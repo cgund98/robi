@@ -98,6 +98,14 @@ pub struct ToolCall {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncation: Option<Truncation>,
+    /// The id the provider issued for this call, when it issued one.
+    ///
+    /// The wire id: a stateless request body must repeat what the provider handed
+    /// out, so a later request echoes this. Not identity — the loop keys on `id`,
+    /// so a provider id that is reused, absent, or malformed cannot confuse
+    /// approval or lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_call_id: Option<String>,
 }
 
 impl ToolCall {
@@ -113,6 +121,7 @@ impl ToolCall {
             result: None,
             error: None,
             truncation: None,
+            provider_call_id: None,
         }
     }
 
@@ -127,6 +136,12 @@ impl ToolCall {
     /// A call the user has already approved, as a test or a re-run supplies it.
     pub fn approved(mut self) -> Self {
         self.approval_status = ApprovalStatus::Approved;
+        self
+    }
+
+    /// Record the id the provider issued, so a later request can echo it.
+    pub fn with_provider_call_id(mut self, provider_call_id: impl Into<String>) -> Self {
+        self.provider_call_id = Some(provider_call_id.into());
         self
     }
 
@@ -251,4 +266,66 @@ pub fn unresolved_turn(messages: &[Message]) -> Option<usize> {
     messages
         .iter()
         .rposition(|m| m.role == Role::Assistant && m.has_unfinished_tool_calls())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_call_has_no_provider_id_until_the_adapter_sets_one() {
+        let call = ToolCall::new("read_file", serde_json::json!({}));
+        assert_eq!(call.provider_call_id, None);
+        assert_eq!(
+            call.with_provider_call_id("call_abc123").provider_call_id,
+            Some("call_abc123".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_absent_provider_id_is_not_serialized() {
+        let call = ToolCall::new("read_file", serde_json::json!({}));
+        let json = serde_json::to_value(&call).expect("a call serializes");
+        assert!(
+            json.get("provider_call_id").is_none(),
+            "a call with no provider id omits the field entirely"
+        );
+    }
+
+    #[test]
+    fn a_transcript_written_before_the_field_existed_still_deserializes() {
+        // The shape `ToolCall` had before `provider_call_id` existed.
+        let old = serde_json::json!({
+            "id": MessageId::new(),
+            "role": "assistant",
+            "content": "reading",
+            "tool_calls": [{
+                "id": ToolCallId::new(),
+                "name": "read_file",
+                "args": {"path": "a.rs"},
+                "approval_status": "approved",
+                "execution_status": "not_started"
+            }]
+        });
+
+        let message: Message = serde_json::from_value(old).expect("an older transcript loads");
+        assert_eq!(message.tool_calls[0].provider_call_id, None);
+        assert_eq!(message.tool_calls[0].name, "read_file");
+    }
+
+    #[test]
+    fn a_provider_id_does_not_change_identity() {
+        // Two calls that share a provider id stay distinct, because the loop keys
+        // on `id`. A provider that reused an id must not merge them.
+        let a = ToolCall::new("read_file", serde_json::json!({}))
+            .with_provider_call_id("call_duplicate");
+        let b = ToolCall::new("read_file", serde_json::json!({}))
+            .with_provider_call_id("call_duplicate");
+
+        assert_ne!(a.id, b.id);
+        let mut message = Message::assistant_with_tool_calls("", vec![a.clone(), b.clone()]);
+        assert!(message.call_mut(a.id).is_some());
+        assert!(message.call_mut(b.id).is_some());
+        assert_eq!(message.tool_calls.len(), 2);
+    }
 }

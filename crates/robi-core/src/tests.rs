@@ -144,6 +144,35 @@ fn asking_then(names: &[&str], then: &str) -> StubModel {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn the_session_id_reaches_the_model() {
+    // A provider needs the session for its routing hint and, later, to pick a
+    // model per session. The loop already holds it, so it hands it over.
+    let model = StubModel::saying("hello");
+    let h = harness(model, vec![], LoopConfig::default());
+
+    h.agent.user_input(h.session, "hi", no_cancel()).await;
+
+    assert_eq!(h.model.sessions_seen(), vec![h.session]);
+}
+
+#[tokio::test]
+async fn every_model_turn_in_a_conversation_carries_one_session_id() {
+    let model = asking_then(&["read"], "done");
+    let tools = vec![FunctionTool::new("read").arc()];
+    let h = harness(model, tools, LoopConfig::default());
+
+    h.agent.user_input(h.session, "go", no_cancel()).await;
+    h.agent.user_input(h.session, "again", no_cancel()).await;
+
+    let seen = h.model.sessions_seen();
+    assert!(seen.len() > 1, "the tool loop takes several model turns");
+    assert!(
+        seen.iter().all(|session| *session == h.session),
+        "one conversation keeps one session id across every turn"
+    );
+}
+
+#[tokio::test]
 async fn a_single_turn_without_tools_completes() {
     let model = StubModel::saying("hello");
     let h = harness(model, vec![], LoopConfig::default());
@@ -476,6 +505,67 @@ async fn a_call_needing_approval_pauses_the_turn() {
         .events()
         .iter()
         .any(|event| matches!(event, Event::AwaitingApproval { .. })));
+}
+
+#[tokio::test]
+async fn a_call_that_needed_no_approval_is_not_reported_as_pending() {
+    // An auto-approved call keeps `ApprovalStatus::Pending`, because the loop
+    // records a decision only when a user makes one. It must still not be offered
+    // for approval once it has run, or a caller would be asked to decide about
+    // work that is already done.
+    let probe = Probe::new();
+    let tools = vec![FunctionTool::new("read").probed(probe.clone()).arc()];
+    let model = asking_then(&["read"], "done");
+    let h = harness(model, tools, LoopConfig::default());
+
+    assert_eq!(
+        h.agent.user_input(h.session, "go", no_cancel()).await,
+        TurnOutcome::Complete
+    );
+    assert!(probe.ran("read"), "the tool ran without a decision");
+
+    assert!(
+        h.agent
+            .pending_tool_calls(h.session)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a call that already ran is not waiting on a decision"
+    );
+}
+
+#[tokio::test]
+async fn an_executed_call_is_not_pending_while_a_later_call_waits() {
+    // The shape a real session produces: within one turn, the model calls a tool
+    // that needs no approval, reads its result, then calls one that does. Only the
+    // second call may be offered for a decision.
+    let probe = Probe::new();
+    let tools = vec![
+        FunctionTool::new("read").probed(probe.clone()).arc(),
+        FunctionTool::new("write")
+            .needs_approval()
+            .probed(probe.clone())
+            .arc(),
+    ];
+    let model = StubModel::new(vec![
+        Script::Message(assistant_asking_for(vec![call("read")])),
+        Script::Message(assistant_asking_for(vec![call("write")])),
+        Script::Message(Message::assistant("done")),
+    ]);
+    let h = harness(model, tools, LoopConfig::default());
+
+    assert_eq!(
+        h.agent
+            .user_input(h.session, "read then write", no_cancel())
+            .await,
+        TurnOutcome::Paused
+    );
+    assert!(probe.ran("read"), "the auto-approved call ran");
+    assert!(!probe.ran("write"), "the call awaiting a decision did not");
+
+    let pending = h.agent.pending_tool_calls(h.session).await.unwrap();
+    assert_eq!(pending.len(), 1, "only the call awaiting a decision");
+    assert_eq!(pending[0].name, "write");
 }
 
 #[tokio::test]

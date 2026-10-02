@@ -5,6 +5,8 @@ local workspace, and a React front end that renders the conversation.
 
 Start with [docs/roadmap.md](docs/roadmap.md) for what ships and in what order.
 The design for the current milestone is
+[docs/design/providers-streaming.md](docs/design/providers-streaming.md); the loop
+it drives — the transcript types, the four traits, and the turn state machine — is
 [docs/design/agent-loop.md](docs/design/agent-loop.md).
 
 ## Layout

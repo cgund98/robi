@@ -98,9 +98,12 @@ Tauri, no HTTP client, and no provider SDK:
   `MessageStore`, and `EventSink`. M1 supplies a real `Model`, M2 supplies a real
   `MessageStore`, and M3 onward supply real `Tool`s. The loop never changes when
   one of those arrives.
-- The other crates exist as directories when their milestone arrives, not now:
-  `robi-providers` (M1), `robi-store` and `robi-app` (M2), `robi-tools` and
-  `robi-workspace` (M3), `robi-review` (M6), `robi-lsp` and `robi-index` (M7).
+- **One crate for implementations, not one per concern.** `crates/robi` holds
+  everything that does I/O: `providers` first (M1), then `store` (M2), `tools` and
+  `workspace` (M3), `review` (M6), `lsp` and `index` (M7) — each a module, split
+  into its own crate only if a module outgrows the crate.
+  `docs/design/providers-streaming.md` records why providers did not become
+  `robi-providers`.
 
 The dependency direction is one-way. Everything depends on `robi-core`, and
 `robi-core` depends on nothing else in the workspace. That is what makes the next
@@ -125,7 +128,7 @@ separate state to reconstruct.
 | Type | Fields | Notes |
 |---|---|---|
 | `Message` | `id`, `role`, `content`, `tool_calls`, `tool_call_id`, `usage` | Roles: `user`, `assistant`, `tool` |
-| `ToolCall` | `id`, `name`, `args`, `approval_status`, `execution_status`, `result`, `error` | Status enums, not booleans |
+| `ToolCall` | `id`, `name`, `args`, `approval_status`, `execution_status`, `result`, `error`, `provider_call_id` | Status enums, not booleans. `id` is loop identity; `provider_call_id` is the wire id the provider issued, echoed on the next request (D3) |
 | `Usage` | `input`, `output`, `cached` | On the assistant message; drives the context meter in M3 |
 | `Turn` | derived, never stored | A user message up to the last assistant message |
 
@@ -333,19 +336,55 @@ store drive every case.
 **Goal** — drive the M0 loop with a real model, and stream tokens into it.
 
 M0's `Model` trait is already async and already cancellable, so this milestone
-is the first implementation that touches a network. Keep the loop untouched: if
-M1 has to change `robi-core`, the trait was wrong.
+is the first implementation that touches a network.
+
+**`robi-core` did change, and the trait was wrong.** M1 added three things, all
+recorded in [`design/providers-streaming.md`](design/providers-streaming.md):
+
+- `Model::generate` now takes the `SessionId`. The loop already held it, and the
+  provider needs it as a per-conversation routing and cache key. Deriving it
+  inside the adapter from the transcript was rejected: compaction (M3) rewrites
+  the transcript's first message, which would silently rotate the key (D4).
+- `ToolCall` gained `provider_call_id`: the id the provider issued, echoed on the
+  next request. Loop identity stays the local UUID, so a provider id that is
+  reused, absent, or malformed cannot confuse approval or lookup (D3).
+- `model_turn` selects on the cancel token around `generate`. Without it, a cancel
+  that fires before the response headers arrive surfaces as a transport failure
+  rather than `Cancelled`, because the two-variant `ModelError` cannot express a
+  cancellation.
+
+A fourth change is a bug fix rather than a design decision: `pending_tool_calls`
+had to stop offering already-executed calls for approval. It is described under
+"Where M1 stands" below.
+
+None of these touches the loop's algorithm. The lesson for later milestones is
+that a trait is only "fixed" once a real implementation has exercised it.
 
 ### F1.1 Provider clients
 
-- Anthropic and OpenAI, plus the OpenAI-compatible providers gopi targets
-  (Kimi/Moonshot and DeepSeek), which reuse the OpenAI client with a different
-  base URL and auth.
-- Port gopi's model catalog of context windows and prices. They are not
-  decoration: M3's context meter and any cost display depend on them.
-- **Open decisions** — a typed SDK per provider, or one HTTP client with
-  per-provider request and response mapping. gogent does the latter, which is
-  less code per provider at the cost of owning the wire mapping.
+- **First provider: OpenCode Go**, over the OpenAI-compatible chat-completions
+  wire format. One client serves every endpoint that speaks it: Kimi, DeepSeek,
+  and OpenRouter are the same request shape with a different base URL,
+  credential, and model table. Anthropic's own format is still open work.
+- What the endpoint requires, now that it is built and tested:
+  - `POST {base}/chat/completions` with `stream: true` and
+    `stream_options.include_usage`. Base URL
+    `https://opencode.ai/zen/go/v1`.
+  - `Authorization: Bearer <key>`, and `x-opencode-session: <SessionId>`. The
+    header is what the provider keys routing and prompt caching on, so it must be
+    the conversation's id, stable across turns and restarts (D4).
+  - The model id on the wire is the bare id (`glm-5.3`), not the
+    `opencode-go/glm-5.3` form that configuration writes.
+  - A client that names itself in `User-Agent`; the vendor asks for this rather
+    than a library default.
+- Port gopi's model catalog of context windows. They are not decoration: M3's
+  context meter depends on them. The table is vendored, not fetched, so startup
+  does not need the network — and it lists only tool-capable models, because a
+  model that cannot call tools cannot drive the loop (D9). Prices are deferred
+  until something displays them.
+- **Settled** — one HTTP client with per-provider request and response mapping,
+  not a typed SDK per provider, because the delta mapping and tool-call assembly
+  are written either way and no official Rust SDK exists. See D1.
 
 ### F1.2 Streaming and the delta protocol
 
@@ -353,8 +392,9 @@ M1 has to change `robi-core`, the trait was wrong.
   the whole response is done, and gopi's TUI redraws on whole-message events. A
   chat window cannot. **This is the largest single risk in the plan**, because
   the delta protocol is the boundary the whole UI is built against.
-- Emit typed deltas, never raw SSE: `TextDelta`, `ToolCallStart`,
-  `ToolCallArgsDelta`, `ToolCallEnd`, `Usage`, `Done`, `Error`.
+- Emit typed deltas, never raw SSE: `Text`, `Reasoning`, `ToolCallStart`,
+  `ToolCallArgs`, `ToolCallEnd`, `Usage`, `Finished`, `Failed` — the M0 variant
+  list, which this milestone fills in rather than extends.
 - **Partial tool arguments matter.** A tool card should appear while its arguments
   are still streaming, so the user sees what is about to happen before it happens.
   That needs delta-level tool-call events, which gogent's whole-message
@@ -363,27 +403,58 @@ M1 has to change `robi-core`, the trait was wrong.
   `WithReasoningEffort`. The delta vocabulary is fixed in M0 and includes
   `Reasoning`, so the loop forwards traces from the start. Whether the UI shows,
   collapses, or drops them is a chat-UI decision (M2).
-- **Open decisions** — (D2) the delta serialization and its IPC encoding;
-  hand-rolled SSE parsing vs. a crate; how a mid-stream provider error is
-  represented. The variant list is settled; these are the wire details.
+- **Settled** — (D2) the delta serialization and its IPC encoding is still open;
+  SSE is decoded by hand rather than by a crate, because the inter-chunk timeout
+  and the cancellation path have to live in the same loop as the read (D6); and a
+  mid-stream provider error arrives as an error object inside the 200 body, which
+  becomes `Delta::Failed`.
 
 ### F1.3 Reliability
 
 - Retries with backoff on 429 and 5xx, and an explicit statement of what is *not*
   retried: a cancellation, and any 4xx that is not a rate limit.
 - Neither gogent nor gopi has a retry layer. This is new work.
-- A retry must not duplicate a partially-rendered message, so decide where the
-  retry boundary sits relative to the transcript write.
+- **Settled** — a retry is confined to the window before the first delta reaches
+  the loop, which is what keeps it from duplicating a partially-rendered message:
+  the adapter retries the request, never a stream in progress. 429 (honouring
+  `Retry-After`), 5xx, and connect timeouts are retried; a cancellation and every
+  other 4xx are not. Three attempts, exponential backoff with full jitter (D7).
 
 ### F1.4 Model and effort selection
 
 - Per-session model and reasoning effort, with provider-level defaults.
 - Switching model mid-session is allowed; the transcript is provider-agnostic.
 - The active model is visible where the user types, not buried in settings.
+- **Switching goes through a `ModelRouter`** in `crates/robi::providers`, which is
+  itself a `Model` that resolves a session's model and dispatches. `Agent` keeps
+  holding one `Arc<dyn Model>` and never learns that switching exists. The concrete
+  design is under **D8** in
+  [design/providers-streaming.md](design/providers-streaming.md).
+  It arrives with M2, since M1 ships one provider and no UI.
 
-**Exit criteria for M1** — the M0 loop, unchanged, driving a real provider:
-streaming tokens and partial tool arguments, surviving a rate limit, and
-cancelling mid-stream without corrupting the transcript.
+**Exit criteria for M1** — the M0 loop, with only the three core changes listed
+above, driving a real provider: streaming tokens and partial tool arguments,
+surviving a rate limit, and cancelling mid-stream without corrupting the
+transcript.
+
+**Where M1 stands.** F1.1 through F1.3 are built and tested against a fake
+provider that speaks the real wire format: streaming, tool-call assembly with the
+provider's ids, the retry policy, timeouts, cancellation, and an `Agent` turn
+end-to-end. `cargo run -p robi --example simple` drives the same stack by hand
+against a real endpoint, with one tool that needs no approval and one that does.
+Two things remain before M1 is done:
+
+- **No live turn has been run.** Every test uses a scripted loopback server, so
+  the vendor's exact framing is still an assumption. The example is how to check
+  it; run it once with a real key.
+- **F1.4 is not started.** One provider is wired and no UI selects a model, so
+  per-session model and effort selection arrive with M2.
+
+Running the example by hand already paid for itself: it exposed a core bug where
+`pending_tool_calls` offered an already-executed call for approval, because it
+filtered on `ApprovalStatus::Pending` and the loop only records a decision a user
+made. The fix and its tests are in `robi-core`; see
+[providers-streaming.md](design/providers-streaming.md#trying-it-by-hand).
 
 **Design doc** — `docs/design/providers-streaming.md`.
 
@@ -774,8 +845,8 @@ Statuses: **needed**, **later**, **done**.
 
 | Doc | Covers | Needed before | Status |
 |---|---|---|---|
-| `docs/design/agent-loop.md` | Transcript, loop algorithm, turn lifecycle sequence, approval lifecycle, tool execution, events, cancellation, test strategy | M0 | needed (first) |
-| `docs/design/providers-streaming.md` | Delta protocol, SSE, provider quirks, retries/backoff, reasoning tokens | M1 | needed |
+| `docs/design/agent-loop.md` | Transcript, loop algorithm, turn lifecycle sequence, approval lifecycle, tool execution, events, cancellation, test strategy | M0 | done |
+| `docs/design/providers-streaming.md` | Delta protocol, SSE, provider quirks, retries/backoff, reasoning tokens | M1 | done |
 | `docs/design/architecture.md` | Crate layout, IPC protocol, thread/runtime model, event ordering | M2 | needed |
 | `docs/design/chat-ui.md` | Streaming render, scroll behavior, message list, tool-card layout | M2 | needed |
 | `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | needed |
@@ -811,7 +882,7 @@ What to take, what to leave. Names refer to `../gopi`.
 | `internal/review/` | `robi-review` | Port the diff; the review object is new |
 | `internal/app/` mode wiring | `robi-core::mode` | Port the registry-per-mode idea; drop the TUI coupling |
 | `internal/tui/` | `src/` (React) | Behavior only: what a tool card shows, when approval pauses |
-| `internal/models/` catalog | `robi-providers` | Port context windows and prices; they drive the context meter and cost display |
+| `internal/models/` catalog | `crates/robi::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all (D9) |
 | `docs/` (mdbook, 30 pages) | `docs/` | Adopt the taxonomy: **guides teach, concepts explain, reference states facts.** One job per page |
 | — | new | Streaming, cancellation API, checkpoints, LSP, index |
 

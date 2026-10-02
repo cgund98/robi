@@ -18,7 +18,7 @@ use crate::ids::{MessageId, SessionId, WorkspaceId};
 use crate::message::Message;
 use crate::model::{Delta, Model, ModelStream};
 use crate::store::MessageStore;
-use crate::tool::{Concurrency, ApprovalDecision, Tool};
+use crate::tool::{ApprovalDecision, Concurrency, Tool};
 
 // ---------------------------------------------------------------------------
 // Timeline: a shared record of writes and emits, to check their order.
@@ -274,6 +274,7 @@ pub enum Script {
 pub struct StubModel {
     scripts: Mutex<VecDeque<Script>>,
     seen: Mutex<Vec<Vec<Message>>>,
+    sessions: Mutex<Vec<SessionId>>,
 }
 
 impl StubModel {
@@ -281,6 +282,7 @@ impl StubModel {
         Self {
             scripts: Mutex::new(scripts.into()),
             seen: Mutex::new(Vec::new()),
+            sessions: Mutex::new(Vec::new()),
         }
     }
 
@@ -297,6 +299,14 @@ impl StubModel {
             .clone()
     }
 
+    /// The session id the loop handed the model, one per call.
+    pub fn sessions_seen(&self) -> Vec<SessionId> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn call_count(&self) -> usize {
         self.seen().len()
     }
@@ -306,6 +316,7 @@ impl StubModel {
 impl Model for StubModel {
     async fn generate(
         &self,
+        session: SessionId,
         transcript: &[Message],
         _cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
@@ -313,6 +324,10 @@ impl Model for StubModel {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(transcript.to_vec());
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(session);
 
         let script = self
             .scripts

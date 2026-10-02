@@ -173,8 +173,13 @@ milestone supplies an implementation; none of them changes a signature here.
 pub trait Model: Send + Sync {
     /// One model turn. Deltas stream as they arrive; the final item is
     /// `Delta::Finished`, carrying the fully assembled assistant message.
+    ///
+    /// `session` identifies the conversation. The loop already holds it, and an
+    /// adapter needs it: OpenCode Go takes a per-conversation routing header, and
+    /// per-session model selection reads it too.
     async fn generate(
         &self,
+        session: SessionId,
         transcript: &[Message],
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError>;
@@ -340,6 +345,12 @@ impl Agent {
     pub async fn resume(&self, session: SessionId,
                         cancel: CancellationToken) -> Result<TurnOutcome>;
 
+    /// The calls waiting on a decision, in transcript order.
+    ///
+    /// A call that has already run is not waiting on anything. The loop records a
+    /// decision only when a user makes one, so a call that needed no approval keeps
+    /// `ApprovalStatus::Pending`; "pending" therefore means pending approval *and*
+    /// still unexecuted.
     pub async fn pending_tool_calls(&self, session: SessionId) -> Result<Vec<ToolCall>>;
     pub async fn approve(&self, session: SessionId, call: ToolCallId) -> Result<()>;
     pub async fn reject(&self, session: SessionId, call: ToolCallId, reason: &str) -> Result<()>;
@@ -671,6 +682,12 @@ The loop owns a `tokio_util::sync::CancellationToken`, passed by reference into
   message with half-assembled tool calls is the exact failure this rule prevents.
 - **In-flight tools get the token and their results are recorded** as cancelled.
   Dropping them would leave the turn unresolved with no way to settle it.
+
+The model-turn call site selects on the token around `generate` itself, so a cancel
+that fires while the request is in flight returns `Cancelled` without waiting for
+response headers. The adapter cannot express cancellation through `ModelError`, so
+without that select a user-stopped turn would surface as a connection failure. M1
+added it; see [providers-streaming.md](providers-streaming.md).
 
 Decide per cancellation point what the transcript looks like, and assert it in a
 test. M5's subagents inherit whatever this doc decides.

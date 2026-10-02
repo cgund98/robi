@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ModelError;
-use crate::ids::{MessageId, ToolCallId};
+use crate::ids::{MessageId, SessionId, ToolCallId};
 use crate::message::{Message, Usage};
 
 /// One piece of a model turn, as it arrives.
@@ -84,8 +84,13 @@ impl From<mpsc::Receiver<Delta>> for ModelStream {
 #[async_trait]
 pub trait Model: Send + Sync {
     /// Start one model turn over the transcript.
+    ///
+    /// `session` identifies the conversation. The loop already holds it, and an
+    /// adapter needs it for two things: a per-conversation routing hint, and
+    /// picking a configured model per session. Treat it as opaque.
     async fn generate(
         &self,
+        session: SessionId,
         transcript: &[Message],
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError>;
@@ -99,6 +104,7 @@ pub struct UnavailableModel;
 impl Model for UnavailableModel {
     async fn generate(
         &self,
+        _session: SessionId,
         _transcript: &[Message],
         _cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {

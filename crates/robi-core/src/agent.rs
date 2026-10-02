@@ -132,6 +132,12 @@ impl Agent {
     }
 
     /// The calls waiting on a decision, in transcript order.
+    ///
+    /// A call that has already run is not waiting on anything. The loop sets
+    /// `ApprovalStatus::Approved` only when a user approves, so a call that needed
+    /// no approval keeps `Pending` for its whole life; filtering on approval alone
+    /// would report every no-approval call that ever ran and invite a decision on
+    /// work that is already done.
     pub async fn pending_tool_calls(
         &self,
         session: SessionId,
@@ -140,7 +146,7 @@ impl Agent {
         Ok(messages
             .iter()
             .flat_map(|message| message.tool_calls.iter())
-            .filter(|call| call.is_pending_approval())
+            .filter(|call| call.is_pending_approval() && call.needs_execution())
             .cloned()
             .collect())
     }
@@ -318,7 +324,17 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<Message, TurnError> {
         let transcript = self.store.messages(*session).await?;
-        let mut stream = self.model.generate(&transcript, cancel.clone()).await?;
+
+        // Cancellation during connection setup must report `Cancelled`, not a
+        // failure: the adapter cannot express "cancelled" through `ModelError`, and
+        // a turn the user stopped is not an error to surface. Selecting here also
+        // drops the in-flight request.
+        let stream = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(TurnError::Cancelled),
+            stream = self.model.generate(*session, &transcript, cancel.clone()) => stream?,
+        };
+        let mut stream = stream;
         // The id the delta events will name, fixed before the first delta.
         let message_id = stream.message_id();
 
