@@ -17,11 +17,12 @@
 }
 
 .user {
-  align-self: stretch;
-  width: 100%;
+  align-self: flex-end;
+  width: fit-content;
+  max-width: 85%;
   padding: var(--space-3) var(--space-4);
   background: var(--bg-user);
-  color: var(--ink);
+  color: var(--ink-bright);
   border-radius: var(--radius-lg);
   white-space: pre-wrap;
   box-sizing: border-box;

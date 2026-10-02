@@ -28,6 +28,7 @@ use crate::{
         chat_session::service::ChatSessionService,
         error::ServiceError,
         events::EventFanOut,
+        file_change::repo::FileChangeRepository,
     },
 };
 
@@ -43,6 +44,8 @@ pub struct AgentFactory {
     pub config: LoopConfig,
     /// Chat session rows. Absent in tests that do not name sessions.
     pub sessions: Option<Arc<ChatSessionService>>,
+    /// Baselines for files this session changes. Required when `sessions` is set.
+    pub file_changes: Option<Arc<dyn FileChangeRepository>>,
     /// Publishes `session_updated` after a title is stored. Absent when there is
     /// no fan-out.
     pub fanout: Option<Arc<EventFanOut>>,
@@ -78,14 +81,23 @@ impl AgentFactory {
             .ok_or_else(|| ServiceError::NotFound(chat.workspace_id.to_string()))?;
         let root = std::path::PathBuf::from(&workspace.root);
         let root = root.canonicalize().unwrap_or(root);
+        let file_changes = self.file_changes.clone().ok_or_else(|| {
+            tracing::error!("session tools require a file change repository");
+            ServiceError::Unknown
+        })?;
         let registry = ToolRegistry::new();
         let ctx = Arc::new(crate::tools::ToolContext {
             session_id: session,
             root: root.clone(),
             sessions: Arc::clone(sessions),
+            file_changes,
         });
-        crate::tools::register_read_tools(&registry, ctx).map_err(|err| {
+        crate::tools::register_read_tools(&registry, Arc::clone(&ctx)).map_err(|err| {
             tracing::error!(%err, "failed to register read tools");
+            ServiceError::Unknown
+        })?;
+        crate::tools::register_edit_tools(&registry, ctx).map_err(|err| {
+            tracing::error!(%err, "failed to register edit tools");
             ServiceError::Unknown
         })?;
         Ok((Arc::new(registry), Some(root)))
@@ -531,6 +543,7 @@ mod tests {
             tools: Arc::new(ToolRegistry::new()),
             config: LoopConfig::default(),
             sessions: None,
+            file_changes: None,
             fanout: None,
         })
     }
@@ -718,6 +731,7 @@ mod tests {
             tools: Arc::new(ToolRegistry::new()),
             config: LoopConfig::default(),
             sessions: None,
+            file_changes: None,
             fanout: None,
         });
 
@@ -781,6 +795,9 @@ mod tests {
             tools: Arc::new(ToolRegistry::new()),
             config: LoopConfig::default(),
             sessions: Some(sessions),
+            file_changes: Some(Arc::new(
+                crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
+            )),
             fanout: Some(fanout),
         })
     }

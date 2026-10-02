@@ -80,14 +80,23 @@ A turn that is still running, or waiting on approval, does not show it.
 
 Tool rows from later iterations of the same turn sit in that same stack, with
 no extra gap between them. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
-`Listed`), and the path or pattern. A running call shows a spinner.
+`Listed`), and the path or pattern. A finished `write_file`, `edit_file`, or
+`delete_file` is a bordered card: the path the tool was called with
+(`scratch/test.md`, `../gopi/test.md`, `/tmp/test.md`), the `+` / `−` counts beside
+it, and the first 4 diff lines. Added and removed lines carry a left accent in
+`--diff-add` or `--diff-del`. Clicking the name opens the rest, at most 24
+lines, then `N more lines` when the change is longer. A running call shows a spinner.
 A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
 the body: numbered file text, match lines, paths, or the error. The row stays
 closed until that click.
 
 A call that is still `pending` approval and `not_started`, while the session
 phase is idle, is the approval bar. It shows the same verb and target, then
-**Reject** and **Run**. Run posts `approve`. Reject posts `reject`. The phase
+**Reject** and **Approve**. A pending `edit_file` uses the same diff card as a
+finished edit, built from `old` and `new`: that same path, the counts, the
+first 4 lines, and the same 24-line cap. **Reject** and **Approve** sit on that
+card. Approve posts `approve`. It uses `--accent` with dark text. Reject posts
+`reject`. Either button lightens on hover. The phase
 becomes **Thinking** until the resumed turn reports back. A call that ran
 without asking stays a result row: `pending` approval with `succeeded`
 execution is not a prompt.

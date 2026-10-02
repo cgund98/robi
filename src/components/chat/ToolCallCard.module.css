@@ -94,6 +94,126 @@
   user-select: none;
 }
 
+.diffLine .lineNo {
+  width: auto;
+  text-align: left;
+}
+
+.edit {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+}
+
+.editHead {
+  display: flex;
+  align-items: center;
+}
+
+.editHead .actions {
+  padding-right: var(--space-2);
+}
+
+.editRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.editRow:disabled {
+  cursor: default;
+}
+
+.editPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.editCounts {
+  display: inline-flex;
+  gap: var(--space-2);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.add {
+  color: var(--diff-add);
+}
+
+.del {
+  color: var(--diff-del);
+}
+
+.diff {
+  margin: 0;
+  max-height: 22rem;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diffLine {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  border-left: 3px solid transparent;
+  white-space: pre;
+}
+
+.diffLine[data-kind='del'] {
+  background: color-mix(in srgb, var(--diff-del) 22%, transparent);
+  border-left-color: var(--diff-del);
+}
+
+.diffLine[data-kind='add'] {
+  background: color-mix(in srgb, var(--diff-add) 22%, transparent);
+  border-left-color: var(--diff-add);
+}
+
+.mark {
+  width: 1ch;
+  flex: none;
+  user-select: none;
+}
+
+.diffLine[data-kind='del'] .mark {
+  color: var(--diff-del);
+}
+
+.diffLine[data-kind='add'] .mark {
+  color: var(--diff-add);
+}
+
+.diffText {
+  min-width: 0;
+}
+
+.more {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
 .approval {
   display: flex;
   align-items: center;
@@ -121,27 +241,37 @@
 }
 
 .reject,
-.run {
+.approve {
   border: 0;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
   font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
   cursor: pointer;
 }
 
 .reject {
-  padding: var(--space-1) var(--space-2);
   background: transparent;
   color: var(--ink-muted);
 }
 
-.run {
-  padding: var(--space-1) var(--space-3);
-  background: var(--bg-surface-active);
-  color: var(--ink-strong);
-  border-radius: var(--radius-sm);
+.approve {
+  background: var(--accent);
+  color: var(--bg-canvas);
+}
+
+.reject:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+
+.approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 82%, white);
 }
 
 .reject:disabled,
-.run:disabled {
+.approve:disabled {
   opacity: 0.5;
   cursor: default;
 }

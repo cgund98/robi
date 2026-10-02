@@ -7,5 +7,6 @@ pub mod chat_message;
 pub mod chat_session;
 pub mod error;
 pub mod events;
+pub mod file_change;
 pub mod settings;
 pub mod workspace;

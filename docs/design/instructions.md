@@ -10,7 +10,7 @@ lives in `robi-core::prompt`. The sources that fill those blocks live in
 | Topic | Where it belongs |
 |---|---|
 | How the request prepends the string | [providers-streaming.md](providers-streaming.md) |
-| Which tools exist | [read-tools.md](read-tools.md) |
+| Which tools exist | [read-tools.md](read-tools.md), [editing-tools.md](editing-tools.md) |
 | Skills, mode prefixes, and a trust decision before reading a project file | [roadmap](../roadmap.md) M5 and M8 |
 
 ## Problem

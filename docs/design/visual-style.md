@@ -26,7 +26,8 @@ palette and shell layout, every screen invents its own grays, and the UI drifts
 toward either a generic dark dashboard or a light marketing shell.
 
 Claude's desktop Code view already solves the composition we need: a narrow
-session rail, a quiet transcript on near-black, a navy user bubble, warm muted
+session rail, a quiet transcript on near-black, a user bubble slightly
+lighter than the canvas, warm muted
 ink, and a bottom composer with model controls. Steal that surface language.
 Do not steal Claude product features that Robi has not decided to ship.
 
@@ -38,7 +39,7 @@ theme for M2.** Dark-only. No light mode until product schedules one.
 | Steal | Defer | Reject for now |
 |---|---|---|
 | Near-black canvas + charcoal sidebar/composer surfaces | Home / Code product toggle | Marketing light theme |
-| Navy user message bubble | Routines / Scheduled lists | Card-heavy dashboard chrome |
+| User bubble slightly lighter than the canvas | Routines / Scheduled lists | Card-heavy dashboard chrome |
 | Warm off-white body ink (not pure white) | Voice / mic control | Purple accent stacks |
 | Soft radii on bubbles, composer, sidebar pills | Pinned section as a first-class store | Floating badges over the transcript |
 | Session rail + main transcript + bottom composer | Breadcrumb as editable project switcher | Multi-column agent canvases (Devin-style) |
@@ -99,7 +100,7 @@ Do not sprinkle raw hex in components.
 | `--bg-surface` | `#1f1f1e` | Composer field, elevated chips |
 | `--bg-surface-hover` | `#282827` | Row / control hover |
 | `--bg-surface-active` | `#333333` | Selected session, pressed toggle |
-| `--bg-user` | `#15202c` | User message bubble |
+| `--bg-user` | `#181817` | User message bubble, a dark gray lighter than `--bg-canvas` |
 | `--ink` | `#c3c2b8` | Primary body text (warm, not pure white) |
 | `--ink-strong` | `#ecece8` | Titles, emphasis |
 | `--ink-bright` | `#f7f6f2` | Assistant prose |
@@ -107,7 +108,6 @@ Do not sprinkle raw hex in components.
 | `--ink-faint` | `#5c5c57` | Placeholders, disabled |
 | `--accent` | `#55a2fb` | Focus ring, send/active status, links |
 | `--accent-muted` | `#3a6fa8` | Accent on dark fills (icons in quiet states) |
-| `--mark` | `#e07a5f` | Empty-chat greeting mark |
 | `--code-bg` | `#1a1a19` | Inline code chip background |
 | `--code-ink` | `#d4d3cb` | Inline code text |
 | `--rule` | `#2a2a28` | Hairline separators (use sparingly) |
@@ -117,13 +117,13 @@ Do not sprinkle raw hex in components.
 | `--diff-del` | `#c46b6b` | `-N` line counts in edit summaries |
 | `--bg-row` | `#303030` | File rows inside the edit-summary widget |
 
-`color-scheme: dark` on the document. Scrollbars and form controls should follow
-the dark scheme.
+`color-scheme: dark` on the document. Form controls follow the dark scheme.
+Scrollbar thumbs are `--bg-surface-active`, thin, with a transparent track.
 
 ### Accent discipline
 
 `--accent` is for **state and focus**, not decoration. Do not tint large panels
-blue. User messages stay navy (`--bg-user`); assistant messages stay unbubbled on
+blue. User messages stay a dark gray (`--bg-user`); assistant messages stay unbubbled on
 `--bg-canvas`.
 
 ## Typography
@@ -135,10 +135,10 @@ blue. User messages stay navy (`--bg-user`); assistant messages stay unbubbled o
 | Body size | ~14–15px | Comfortable reading; avoid 12px transcript |
 | Activity line | ~12–13px, `--ink-muted` | Quieter than assistant prose |
 | Sidebar item | ~13–14px | Truncate with ellipsis; full title on hover |
-| Empty greeting | ~32px, `ui-serif` | One line on a chat that has no messages yet |
+| Empty greeting | ~32px, UI sans, weight 560 | Same type as the workspaces page title |
 
-Line height ~1.5 for assistant prose. The empty-chat greeting is the one serif
-line. The rest of the shell stays on the UI sans.
+Line height ~1.5 for assistant prose. The empty-chat greeting uses the same
+sans title as the workspaces page. The rest of the shell stays on the UI sans.
 
 ## Shape and spacing
 
@@ -161,8 +161,9 @@ These are the chrome pieces the style owns. Behavior of each is specified in
 
 ### User message
 
-- Full-width bubble on `--bg-user` within the chat column, text `--ink`
-  (or slightly cooler if needed for contrast on navy).
+- Bubble on `--bg-user`, aligned to the chat column's right edge. It is only
+  as wide as its text, and never wider than 85% of the column. Text is
+  `--ink-bright` so it matches the brightness of assistant prose.
 - Large radius (`--radius-lg`).
 - The chat column itself caps at `--chat-column-width` (`48rem`); user bubbles,
   assistant prose, and the composer share that bound.
@@ -196,7 +197,8 @@ text. Not cards. Tool **results** that need inspection become tool cards
   text + chevron, not colored pills — except the active run indicator, which may
   use `--accent`. No mode toggle or attach control in the shell mock.
 - An empty chat lifts that same field into one bordered card under the greeting.
-  The model row sits inside the card. The greeting mark uses `--mark`.
+  The model row sits inside the card. The greeting is the workspaces title
+  type, with no mark beside it.
 
 ### Settings
 

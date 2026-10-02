@@ -1,0 +1,114 @@
+//! Delete one text file.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use robi_core::error::ToolError;
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use serde::Deserialize;
+use serde_json::Value;
+use tokio_util::sync::CancellationToken;
+
+use super::change::{
+    change_diff, diff_json, lock_path, read_text, record_baseline, write_approval,
+};
+use super::context::{display_path, ToolContext};
+
+pub struct DeleteFile {
+    ctx: Arc<ToolContext>,
+}
+
+impl DeleteFile {
+    pub fn new(ctx: Arc<ToolContext>) -> Self {
+        Self { ctx }
+    }
+}
+
+#[derive(Deserialize)]
+struct DeleteArgs {
+    path: String,
+}
+
+#[async_trait]
+impl Tool for DeleteFile {
+    fn name(&self) -> &str {
+        "delete_file"
+    }
+
+    fn description(&self) -> &str {
+        "Delete one text file. Refuses a directory, a missing path, and a file that is not UTF-8. Parent directories are left in place. A path the session write rules deny waits for approval on this call and does not save an allow. The result is a deletion diff."
+    }
+
+    fn parameters(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File to delete. Workspace-relative, absolute, or ~/."}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+
+    fn concurrency(&self) -> Concurrency {
+        Concurrency::Exclusive
+    }
+
+    async fn requires_approval(&self, args: &Value) -> ApprovalDecision {
+        write_approval(&self.ctx, args).await
+    }
+
+    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let args: DeleteArgs = serde_json::from_value(args)
+            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        if args.path.is_empty() {
+            return Err(ToolError::InvalidArgs("path is required".into()));
+        }
+        self.ctx.filter().await?;
+        let resolved = self.ctx.resolve(&args.path)?;
+        let _guard = lock_path(&resolved.absolute).await;
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        if std::fs::metadata(&resolved.absolute)
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(ToolError::Failed("path is a directory".into()));
+        }
+        let Some(before) = read_text(&resolved.absolute)? else {
+            return Err(ToolError::Failed("file not found".into()));
+        };
+        let relative = display_path(&resolved);
+        let existing = self
+            .ctx
+            .file_changes
+            .get_baseline(self.ctx.session_id, &relative)
+            .await
+            .map_err(|err| ToolError::Failed(err.to_string()))?;
+        if existing.as_ref().is_some_and(|baseline| baseline.created) {
+            std::fs::remove_file(&resolved.absolute)
+                .map_err(|err| ToolError::Failed(format!("delete file: {err}")))?;
+            self.ctx
+                .file_changes
+                .delete_baseline(self.ctx.session_id, &relative)
+                .await
+                .map_err(|err| ToolError::Failed(err.to_string()))?;
+        } else {
+            record_baseline(
+                self.ctx.file_changes.as_ref(),
+                self.ctx.session_id,
+                &relative,
+                &before,
+                false,
+            )
+            .await?;
+            std::fs::remove_file(&resolved.absolute)
+                .map_err(|err| ToolError::Failed(format!("delete file: {err}")))?;
+        }
+        Ok(diff_json(&change_diff(&relative, &before, "", true, true)))
+    }
+}

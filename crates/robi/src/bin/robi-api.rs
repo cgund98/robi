@@ -12,6 +12,7 @@ use robi::{
         chat_message::SqliteMessageStore,
         chat_runtime::{AgentFactory, SerializedChatRuntime},
         chat_session::repo::SqliteChatSessionRepository,
+        file_change::repo::SqliteFileChangeRepository,
         model_source::SettingsModelSource,
         settings::{home_dir, TomlSettingsStore},
         sqlite,
@@ -21,6 +22,7 @@ use robi::{
         chat_message::service::ChatMessageService,
         chat_session::service::ChatSessionService,
         events::{EventFanOut, FanOutEventSink},
+        file_change::repo::FileChangeRepository,
         settings::{store::SettingsStore, SettingsService},
         workspace::service::WorkspaceService,
     },
@@ -86,6 +88,8 @@ async fn main() {
         tools,
         config: LoopConfig::default(),
         sessions: Some(Arc::clone(&chat_session_service)),
+        file_changes: Some(Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)))
+            as Arc<dyn FileChangeRepository>),
         fanout: Some(Arc::clone(&event_fanout)),
     }));
     let state = AppState {

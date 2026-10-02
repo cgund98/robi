@@ -600,19 +600,18 @@ test is half a workflow, and a shell tool without a sandbox is not one to ship.
 
 ### F4.1 Write and edit tools
 
-- `write_file` for new files and full rewrites.
-- `edit_file` for targeted changes. **This is the biggest open design question in
-  the roadmap: search-and-replace vs. diff/patch.** See
-  [D5](#d5) below and
-  `docs/design/editing-tools.md`.
-- Whatever the format, the tool must fail closed: an ambiguous or non-unique
-  match is an error with a diagnostic, never a best-guess write.
+- `write_file` for new files and full rewrites. `delete_file` removes one file.
+- `edit_file` for targeted changes, by exact search-and-replace. Settled in
+  [D5](#d5) and [editing-tools.md](design/editing-tools.md).
+- An ambiguous or non-unique match is an error with a diagnostic, never a
+  best-guess write. A path the write rules deny waits for approval on that call.
 
 ### F4.2 Checkpoints and undo
 
-Every edit is a checkpoint the user can revert, independent of git. This is what
-makes an agent worth trusting with a working tree, and it is cheap once edits
-flow through one code path. Design it with F4.1, not after.
+Every edit is a checkpoint the user can revert, independent of git. The
+checkpoint is the session's baseline for that path, specified in
+[checkpoints.md](design/checkpoints.md). Putting a hunk back is the review
+milestone.
 
 ### F4.3 Verification loop
 
@@ -937,7 +936,7 @@ resolve them.
 | D2 | Delta serialization and IPC encoding | F1.2 | The variant list is fixed in M0; these are the wire details. Expensive to change once the UI depends on them |
 | D3 | In-process loop vs. sidecar | F2.1 | Gate on headless mode (M8) being a goal |
 | D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/design/persistence.md`. App home directory is still open. Usage history and the M7 index lean the same file; the index engine is D7 |
-| D5 | Editing: search-and-replace vs. diff-based | F4.1 | The highest-leverage decision in the roadmap; see below |
+| D5 | Editing: search-and-replace vs. diff-based | F4.1 | Settled: exact search-and-replace. See below and `docs/design/editing-tools.md` |
 | D6 | Embeddings: local vs. hosted | F7.2 | Product decision about code leaving the machine |
 | D7 | Vector store | F7.2 | `sqlite-vec`, LanceDB, or Qdrant |
 | D8 | LSP client approach | F7.1 | Hand-rolled with `lsp-types` vs. an off-the-shelf client |
@@ -948,25 +947,25 @@ resolve them.
 
 <a id="d5"></a>
 
-### D5: Editing — search-and-replace vs. diff-based
+### D5: Editing — search-and-replace
 
-The most consequential decision here, because it shapes the tool schema, the
-approval UI, the checkpoint model, and every prompt after it.
+Settled. The model edits with exact search-and-replace (`edit_file`), full-file
+writes (`write_file`), and `delete_file`. It does not send a unified diff. The
+review preview is computed after the write, from the session baseline, so the
+model does not author that diff. The schemas, the fail-closed match, and the
+approval prompt are in [editing-tools.md](design/editing-tools.md).
 
 | Approach | Strength | Cost |
 |---|---|---|
 | Search and replace | Unambiguous, cheap to validate, trivially reversible | Ambiguous on repeated text; large edits become many calls; no natural preview |
 | Unified diff / patch | Precise about position and context; one call per file; previewable as a real diff in review UI | Fragile to context drift; models generate malformed patches; needs fuzzy application |
 
-Neither wins outright, and the failure modes differ in kind: search-and-replace
-fails loudly on ambiguity, a patch fails quietly by applying to the wrong place
-or not at all. gopi uses search-and-replace. Robi should decide deliberately.
-A hybrid is plausible (search-and-replace for small edits, patch for full-file
-rewrites), but a hybrid doubles the surface the model must be prompted for, so
-choose it only if the review-UI preview requirement (F6.2) forces it.
-
-`docs/design/editing-tools.md` settles it, and it is the highest-leverage of the
-breakout docs. `docs/design/agent-loop.md` is the first one written.
+Search-and-replace fails closed when `old` is missing or matches more than
+once. A patch the model authors was rejected: it applies to the wrong place
+when the file has drifted, and models emit malformed patches. Fuzzy matchers
+were rejected for the same reason. A write must not succeed when `old` is not
+the bytes in the file. `replace_all` is the explicit opt-in when every match
+should change.
 
 ---
 
@@ -989,8 +988,8 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/instructions.md` | System prompt sources: built-in tool list, user text, global and project `AGENTS.md` | M3 | done |
 | `docs/design/permissions.md` | Approval, policy floor, grants, protected paths | M3 | needed |
 | `docs/design/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
-| `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | needed |
-| `docs/design/checkpoints.md` | Edit journal, undo, relation to git | M4 | needed |
+| `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | done |
+| `docs/design/checkpoints.md` | Edit journal, undo, relation to git | M4 | done |
 | `docs/design/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, audit log, output limits | M4 | needed |
 | `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | needed |
 | `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | needed |

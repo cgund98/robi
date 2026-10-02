@@ -44,7 +44,7 @@ Add the directory when its milestone starts, not before.
 | `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI. The `robi-api` binary wires them |
 | `tools/` | M3 | Built-in tools |
 | `workspace/` | M3 | Root resolution, path confinement, policy |
-| `review/` | M6 | Diff engine and review objects |
+| `review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
 | `lsp/` | M7 | Language server client |
 | `index/` | M7 | AST chunking, embeddings, vector search |
 | `compress/` | M9 | Tool-output compression and the original store |

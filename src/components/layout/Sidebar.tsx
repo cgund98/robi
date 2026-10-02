@@ -31,31 +31,7 @@ export function Sidebar({
     <aside className={styles.sidebar}>
       <WorkspaceSwitcher />
 
-      <button
-        type="button"
-        className={styles.navLink}
-        disabled={disabled}
-        onClick={() => navigate('/workspaces')}
-      >
-        <span className={styles.navIcon} aria-hidden>
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="3" width="7" height="7" rx="1.5" />
-            <rect x="14" y="3" width="7" height="7" rx="1.5" />
-            <rect x="3" y="14" width="7" height="7" rx="1.5" />
-            <rect x="14" y="14" width="7" height="7" rx="1.5" />
-          </svg>
-        </span>
-        Workspaces
-      </button>
+
 
       <button
         type="button"
@@ -80,6 +56,32 @@ export function Sidebar({
           </svg>
         </span>
         New chat
+      </button>
+
+      <button
+        type="button"
+        className={styles.navLink}
+        disabled={disabled}
+        onClick={() => navigate('/workspaces')}
+      >
+        <span className={styles.navIcon} aria-hidden>
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+        </span>
+        Workspaces
       </button>
 
       <div className={styles.section}>

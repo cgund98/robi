@@ -33,6 +33,27 @@ button {
   cursor: pointer;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-surface-active) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--bg-surface-active);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
 code {
   font-family: var(--font-mono);
 }

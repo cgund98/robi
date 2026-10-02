@@ -77,7 +77,8 @@ and no `user_id`.
 ### Schema
 
 Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
-chat sessions, and chat messages. The four path-rule columns default to `[]`.
+chat sessions, and chat messages. `0002_session_file_baselines.sql` creates the
+baseline table. The four path-rule columns default to `[]`.
 They store session additions. The built-in secret and `.git` patterns are
 applied in code and are not written on the row.
 
@@ -120,6 +121,19 @@ Index: `(workspace_id, last_used_at DESC, id DESC)`.
 | `body` | `TEXT NOT NULL` | `serde_json` of `robi_core::Message`, so tool-call status stays in the transcript |
 
 Unique `(chat_session_id, position)`.
+
+`session_file_baselines` is the pre-edit body of each path a chat session has
+written or deleted. The edit tools insert it. Review reads it. See
+[checkpoints.md](checkpoints.md).
+
+| Column | Type | Notes |
+|---|---|---|
+| `chat_session_id` | `TEXT NOT NULL` | References `chat_sessions(id)` `ON DELETE CASCADE` |
+| `path` | `TEXT NOT NULL` | Workspace-relative, `/` separators. A path outside the workspace starts with `..` |
+| `baseline` | `TEXT NOT NULL` | UTF-8 body before this session's first change. `''` when the file did not exist |
+| `created` | `INTEGER NOT NULL` | `1` when the file did not exist. `0` when it did |
+
+Primary key `(chat_session_id, path)`. A second change of the same path does not replace the row.
 
 Every connection sets the pragmas a local file needs: `journal_mode=WAL`
 (skipped for in-memory databases, which refuse WAL), `synchronous=NORMAL`,

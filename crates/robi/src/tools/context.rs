@@ -7,6 +7,7 @@ use robi_core::error::ToolError;
 use robi_core::ids::SessionId;
 
 use crate::domain::chat_session::service::ChatSessionService;
+use crate::domain::file_change::repo::FileChangeRepository;
 use crate::workspace::{resolve_path, user_home, PathFilter, ResolvedPath};
 
 /// The workspace and the session whose path rules a tool call reloads.
@@ -14,6 +15,7 @@ pub struct ToolContext {
     pub session_id: SessionId,
     pub root: PathBuf,
     pub sessions: Arc<ChatSessionService>,
+    pub file_changes: Arc<dyn FileChangeRepository>,
 }
 
 impl ToolContext {
