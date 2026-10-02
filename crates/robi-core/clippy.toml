@@ -1,0 +1,30 @@
+# The loop performs no I/O. `std::fs` and `std::net` ship with `std`, so no crate
+# boundary excludes them; this is the mechanism that does. A new entry here is a
+# decision, not a detail.
+#
+# Scoped to this crate on purpose: `crates/robi` and later `robi-store` do real
+# I/O, and a workspace-level file would block them.
+disallowed-types = [
+    "std::fs::File",
+    "std::fs::OpenOptions",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+]
+disallowed-methods = [
+    "std::fs::read",
+    "std::fs::read_to_string",
+    "std::fs::read_dir",
+    "std::fs::write",
+    "std::fs::copy",
+    "std::fs::rename",
+    "std::fs::remove_file",
+    "std::fs::remove_dir",
+    "std::fs::remove_dir_all",
+    "std::fs::create_dir",
+    "std::fs::create_dir_all",
+    "std::fs::metadata",
+    "std::fs::canonicalize",
+    "std::net::TcpStream::connect",
+    "std::env::set_var",
+]
