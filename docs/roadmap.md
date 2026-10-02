@@ -42,11 +42,12 @@ network. It is done when its tests pass. See
 | M1 | Providers and streaming | The loop drives a real model and streams tokens | Provider clients, delta protocol, retries, model catalog |
 | M2 | Desktop shell and chat | The loop in a Tauri window, with saved sessions | Tauri app, IPC, chat UI, sessions, persistence |
 | M3 | Read-only tools | The assistant reads your workspace, with approval | `read_file`, `find`, `grep`, `list_dir`, approvals, compaction |
-| M4 | Editing | The assistant changes your files | `write_file`, edit tools, checkpoints/undo, git awareness |
+| M4 | Editing | The assistant changes your files and runs commands | `write_file`, edit tools, checkpoints/undo, git awareness, sandboxed shell |
 | M5 | Modes and subagents | Ask, plan, and agent modes; read-only exploration | Modes, plan artifacts, `tasks`, `explore`, `delegate` |
 | M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments |
 | M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search |
 | M8 | Reach | Integrations and headless use | MCP client, skills, web tools, headless/CI mode |
+| M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
 
 The line between "usable" and "differentiated" falls after M5. M1–M3 produce a
 chat app that reads code. M4 makes it an agent. M5 is where Robi stops being a
@@ -63,10 +64,12 @@ graph LR
   M5 --> M7[M7 Code intelligence]
   M6 --> M7
   M7 --> M8[M8 Reach]
+  M4 --> M9[M9 Output compression]
 ```
 
-M6 and M7 both need M4 but not each other. M8 needs M5. Only the M0→M5 spine is
-strictly serial.
+M6 and M7 both need M4 but not each other. M8 needs M5. M9 needs M4: it
+compresses tool results, and the shell is where those results get large. Only
+the M0→M5 spine is strictly serial. M9 does not gate M5–M8.
 
 ---
 
@@ -506,7 +509,8 @@ made. The fix and its tests are in `robi-core`; see
 **Exit criteria for M2** — send a message in the app, watch it stream, restart,
 and find the session intact.
 
-**Design docs** — `docs/design/chat-ui.md`, `docs/design/persistence.md`.
+**Design docs** — `docs/design/visual-style.md`, `docs/design/chat-ui.md`,
+`docs/design/persistence.md`.
 
 ---
 
@@ -570,6 +574,10 @@ and every feature after this one adds context pressure.
 - **Open decisions** — what compaction preserves (system prompt, plan file,
   recent turns, tool results) and whether it is lossy-summarized or
   structured-truncated.
+- Compaction rewrites older turns once the window fills. Shrinking one result
+  as the tool returns it, and keeping the original retrievable, is M9. The two
+  compose: compression keeps a turn inside the window longer, and compaction
+  still runs when the window fills anyway.
 
 **Design doc needed for** F3.3 — the approval and grant model.
 See `docs/design/permissions.md`.
@@ -578,7 +586,9 @@ See `docs/design/permissions.md`.
 
 ## M4 — Editing
 
-**Goal** — the assistant changes files, safely and reversibly.
+**Goal** — the assistant changes files safely and reversibly, and runs commands
+only inside an OS sandbox. The two arrive together: an edit tool that cannot run a
+test is half a workflow, and a shell tool without a sandbox is not one to ship.
 
 ### F4.1 Write and edit tools
 
@@ -605,18 +615,30 @@ flow through one code path. Design it with F4.1, not after.
 - Diagnostics come from LSP in M7; until then, the model can run builds and
   tests through a shell tool.
 
-### F4.4 Shell tool
+### F4.4 Sandboxed shell tool
 
-- The one tool with unbounded blast radius. gopi's model is the reference:
-  deny by default, scrubbed environment, allowlisted network, audit log, and
-  workspace-rooted cwd.
-- **Open decisions** — (D9) cross-platform sandboxing. gopi's Seatbelt profile is
-  macOS-only; on Linux the analogue is bubblewrap/landlock, and on Windows it is
-  AppContainer or nothing. Decide whether the OS sandbox is a v1 requirement or
-  an explicit per-platform gap.
+- The one tool with unbounded blast radius, and the only tool that runs inside an
+  OS sandbox. gopi's model is the reference: deny by default, scrubbed
+  environment, allowlisted network, audit log, and workspace-rooted cwd.
+- **The sandbox is a requirement, not an option.** A shell that runs a model's
+  command unsandboxed on a developer's machine is a different product, so this
+  tool does not ship on a platform with no sandbox; it reports that platform as
+  unsupported. What D9 decides is the *mechanism* per platform and *how the tool
+  degrades* where there is none — not whether to sandbox at all.
+- The sandbox bounds the process; it does not replace approval. F3.3's three gates
+  compose: a command still needs a decision, still clears the policy floor, and
+  still runs under the sandbox.
+- Output is a bounded artifact, not a stream into the transcript: a build can
+  produce megabytes, so the tool reports a truncation like every other tool
+  (`LoopConfig::max_tool_result_bytes`) rather than appending all of it.
+- **Open decision** — (D9) the mechanism per platform. Seatbelt on macOS;
+  bubblewrap plus landlock on Linux; AppContainer on Windows, or an explicit
+  "unsupported" if that proves too costly to build. Settle it before F4.4, not
+  during.
 
-**Design docs needed for** F4.1 and F4.2.
-See `docs/design/editing-tools.md` and `docs/design/checkpoints.md`.
+**Design docs needed for** F4.1, F4.2, and F4.4.
+See `docs/design/editing-tools.md`, `docs/design/checkpoints.md`, and
+`docs/design/shell-tool.md`.
 
 ---
 
@@ -779,6 +801,105 @@ Lower priority. Sequence by user demand, not by this order.
 
 ---
 
+## M9 — Tool output compression
+
+**Goal** — a large tool result reaches the model as a smaller, faithful view of
+itself, and the original stays on disk so the model can read it back. The user
+still sees the full output.
+
+[Headroom](https://github.com/headroomlabs-ai/headroom) is the behavioral
+reference: it routes each payload by content type, caches the original locally,
+and gives the model a retrieve tool. Reported savings are large on JSON arrays
+and logs, and near zero on source and grep hits that are already dense. Robi
+compresses a result once, in-process, when the tool returns it. Headroom stays
+a reference, not a dependency. A proxy in front of the provider would rewrite
+the outgoing request, including history the transcript already stored, and that
+rewrite is what busts a provider's prompt-cache prefix.
+
+F3.4 compacts older turns when the window fills. This milestone runs earlier,
+on a single result, before that result is appended. A tool's own bound, and the
+256 KiB core backstop, discard a tail and say where to continue. Compression
+keeps a smaller view of the same bytes and a way back to them. A result under
+the size gate is stored unchanged.
+
+### F9.1 The boundary
+
+Compression sits after `Tool::execute` and after the tool's own truncation,
+and before the result is appended. The original a retrieve call can return is
+the bounded result the tool reported, including its truncation notice. It is
+not the unbounded stream the tool chose to drop. Order:
+
+1. The tool bounds its result and reports where to continue.
+2. The compressor shrinks that result, if it is large enough and of a shape it
+   knows, and stores the pre-compression bytes with the session.
+3. The core's `max_tool_result_bytes` backstop still applies to whatever the
+   compressor returned.
+
+One pipeline covers every tool, including MCP tools when M8 arrives. A tool
+does not grow its own crusher.
+
+The loop stays free of I/O. `robi-core` calls a compressor trait and records
+that a result was compressed, plus the id of its original. The implementation
+and the original store live in `crates/robi`. Tests keep a pass-through
+compressor, so `cargo test -p robi-core` still touches no file. Originals share
+the session's lifetime: deleting the session deletes them. Redaction runs
+first, so the stored original is the scrubbed result.
+
+A compressor that saves nothing, or that fails, returns the original. A
+compression error never fails the turn.
+
+### F9.2 Content-routed compressors
+
+Detect the shape and pick a compressor. The default path is deterministic and
+makes no model call.
+
+| Content | What the model keeps |
+|---|---|
+| JSON arrays and objects | The schema, a sample of rows, and counts or aggregates for the rest |
+| Logs and shell output | The head, the tail, and collapsed repeated lines |
+| Search hits | Paths, line numbers, and a capped set of matching lines |
+| Source, short text, errors | The original. These are already dense, and a crushed file is how an agent edits the wrong lines |
+
+The compressed body says that it was compressed, how big the original was, and
+the id the retrieve tool takes. A silent crush has the same failure mode as a
+silent truncate.
+
+- **Open decisions** — (D11) a local learned text model, in the style of
+  Headroom's Kompress fallback, versus staying on structural compressors. A
+  learned model is a heavy optional dependency and does not belong in the first
+  cut or in `robi-core`. Also: which results always pass through because the
+  model must quote them exactly (edit failures, diagnostics, plan text), and
+  the size gate below which a result is stored byte-identical.
+
+### F9.3 Retrieval
+
+The compressed text is what the next model turn sees. The original is stored
+with the session, keyed so a restart can still fetch it. A `retrieve` tool
+returns that original, or a slice of it, when the compressed view is not
+enough.
+
+The tool card renders the original. The context meter (F3.4) shows tokens saved
+on the turn as well as tokens used. A compression the user cannot see will be
+turned off the first time it hides a bug.
+
+- **Open decision** — (D12) whether the transcript itself stores only the
+  compressed form, with the original in the session store, or stores both and
+  lets the provider request select the compressed form. M0's rule is that the
+  transcript is the only state the loop needs to resume. Retrieval has to
+  survive a restart without breaking that rule, and without rewriting earlier
+  turns: stable prefixes stay byte-stable so a provider prompt cache survives.
+
+**Exit criteria for M9** — a large JSON or log result is what the model reads
+in compressed form; the model can retrieve the original after a restart; a
+short result and a pass-through shape are byte-identical; a compressor failure
+passes the original through; the tool card shows the full output; the meter
+shows the saving.
+
+**Design doc needed for** M9.
+See `docs/design/tool-output-compression.md`.
+
+---
+
 ## Cross-cutting concerns
 
 These are not milestones. They apply to every one, and the first two apply from M0.
@@ -789,7 +910,7 @@ These are not milestones. They apply to every one, and the first two apply from 
 | **Fail closed** | Any path that cannot decide returns an error into the transcript. Never a best guess, never a silent prompt from inside a subagent. |
 | **Cancellation is a state, not an exception** | Every turn must be resumable or resolvable after a stop. No half-written transcripts. |
 | **Redaction** | Secret values and token shapes are scrubbed from tool arguments, results, and logs before they reach the model or an audit file. |
-| **Context budget** | Every tool result declares its size and truncation point, and the core holds a 256 KiB backstop on any single result. Nothing grows unbounded. |
+| **Context budget** | Every tool result declares its size and truncation point, and the core holds a 256 KiB backstop on any single result. Nothing grows unbounded. M9 compresses a large result in place; the backstop still applies to what remains. |
 | **Untrusted input** | File contents, search results, web pages, and MCP responses are data. A prompt-injection attempt in a read file must not be able to trigger a write. |
 | **Path confinement** | One workspace root per session, re-checked after symlink resolution, on every access. |
 | **Audit log** | Every approved side effect, recorded with its arguments. |
@@ -811,8 +932,10 @@ resolve them.
 | D6 | Embeddings: local vs. hosted | F7.2 | Product decision about code leaving the machine |
 | D7 | Vector store | F7.2 | `sqlite-vec`, LanceDB, or Qdrant |
 | D8 | LSP client approach | F7.1 | Hand-rolled with `lsp-types` vs. an off-the-shelf client |
-| D9 | OS sandbox per platform | F4.4 | macOS Seatbelt has no direct Windows analogue |
+| D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Seatbelt has no direct Windows analogue. The sandbox itself is required; only the mechanism and the degrade path are open |
 | D10 | MCP in v1 or later | M8 | Affects the tool registry's dynamism from M0 |
+| D11 | Learned text compression vs. structural compressors only | M9 | A local model is a heavy optional dependency. The first cut is deterministic compressors for JSON, logs, and search hits |
+| D12 | Where a compressed result and its original live | M9 | The model reads the compressed form; retrieval has to survive restart without rewriting earlier turns |
 
 <a id="d5"></a>
 
@@ -848,17 +971,20 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/agent-loop.md` | Transcript, loop algorithm, turn lifecycle sequence, approval lifecycle, tool execution, events, cancellation, test strategy | M0 | done |
 | `docs/design/providers-streaming.md` | Delta protocol, SSE, provider quirks, retries/backoff, reasoning tokens | M1 | done |
 | `docs/design/architecture.md` | Crate layout, IPC protocol, thread/runtime model, event ordering | M2 | needed |
+| `docs/design/visual-style.md` | Dark theme tokens, shell layout, chat chrome look (Claude Code-view reference) | M2 | done |
 | `docs/design/chat-ui.md` | Streaming render, scroll behavior, message list, tool-card layout | M2 | needed |
 | `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | needed |
 | `docs/design/permissions.md` | Approval, policy floor, grants, protected paths | M3 | needed |
 | `docs/design/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
 | `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | needed |
 | `docs/design/checkpoints.md` | Edit journal, undo, relation to git | M4 | needed |
+| `docs/design/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, audit log, output limits | M4 | needed |
 | `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | needed |
 | `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | needed |
 | `docs/design/code-review.md` | Diff engine, review object, inline comments, apply path | M6 | later |
 | `docs/design/lsp.md` | Client, server discovery, capability ladder, degradation | M7 | later |
 | `docs/design/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | later |
+| `docs/design/tool-output-compression.md` | **D11, D12**, content routing, the retrieve tool, what the transcript stores, the size gate | M9 | later |
 
 Every design doc states: the problem, the decision, the rejected alternatives
 with reasons, the interfaces, and the failure modes. A doc that only describes
@@ -875,16 +1001,16 @@ What to take, what to leave. Names refer to `../gopi`.
 | `gogent` loop (`agent.go`, `tool_execution.go`, `tool_turn.go`) | `robi-core` | **The spec for M0.** Port the state machine and the three-phase tool execution; rewrite in Rust with async traits and a real cancellation path |
 | `gogent` `Message`, `Tool`, `ToolRegistry` | `robi-core` | Port the shapes and the status enums; the trait signatures stay fixed from M0 through M5 |
 | `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt` | Port the `base + user + project + skills` concatenation and the per-section byte cap |
-| `internal/tools/` (13 tools) | `robi-tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
-| `internal/policy/`, `internal/secrets/` | `robi-workspace`, `robi-store` | Port the glob floor and redaction; replace the secrets file with a keychain |
-| `internal/sandbox/` | `robi-tools::shell` | macOS-only in gopi. See D9 |
-| `internal/session/` | `robi-store` | Port the shape, drop the 50-session cap |
-| `internal/review/` | `robi-review` | Port the diff; the review object is new |
+| `internal/tools/` (13 tools) | `crates/robi::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
+| `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::store` | Port the glob floor and redaction; replace the secrets file with a keychain |
+| `internal/sandbox/` | `crates/robi::tools::shell` | macOS-only in gopi, and the only part gopi never generalizes. Port the policy, not the profile. See D9 |
+| `internal/session/` | `crates/robi::store` | Port the shape, drop the 50-session cap |
+| `internal/review/` | `crates/robi::review` | Port the diff; the review object is new |
 | `internal/app/` mode wiring | `robi-core::mode` | Port the registry-per-mode idea; drop the TUI coupling |
 | `internal/tui/` | `src/` (React) | Behavior only: what a tool card shows, when approval pauses |
 | `internal/models/` catalog | `crates/robi::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all (D9) |
 | `docs/` (mdbook, 30 pages) | `docs/` | Adopt the taxonomy: **guides teach, concepts explain, reference states facts.** One job per page |
-| — | new | Streaming, cancellation API, checkpoints, LSP, index |
+| — | new | Streaming, cancellation API, checkpoints, LSP, index, tool-output compression |
 
 Leave behind: the Bubble Tea update loop, `gogent`'s blocking `GenerateResponse`,
 manual-only compaction, JSON-file persistence, and the macOS-only sandbox

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/robi", "crates/robi-core"]
+members = ["crates/robi", "crates/robi-core", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.90"
 license = "MIT"
 
 # Every dependency is declared once here so versions cannot drift between crates.
@@ -29,4 +29,9 @@ uuid = { version = "1.24.0", features = ["v7", "serde"] }
 
 # Test-only, for the fake SSE server that stands in for a provider.
 axum = "0.8.4"
+
+# The desktop shell. Versions stay here so they cannot drift.
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-opener = "2"
 

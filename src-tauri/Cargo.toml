@@ -1,0 +1,33 @@
+[package]
+name = "robi-app"
+description = "The Tauri app: commands, IPC, and wiring"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The package name stays `robi-app` so it does not collide with the `robi` library.
+# The binary the window launches is `robi`.
+[[bin]]
+name = "robi"
+path = "src/main.rs"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "robi_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+# Linked so the crate graph matches the layout. Commands that call into it
+# arrive with IPC, not this skeleton.
+robi = { path = "../crates/robi" }
+
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-opener.workspace = true

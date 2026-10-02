@@ -1,0 +1,11 @@
+# Build & deps
+dist
+node_modules
+.pnpm-store
+src-tauri
+target
+crates
+pnpm-lock.yaml
+
+# Markdown is owned by the docs, not Prettier.
+*.md

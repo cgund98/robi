@@ -45,6 +45,7 @@ Add the directory when its milestone starts, not before.
 | `review/` | M6 | Diff engine and review objects |
 | `lsp/` | M7 | Language server client |
 | `index/` | M7 | AST chunking, embeddings, vector search |
+| `compress/` | M9 | Tool-output compression and the original store |
 
 `crates/robi-index` and `crates/robi-lsp` are the likely first splits, because
 their dependencies — an embedding runtime, tree-sitter grammars, a JSON-RPC
@@ -102,6 +103,28 @@ The anti-signal: adding `pub` to an item only so another crate can reach it, whe
 that item is not part of a real API. That is a split that happened too early.
 Because these modules are already shaped like crates, a promotion is a move plus a
 manifest, so deferring costs little.
+
+## Frontend
+
+The desktop shell is a React app in `src/` inside the Tauri crate at `src-tauri/`.
+The package manager is pnpm. The Vite dev server listens on port **1430**, strict,
+so it does not share a port with other local Tauri apps.
+
+Visual language (dark tokens, shell layout, chat chrome):
+[docs/design/visual-style.md](docs/design/visual-style.md). Use those CSS
+variables; do not invent one-off hex or import another product's theme.
+
+| Task | Command |
+|------|---------|
+| Web-only Vite dev | `pnpm dev` (port **1430**, strict) |
+| Desktop app | `pnpm tauri dev` |
+| Production web build | `pnpm build` |
+| Lint (ESLint + Prettier) | `pnpm run lint` |
+| Format | `pnpm run format` |
+| Typecheck | `pnpm run typecheck` |
+
+`pnpm dev` serves the web UI alone. `pnpm tauri dev` opens the desktop window
+against that same server.
 
 ## Working rules
 

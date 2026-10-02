@@ -1,0 +1,48 @@
+/* Design tokens — see docs/design/visual-style.md */
+
+:root {
+  color-scheme: dark;
+
+  --bg-canvas: #0b0b0b;
+  --bg-sidebar: #1f1f1e;
+  --bg-surface: #1f1f1e;
+  --bg-surface-hover: #282827;
+  --bg-surface-active: #333333;
+  --bg-user: #15202c;
+  --bg-row: #303030;
+
+  --ink: #c3c2b8;
+  --ink-strong: #ecece8;
+  --ink-muted: #8a8983;
+  --ink-faint: #5c5c57;
+
+  --accent: #55a2fb;
+  --accent-muted: #3a6fa8;
+
+  --code-bg: #1a1a19;
+  --code-ink: #d4d3cb;
+
+  --rule: #2a2a28;
+
+  --danger: #e56767;
+  --success: #6fbf7a;
+  --diff-add: #5db27b;
+  --diff-del: #c46b6b;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --sidebar-width: 260px;
+  --chat-column-width: 48rem;
+  --font-ui: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}

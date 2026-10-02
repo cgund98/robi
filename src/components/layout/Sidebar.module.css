@@ -1,0 +1,134 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-radius: var(--radius-xl);
+  padding: var(--space-3);
+  min-height: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  color: var(--ink-strong);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.brandMark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-active);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.newSession {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.newSession:hover {
+  background: var(--bg-surface-hover);
+}
+
+.newSessionIcon {
+  color: var(--ink-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.section {
+  margin-top: var(--space-4);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.sectionLabel {
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.sessionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sessionButton {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sessionButton:hover {
+  background: var(--bg-surface-hover);
+}
+
+.sessionButtonActive {
+  background: var(--bg-surface-active);
+  color: var(--ink-strong);
+}
+
+.footer {
+  margin-top: auto;
+  padding: var(--space-3) var(--space-2) var(--space-1);
+  border-top: 1px solid var(--rule);
+}
+
+.settings {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  text-align: left;
+  font-size: 13px;
+}
+
+.settingsIcon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.settings:hover {
+  color: var(--ink);
+  background: var(--bg-surface-hover);
+}

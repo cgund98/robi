@@ -1,0 +1,18 @@
+.shell {
+  display: flex;
+  gap: var(--space-3);
+  height: 100%;
+  padding: var(--space-3);
+  background: var(--bg-canvas);
+  min-height: 0;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-canvas);
+  border-radius: var(--radius-xl);
+}
