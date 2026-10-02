@@ -21,26 +21,39 @@ use robi_core::tool::ToolRegistry;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::{
-    chat_message::runtime::{ChatRuntime, SubmitOutcome},
-    error::ServiceError,
+use crate::{
+    adapters::{model_source::ModelSource, session_title::title_completed_turn},
+    domain::{
+        chat_message::runtime::{ChatRuntime, SubmitOutcome},
+        chat_session::service::ChatSessionService,
+        error::ServiceError,
+        events::EventFanOut,
+    },
 };
 
 /// Process-wide pieces a session actor needs. The agent is not one of them.
+///
+/// `models` is read when an actor starts. A turn that is already running keeps
+/// the model that actor was built with.
 pub struct AgentFactory {
     pub store: Arc<dyn MessageStore>,
     pub events: Arc<dyn EventSink>,
-    pub model: Arc<dyn Model>,
+    pub models: Arc<dyn ModelSource>,
     pub tools: Arc<ToolRegistry>,
     pub config: LoopConfig,
+    /// Chat session rows. Absent in tests that do not name sessions.
+    pub sessions: Option<Arc<ChatSessionService>>,
+    /// Publishes `session_updated` after a title is stored. Absent when there is
+    /// no fan-out.
+    pub fanout: Option<Arc<EventFanOut>>,
 }
 
 impl AgentFactory {
-    fn build(&self) -> Agent {
+    fn build(&self, model: Arc<dyn Model>) -> Agent {
         Agent::new(
             Arc::clone(&self.store),
             Arc::clone(&self.events),
-            Arc::clone(&self.model),
+            model,
             Arc::clone(&self.tools),
             self.config,
         )
@@ -68,12 +81,42 @@ impl SerializedChatRuntime {
         }
     }
 
-    fn spawn_actor(&self, session: SessionId) {
-        let agent = self.factory.build();
+    fn spawn_actor(&self, session: SessionId, model: Arc<dyn Model>) {
+        let agent = self.factory.build(Arc::clone(&model));
         let slots = Arc::clone(&self.slots);
+        let store = Arc::clone(&self.factory.store);
+        let sessions = self.factory.sessions.clone();
+        let fanout = self.factory.fanout.clone();
         tokio::spawn(async move {
-            run_actor(agent, slots, session).await;
+            run_actor(agent, model, store, sessions, fanout, slots, session).await;
         });
+    }
+
+    async fn start_actor(
+        &self,
+        session: SessionId,
+        instruction: String,
+        model: Arc<dyn Model>,
+    ) -> Result<SubmitOutcome, ServiceError> {
+        let mut slots = self.slots.lock().await;
+        let slot = slots.entry(session).or_default();
+        if slot.running {
+            replace_pending(slot, instruction);
+            return Ok(SubmitOutcome::Accepted);
+        }
+        slot.running = true;
+        slot.pending = Some(instruction);
+        drop(slots);
+        self.spawn_actor(session, model);
+        Ok(SubmitOutcome::Accepted)
+    }
+
+    async fn actor_running(&self, session: SessionId) -> bool {
+        self.slots
+            .lock()
+            .await
+            .get(&session)
+            .is_some_and(|slot| slot.running)
     }
 }
 
@@ -95,17 +138,19 @@ impl ChatRuntime for SerializedChatRuntime {
             return Ok(SubmitOutcome::AwaitingApproval);
         }
 
-        let mut slots = self.slots.lock().await;
-        let slot = slots.entry(session).or_default();
-        if slot.running {
-            replace_pending(slot, instruction);
-            return Ok(SubmitOutcome::Accepted);
+        if self.actor_running(session).await {
+            let mut slots = self.slots.lock().await;
+            let slot = slots.entry(session).or_default();
+            if slot.running {
+                replace_pending(slot, instruction);
+                return Ok(SubmitOutcome::Accepted);
+            }
         }
-        slot.running = true;
-        slot.pending = Some(instruction);
-        drop(slots);
-        self.spawn_actor(session);
-        Ok(SubmitOutcome::Accepted)
+
+        // Resolve before the slot is marked running, so a missing key does not
+        // leave an actor that will never start.
+        let model = self.factory.models.model().await?;
+        self.start_actor(session, instruction, model).await
     }
 
     async fn running_session_ids(&self) -> Vec<SessionId> {
@@ -166,7 +211,15 @@ fn map_store(error: StoreError) -> ServiceError {
     }
 }
 
-async fn run_actor(agent: Agent, slots: Arc<Mutex<HashMap<SessionId, Slot>>>, session: SessionId) {
+async fn run_actor(
+    agent: Agent,
+    model: Arc<dyn Model>,
+    store: Arc<dyn MessageStore>,
+    sessions: Option<Arc<ChatSessionService>>,
+    fanout: Option<Arc<EventFanOut>>,
+    slots: Arc<Mutex<HashMap<SessionId, Slot>>>,
+    session: SessionId,
+) {
     loop {
         let (instruction, cancel) = {
             let mut guard = slots.lock().await;
@@ -184,13 +237,26 @@ async fn run_actor(agent: Agent, slots: Arc<Mutex<HashMap<SessionId, Slot>>>, se
         };
 
         let outcome = agent.user_input(session, &instruction, cancel).await;
-        match outcome {
+        match &outcome {
             TurnOutcome::Failed(error) => {
                 tracing::warn!(%session, %error, "chat turn failed");
             }
             other => {
                 tracing::debug!(%session, ?other, "chat turn finished");
             }
+        }
+        let title_sessions = if matches!(outcome, TurnOutcome::Complete) {
+            sessions.clone()
+        } else {
+            None
+        };
+        if let Some(sessions) = title_sessions {
+            let model = Arc::clone(&model);
+            let store = Arc::clone(&store);
+            let fanout = fanout.clone();
+            tokio::spawn(async move {
+                title_completed_turn(session, model, store, sessions, fanout).await;
+            });
         }
     }
 }
@@ -205,7 +271,7 @@ mod tests {
     use robi_core::config::LoopConfig;
     use robi_core::error::{ModelError, StoreError};
     use robi_core::event::NopSink;
-    use robi_core::ids::{SessionId, WorkspaceId};
+    use robi_core::ids::{MessageId, SessionId, WorkspaceId};
     use robi_core::message::{Message, Role, ToolCall};
     use robi_core::model::{Delta, Model, ModelStream};
     use robi_core::store::MessageStore;
@@ -214,7 +280,16 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{AgentFactory, SerializedChatRuntime};
+    use crate::adapters::model_source::{FixedModelSource, ModelSource};
     use crate::domain::chat_message::runtime::{ChatRuntime, SubmitOutcome};
+    use crate::domain::chat_session::{
+        model::{ChatSession, CreateChatSessionCommand},
+        repo::ChatSessionRepository,
+        service::ChatSessionService,
+    };
+    use crate::domain::error::ServiceError;
+    use crate::domain::events::{EventFanOut, SESSION_UPDATED};
+    use crate::domain::workspace::repo::AnyWorkspace;
 
     struct MemoryStore {
         sessions: Mutex<Vec<SessionId>>,
@@ -253,6 +328,18 @@ mod tests {
                 .get(&session)
                 .cloned()
                 .ok_or(StoreError::SessionNotFound(session))
+        }
+
+        async fn message(
+            &self,
+            session: SessionId,
+            id: MessageId,
+        ) -> Result<Option<Message>, StoreError> {
+            let messages = self.messages.lock().expect("messages");
+            let transcript = messages
+                .get(&session)
+                .ok_or(StoreError::SessionNotFound(session))?;
+            Ok(transcript.iter().find(|message| message.id == id).cloned())
         }
 
         async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError> {
@@ -333,9 +420,11 @@ mod tests {
         SerializedChatRuntime::new(AgentFactory {
             store,
             events: Arc::new(NopSink),
-            model,
+            models: Arc::new(FixedModelSource::new(model)),
             tools: Arc::new(ToolRegistry::new()),
             config: LoopConfig::default(),
+            sessions: None,
+            fanout: None,
         })
     }
 
@@ -494,5 +583,336 @@ mod tests {
         })
         .await
         .expect("actors go idle");
+    }
+
+    struct FailSource;
+
+    #[async_trait]
+    impl ModelSource for FailSource {
+        async fn model(&self) -> Result<Arc<dyn Model>, ServiceError> {
+            Err(ServiceError::BadRequest(
+                "opencode_go_api_key is not set".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_that_cannot_be_built_does_not_mark_the_session_running() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let runtime = SerializedChatRuntime::new(AgentFactory {
+            store,
+            events: Arc::new(NopSink),
+            models: Arc::new(FailSource),
+            tools: Arc::new(ToolRegistry::new()),
+            config: LoopConfig::default(),
+            sessions: None,
+            fanout: None,
+        });
+
+        let error = runtime.submit(session, "hello".into()).await.unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("opencode_go_api_key is not set".into())
+        );
+        assert!(runtime.running_session_ids().await.is_empty());
+    }
+
+    struct TitleModel {
+        calls: AtomicUsize,
+        prompts: Mutex<Vec<String>>,
+        fail_user_turns: bool,
+    }
+
+    #[async_trait]
+    impl Model for TitleModel {
+        async fn generate(
+            &self,
+            _session: SessionId,
+            transcript: &[Message],
+            _cancel: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            let prompt = transcript
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let naming = prompt.contains("Name this conversation");
+            self.prompts.lock().expect("prompts").push(prompt);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = mpsc::channel(1);
+            if self.fail_user_turns && !naming {
+                let _ = tx
+                    .send(Delta::Failed(ModelError::Provider("nope".into())))
+                    .await;
+            } else {
+                let text = if naming {
+                    "\"Parser cleanup.\""
+                } else {
+                    "done"
+                };
+                let _ = tx.send(Delta::Finished(Message::assistant(text))).await;
+            }
+            Ok(ModelStream::new(rx))
+        }
+    }
+
+    fn titled_runtime(
+        store: Arc<dyn MessageStore>,
+        model: Arc<dyn Model>,
+        sessions: Arc<ChatSessionService>,
+        fanout: Arc<EventFanOut>,
+    ) -> SerializedChatRuntime {
+        SerializedChatRuntime::new(AgentFactory {
+            store,
+            events: Arc::new(NopSink),
+            models: Arc::new(FixedModelSource::new(model)),
+            tools: Arc::new(ToolRegistry::new()),
+            config: LoopConfig::default(),
+            sessions: Some(sessions),
+            fanout: Some(fanout),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_completed_turn_stores_a_title_when_the_session_is_unnamed() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::new(session)),
+            workspaces: Arc::new(AnyWorkspace),
+        });
+        let fanout = Arc::new(EventFanOut::new());
+        let mut subscription = fanout.subscribe();
+        let model = Arc::new(TitleModel {
+            calls: AtomicUsize::new(0),
+            prompts: Mutex::new(Vec::new()),
+            fail_user_turns: false,
+        });
+        let runtime = titled_runtime(
+            store.clone(),
+            model.clone(),
+            Arc::clone(&sessions),
+            Arc::clone(&fanout),
+        );
+
+        runtime
+            .submit(session, "rename the parser".into())
+            .await
+            .unwrap();
+
+        let named = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(title) = sessions
+                    .get_chat_session(session)
+                    .await
+                    .unwrap()
+                    .title
+                    .clone()
+                {
+                    return title;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("title is stored");
+        assert_eq!(named, "Parser cleanup");
+
+        let envelope = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
+            .await
+            .expect("session_updated")
+            .expect("envelope");
+        assert_eq!(envelope.event_type, SESSION_UPDATED);
+        assert_eq!(envelope.subject, session.to_string());
+        assert_eq!(envelope.data["title"], "Parser cleanup");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if runtime.running_session_ids().await.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actor goes idle");
+
+        let prompts = model.prompts.lock().expect("prompts");
+        assert!(prompts
+            .iter()
+            .any(|prompt| prompt.contains("rename the parser")));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn an_existing_title_is_not_replaced() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::named(session, "Kept")),
+            workspaces: Arc::new(AnyWorkspace),
+        });
+        let model = Arc::new(TitleModel {
+            calls: AtomicUsize::new(0),
+            prompts: Mutex::new(Vec::new()),
+            fail_user_turns: false,
+        });
+        let runtime = titled_runtime(
+            store,
+            model.clone(),
+            sessions.clone(),
+            Arc::new(EventFanOut::new()),
+        );
+
+        runtime.submit(session, "hello".into()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if runtime.running_session_ids().await.is_empty()
+                    && model.calls.load(Ordering::SeqCst) >= 1
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("turn finishes");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sessions
+                .get_chat_session(session)
+                .await
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Kept")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_does_not_name_the_session() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::new(session)),
+            workspaces: Arc::new(AnyWorkspace),
+        });
+        let model = Arc::new(TitleModel {
+            calls: AtomicUsize::new(0),
+            prompts: Mutex::new(Vec::new()),
+            fail_user_turns: true,
+        });
+        let runtime = titled_runtime(
+            store,
+            model.clone(),
+            sessions.clone(),
+            Arc::new(EventFanOut::new()),
+        );
+
+        runtime.submit(session, "hello".into()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if runtime.running_session_ids().await.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actor goes idle");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sessions.get_chat_session(session).await.unwrap().title,
+            None
+        );
+    }
+
+    /// Chat session rows for title tests. Message storage stays on `MemoryStore`.
+    struct MemorySessions {
+        sessions: Mutex<std::collections::HashMap<SessionId, ChatSession>>,
+    }
+
+    impl MemorySessions {
+        fn new(id: SessionId) -> Self {
+            Self::named_option(id, None)
+        }
+
+        fn named(id: SessionId, title: &str) -> Self {
+            Self::named_option(id, Some(title.to_owned()))
+        }
+
+        fn named_option(id: SessionId, title: Option<String>) -> Self {
+            let now = chrono::Utc::now();
+            let session = ChatSession {
+                id,
+                workspace_id: WorkspaceId::new(),
+                title,
+                created_at: now,
+                updated_at: now,
+                last_used_at: now,
+            };
+            let mut sessions = std::collections::HashMap::new();
+            sessions.insert(id, session);
+            Self {
+                sessions: Mutex::new(sessions),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChatSessionRepository for MemorySessions {
+        async fn create_chat_session(
+            &self,
+            _command: CreateChatSessionCommand,
+        ) -> Result<ChatSession, ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+
+        async fn get_chat_session(
+            &self,
+            id: SessionId,
+        ) -> Result<Option<ChatSession>, ServiceError> {
+            Ok(self.sessions.lock().expect("sessions").get(&id).cloned())
+        }
+
+        async fn list_chat_sessions(
+            &self,
+            _workspace_id: Option<WorkspaceId>,
+        ) -> Result<Vec<ChatSession>, ServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn update_chat_session(
+            &self,
+            command: crate::domain::chat_session::model::UpdateChatSessionCommand,
+        ) -> Result<ChatSession, ServiceError> {
+            Err(ServiceError::NotFound(command.id.to_string()))
+        }
+
+        async fn set_title_if_unset(
+            &self,
+            id: SessionId,
+            title: String,
+        ) -> Result<Option<ChatSession>, ServiceError> {
+            let mut sessions = self.sessions.lock().expect("sessions");
+            let session = sessions
+                .get_mut(&id)
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            if session.title.is_some() {
+                return Ok(None);
+            }
+            session.title = Some(title);
+            session.updated_at = chrono::Utc::now();
+            Ok(Some(session.clone()))
+        }
+
+        async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
+            Err(ServiceError::NotFound(id.to_string()))
+        }
     }
 }

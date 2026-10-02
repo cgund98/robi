@@ -14,9 +14,9 @@ in the [roadmap](../roadmap.md). Read it before writing code in
 | How a submitted instruction is serialized and interrupted | [chat-runtime.md](chat-runtime.md) (M2) |
 | IPC between the loop and the desktop UI | `docs/design/architecture.md` (M2) |
 | Chat rendering | `docs/design/chat-ui.md` (M2) |
-| API keys and the OS keychain | Deferred. They do not go in this database |
-| Where the app's home directory lives | Still open. The server takes an explicit database URL until that is decided |
-| Auto-title is a model call after the first turn | The call waits until a turn is persisted. This page fixes that the title starts unset |
+| API keys and other settings | This page, under [Settings](#settings). They do not go in this database. A later `SettingsStore` can keep secrets in the OS keychain |
+| Where the app's home directory lives | Settings use `~/.robi`. The database file stays on `ROBI_DATABASE_URL` |
+| Auto-title after a completed turn | [chat-runtime.md](chat-runtime.md). This page fixes that the title starts unset, and that a later write does not replace one already stored |
 
 ## Problem
 
@@ -51,35 +51,53 @@ graph LR
 ```
 
 - **`domain/`** holds the chat session model, `ChatSessionRepository`,
-  `ChatSessionService`, `ChatMessageService`, `ChatRuntime`, and
-  `ServiceError`. It performs no I/O. It may use `SessionId`, `WorkspaceId`,
-  and `Message` from `robi-core`.
+  `ChatSessionService`, the workspace model, `WorkspaceRepository`,
+  `WorkspaceService`, `ChatMessageService`, `ChatRuntime`, `SettingsStore`,
+  `SettingsService`, and `ServiceError`. It performs no I/O. It may use
+  `SessionId`, `WorkspaceId`, and `Message` from `robi-core`. Canonicalizing a
+  workspace root is I/O, so that call is a method on `WorkspaceRepository`.
 - **`adapters/`** holds the pool, the migrations, `SqliteChatSessionRepository`,
-  `SqliteMessageStore`, and `SerializedChatRuntime`.
+  `SqliteWorkspaceRepository`, `SqliteMessageStore`, `SerializedChatRuntime`,
+  and `TomlSettingsStore`.
 - **`web_api/`** holds Axum routes, DTOs, and OpenAPI. `AppState` carries the
-  two services. Handlers do not see the pool or an `Agent`.
+  workspace service, the chat session service, the chat message service, and
+  the settings service. Handlers do not see the pool or an `Agent`.
 - **`robi-api`** (`crates/robi/src/bin/robi-api.rs`) is the composition root.
   It builds the factory the runtime uses and stores that factory on the
   runtime. `export-openapi` prints the spec. `src-tauri` is not wired to either.
 
 `ChatSessionRepository` is the metadata port. `SqliteMessageStore` is
-`MessageStore` on the same pool. That trait stays as M0 left it, including the
-two synchronous methods. Those two call `block_in_place` and `block_on` on the
-multi-thread runtime.
+`MessageStore` on the same pool. The trait keeps the two synchronous methods
+from M0. Those two call `block_in_place` and `block_on` on the multi-thread
+runtime. `message` is a keyed read of one row.
 
 The process is single-user and binds a loopback address. There is no account
 and no `user_id`.
 
 ### Schema
 
-Migration `crates/robi/migrations/0001_chat_sessions.sql`.
+Migration `crates/robi/migrations/0001_chat_sessions.sql` creates the chat
+tables. `0002_workspaces.sql` adds workspaces and rebuilds `chat_sessions` so
+`workspace_id` references that table. Rows written before a workspace had a
+root are deleted by that migration.
+
+`workspaces`:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `TEXT PRIMARY KEY` | `WorkspaceId`, UUIDv7, minted in the adapter |
+| `name` | `TEXT NOT NULL` | Final path component of `root`. The sidebar workspace header shows this |
+| `root` | `TEXT NOT NULL UNIQUE` | Canonical absolute directory. Opening the same directory again returns this row |
+| `created_at` | `TEXT NOT NULL` | RFC 3339 |
+
+Index: `(created_at DESC, id DESC)`.
 
 `chat_sessions`:
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `TEXT PRIMARY KEY` | `SessionId`, UUIDv7, minted in the adapter |
-| `workspace_id` | `TEXT NOT NULL` | `WorkspaceId`. A chat session does not move workspaces |
+| `workspace_id` | `TEXT NOT NULL` | `WorkspaceId`. References `workspaces(id)` `ON DELETE CASCADE`. A chat session does not move workspaces |
 | `title` | `TEXT` | Null until set. At most 200 characters. The model writes it after the first turn when it is still null |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
 | `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on title change |
@@ -108,23 +126,31 @@ does not run.
 Timestamps and ids are text. Queries use runtime `sqlx::query`, not the
 compile-time macros.
 
-### Chat session API
+### HTTP API
 
 Base path `/api/v1`. One error body, `{ "error": "..." }`.
 
 | Method | Path | Success | Failure |
 |---|---|---|---|
 | `GET` | `/health` | `200` `Ok` | |
-| `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID or `title` is longer than 200 characters |
+| `GET` | `/workspaces` | `200` list | |
+| `POST` | `/workspaces` | `201` when the root is new, `200` when that canonical directory is already stored | `400` if `root` is empty, missing, or not a directory |
+| `GET` | `/workspaces/{id}` | `200` workspace | `404` if missing, `400` if `id` is not a UUID |
+| `DELETE` | `/workspaces/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. Sessions and their messages go with it |
+| `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID or `title` is longer than 200 characters, `404` if that workspace does not exist |
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
 | `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` or `title` is invalid |
 | `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID |
 
-`POST` body is `{ "workspace_id", "title"? }`. Omitted, null, and `""` are stored
-as null. After the first turn, the model writes a title when the column is
+`POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
+so a symlink and its target are one workspace. `name` is the last path
+component. `GET /workspaces` orders by `created_at DESC, id DESC`.
+
+`POST` body for a chat session is `{ "workspace_id", "title"? }`. Omitted, null, and `""` are stored
+as null. After a turn completes, the model writes a title when the column is
 still null. A title passed on create is kept, and the model does not replace
-it. That model call is not in this API yet; it runs when a turn is persisted.
+it. That call is specified in [chat-runtime.md](chat-runtime.md).
 `PATCH` body is `{ "title" }`. It updates `updated_at` and leaves
 `last_used_at` and `workspace_id` alone. A body Axum cannot deserialize is
 rejected by Axum (422), which is separate from a title the service refuses.
@@ -144,18 +170,65 @@ is read from the runtime's in-memory slots. It is not a column.
 |---|---|---|---|
 | `POST` | `/chat_sessions/{id}/messages` | `202` `{ "status": "accepted" }` | `400` if `id` is not a UUID or `instruction` is empty or whitespace, `404` if the chat session is missing, `409` if the transcript is waiting on a tool approval |
 | `GET` | `/chat_sessions/{id}/messages` | `200` transcript, in order | `404` if the chat session is missing, `400` if `id` is not a UUID |
+| `GET` | `/chat_sessions/{id}/messages/{message_id}` | `200` one message | `404` if the chat session or the message is missing, `400` if either id is not a UUID |
 
 `POST` body is `{ "instruction" }`. The handler returns once the session actor
 has taken the instruction. The actor, the factory, and the interrupt rules are
 in [chat-runtime.md](chat-runtime.md).
 
-`GET` returns each message's id, role, content, tool calls, and tool-call id.
-It reads `MessageStore` and does not take the actor lock.
+`GET` of the list and `GET` of one message return each message's id, role,
+content, tool calls, and tool-call id. The list calls `MessageStore::messages`.
+The single-message read calls `MessageStore::message`, which loads that row
+by id. Neither takes the actor lock. A message id that is absent from that
+session is `404`.
 
 `ServiceError` is `BadRequest`, `NotFound`, `Conflict`, or `Unknown`. The web
-layer maps those to 400, 404, 409, and 500. A SQL failure is logged and
-returned as `Unknown` with a fixed message, so the client never sees driver
-text.
+layer maps those to 400, 404, 409, and 500. A SQL failure or a failed settings
+sync is logged and returned as `Unknown` with a fixed message, so the client
+never sees driver text.
+
+### Settings
+
+String settings live in memory and are read on every query. `~/.robi` is the
+directory, from `HOME`. Non-secrets are `config.toml`. Secrets are
+`secrets.toml`. Both are a flat table of strings. A missing file loads as
+empty. The directory is created `0700`, and both files are written `0600`.
+`secrets.toml` is refused when group or world can read it. A key that appears
+in both files keeps the secrets copy.
+
+`SettingsStore` is the port. `get` returns the in-memory value. `set` updates
+that map, then rewrites both files, and restores the previous value when the
+write fails. `TomlSettingsStore` is the first implementation. A later one can
+keep secrets in the OS keychain without changing callers.
+
+The API reads and writes only these keys. Each has a fixed secret flag. A key
+that is not in this list is `400`.
+
+| Key | Secret | Default |
+|---|---|---|
+| `opencode_go_api_key` | yes | None. A chat turn is `400` until this is set |
+| `model` | no | `glm-5.3`, written on the first read when the key is absent |
+| `reasoning_effort` | no | None. Optional `low`, `medium`, or `high` |
+| `base_url` | no | None. Optional provider base URL |
+
+A read of an absent key that has a default calls the same write as `PUT`: the
+value is stored in memory and both files are rewritten, then the read returns
+that value. A read of an absent key with no default returns `value: null` and
+does not write a file. An empty value is rejected.
+
+`SettingsModelSource` reads these keys when a session actor starts and passes
+the result to `build_model`. A turn that is already running keeps its model.
+The server starts without an API key: health and these routes work, and the
+first chat turn fails until `opencode_go_api_key` is set.
+
+| Method | Path | Success | Failure |
+|---|---|---|---|
+| `GET` | `/settings/{key}` | `200` setting | `400` if `key` is not in the whitelist |
+| `PUT` | `/settings/{key}` | `204` | `400` if `key` is not in the whitelist, `value` is empty, or the secret flag does not match the key. `500` if the files could not be written |
+
+`PUT` body is `{ "value", "secret" }`. `GET` of a stored secret returns
+`{ "key", "secret": true }` and omits `value`. `GET` of an unset key with no
+default returns `{ "key", "secret", "value": null }`.
 
 ### Configuration
 
@@ -165,10 +238,10 @@ Read in the `robi-api` binary only.
 |---|---|---|
 | `ROBI_DATABASE_URL` | `sqlite://robi.db?mode=rwc` | sqlx SQLite URL |
 | `ROBI_BIND` | `127.0.0.1:1431` | Listen address. Must be loopback. `1431` stays off the Vite port `1430` |
-| `OPENCODE_GO_API_KEY` | | Required. The process exits when it is missing or empty |
-| `ROBI_MODEL` | `glm-5.3` | Model id passed to the provider |
-| `ROBI_BASE_URL` | provider default | Optional base URL |
-| `ROBI_EFFORT` | unset | Optional `low`, `medium`, or `high`. Any other value exits the process |
+
+Provider credentials and model choices are [settings](#settings), not
+environment variables. `examples/simple.rs` still reads `OPENCODE_GO_API_KEY`,
+`ROBI_MODEL`, `ROBI_BASE_URL`, and `ROBI_EFFORT` for that one program.
 
 `make api` runs the server. `make dev-api` restarts it when `crates/robi` or
 `crates/robi-core` change, and needs `cargo-watch`. Swagger UI is at `/docs`.
@@ -186,15 +259,26 @@ from `openapi/openapi.json`.
 | Generated types | `src/api/schema.d.ts` (`pnpm run generate:api`) |
 | Client | `src/api/client.ts` |
 | Session wrappers | `src/api/sessions.ts` |
+| Workspace wrappers | `src/api/workspaces.ts` |
 
 Web-only Vite (`pnpm dev` on `1430`) proxies `/api` to `127.0.0.1:1431`, so
 `VITE_API_BASE_URL` stays empty in that mode. Run `robi-api` beside the UI.
 There is no CORS layer on the API yet; packaged Tauri will need a different
 path.
 
-Until a workspace picker exists, the shell uses a fixed workspace UUID in
-`src/workspace.ts` (`SHELL_WORKSPACE`) and shows `acme-storefront` as the label.
-Create and list filter on that id. Null titles render as **New session**.
+The shell shows one workspace at a time. The active id is
+`localStorage` key `robi.activeWorkspaceId`. `/workspaces` is the list: search,
+sort, create, and open. The sidebar footer links there, and an empty list
+opens that page instead of the chat. The workspace dropdown at the top of the
+sidebar still switches the active workspace without leaving the chat. Add opens the system
+folder dialog in the desktop window, and asks for a path in a normal browser.
+List and create of chat sessions use that active id. Switching workspaces
+clears the open session and shows the draft composer for the newly selected
+workspace. Null titles render as **New session**.
+
+Loop events are not REST. The shell opens one `EventSource` on
+`/api/v1/events/stream` through the same proxy. Envelope, fan-out, and reconnect
+rules are in [events-sse.md](events-sse.md).
 
 ## Rejected alternatives
 
@@ -223,6 +307,10 @@ Create and list filter on that id. Null titles render as **New session**.
 
 - A missing chat session is `404`. The message names the id and does not distinguish
   "never existed" from "deleted".
+- A missing workspace is `404`. Creating a chat session for an unknown
+  workspace is the same. Deleting a workspace removes its sessions and, because
+  foreign keys are on, their messages.
+- A workspace root that is empty, missing, or a file is `400` and is not written.
 - A title over 200 characters is `400` and is not written. A missing title is
   null, not an empty string, so a later turn can tell that the model has not
   named the chat session yet.
@@ -239,12 +327,33 @@ Create and list filter on that id. Null titles render as **New session**.
 
 ## Testing
 
+- `WorkspaceService` tests use a fake `WorkspaceRepository`: create stores the
+  directory name, a second open of the same canonical root does not insert,
+  a missing path is rejected before insert, an empty root never canonicalizes,
+  a duplicate insert returns the existing row, list order, and delete of a
+  missing id.
+- Workspace adapter tests use a shared-cache in-memory pool: canonical root round trip,
+  one row for a repeated open and for a symlink to that directory, rejection
+  of a missing path and of a file, list order, and delete cascading to
+  `chat_sessions` and `chat_messages`.
 - `ChatSessionService` tests use a fake `ChatSessionRepository`: create with and without
-  a title, missing get, list filter, missing update, delete.
-- Adapter tests use a shared-cache in-memory pool: round trip, list order,
-  title update leaving `last_used_at` in place, delete of a missing row, and
+  a title, missing get, list filter, missing update, a null title written once
+  and not replaced, an empty or oversized generated title refused, delete, and create against
+  an unknown workspace.
+- `SqliteChatSessionRepository` tests use a shared-cache in-memory pool: round trip, list order,
+  title update leaving `last_used_at` in place, a null title written once and
+  not replaced, delete of a missing row,
+  create when the workspace row is absent, and
   cascade from `chat_sessions` to `chat_messages`.
 - `SqliteMessageStore` tests cover append order, update in place,
-  `last_used_at` moving only on append, and a missing session.
+  `last_used_at` moving only on append, a single-message lookup, and a missing
+  session.
 - Runtime and instruction-service tests are in [chat-runtime.md](chat-runtime.md).
+- Settings service tests reject a key outside the whitelist, an empty value,
+  and a known key stored with the wrong secret flag. A read of an unset
+  `model` writes `glm-5.3` through the store. A read of an unset key with no
+  default returns an empty value and leaves the store unchanged. The TOML adapter tests round-trip both
+  files, refuse a group-readable `secrets.toml`, and check that a failed write
+  leaves the previous value in memory. `SettingsModelSource` tests check that
+  a write between two builds is what the second build uses.
 - `cargo test -p robi-core` does not link sqlx and does not open a socket.

@@ -23,7 +23,7 @@ use robi_core::config::LoopConfig;
 use robi_core::error::StoreError;
 use robi_core::error::TurnOutcome;
 use robi_core::event::NopSink;
-use robi_core::ids::{SessionId, WorkspaceId};
+use robi_core::ids::{MessageId, SessionId, WorkspaceId};
 use robi_core::message::{Message, Role};
 use robi_core::model::{Delta, Model, ModelStream};
 use robi_core::store::MessageStore;
@@ -1018,6 +1018,19 @@ impl MessageStore for MemoryStore {
             .get(&session)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn message(
+        &self,
+        session: SessionId,
+        id: MessageId,
+    ) -> Result<Option<Message>, StoreError> {
+        Ok(self
+            .sessions
+            .lock()
+            .expect("the store is not poisoned")
+            .get(&session)
+            .and_then(|messages| messages.iter().find(|message| message.id == id).cloned()))
     }
 
     async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError> {

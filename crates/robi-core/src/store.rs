@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 
 use crate::error::StoreError;
-use crate::ids::{SessionId, WorkspaceId};
+use crate::ids::{MessageId, SessionId, WorkspaceId};
 use crate::message::Message;
 
 #[async_trait]
@@ -22,6 +22,15 @@ pub trait MessageStore: Send + Sync {
 
     /// The whole transcript, in order.
     async fn messages(&self, session: SessionId) -> Result<Vec<Message>, StoreError>;
+
+    /// One message in the session, looked up by id.
+    ///
+    /// `Ok(None)` means the session exists and the message does not.
+    async fn message(
+        &self,
+        session: SessionId,
+        id: MessageId,
+    ) -> Result<Option<Message>, StoreError>;
 
     /// Add a message to the end of the transcript.
     async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError>;

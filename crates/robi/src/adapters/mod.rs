@@ -5,4 +5,8 @@
 pub mod chat_message;
 pub mod chat_runtime;
 pub mod chat_session;
+pub mod model_source;
+pub mod session_title;
+pub mod settings;
 pub mod sqlite;
+pub mod workspace;

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use robi_core::error::StoreError;
-use robi_core::ids::SessionId;
+use robi_core::ids::{MessageId, SessionId};
 use robi_core::message::Message;
 use robi_core::store::MessageStore;
 
@@ -42,6 +42,19 @@ impl ChatMessageService {
         self.store.messages(session).await.map_err(map_store)
     }
 
+    pub async fn get_message(
+        &self,
+        session: SessionId,
+        message_id: MessageId,
+    ) -> Result<Message, ServiceError> {
+        self.sessions.get_chat_session(session).await?;
+        self.store
+            .message(session, message_id)
+            .await
+            .map_err(map_store)?
+            .ok_or_else(|| ServiceError::NotFound(message_id.to_string()))
+    }
+
     /// Sessions that currently have a running actor. Read from memory.
     pub async fn running_session_ids(&self) -> Vec<SessionId> {
         self.runtime.running_session_ids().await
@@ -66,7 +79,7 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use robi_core::error::StoreError;
-    use robi_core::ids::{SessionId, WorkspaceId};
+    use robi_core::ids::{MessageId, SessionId, WorkspaceId};
     use robi_core::message::Message;
     use robi_core::store::MessageStore;
 
@@ -143,6 +156,14 @@ mod tests {
             Err(ServiceError::Unknown)
         }
 
+        async fn set_title_if_unset(
+            &self,
+            _id: SessionId,
+            _title: String,
+        ) -> Result<Option<ChatSession>, ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+
         async fn delete_chat_session(&self, _id: SessionId) -> Result<(), ServiceError> {
             Err(ServiceError::Unknown)
         }
@@ -215,6 +236,18 @@ mod tests {
                 .ok_or(StoreError::SessionNotFound(session))
         }
 
+        async fn message(
+            &self,
+            session: SessionId,
+            id: MessageId,
+        ) -> Result<Option<Message>, StoreError> {
+            let messages = self.messages.lock().expect("fake store");
+            let transcript = messages
+                .get(&session)
+                .ok_or(StoreError::SessionNotFound(session))?;
+            Ok(transcript.iter().find(|message| message.id == id).cloned())
+        }
+
         async fn append(&self, _session: SessionId, _message: Message) -> Result<(), StoreError> {
             Ok(())
         }
@@ -236,6 +269,7 @@ mod tests {
         let service = ChatMessageService {
             sessions: Arc::new(ChatSessionService {
                 repository: sessions.clone(),
+                workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
             }),
             runtime: runtime.clone(),
             store: store.clone(),
@@ -305,6 +339,43 @@ mod tests {
         let listed = service.list_messages(session).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].content, "earlier");
+    }
+
+    #[tokio::test]
+    async fn get_message_returns_the_matching_row() {
+        let (service, sessions, _, store) = service();
+        let session = SessionId::new();
+        sessions.insert(session);
+        let earlier = Message::user("earlier");
+        let later = Message::user("later");
+        store
+            .messages
+            .lock()
+            .expect("fake store")
+            .insert(session, vec![earlier.clone(), later.clone()]);
+
+        let found = service.get_message(session, earlier.id).await.unwrap();
+        assert_eq!(found, earlier);
+
+        let missing = MessageId::new();
+        assert_eq!(
+            service.get_message(session, missing).await.unwrap_err(),
+            ServiceError::NotFound(missing.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_message_on_a_missing_session_is_not_found() {
+        let (service, _, _, _) = service();
+        let session = SessionId::new();
+
+        assert_eq!(
+            service
+                .get_message(session, MessageId::new())
+                .await
+                .unwrap_err(),
+            ServiceError::NotFound(session.to_string())
+        );
     }
 
     #[tokio::test]

@@ -1,11 +1,13 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 
-import type { MockTranscriptItem } from '../../mock/chat'
-import { FileEditSummary } from './FileEditSummary'
+import type { ChatMessage } from '../../api/messages'
+import type { AgentPhase } from '../../state/chatStore'
 import styles from './Transcript.module.css'
 
 type TranscriptProps = {
-  items: MockTranscriptItem[]
+  messages: ChatMessage[]
+  echo: string | null
+  phase: AgentPhase
 }
 
 function renderInlineCode(text: string): ReactNode[] {
@@ -18,46 +20,68 @@ function renderInlineCode(text: string): ReactNode[] {
   })
 }
 
-export function Transcript({ items }: TranscriptProps) {
+function activityLabel(phase: AgentPhase): string | null {
+  if (phase === 'thinking') {
+    return 'Thinking'
+  }
+  if (phase === 'responding') {
+    return 'Responding'
+  }
+  return null
+}
+
+export function Transcript({ messages, echo, phase }: TranscriptProps) {
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const label = activityLabel(phase)
+
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) {
+      return
+    }
+    scroller.scrollTop = scroller.scrollHeight
+  }, [messages, echo, phase])
+
   return (
-    <div className={styles.transcript}>
+    <div className={styles.transcript} ref={scrollerRef}>
       <ul className={styles.list}>
-        {items.map((item) => {
-          switch (item.kind) {
-            case 'user':
-              return (
-                <li key={item.id} className={styles.user}>
-                  {item.text}
-                </li>
-              )
-            case 'assistant':
-              return (
-                <li key={item.id} className={styles.assistant}>
-                  {renderInlineCode(item.text)}
-                </li>
-              )
-            case 'activity':
-              return (
-                <li key={item.id} className={styles.activity}>
-                  <span className={styles.activityIcon} aria-hidden>
-                    ●
-                  </span>
-                  {item.text}
-                </li>
-              )
-            case 'file-edits':
-              return (
-                <li key={item.id}>
-                  <FileEditSummary
-                    filesEdited={item.filesEdited}
-                    additions={item.additions}
-                    deletions={item.deletions}
-                    files={item.files}
-                  />
-                </li>
-              )
+        {messages.map((message) => {
+          if (message.role === 'user') {
+            return (
+              <li key={message.id} className={styles.user}>
+                {message.content}
+              </li>
+            )
           }
+          if (message.role === 'assistant') {
+            return (
+              <li key={message.id} className={styles.assistant}>
+                {renderInlineCode(message.content)}
+              </li>
+            )
+          }
+          if (!message.content.trim()) {
+            return null
+          }
+          return (
+            <li key={message.id} className={styles.activity}>
+              {message.content}
+            </li>
+          )
         })}
+        {echo ? (
+          <li key="pending-echo" className={styles.user}>
+            {echo}
+          </li>
+        ) : null}
+        {label ? (
+          <li className={styles.activity} aria-live="polite">
+            <span className={`${styles.activityIcon} ${styles.activityIconLive}`} aria-hidden>
+              ●
+            </span>
+            {label}
+          </li>
+        ) : null}
       </ul>
     </div>
   )

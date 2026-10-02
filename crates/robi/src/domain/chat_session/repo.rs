@@ -33,5 +33,15 @@ pub trait ChatSessionRepository: Send + Sync {
         command: UpdateChatSessionCommand,
     ) -> Result<ChatSession, ServiceError>;
 
+    /// Write `title` only when the stored title is null.
+    ///
+    /// `Ok(None)` means the row exists and already has a title, so nothing was
+    /// written. `updated_at` moves when the write lands. `last_used_at` does not.
+    async fn set_title_if_unset(
+        &self,
+        id: SessionId,
+        title: String,
+    ) -> Result<Option<ChatSession>, ServiceError>;
+
     async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError>;
 }

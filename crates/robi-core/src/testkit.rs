@@ -143,6 +143,16 @@ impl MessageStore for InMemoryStore {
         self.with_session(session, |messages| messages.clone())
     }
 
+    async fn message(
+        &self,
+        session: SessionId,
+        id: MessageId,
+    ) -> Result<Option<Message>, StoreError> {
+        self.with_session(session, |messages| {
+            messages.iter().find(|message| message.id == id).cloned()
+        })
+    }
+
     async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError> {
         let id = message.id;
         self.with_session(session, |messages| messages.push(message))?;

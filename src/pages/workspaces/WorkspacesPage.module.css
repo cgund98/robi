@@ -1,0 +1,267 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-5) var(--space-6);
+  background: var(--bg-canvas);
+  color: var(--ink);
+}
+
+.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.back {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 0;
+  font-size: 13px;
+}
+
+.back:hover {
+  color: var(--ink);
+}
+
+.title {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 32px;
+  font-weight: 560;
+  letter-spacing: -0.02em;
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  padding-top: var(--space-2);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 34px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--ink-muted);
+}
+
+.search input {
+  width: 140px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  outline: none;
+  font-size: 13px;
+}
+
+.search input::placeholder {
+  color: var(--ink-faint);
+}
+
+.primary,
+.emptyAction {
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--ink-strong);
+  color: var(--bg-canvas);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.primary {
+  height: 34px;
+  padding: 0 var(--space-4);
+}
+
+.primary:hover,
+.emptyAction:hover {
+  background: var(--ink);
+}
+
+.primary:disabled,
+.emptyAction:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.banner {
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.status,
+.noMatch {
+  margin: var(--space-6) 0 0;
+  color: var(--ink-muted);
+  font-size: 14px;
+  list-style: none;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+.mark {
+  color: var(--ink);
+  margin-bottom: var(--space-4);
+}
+
+.emptyTitle {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 560;
+}
+
+.emptyCopy {
+  max-width: 28rem;
+  margin: var(--space-2) 0 var(--space-4);
+  color: var(--ink-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.emptyAction {
+  height: 36px;
+  padding: 0 var(--space-4);
+  background: var(--bg-surface-active);
+  color: var(--ink);
+}
+
+.emptyAction:hover {
+  background: var(--bg-surface-hover);
+  color: var(--ink-strong);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.list > li {
+  width: 100%;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4) var(--space-2);
+}
+
+.cardName {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-strong);
+  padding: 0;
+  text-align: left;
+  font-size: 15px;
+  font-weight: 560;
+}
+
+.cardName:hover {
+  color: var(--ink);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.open,
+.remove {
+  border: 0;
+  background: transparent;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.open {
+  color: var(--ink);
+}
+
+.open:hover {
+  background: var(--bg-canvas);
+  color: var(--ink-strong);
+}
+
+.remove {
+  color: var(--ink-muted);
+}
+
+.remove:hover {
+  color: var(--danger);
+  background: var(--bg-canvas);
+}
+
+.cardRoot {
+  margin: 0 var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-canvas);
+  color: var(--code-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 400;
+}

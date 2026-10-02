@@ -32,7 +32,7 @@ use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
 use robi_core::error::{StoreError, ToolError, TurnOutcome};
 use robi_core::event::NopSink;
-use robi_core::ids::{SessionId, WorkspaceId};
+use robi_core::ids::{MessageId, SessionId, WorkspaceId};
 use robi_core::message::{Message, Role};
 use robi_core::store::MessageStore;
 use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRegistry};
@@ -387,6 +387,16 @@ impl MessageStore for MemoryStore {
 
     async fn messages(&self, session: SessionId) -> Result<Vec<Message>, StoreError> {
         self.with_session(session, |messages| messages.clone())
+    }
+
+    async fn message(
+        &self,
+        session: SessionId,
+        id: MessageId,
+    ) -> Result<Option<Message>, StoreError> {
+        self.with_session(session, |messages| {
+            messages.iter().find(|message| message.id == id).cloned()
+        })
     }
 
     async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError> {

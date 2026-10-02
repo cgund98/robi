@@ -1,5 +1,8 @@
+import { useNavigate } from 'react-router-dom'
+
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
 import styles from './Sidebar.module.css'
+import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 type SidebarProps = {
   sessions: ChatSession[]
@@ -20,14 +23,11 @@ export function Sidebar({
   onRenameSession,
   onDeleteSession
 }: SidebarProps) {
+  const navigate = useNavigate()
+
   return (
     <aside className={styles.sidebar}>
-      <div className={styles.brand}>
-        <span className={styles.brandMark} aria-hidden>
-          R
-        </span>
-        Robi
-      </div>
+      <WorkspaceSwitcher />
 
       <button
         type="button"
@@ -38,7 +38,7 @@ export function Sidebar({
         <span className={styles.newSessionIcon} aria-hidden>
           +
         </span>
-        New session
+        New
       </button>
 
       <div className={styles.section}>
@@ -87,7 +87,37 @@ export function Sidebar({
       </div>
 
       <div className={styles.footer}>
-        <button type="button" className={styles.settings} disabled={disabled}>
+        <button
+          type="button"
+          className={styles.settings}
+          disabled={disabled}
+          onClick={() => navigate('/workspaces')}
+        >
+          <span className={styles.settingsIcon} aria-hidden>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3" y="3" width="7" height="7" rx="1.5" />
+              <rect x="14" y="3" width="7" height="7" rx="1.5" />
+              <rect x="3" y="14" width="7" height="7" rx="1.5" />
+              <rect x="14" y="14" width="7" height="7" rx="1.5" />
+            </svg>
+          </span>
+          Workspaces
+        </button>
+        <button
+          type="button"
+          className={styles.settings}
+          disabled={disabled}
+          onClick={() => navigate('/settings/providers')}
+        >
           <span className={styles.settingsIcon} aria-hidden>
             <svg
               width="14"

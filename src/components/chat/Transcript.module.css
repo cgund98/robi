@@ -55,3 +55,25 @@
   color: var(--ink-faint);
   font-size: 11px;
 }
+
+.activityIconLive {
+  color: var(--accent);
+  animation: activityPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes activityPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activityIconLive {
+    animation: none;
+    opacity: 1;
+  }
+}

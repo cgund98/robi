@@ -16,7 +16,8 @@ and its failure modes. It is the design doc for **M0** in the
 | Which paths need approval, grants, the policy floor | `docs/design/permissions.md` (M3) |
 | Store schema, migrations, how a session is listed and resumed | `docs/design/persistence.md` (M2) |
 | Who may call `user_input`, and how a newer instruction interrupts a running one | [chat-runtime.md](chat-runtime.md) (M2) |
-| IPC transport between the loop and the UI | `docs/design/architecture.md` (M2) |
+| UI event stream: CloudEvents envelope, fan-out, SSE | [events-sse.md](events-sse.md) (M2) |
+| Process model and command IPC | `docs/design/architecture.md` (M2) |
 
 This page defines the *shape* of the delta and the seams that persistence and the
 UI plug into. Their contents live in their own docs.
@@ -261,6 +262,8 @@ auditable in one place.
 #[async_trait]
 pub trait MessageStore: Send + Sync {
     async fn messages(&self, session: SessionId) -> Result<Vec<Message>>;
+    /// One message. `Ok(None)` means the session exists and the id does not.
+    async fn message(&self, session: SessionId, id: MessageId) -> Result<Option<Message>>;
     async fn append(&self, session: SessionId, message: Message) -> Result<()>;
     /// Status changes on an existing message: a tool call going from
     /// `pending` to `approved`, or gaining its result.
@@ -271,8 +274,9 @@ pub trait MessageStore: Send + Sync {
 Incremental `append`/`update` rather than one snapshot write per turn. A
 snapshot-per-turn store cannot express approving one call while another is still
 pending, and it rewrites the whole transcript on every tool completion. The M0
-implementation is a `Vec<Message>` behind a mutex; M2's SQLite implementation
-needs to be a real implementation of the same three methods and nothing more.
+implementation is a `Vec<Message>` behind a mutex. M2's SQLite implementation
+is the same trait: `messages` reads the transcript in order, and `message`
+reads one row by primary key.
 
 ### EventSink
 

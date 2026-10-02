@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use robi_core::error::StoreError;
-use robi_core::ids::{SessionId, WorkspaceId};
+use robi_core::ids::{MessageId, SessionId, WorkspaceId};
 use robi_core::message::Message;
 use robi_core::store::MessageStore;
 use sqlx::SqlitePool;
@@ -73,6 +73,39 @@ impl MessageStore for SqliteMessageStore {
                 })
             })
             .collect()
+    }
+
+    async fn message(
+        &self,
+        session: SessionId,
+        id: MessageId,
+    ) -> Result<Option<Message>, StoreError> {
+        let body: Option<Option<String>> = sqlx::query_scalar(
+            r#"
+            SELECT chat_messages.body
+            FROM chat_sessions
+            LEFT JOIN chat_messages
+              ON chat_messages.chat_session_id = chat_sessions.id
+             AND chat_messages.id = ?1
+            WHERE chat_sessions.id = ?2
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(session.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(backend)?;
+
+        let Some(body) = body else {
+            return Err(StoreError::SessionNotFound(session));
+        };
+        let Some(body) = body else {
+            return Ok(None);
+        };
+
+        serde_json::from_str(&body).map(Some).map_err(|error| {
+            StoreError::Backend(format!("chat message {id} is not a message: {error}"))
+        })
     }
 
     async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError> {
@@ -233,6 +266,20 @@ mod tests {
         (SqliteMessageStore::new(Arc::clone(&pool)), pool)
     }
 
+    async fn insert_workspace(pool: &SqlitePool, id: WorkspaceId) {
+        sqlx::query(
+            r#"
+            INSERT INTO workspaces (id, name, root, created_at)
+            VALUES (?1, 'test', ?2, '2024-01-01T00:00:00+00:00')
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(format!("/tmp/robi-msg-{id}"))
+        .execute(pool)
+        .await
+        .expect("insert workspace");
+    }
+
     async fn last_used_at(pool: &SqlitePool, session: SessionId) -> String {
         sqlx::query_scalar("SELECT last_used_at FROM chat_sessions WHERE id = ?1")
             .bind(session.to_string())
@@ -244,7 +291,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn append_keeps_insertion_order_and_moves_last_used_at() {
         let (store, pool) = store().await;
-        let session = store.create_session(WorkspaceId::new());
+        let workspace = WorkspaceId::new();
+        insert_workspace(&pool, workspace).await;
+        let session = store.create_session(workspace);
         assert!(store.has_session(session));
 
         let before = last_used_at(&pool, session).await;
@@ -256,14 +305,31 @@ mod tests {
         store.append(session, second.clone()).await.unwrap();
 
         let messages = store.messages(session).await.unwrap();
-        assert_eq!(messages, vec![first, second]);
+        assert_eq!(messages, vec![first.clone(), second.clone()]);
+        assert_eq!(
+            store.message(session, first.id).await.unwrap().as_ref(),
+            Some(&first)
+        );
+        assert_eq!(
+            store.message(session, second.id).await.unwrap().as_ref(),
+            Some(&second)
+        );
+        assert_eq!(
+            store
+                .message(session, robi_core::ids::MessageId::new())
+                .await
+                .unwrap(),
+            None
+        );
         assert_ne!(last_used_at(&pool, session).await, before);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn update_replaces_the_body_and_leaves_last_used_at() {
         let (store, pool) = store().await;
-        let session = store.create_session(WorkspaceId::new());
+        let workspace = WorkspaceId::new();
+        insert_workspace(&pool, workspace).await;
+        let session = store.create_session(workspace);
         let original = Message::user("original");
         store.append(session, original.clone()).await.unwrap();
         let before = last_used_at(&pool, session).await;
@@ -285,6 +351,13 @@ mod tests {
 
         let missing = StoreError::SessionNotFound(session);
         assert_eq!(store.messages(session).await.unwrap_err(), missing.clone());
+        assert_eq!(
+            store
+                .message(session, robi_core::ids::MessageId::new())
+                .await
+                .unwrap_err(),
+            missing.clone()
+        );
         assert_eq!(
             store
                 .append(session, Message::user("hi"))

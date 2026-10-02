@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 # `net` and `rt-multi-thread` drive `robi-api` and the provider-test SSE server.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 tokio-util.workspace = true

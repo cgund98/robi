@@ -5,9 +5,9 @@ layout follow Claude's desktop **Code** view; product behavior (tool cards,
 approvals, modes) stays Robi's.
 
 This page is the design doc for the **look**: tokens, shell layout, and the
-visual treatment of chat chrome. Interaction details — streaming caret,
-scroll-lock, tool-card expand defaults — live in
-[chat-ui.md](chat-ui.md) (M2, still to write).
+visual treatment of chat chrome. Interaction details — the draft session,
+activity line, and composer lock — live in [chat-ui.md](chat-ui.md). Streaming
+caret, scroll-lock, and tool-card expand defaults are still open there.
 
 ## What this doc does not cover
 
@@ -59,11 +59,11 @@ One composition. Two columns. No third panel in M2.
 
 ```text
 ┌────────────┬──────────────────────────────────────────┐
-│  Sidebar   │  Header (workspace / session title)      │
+│  Workspace │  Header (session title)                  │
 │            ├──────────────────────────────────────────┤
 │  New       │                                          │
-│  Sessions  │  Transcript                              │
-│  Recents   │    user bubble                           │
+│  Recents   │  Transcript                              │
+│            │    user bubble                           │
 │            │    assistant prose + inline code         │
 │            │    muted activity lines                  │
 │            │    (tool cards — see chat-ui)            │
@@ -76,8 +76,8 @@ One composition. Two columns. No third panel in M2.
 
 | Region | Role | M2 content |
 |---|---|---|
-| **Sidebar** | Session navigation | New session, Recents list, active-session highlight, Settings link (no auth / profile) |
-| **Header** | Orientation | Workspace name · session title (read-only crumb is fine for M2) |
+| **Sidebar** | Session navigation | Workspace dropdown at the top, New session, Recents list, active-session highlight, rename dialog, Workspaces and Settings links |
+| **Header** | Orientation | Session title |
 | **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards (empty until M3) |
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
 
@@ -153,7 +153,7 @@ outline stack.
 ## Visual elements
 
 These are the chrome pieces the style owns. Behavior of each is specified in
-`chat-ui.md` when that page is written; this page locks how they look.
+`chat-ui.md`; this page locks how they look.
 
 ### User message
 
@@ -192,11 +192,37 @@ text. Not cards. Tool **results** that need inspection become tool cards
   text + chevron, not colored pills — except the active run indicator, which may
   use `--accent`. No mode toggle or attach control in the shell mock.
 
+### Settings
+
+A full-page shell, not a dialog. Left rail: back to the chat, then the section
+list. Right pane: a title and one bordered card of rows (label, hint, control).
+The first cut has **Model Providers** and **General**. Use the same tokens;
+active nav is `--bg-surface-active`, the selected effort pill may use `--accent`.
+Text fields, including secrets, sit one step above the card (`--bg-surface-hover`)
+with a `--bg-surface-active` border. Focus moves that border to `--ink-faint`.
+They are not canvas wells.
+
 ### Header
 
-Single quiet line: `workspace / session title`. No toolbar of icons in M2.
-Chevron for a future session switcher is allowed as a disabled or no-op affordance
-only if it does not imply unfinished product.
+The session title is a single quiet line. No toolbar of icons.
+
+The workspace dropdown is the top of the sidebar, in place of a product title.
+The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
+Both are styled with these tokens. The active workspace uses an open folder. The others use a closed folder. The closed control matches the sidebar, with a
+chevron. A border appears on hover and while the list is open. The open list is the darker canvas color, with a stronger
+edge. The chevron opens the list of workspaces, plus add. Add opens the system folder dialog in the
+desktop window, and asks for a path in a normal browser. **Workspaces** in the
+sidebar footer opens the full list.
+
+### Workspaces page
+
+A full-page list at `/workspaces`, in the same role as a projects home. The
+title sits on the left. Search and **New workspace** sit on the right. With no workspaces, the canvas center holds a short prompt
+and the same create action. With some, the cards stack in one column, each as
+wide as the page. The name and Open / Remove share the top line. The path sits
+below on a darker strip in mono. Opening a card selects it and returns to the
+chat. The chat shell sends you here when the list is empty. **Chat** returns
+when one is already selected.
 
 ### File-edit summary widget
 
@@ -251,7 +277,7 @@ summary; the review window owns hunks, side-by-side, and comments
 | V1 | Sidebar flush to the window edge vs. inset floating rail | **Chosen: inset floating rail** with `--radius-xl` on a canvas gutter |
 | V2 | Exact sidebar width and whether it is resizable | Start fixed (~260px); resize is polish |
 | V3 | Whether assistant ever gets a bubble | Default no; revisit only if contrast testing fails |
-| V4 | Brand mark in the sidebar | None in M2 unless a simple wordmark is ready |
+| V4 | Brand mark in the sidebar | The workspace dropdown occupies the top of the sidebar |
 | V5 | File-row chevron: expand inline snippet vs. jump to that file in review | Prefer jump-to-review once M6 exists; until then a collapsed-only row is fine |
 | V6 | Aggregate counts: lines changed vs. files touched | Reference uses line counts (`+123 -42`); keep that unless editing tools report only file-level stats |
 
@@ -266,7 +292,7 @@ summary; the review window owns hunks, side-by-side, and comments
 
 ## Relationship to later docs
 
-When `chat-ui.md` is written, it should assume these tokens and regions, and
-place the file-edit summary in the message list. When `code-review.md` is
+`chat-ui.md` assumes these tokens and regions. The file-edit summary stays in
+the message list when editing lands. When `code-review.md` is
 written, it owns the destination of `Review ↗`. When a component needs a new
 color, add a token here first — do not invent a one-off hex in the module.

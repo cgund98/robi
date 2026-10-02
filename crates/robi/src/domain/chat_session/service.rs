@@ -8,6 +8,7 @@ use crate::domain::{
         repo::ChatSessionRepository,
     },
     error::ServiceError,
+    workspace::repo::WorkspaceRepository,
 };
 
 /// A chat session title longer than this is rejected before it is written.
@@ -15,6 +16,7 @@ pub const CHAT_SESSION_TITLE_MAX_CHARS: usize = 200;
 
 pub struct ChatSessionService {
     pub repository: Arc<dyn ChatSessionRepository>,
+    pub workspaces: Arc<dyn WorkspaceRepository>,
 }
 
 impl ChatSessionService {
@@ -22,6 +24,14 @@ impl ChatSessionService {
         &self,
         command: CreateChatSessionCommand,
     ) -> Result<ChatSession, ServiceError> {
+        if self
+            .workspaces
+            .get_workspace(command.workspace_id)
+            .await?
+            .is_none()
+        {
+            return Err(ServiceError::NotFound(command.workspace_id.to_string()));
+        }
         let title = normalize_new_title(command.title)?;
         self.repository
             .create_chat_session(CreateChatSessionCommand {
@@ -51,6 +61,25 @@ impl ChatSessionService {
     ) -> Result<ChatSession, ServiceError> {
         validate_title(&command.title)?;
         self.repository.update_chat_session(command).await
+    }
+
+    /// Name a chat session that does not have a title yet.
+    ///
+    /// `Ok(None)` means a title was already stored. An empty title is refused
+    /// and is not written.
+    pub async fn set_title_if_unset(
+        &self,
+        id: SessionId,
+        title: String,
+    ) -> Result<Option<ChatSession>, ServiceError> {
+        let title = title.trim().to_owned();
+        if title.is_empty() {
+            return Err(ServiceError::BadRequest(
+                "title must not be empty".to_owned(),
+            ));
+        }
+        validate_title(&title)?;
+        self.repository.set_title_if_unset(id, title).await
     }
 
     pub async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
@@ -90,7 +119,9 @@ mod tests {
     use robi_core::ids::{SessionId, WorkspaceId};
 
     use super::*;
-    use crate::domain::chat_session::model::UpdateChatSessionCommand;
+    use crate::domain::{
+        chat_session::model::UpdateChatSessionCommand, workspace::repo::AnyWorkspace,
+    };
 
     struct FakeRepo {
         sessions: Mutex<HashMap<SessionId, ChatSession>>,
@@ -169,6 +200,23 @@ mod tests {
             Ok(session.clone())
         }
 
+        async fn set_title_if_unset(
+            &self,
+            id: SessionId,
+            title: String,
+        ) -> Result<Option<ChatSession>, ServiceError> {
+            let mut sessions = self.lock();
+            let session = sessions
+                .get_mut(&id)
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            if session.title.is_some() {
+                return Ok(None);
+            }
+            session.title = Some(title);
+            session.updated_at = Utc::now();
+            Ok(Some(session.clone()))
+        }
+
         async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
             if self.lock().remove(&id).is_none() {
                 return Err(ServiceError::NotFound(id.to_string()));
@@ -180,7 +228,69 @@ mod tests {
     fn service() -> ChatSessionService {
         ChatSessionService {
             repository: Arc::new(FakeRepo::new()),
+            workspaces: Arc::new(AnyWorkspace),
         }
+    }
+
+    struct MissingWorkspace;
+
+    #[async_trait]
+    impl WorkspaceRepository for MissingWorkspace {
+        async fn canonicalize_root(&self, root: &str) -> Result<String, ServiceError> {
+            Ok(root.to_string())
+        }
+
+        async fn get_workspace(
+            &self,
+            _id: WorkspaceId,
+        ) -> Result<Option<crate::domain::workspace::model::Workspace>, ServiceError> {
+            Ok(None)
+        }
+
+        async fn get_workspace_by_root(
+            &self,
+            _root: &str,
+        ) -> Result<Option<crate::domain::workspace::model::Workspace>, ServiceError> {
+            Ok(None)
+        }
+
+        async fn insert_workspace(
+            &self,
+            _root: &str,
+            _name: &str,
+        ) -> Result<crate::domain::workspace::model::Workspace, ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+
+        async fn list_workspaces(
+            &self,
+        ) -> Result<Vec<crate::domain::workspace::model::Workspace>, ServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError> {
+            Err(ServiceError::NotFound(id.to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn create_chat_session_is_not_found_for_an_unknown_workspace() {
+        let repository = Arc::new(FakeRepo::new());
+        let service = ChatSessionService {
+            repository: repository.clone(),
+            workspaces: Arc::new(MissingWorkspace),
+        };
+        let workspace_id = WorkspaceId::new();
+        let error = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id,
+                title: Some("Notes".into()),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServiceError::NotFound(workspace_id.to_string()));
+        assert!(repository.lock().is_empty());
     }
 
     #[tokio::test]
@@ -276,6 +386,71 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].workspace_id, keep);
         assert_eq!(listed[0].title.as_deref(), Some("keep"));
+    }
+
+    #[tokio::test]
+    async fn set_title_if_unset_writes_once() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+            })
+            .await
+            .unwrap();
+
+        let named = service
+            .set_title_if_unset(session.id, "  Parser cleanup  ".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(named.title.as_deref(), Some("Parser cleanup"));
+        assert_eq!(named.last_used_at, session.last_used_at);
+        assert!(named.updated_at >= session.updated_at);
+
+        assert!(service
+            .set_title_if_unset(session.id, "Other".into())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            service
+                .get_chat_session(session.id)
+                .await
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Parser cleanup")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_title_if_unset_rejects_an_empty_or_oversized_title() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .set_title_if_unset(session.id, "   ".into())
+                .await
+                .unwrap_err(),
+            ServiceError::BadRequest("title must not be empty".into())
+        );
+        let title = "a".repeat(CHAT_SESSION_TITLE_MAX_CHARS + 1);
+        assert!(matches!(
+            service.set_title_if_unset(session.id, title).await,
+            Err(ServiceError::BadRequest(_))
+        ));
+        assert_eq!(
+            service.get_chat_session(session.id).await.unwrap().title,
+            None
+        );
     }
 
     #[tokio::test]

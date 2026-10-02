@@ -40,7 +40,7 @@ Add the directory when its milestone starts, not before.
 |--------|-----------|------|
 | `providers/` | M1 | Model clients, streaming, retries |
 | `domain/` | M2 | Chat session models, repository traits, and services. No I/O |
-| `adapters/` | M2 | SQLite behind those traits. Settings and the keychain land here later |
+| `adapters/` | M2 | SQLite behind those traits, and the settings files. A keychain can replace the secret backend later |
 | `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI. The `robi-api` binary wires them |
 | `tools/` | M3 | Built-in tools |
 | `workspace/` | M3 | Root resolution, path confinement, policy |
@@ -120,6 +120,7 @@ so it does not share a port with other local Tauri apps.
 Visual language (dark tokens, shell layout, chat chrome):
 [docs/design/visual-style.md](docs/design/visual-style.md). Use those CSS
 variables; do not invent one-off hex or import another product's theme.
+Menus and dialogs use Radix primitives, styled with those tokens.
 
 | Task | Command |
 |------|---------|
@@ -134,7 +135,9 @@ variables; do not invent one-off hex or import another product's theme.
 
 `pnpm dev` serves the web UI alone. `pnpm tauri dev` opens the desktop window
 against that same server. Chat-session HTTP goes through the Vite `/api` proxy
-to `robi-api`; run the API alongside the web UI. Never hand-edit
+to `robi-api`; run the API alongside the web UI. The shell opens one
+`EventSource` on `/api/v1/events/stream` through that proxy — see
+[docs/design/events-sse.md](docs/design/events-sse.md). Never hand-edit
 `src/api/schema.d.ts` — regenerate it after `make openapi-spec` when routes
 change.
 

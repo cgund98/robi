@@ -93,6 +93,26 @@
   height: 14px;
   border-radius: 999px;
   border: 2px solid var(--accent-muted);
-  border-top-color: var(--accent);
   margin-left: var(--space-1);
+  flex-shrink: 0;
+}
+
+.statusBusy {
+  border-color: transparent;
+  border-top-color: var(--accent);
+  animation: statusSpin 0.8s linear infinite;
+}
+
+@keyframes statusSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusBusy {
+    animation: none;
+    border-color: var(--accent-muted);
+    border-top-color: var(--accent);
+  }
 }

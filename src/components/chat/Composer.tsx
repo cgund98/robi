@@ -1,9 +1,38 @@
 import { useState } from 'react'
 
+import type { AgentPhase } from '../../state/chatStore'
 import styles from './Composer.module.css'
 
-export function Composer() {
+type ComposerProps = {
+  disabled: boolean
+  phase: AgentPhase
+  onSubmit: (text: string) => Promise<boolean>
+}
+
+function statusLabel(phase: AgentPhase): string {
+  if (phase === 'thinking') {
+    return 'Thinking'
+  }
+  if (phase === 'responding') {
+    return 'Responding'
+  }
+  return 'Idle'
+}
+
+export function Composer({ disabled, phase, onSubmit }: ComposerProps) {
   const [draft, setDraft] = useState('')
+  const label = statusLabel(phase)
+  const canSend = !disabled && draft.trim().length > 0
+
+  async function submit() {
+    if (!canSend) {
+      return
+    }
+    const sent = await onSubmit(draft)
+    if (sent) {
+      setDraft('')
+    }
+  }
 
   return (
     <div className={styles.composer}>
@@ -14,10 +43,23 @@ export function Composer() {
             rows={1}
             placeholder="Describe a task or ask a question"
             value={draft}
+            disabled={disabled}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void submit()
+              }
+            }}
             aria-label="Message"
           />
-          <button type="button" className={styles.send} disabled={!draft.trim()} aria-label="Send">
+          <button
+            type="button"
+            className={styles.send}
+            disabled={!canSend}
+            aria-label="Send"
+            onClick={() => void submit()}
+          >
             ⏎
           </button>
         </div>
@@ -30,7 +72,10 @@ export function Composer() {
             <button type="button" className={styles.control}>
               Extra high ▾
             </button>
-            <span className={styles.status} aria-hidden title="Idle" />
+            <span
+              className={`${styles.status} ${phase === 'idle' ? '' : styles.statusBusy}`}
+              title={label}
+            />
           </div>
         </div>
       </div>

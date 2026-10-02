@@ -15,7 +15,7 @@ the design doc for the chat-instruction half of **M2** in the
 | Provider wire format, retries, and the delta stream | [providers-streaming.md](providers-streaming.md) (M1) |
 | Streaming those deltas to the window | `docs/design/architecture.md` and `docs/design/chat-ui.md` (M2). This slice has no SSE |
 | Which tools need approval | `docs/design/permissions.md` (M3) |
-| The model writing a title after the first turn | Still deferred. [persistence.md](persistence.md) fixes that the title starts unset |
+| The model writing a title after a completed turn | [Session title](#session-title) on this page |
 
 ## Problem
 
@@ -43,19 +43,21 @@ One actor per chat session. That actor is the only `user_input` caller for the
 session. Two chat sessions each have an actor, and those actors run at the
 same time. They share the factory, not an agent.
 
-The process stores an `AgentFactory`: the message store, the event sink, the
-model, the tool registry, and `LoopConfig`. Building the actor calls
-`Agent::new` from those pieces. The agent is moved into the actor task and
-dropped when the actor goes idle. The next instruction for that session builds
-another actor and another agent from the same factory. One agent serves every
-instruction that actor drains before it goes idle.
+The process stores an `AgentFactory`: the message store, the event sink, a
+`ModelSource`, the tool registry, and `LoopConfig`. Building the actor calls
+`Agent::new` from those pieces. The source is read when the actor starts, so
+the agent receives the settings that are current then. The agent is moved into
+the actor task and dropped when the actor goes idle. The next instruction for
+that session builds another actor and another agent from the same factory. One
+agent serves every instruction that actor drains before it goes idle.
 
-`robi-api` fills the factory with `SqliteMessageStore`, `NopSink`, the model
-from `build_model`, an empty `ToolRegistry`, and `LoopConfig::default()`. The
-event sink drops every event. The window sees the turn by reading the
-transcript. An empty registry means a tool name the model emits fails as
-`NotFound` inside the loop; the runtime's approval check still reads whatever
-the transcript already contains.
+`robi-api` fills the factory with `SqliteMessageStore`, `FanOutEventSink`, a
+`SettingsModelSource` over the settings store, an empty `ToolRegistry`, and
+`LoopConfig::default()`. The sink publishes each loop event on the in-process
+fan-out. The window follows that stream and still reads the transcript with
+GET. An empty registry means a tool name the model emits fails as `NotFound`
+inside the loop; the runtime's approval check still reads whatever the
+transcript already contains.
 
 ### Slot
 
@@ -143,7 +145,9 @@ The actor loops:
 2. Take `pending`, mint a `CancellationToken`, store it on the slot, and drop
    the lock.
 3. Call `user_input` with that token.
-4. Log `Failed` at warn and any other `TurnOutcome` at debug, then loop.
+4. Log `Failed` at warn and any other `TurnOutcome` at debug. When the outcome
+   is `Complete`, spawn the title task from [Session title](#session-title),
+   then loop. The actor does not wait for that task.
 
 Because the token is stored before the lock is dropped, a submit that arrives
 during `user_input` cancels that call. A submit that arrives before step 2
@@ -169,6 +173,29 @@ The idle path avoids the third case by reading the transcript before it
 spawns. The running path cannot: the decision to accept was made while a turn
 was still in flight.
 
+### Session title
+
+When `user_input` returns `Complete` and the chat session's `title` is still
+null, the actor spawns a task that asks the same model for a short title and
+writes it. A title set at create or by rename is left as it is. A cancelled,
+paused, or failed turn does not name the session. If the title is still null
+after that, the next completed turn tries again.
+
+The call is `Model::generate` with one user message: a naming instruction plus
+an excerpt of the latest user text and the latest assistant text. It uses a
+fresh session id, so the provider conversation header is not the chat's id.
+The prompt and the reply are not appended to the transcript. The reply's first
+line is the title, with wrapping quotes and a trailing period removed, and it
+is cut at 200 characters. An empty reply is not written.
+
+The write is `UPDATE ... WHERE title IS NULL`. It moves `updated_at` and leaves
+`last_used_at` alone. A rename that lands while the model is answering keeps
+the renamed title.
+
+After the row is stored, the task publishes `robi.agent.v1.session_updated`
+on the fan-out. The shell refetches that session. The actor has already been
+free to take the next instruction; the title task does not hold the slot.
+
 ## Interfaces
 
 `ChatRuntime` (`crates/robi/src/domain/chat_message/runtime.rs`):
@@ -184,10 +211,12 @@ slots stay in the map and are left out. Nothing about this list is written
 to the database.
 
 `ChatMessageService` checks the instruction and the chat session, then calls
-`submit` or `MessageStore::messages`. `list_messages` does not call the
-runtime. Chat session responses copy `running_session_ids` into
-`has_pending_agent` on each returned session. Get and list are the reads the
-window uses; create and rename return the same field from the same snapshot.
+`submit`, `MessageStore::messages`, or `MessageStore::message`.
+`list_messages` and `get_message` do not call the runtime. `get_message`
+loads that id through `MessageStore::message`.
+Chat session responses copy `running_session_ids` into `has_pending_agent` on
+each returned session. Get and list are the reads the window uses; create and
+rename return the same field from the same snapshot.
 
 `AgentFactory` (`crates/robi/src/adapters/chat_runtime.rs`) holds:
 
@@ -195,17 +224,23 @@ window uses; create and rename return the same field from the same snapshot.
 |---|---|
 | `store` | `Arc<dyn MessageStore>` shared by every actor |
 | `events` | `Arc<dyn EventSink>` |
-| `model` | `Arc<dyn Model>` |
+| `models` | `Arc<dyn ModelSource>`, read when an actor starts |
 | `tools` | `Arc<ToolRegistry>` |
 | `config` | `LoopConfig`, copied into each agent |
+| `sessions` | `Option<Arc<ChatSessionService>>`. The title task reads and writes the row. Absent in tests that do not name sessions |
+| `fanout` | `Option<Arc<EventFanOut>>`. Publishes `session_updated` after a title is stored |
 
-`build` is called from `spawn_actor` and nowhere else. `SerializedChatRuntime`
-stores the factory and the slot map. It does not store an `Agent`.
+`submit` asks `models` for a model before it marks the session running, then
+`build` receives that model. A missing key or a bad effort returns the error
+and leaves the slot idle. An actor that is already running keeps its model;
+the instruction replaces the pending one.
 
-The composition root is `robi-api`. Model settings are the variables in
-[persistence.md](persistence.md#configuration): `OPENCODE_GO_API_KEY` is
-required, `ROBI_MODEL` defaults to `glm-5.3`, and `ROBI_BASE_URL` and
-`ROBI_EFFORT` are optional.
+`SerializedChatRuntime` stores the factory and the slot map. It does not store
+an `Agent`.
+
+The composition root is `robi-api`. It loads the settings store from
+[persistence.md](persistence.md#settings) and passes a `SettingsModelSource`
+to the factory.
 
 ## Rejected alternatives
 
@@ -221,8 +256,9 @@ required, `ROBI_MODEL` defaults to `glm-5.3`, and `ROBI_BASE_URL` and
    traits. The runtime is an adapter over `user_input`.
 5. **Holding the HTTP request until the turn finishes.** Rejected. `202` means
    the actor has the instruction.
-6. **SSE in this slice.** Rejected for now. `GET` reads the persisted
-   transcript, including while a turn is writing it.
+6. **SSE as the transcript read.** Rejected. `GET` reads the persisted
+   transcript, including while a turn is writing it. Live updates are the
+   stream in [events-sse.md](events-sse.md).
 7. **One actor for the whole process.** Rejected. Serialization is per chat
    session. Two sessions run concurrently.
 
@@ -246,7 +282,10 @@ required, `ROBI_MODEL` defaults to `glm-5.3`, and `ROBI_BASE_URL` and
   logged; the client sees the fixed `Unknown` message.
 - `user_input` returning `Failed` is logged. The actor then takes the next
   `pending` instruction, or exits if there is none. The HTTP response was
-  already `202`.
+  already `202`. The session is not titled.
+- A title estimate that fails, or an empty reply, is logged or ignored. The
+  turn's outcome is unchanged and the title stays null.
+- A title that is already stored is not replaced, and the model is not asked.
 - The actor is a detached task. Process shutdown drops it. A restart has no
   slots. The next submit builds a new actor, and a transcript that is waiting
   on approval gets `409` again.
@@ -262,5 +301,9 @@ required, `ROBI_MODEL` defaults to `glm-5.3`, and `ROBI_BASE_URL` and
   message list is unchanged.
 - `ChatMessageService` with a fake `ChatRuntime`: a blank instruction is
   `BadRequest` and the runtime is not called; a missing chat session is
-  `NotFound` for submit and for list; a real instruction is passed through and
-  list reads the store.
+  `NotFound` for submit, list, and get; a real instruction is passed through
+  and list reads the store. Get returns the message with that id, and a
+  missing message id is `NotFound`.
+- A completed turn on an unnamed session stores the model's title and publishes
+  `session_updated`. A session that already has a title does not ask the model
+  again. A failed turn leaves the title null.

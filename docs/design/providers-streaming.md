@@ -294,8 +294,11 @@ Backoff is exponential with full jitter, 500 ms base, 8 s cap, 3 attempts.
 ### D8 — Credentials come from a factory, and the model never looks behind it
 
 An `OpenAiCompatibleModel` takes a fully-constructed `ProviderSettings` and reads
-no environment variable, no file, and no keychain. M2 adds the layer that produces
-one: settings storage plus the OS keychain.
+no environment variable, no file, and no keychain. `SettingsModelSource` reads
+the [settings store](persistence.md#settings) when a session actor is built and
+passes the result to `build_model`. A later `SettingsStore` can keep secrets in
+the OS keychain. An actor that has already started keeps the model it was
+given; the next actor reads the store again.
 
 `providers::factory::build_model` owns construction, so the model type stays a leaf
 and one place knows how a provider is assembled. It takes the `ToolRegistry` as well

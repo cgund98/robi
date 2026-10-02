@@ -4,7 +4,7 @@ use thiserror::Error;
 ///
 /// The web layer maps each variant to a status. Callers outside HTTP use the
 /// same enum, so a long title is `BadRequest` whether or not a socket is open.
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ServiceError {
     #[error("Bad request: {0}")]
     BadRequest(String),

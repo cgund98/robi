@@ -13,7 +13,7 @@ export class ApiError extends Error {
   }
 }
 
-function errorMessage(error: unknown, fallback: string): string {
+export function errorMessage(error: unknown, fallback: string): string {
   if (error && typeof error === 'object' && 'error' in error) {
     const value = (error as { error?: unknown }).error
     if (typeof value === 'string' && value.length > 0) {
@@ -26,7 +26,7 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
-function statusOf(response: { status: number } | undefined): number {
+export function statusOf(response: { status: number } | undefined): number {
   return response?.status ?? 500
 }
 
@@ -106,5 +106,5 @@ export function sessionDisplayTitle(
   session: Pick<ChatSession, 'title'> | null | undefined
 ): string {
   const title = session?.title?.trim()
-  return title && title.length > 0 ? title : 'New session'
+  return title && title.length > 0 ? title : 'New chat'
 }

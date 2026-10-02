@@ -1,0 +1,113 @@
+.switcher {
+  position: relative;
+  margin-bottom: var(--space-3);
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-strong);
+  cursor: pointer;
+  outline: none;
+}
+
+.summary:hover,
+.summary[data-state='open'],
+.summary:focus-visible {
+  background: var(--bg-surface-hover);
+  border-color: var(--ink-faint);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.chevron {
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+.folder {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+}
+
+.summary[data-state='open'] .chevron {
+  transform: rotate(180deg);
+}
+
+.panel {
+  z-index: 2;
+  width: var(--radix-dropdown-menu-trigger-width);
+  padding: var(--space-1);
+  background: var(--bg-canvas);
+  border: 1px solid var(--ink-faint);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+.item,
+.action {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.item[data-highlighted],
+.action[data-highlighted] {
+  background: var(--bg-surface-hover);
+}
+
+.item[data-state='checked'] {
+  background: var(--bg-surface-active);
+}
+
+.item[data-state='checked'][data-highlighted] {
+  background: var(--bg-surface-hover);
+}
+
+.itemCopy {
+  min-width: 0;
+  flex: 1;
+}
+
+.itemName {
+  display: block;
+  color: var(--ink);
+}
+
+.itemRoot {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action {
+  color: var(--ink-muted);
+}

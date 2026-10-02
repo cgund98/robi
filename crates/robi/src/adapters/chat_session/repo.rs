@@ -20,6 +20,13 @@ fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError
     ServiceError::Unknown
 }
 
+fn is_foreign_key(err: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db) = err else {
+        return false;
+    };
+    db.code().as_deref() == Some("787") || db.message().contains("FOREIGN KEY")
+}
+
 fn chat_session_from_row(
     context: &'static str,
     row: SqliteRow,
@@ -95,7 +102,12 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&timestamp)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|err| log_unknown("create_chat_session: insert", err))?;
+        .map_err(|err| {
+            if is_foreign_key(&err) {
+                return ServiceError::NotFound(command.workspace_id.to_string());
+            }
+            log_unknown("create_chat_session: insert", err)
+        })?;
 
         Ok(ChatSession {
             id,
@@ -174,6 +186,40 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             .ok_or_else(|| ServiceError::NotFound(command.id.to_string()))
     }
 
+    async fn set_title_if_unset(
+        &self,
+        id: SessionId,
+        title: String,
+    ) -> Result<Option<ChatSession>, ServiceError> {
+        let updated_at = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            r#"
+            UPDATE chat_sessions
+            SET title = ?1, updated_at = ?2
+            WHERE id = ?3 AND title IS NULL
+            "#,
+        )
+        .bind(&title)
+        .bind(&updated_at)
+        .bind(id.to_string())
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|err| log_unknown("set_title_if_unset: update", err))?;
+
+        if result.rows_affected() == 1 {
+            let session = self
+                .get_chat_session(id)
+                .await?
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            return Ok(Some(session));
+        }
+
+        match self.get_chat_session(id).await? {
+            Some(_) => Ok(None),
+            None => Err(ServiceError::NotFound(id.to_string())),
+        }
+    }
+
     async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
         let result = sqlx::query("DELETE FROM chat_sessions WHERE id = ?1")
             .bind(id.to_string())
@@ -209,6 +255,20 @@ mod tests {
         SqliteChatSessionRepository::new(Arc::new(pool))
     }
 
+    async fn insert_workspace(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            r#"
+            INSERT INTO workspaces (id, name, root, created_at)
+            VALUES (?1, 'test', ?2, '2024-01-01T00:00:00+00:00')
+            "#,
+        )
+        .bind(id)
+        .bind(format!("/tmp/robi-test-{id}"))
+        .execute(pool)
+        .await
+        .expect("insert workspace");
+    }
+
     async fn insert_chat_session(
         pool: &SqlitePool,
         id: &str,
@@ -234,6 +294,7 @@ mod tests {
     async fn create_and_get_round_trip() {
         let repo = repository().await;
         let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
         let created = repo
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
@@ -254,9 +315,11 @@ mod tests {
     #[tokio::test]
     async fn create_without_a_title_stores_null() {
         let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
         let created = repo
             .create_chat_session(CreateChatSessionCommand {
-                workspace_id: WorkspaceId::new(),
+                workspace_id,
                 title: None,
             })
             .await
@@ -271,6 +334,7 @@ mod tests {
     async fn list_orders_by_last_used_then_id() {
         let repo = repository().await;
         let workspace_id = WorkspaceId::new().to_string();
+        insert_workspace(repo.pool.as_ref(), &workspace_id).await;
         let early = "00000000-0000-7000-8000-000000000001";
         let tie_low = "00000000-0000-7000-8000-000000000002";
         let tie_mid = "00000000-0000-7000-8000-000000000003";
@@ -312,6 +376,8 @@ mod tests {
         let repo = repository().await;
         let keep = WorkspaceId::new();
         let other = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &keep.to_string()).await;
+        insert_workspace(repo.pool.as_ref(), &other.to_string()).await;
         insert_chat_session(
             repo.pool.as_ref(),
             &SessionId::new().to_string(),
@@ -335,9 +401,11 @@ mod tests {
     #[tokio::test]
     async fn update_changes_title_and_leaves_last_used_at() {
         let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
         let created = repo
             .create_chat_session(CreateChatSessionCommand {
-                workspace_id: WorkspaceId::new(),
+                workspace_id,
                 title: Some("Before".into()),
             })
             .await
@@ -370,6 +438,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_title_if_unset_leaves_an_existing_title_and_last_used_at() {
+        let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
+        let created = repo
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id,
+                title: None,
+            })
+            .await
+            .unwrap();
+
+        let named = repo
+            .set_title_if_unset(created.id, "Parser cleanup".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(named.title.as_deref(), Some("Parser cleanup"));
+        assert_eq!(named.last_used_at, created.last_used_at);
+        assert!(named.updated_at >= created.updated_at);
+
+        assert!(repo
+            .set_title_if_unset(created.id, "Other".into())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repo.get_chat_session(created.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Parser cleanup")
+        );
+
+        let missing = SessionId::new();
+        assert_eq!(
+            repo.set_title_if_unset(missing, "Nope".into())
+                .await
+                .unwrap_err(),
+            ServiceError::NotFound(missing.to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn delete_missing_is_not_found_and_present_cascades_messages() {
         let repo = repository().await;
         let missing = SessionId::new();
@@ -378,9 +492,11 @@ mod tests {
             ServiceError::NotFound(missing.to_string())
         );
 
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
         let session = repo
             .create_chat_session(CreateChatSessionCommand {
-                workspace_id: WorkspaceId::new(),
+                workspace_id,
                 title: None,
             })
             .await
@@ -407,5 +523,19 @@ mod tests {
                 .expect("count messages");
         assert_eq!(remaining, 0);
         assert!(repo.get_chat_session(session.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn create_fails_when_the_workspace_row_is_absent() {
+        let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        let error = repo
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id,
+                title: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error, ServiceError::NotFound(workspace_id.to_string()));
     }
 }

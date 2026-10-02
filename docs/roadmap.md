@@ -472,13 +472,13 @@ made. The fix and its tests are in `robi-core`; see
 
 - React + TypeScript + Vite front end in `src/`. Tauri 2.x is the current stable
   line ([Tauri](https://v2.tauri.app/)).
-- Commands in, events out: the UI calls a command to send a message or settle an
-  approval, and subscribes to the event stream for updates.
-- **Open decisions** — (D1) Tauri events only, or an in-process channel behind a
-  thin event bridge; and how events order against persistence so the UI never
-  renders an unsaved message. (D3) in-process loop vs. a sidecar binary — a
+- Commands in, events out: the UI posts a message or settles an approval over
+  HTTP, and subscribes to `GET /api/v1/events/stream` for updates. The stream
+  is specified in [events-sse.md](design/events-sse.md).
+- **Open decisions** — (D3) in-process loop vs. a sidecar binary — a
   sidecar keeps the core usable headless (M8) and survives a UI crash, while
-  in-process is less plumbing.
+  in-process is less plumbing. Event *delivery* is HTTP SSE (D1, settled in
+  `docs/design/events-sse.md`). Process placement is still open.
 
 ### F2.2 Chat UI
 
@@ -494,18 +494,22 @@ made. The fix and its tests are in `robi-core`; see
 
 ### F2.3 Sessions and persistence
 
-- Session list with titles, last-used time, and workspace. The model generates
+- Session list with titles, last-used time, and workspace. A workspace is a
+  named directory root. The shell shows one workspace at a time and lists that
+  workspace's sessions. Path confinement stays in M3. The model generates
   the title after the first turn; creation leaves it unset unless the client
   supplies one.
 - `MessageStore` gets its real implementation here. Nothing in `robi-core`
   changes.
-- Secrets go in an OS keychain rather than a plaintext file. gopi reads
-  `secrets.toml` and refuses it unless the mode is 0600; a desktop app has a
-  better option and should use it from the start.
-- **Open decisions** — where the app's home directory lives, and whether a
-  workspace needs the explicit trust decision gopi records in `trust.json`.
-  The session store is SQLite; see `docs/design/persistence.md`. Token-usage
-  history and the M7 index lean toward that same file.
+- Secrets go in `~/.robi/secrets.toml`, non-secrets in `~/.robi/config.toml`.
+  The secrets file is written `0600` and refused when group or world can read
+  it. Callers read both through `SettingsStore`, so a later backend can put
+  secrets in the OS keychain.
+- **Open decisions** — whether a workspace needs the explicit trust decision
+  gopi records in `trust.json`. The session store is SQLite; see
+  `docs/design/persistence.md`. Token-usage history and the M7 index lean
+  toward that same file. Settings live under `~/.robi`. The database file
+  stays on `ROBI_DATABASE_URL`.
 
 **Exit criteria for M2** — send a message in the app, watch it stream, restart,
 and find the session intact.
@@ -925,7 +929,7 @@ resolve them.
 
 | # | Decision | Blocks | Notes |
 |---|---|---|---|
-| D1 | IPC transport and event ordering | F2.1 | Tauri events vs. channel + events; how deltas order against persistence |
+| D1 | UI event delivery | F2.1 | Settled: HTTP SSE on `robi-api`, CloudEvents envelope, in-process fan-out. See `docs/design/events-sse.md`. Emit-after-persist still orders events against the store. Command transport and process placement are D3 / `architecture.md` |
 | D2 | Delta serialization and IPC encoding | F1.2 | The variant list is fixed in M0; these are the wire details. Expensive to change once the UI depends on them |
 | D3 | In-process loop vs. sidecar | F2.1 | Gate on headless mode (M8) being a goal |
 | D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/design/persistence.md`. App home directory is still open. Usage history and the M7 index lean the same file; the index engine is D7 |
@@ -971,11 +975,12 @@ Statuses: **needed**, **later**, **done**.
 |---|---|---|---|
 | `docs/design/agent-loop.md` | Transcript, loop algorithm, turn lifecycle sequence, approval lifecycle, tool execution, events, cancellation, test strategy | M0 | done |
 | `docs/design/providers-streaming.md` | Delta protocol, SSE, provider quirks, retries/backoff, reasoning tokens | M1 | done |
-| `docs/design/architecture.md` | Crate layout, IPC protocol, thread/runtime model, event ordering | M2 | needed |
+| `docs/design/architecture.md` | Crate layout, process model, command IPC | M2 | needed |
 | `docs/design/visual-style.md` | Dark theme tokens, shell layout, chat chrome look (Claude Code-view reference) | M2 | done |
-| `docs/design/chat-ui.md` | Streaming render, scroll behavior, message list, tool-card layout | M2 | needed |
+| `docs/design/chat-ui.md` | Draft session, HTTP transcript, activity line, composer lock. Caret, scroll-lock, and tool cards stay open | M2 | done |
 | `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | done |
 | `docs/design/chat-runtime.md` | Per-session actor, agent factory, interrupt, approval refusal | M2 | done |
+| `docs/design/events-sse.md` | **D1**, CloudEvents envelope, fan-out, `GET /api/v1/events/stream`, shell EventSource | M2 | done |
 | `docs/design/permissions.md` | Approval, policy floor, grants, protected paths | M3 | needed |
 | `docs/design/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
 | `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | needed |

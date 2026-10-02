@@ -21,6 +21,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chat_sessions/{id}/messages",
             get(list_chat_messages).post(submit_instruction),
         )
+        .route(
+            "/api/v1/chat_sessions/{id}/messages/{message_id}",
+            get(get_chat_message),
+        )
         .with_state(state)
 }
 
@@ -82,10 +86,42 @@ pub async fn list_chat_messages(
     Ok(Json(messages))
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/chat_sessions/{id}/messages/{message_id}",
+    params(
+        ("id" = String, Path, description = "Chat session id"),
+        ("message_id" = String, Path, description = "Chat message id")
+    ),
+    responses(
+        (status = 200, description = "Chat message", body = ChatMessage),
+        (status = 404, description = "Chat session or message is missing")
+    )
+)]
+pub async fn get_chat_message(
+    State(state): State<AppState>,
+    Path((id, message_id)): Path<(String, String)>,
+) -> Result<Json<ChatMessage>, ServiceError> {
+    let session = parse_session_id(&id)?;
+    let message = parse_message_id(&message_id)?;
+    let message = state
+        .chat_message_service
+        .get_message(session, message)
+        .await?;
+    Ok(Json(ChatMessage::from(message)))
+}
+
 fn parse_session_id(value: &str) -> Result<robi_core::ids::SessionId, ServiceError> {
     let id =
         Uuid::parse_str(value).map_err(|_| ServiceError::BadRequest("id must be a UUID".into()))?;
     Ok(robi_core::ids::SessionId::from_uuid(id))
+}
+
+fn parse_message_id(value: &str) -> Result<robi_core::ids::MessageId, ServiceError> {
+    let id = Uuid::parse_str(value)
+        .map_err(|_| ServiceError::BadRequest("message_id must be a UUID".into()))?;
+    Ok(robi_core::ids::MessageId::from_uuid(id))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

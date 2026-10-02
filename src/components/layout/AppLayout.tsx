@@ -1,116 +1,94 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
-import {
-  createSession,
-  deleteSession,
-  listSessions,
-  sessionDisplayTitle,
-  updateSession,
-  type ChatSession
-} from '../../api/sessions'
+import { sessionDisplayTitle } from '../../api/sessions'
+import { useAgentEventsSSE } from '../../app/useAgentEventsSSE'
+import { useChatStore, type AgentPhase } from '../../state/chatStore'
+import { useWorkspaceStore } from '../../state/workspaceStore'
 import { ChatHeader } from '../chat/ChatHeader'
 import { Composer } from '../chat/Composer'
+import { RenameSessionDialog } from '../chat/RenameSessionDialog'
 import { Transcript } from '../chat/Transcript'
 import { Sidebar } from './Sidebar'
-import { MOCK_TRANSCRIPT } from '../../mock/chat'
-import { SHELL_WORKSPACE } from '../../workspace'
 import styles from './AppLayout.module.css'
 
 export function AppLayout() {
-  const [sessions, setSessions] = useState<ChatSession[]>([])
-  const [activeSessionId, setActiveSessionId] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const sessions = useChatStore((state) => state.sessions)
+  const activeSessionId = useChatStore((state) => state.activeSessionId)
+  const draftSelected = useChatStore((state) => state.draftSelected)
+  const messagesBySession = useChatStore((state) => state.messagesBySession)
+  const phaseBySession = useChatStore((state) => state.phaseBySession)
+  const pendingEcho = useChatStore((state) => state.pendingEcho)
+  const error = useChatStore((state) => state.error)
+  const loading = useChatStore((state) => state.loading)
+  const busy = useChatStore((state) => state.busy)
+  const loadSessions = useChatStore((state) => state.loadSessions)
+  const workspacesLoaded = useWorkspaceStore((state) => state.loaded)
+  const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
+  const workspaceError = useWorkspaceStore((state) => state.error)
+  const loadWorkspaces = useWorkspaceStore((state) => state.loadWorkspaces)
+  const workspaceCount = useWorkspaceStore((state) => state.workspaces.length)
+  const previousWorkspace = useRef<string | null | undefined>(undefined)
+  const [renameId, setRenameId] = useState<string | null>(null)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const navigate = useNavigate()
+  const selectSession = useChatStore((state) => state.selectSession)
+  const selectDraft = useChatStore((state) => state.selectDraft)
+  const sendInstruction = useChatStore((state) => state.sendInstruction)
+  const renameSession = useChatStore((state) => state.renameSession)
+  const removeSession = useChatStore((state) => state.removeSession)
 
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0],
-    [sessions, activeSessionId]
-  )
+  useAgentEventsSSE()
 
   useEffect(() => {
-    let cancelled = false
+    void loadWorkspaces()
+  }, [loadWorkspaces])
 
-    void listSessions(SHELL_WORKSPACE.id)
-      .then((next) => {
-        if (cancelled) {
-          return
-        }
-        setSessions(next)
-        setActiveSessionId(next[0]?.id ?? '')
-        setError(null)
-        setLoading(false)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) {
-          return
-        }
-        setError(err instanceof Error ? err.message : 'Failed to load chat sessions')
-        setSessions([])
-        setActiveSessionId('')
-        setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
+  useEffect(() => {
+    if (workspacesLoaded && workspaceCount === 0) {
+      navigate('/workspaces', { replace: true })
     }
-  }, [])
+  }, [workspacesLoaded, workspaceCount, navigate])
 
-  const reloadSessions = useCallback(async () => {
-    setBusy(true)
-    try {
-      const next = await listSessions(SHELL_WORKSPACE.id)
-      setSessions(next)
-      setActiveSessionId((current) => {
-        if (current && next.some((session) => session.id === current)) {
-          return current
-        }
-        return next[0]?.id ?? ''
-      })
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load chat sessions')
-    } finally {
-      setBusy(false)
-    }
-  }, [])
-
-  async function handleNewSession() {
-    setBusy(true)
-    setError(null)
-    try {
-      const created = await createSession(SHELL_WORKSPACE.id)
-      setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
-      setActiveSessionId(created.id)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create chat session')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleRenameSession(id: string) {
-    const current = sessions.find((session) => session.id === id)
-    const nextTitle = window.prompt('Rename session', sessionDisplayTitle(current))
-    if (nextTitle == null) {
+  useEffect(() => {
+    if (!workspacesLoaded) {
       return
     }
-    const trimmed = nextTitle.trim()
-    if (trimmed.length === 0) {
-      setError('Title cannot be empty')
+    const switched =
+      previousWorkspace.current !== undefined && previousWorkspace.current !== activeWorkspaceId
+    previousWorkspace.current = activeWorkspaceId
+    void loadSessions(switched ? { draft: true } : undefined)
+  }, [workspacesLoaded, activeWorkspaceId, loadSessions])
+
+  const activeSession =
+    !draftSelected && activeSessionId
+      ? (sessions.find((session) => session.id === activeSessionId) ?? null)
+      : null
+  const phase: AgentPhase =
+    activeSessionId && !draftSelected ? (phaseBySession[activeSessionId] ?? 'idle') : 'idle'
+  const messages =
+    activeSessionId && !draftSelected ? (messagesBySession[activeSessionId] ?? []) : []
+  const echo =
+    activeSessionId && !draftSelected && pendingEcho?.sessionId === activeSessionId
+      ? pendingEcho.text
+      : null
+  const composerLocked = loading || busy || phase !== 'idle'
+
+  const renameTarget = renameId
+    ? (sessions.find((session) => session.id === renameId) ?? null)
+    : null
+
+  async function handleSaveTitle(title: string) {
+    if (!renameId) {
       return
     }
-
-    setBusy(true)
-    setError(null)
-    try {
-      const updated = await updateSession(id, trimmed)
-      setSessions((current) => current.map((session) => (session.id === id ? updated : session)))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename chat session')
-    } finally {
-      setBusy(false)
+    await renameSession(renameId, title)
+    const message = useChatStore.getState().error
+    if (message) {
+      setRenameError(message)
+      return
     }
+    setRenameId(null)
   }
 
   async function handleDeleteSession(id: string) {
@@ -119,59 +97,60 @@ export function AppLayout() {
     if (!window.confirm(`Delete “${label}”? This cannot be undone.`)) {
       return
     }
-
-    setBusy(true)
-    setError(null)
-    try {
-      await deleteSession(id)
-      setSessions((current) => {
-        const next = current.filter((session) => session.id !== id)
-        setActiveSessionId((active) => {
-          if (active !== id) {
-            return active
-          }
-          return next[0]?.id ?? ''
-        })
-        return next
-      })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete chat session')
-    } finally {
-      setBusy(false)
-    }
+    await removeSession(id)
   }
+
+  const sessionTitle =
+    loading && !activeSession && !draftSelected ? 'Loading…' : sessionDisplayTitle(activeSession)
 
   return (
     <div className={styles.shell}>
       <Sidebar
         sessions={sessions}
-        activeSessionId={activeSession?.id ?? ''}
+        activeSessionId={draftSelected ? '' : (activeSession?.id ?? '')}
         disabled={loading || busy}
-        onSelectSession={setActiveSessionId}
-        onNewSession={() => void handleNewSession()}
-        onRenameSession={(id) => void handleRenameSession(id)}
+        onSelectSession={(id) => void selectSession(id)}
+        onNewSession={selectDraft}
+        onRenameSession={(id) => {
+          setRenameError(null)
+          setRenameId(id)
+        }}
         onDeleteSession={(id) => void handleDeleteSession(id)}
       />
       <div className={styles.main}>
-        {error ? (
+        {workspaceError || error ? (
           <div className={styles.banner} role="alert">
-            <span>{error}</span>
+            <span>{workspaceError ?? error}</span>
             <button
               type="button"
               className={styles.bannerRetry}
-              onClick={() => void reloadSessions()}
+              onClick={() => {
+                void loadWorkspaces()
+                void loadSessions()
+              }}
             >
               Retry
             </button>
           </div>
         ) : null}
-        <ChatHeader
-          workspace={SHELL_WORKSPACE.label}
-          sessionTitle={loading && !activeSession ? 'Loading…' : sessionDisplayTitle(activeSession)}
-        />
-        <Transcript items={MOCK_TRANSCRIPT} />
-        <Composer />
+        <ChatHeader sessionTitle={sessionTitle} />
+        <Transcript messages={messages} echo={echo} phase={phase} />
+        <Composer disabled={composerLocked} phase={phase} onSubmit={sendInstruction} />
       </div>
+      {renameTarget ? (
+        <RenameSessionDialog
+          key={renameTarget.id}
+          open
+          initialTitle={renameTarget.title ?? ''}
+          busy={busy}
+          error={renameError}
+          onCancel={() => {
+            setRenameError(null)
+            setRenameId(null)
+          }}
+          onSave={(title) => void handleSaveTitle(title)}
+        />
+      ) : null}
     </div>
   )
 }
