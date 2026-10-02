@@ -89,6 +89,7 @@ impl Tool for Grant {
             allow_write: None,
             deny_read: None,
             deny_write: None,
+            model_config: None,
         };
         match access {
             Access::Read => {

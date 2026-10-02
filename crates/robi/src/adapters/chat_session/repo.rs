@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::domain::{
     chat_session::{
         model::{
-            apply_session_update, ChatSession, CreateChatSessionCommand, PathRules,
+            apply_session_update, ChatSession, CreateChatSessionCommand, ModelConfig, PathRules,
             UpdateChatSessionCommand,
         },
         repo::ChatSessionRepository,
@@ -18,7 +18,7 @@ use crate::domain::{
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, model_config, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
     error!(?err, %context, "sqlite chat session repository error");
@@ -49,6 +49,7 @@ fn chat_session_from_row(
         deny_read: decode_patterns(context, &row_text(context, &row, "path_deny_read")?)?,
         deny_write: decode_patterns(context, &row_text(context, &row, "path_deny_write")?)?,
     };
+    let model_config = decode_model_config(context, &row_text(context, &row, "model_config")?)?;
     let created_at: String = row
         .try_get("created_at")
         .map_err(|err| log_unknown(context, err))?;
@@ -64,6 +65,7 @@ fn chat_session_from_row(
         workspace_id: WorkspaceId::from_uuid(parse_uuid(context, &workspace_id)?),
         title,
         path_rules,
+        model_config,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
         last_used_at: parse_timestamp(context, &last_used_at)?,
@@ -84,6 +86,14 @@ fn decode_patterns(context: &'static str, value: &str) -> Result<Vec<String>, Se
 
 fn encode_patterns(patterns: &[String]) -> Result<String, ServiceError> {
     serde_json::to_string(patterns).map_err(|err| log_unknown("encode path rules", err))
+}
+
+fn decode_model_config(context: &'static str, value: &str) -> Result<ModelConfig, ServiceError> {
+    serde_json::from_str(value).map_err(|err| log_unknown(context, err))
+}
+
+fn encode_model_config(config: &ModelConfig) -> Result<String, ServiceError> {
+    serde_json::to_string(config).map_err(|err| log_unknown("encode model config", err))
 }
 
 fn parse_uuid(context: &'static str, value: &str) -> Result<Uuid, ServiceError> {
@@ -120,14 +130,16 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let allow_write = encode_patterns(&path_rules.allow_write)?;
         let deny_read = encode_patterns(&path_rules.deny_read)?;
         let deny_write = encode_patterns(&path_rules.deny_write)?;
+        let model_config = encode_model_config(&command.model_config)?;
 
         sqlx::query(
             r#"
             INSERT INTO chat_sessions (
                 id, workspace_id, title, path_allow_read, path_allow_write,
-                path_deny_read, path_deny_write, created_at, updated_at, last_used_at
+                path_deny_read, path_deny_write, model_config, created_at, updated_at,
+                last_used_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
         )
         .bind(id.to_string())
@@ -137,6 +149,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&allow_write)
         .bind(&deny_read)
         .bind(&deny_write)
+        .bind(&model_config)
         .bind(&timestamp)
         .bind(&timestamp)
         .bind(&timestamp)
@@ -154,6 +167,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             workspace_id: command.workspace_id,
             title: command.title,
             path_rules,
+            model_config: command.model_config,
             created_at: now,
             updated_at: now,
             last_used_at: now,
@@ -205,6 +219,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let allow_write = encode_patterns(&session.path_rules.allow_write)?;
         let deny_read = encode_patterns(&session.path_rules.deny_read)?;
         let deny_write = encode_patterns(&session.path_rules.deny_write)?;
+        let model_config = encode_model_config(&session.model_config)?;
         sqlx::query(
             r#"
             UPDATE chat_sessions
@@ -213,8 +228,9 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
                 path_allow_write = ?3,
                 path_deny_read = ?4,
                 path_deny_write = ?5,
-                updated_at = ?6
-            WHERE id = ?7
+                model_config = ?6,
+                updated_at = ?7
+            WHERE id = ?8
             "#,
         )
         .bind(&session.title)
@@ -222,6 +238,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&allow_write)
         .bind(&deny_read)
         .bind(&deny_write)
+        .bind(&model_config)
         .bind(session.updated_at.to_rfc3339())
         .bind(command.id.to_string())
         .execute(self.pool.as_ref())
@@ -344,6 +361,10 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Round trip".into()),
+                model_config: ModelConfig {
+                    model: Some("glm-5.2".into()),
+                    reasoning_effort: Some("high".into()),
+                },
             })
             .await
             .unwrap();
@@ -366,6 +387,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -452,6 +474,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Before".into()),
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -485,6 +508,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -538,6 +562,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -551,6 +576,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                model_config: None,
             })
             .await
             .unwrap();
@@ -576,6 +602,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -611,6 +638,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap_err();

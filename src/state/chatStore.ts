@@ -7,8 +7,10 @@ import {
   deleteSession,
   getSession,
   listSessions,
+  patchSession,
   updateSession,
-  type ChatSession
+  type ChatSession,
+  type ModelConfigBody
 } from '../api/sessions'
 import { useWorkspaceStore } from './workspaceStore'
 
@@ -23,6 +25,10 @@ type ChatState = {
   sessions: ChatSession[]
   activeSessionId: string | null
   draftSelected: boolean
+  /** Model override for a chat that has no row yet. Null inherits the setting. */
+  draftModel: string | null
+  /** Effort override for a chat that has no row yet. Null inherits the setting. */
+  draftEffort: string | null
   messagesBySession: Record<string, ChatMessage[]>
   phaseBySession: Record<string, AgentPhase>
   pendingEcho: PendingEcho | null
@@ -32,6 +38,8 @@ type ChatState = {
   loadSessions: (options?: { draft?: boolean }) => Promise<void>
   selectSession: (id: string) => Promise<void>
   selectDraft: () => void
+  setModelChoice: (model: string | null) => Promise<void>
+  setEffortChoice: (effort: string | null) => Promise<void>
   sendInstruction: (instruction: string) => Promise<boolean>
   decideCall: (sessionId: string, callId: string, decision: 'approve' | 'reject') => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
@@ -82,6 +90,41 @@ function replaceSession(sessions: ChatSession[], session: ChatSession): ChatSess
     return sessions
   }
   return sessions.map((item) => (item.id === session.id ? session : item))
+}
+
+function draftConfig(state: ChatState): ModelConfigBody | undefined {
+  const config: ModelConfigBody = {}
+  if (state.draftModel) {
+    config.model = state.draftModel
+  }
+  if (state.draftEffort) {
+    config.reasoning_effort = state.draftEffort
+  }
+  return config.model == null && config.reasoning_effort == null ? undefined : config
+}
+
+async function setChoice(
+  get: () => ChatState,
+  set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
+  key: 'model' | 'reasoning_effort',
+  value: string | null
+): Promise<void> {
+  const { draftSelected, activeSessionId } = get()
+  if (draftSelected || activeSessionId === null) {
+    set(key === 'model' ? { draftModel: value } : { draftEffort: value })
+    return
+  }
+  try {
+    const updated = await patchSession(activeSessionId, {
+      model_config: { [key]: value }
+    })
+    set((state) => ({
+      sessions: replaceSession(state.sessions, updated),
+      error: null
+    }))
+  } catch (err) {
+    set({ error: errorText(err, 'Failed to update the model') })
+  }
 }
 
 function withoutEcho(
@@ -141,6 +184,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   draftSelected: false,
+  draftModel: null,
+  draftEffort: null,
   messagesBySession: {},
   phaseBySession: {},
   pendingEcho: null,
@@ -239,7 +284,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     bumpHydrate()
-    set({ draftSelected: true, activeSessionId: null, error: null })
+    set({
+      draftSelected: true,
+      activeSessionId: null,
+      error: null,
+      draftModel: null,
+      draftEffort: null
+    })
+  },
+
+  setModelChoice: async (model) => {
+    await setChoice(get, set, 'model', model)
+  },
+
+  setEffortChoice: async (effort) => {
+    await setChoice(get, set, 'reasoning_effort', effort)
   },
 
   sendInstruction: async (instruction) => {
@@ -264,12 +323,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({ busy: false, error: 'Choose a workspace first' })
           return false
         }
-        const created = await createSession(workspaceId)
+        const created = await createSession(workspaceId, undefined, draftConfig(get()))
         const epoch = bumpHydrate()
         set((state) => ({
           sessions: [created, ...state.sessions.filter((session) => session.id !== created.id)],
           activeSessionId: created.id,
-          draftSelected: false
+          draftSelected: false,
+          draftModel: null,
+          draftEffort: null
         }))
         try {
           await submitInstruction(created.id, text)

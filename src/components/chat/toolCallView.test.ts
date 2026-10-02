@@ -49,6 +49,38 @@ describe('toolSummary', () => {
       verb: 'Delete',
       target: '.env'
     })
+    expect(toolSummary(call({ name: 'shell', args: { command: 'cargo test' } }))).toEqual({
+      verb: 'Run',
+      target: 'cargo'
+    })
+    expect(
+      toolSummary(call({ name: 'shell', args: { command: 'gh pr view', unsandboxed: true } }))
+    ).toEqual({
+      verb: 'Run unsandboxed',
+      target: 'gh'
+    })
+    expect(
+      toolSummary(
+        call({ name: 'shell', args: { command: '/usr/bin/curl -I https://example.com' } })
+      )
+    ).toEqual({
+      verb: 'Run',
+      target: 'curl'
+    })
+  })
+})
+
+describe('toolDetail', () => {
+  it('keeps a shell command separate from its output', () => {
+    expect(
+      toolDetail(
+        call({
+          name: 'shell',
+          args: { command: 'make lint' },
+          result: { stdout: 'cargo fmt\n', stderr: '', sandboxed: true }
+        })
+      )
+    ).toEqual({ kind: 'shell', command: 'make lint', output: 'cargo fmt\n' })
   })
 })
 
@@ -88,7 +120,12 @@ describe('editPreview', () => {
       call({
         name: 'write_file',
         args: { path: '/tmp/test.md' },
-        result: { path: '../../../../../private/tmp/test.md', additions: 3, deletions: 0, patch: '' }
+        result: {
+          path: '../../../../../private/tmp/test.md',
+          additions: 3,
+          deletions: 0,
+          patch: ''
+        }
       })
     )
     expect(preview?.path).toBe('/tmp/test.md')

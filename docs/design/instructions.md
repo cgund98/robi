@@ -28,8 +28,9 @@ default chain, built by `assemble_session` when a session actor starts, is:
 
 1. **Built-in.** Identity, rules, an `<access>` section, and one line per
    registered tool (`name` and `description`). The access section tells the
-   model how allow and deny rules rank, and to call `grant` when a tool
-   refuses a path. An empty registry says that no tools are registered.
+   model how allow and deny rules rank, to call `grant` when a tool refuses a
+   path, and how `shell` stays inside the sandbox unless the user approves a
+   wider call. An empty registry says that no tools are registered.
 2. **User setting.** The `system_prompt` settings key, when it is non-empty,
    wrapped in `<user_prompt>`.
 3. **`~/.robi/system.md`.** The same tag, when the file exists.

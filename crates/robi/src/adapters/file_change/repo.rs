@@ -181,6 +181,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: workspace.id,
                 title: None,
+                model_config: crate::domain::chat_session::model::ModelConfig::default(),
             })
             .await
             .unwrap();

@@ -13,6 +13,7 @@ mod grep;
 mod list_dir;
 mod read_file;
 mod replace;
+mod shell;
 mod write_file;
 
 #[cfg(test)]
@@ -46,5 +47,14 @@ pub fn register_edit_tools(
     registry.register(Arc::new(write_file::WriteFile::new(Arc::clone(&ctx))))?;
     registry.register(Arc::new(edit_file::EditFile::new(Arc::clone(&ctx))))?;
     registry.register(Arc::new(delete_file::DeleteFile::new(ctx)))?;
+    Ok(())
+}
+
+/// Register `shell`.
+pub fn register_shell_tool(
+    registry: &ToolRegistry,
+    ctx: Arc<ToolContext>,
+) -> Result<(), RegistryError> {
+    registry.register(Arc::new(shell::Shell::new(ctx)))?;
     Ok(())
 }

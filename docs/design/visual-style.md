@@ -186,6 +186,9 @@ text. Not cards. Tool **results** that need inspection become tool cards
 - Idle: transparent / canvas-adjacent.
 - Hover: `--bg-surface-hover`.
 - Active: `--bg-surface-active` pill with `--radius-md`.
+- A running agent: a 12px ring at the start of the row, `--ink-faint` with an
+  `--ink` leading edge, spinning. Grayscale, not `--accent`. Reduced motion
+  leaves the ring still.
 - Section labels (Recents): uppercase or small caps optional; prefer plain muted
   label text over heavy chrome.
 

@@ -116,4 +116,16 @@ the phase is not `idle`. Another session can still be running; the lock
 follows the session on screen. Selecting it again refetches, and
 `has_pending_agent` restores the phase when the actor is still running.
 
-Model and effort controls stay as quiet placeholders.
+A session whose agent is still running shows a grayscale spinner on its row
+in the sidebar. That is the phase when it is not `idle`, or `has_pending_agent`
+when the list was loaded with the actor already running. Reduced motion
+keeps the ring still.
+
+Model and effort are quiet dropdowns in that cluster, and inside the welcome
+card. Each shows the value in effect: the session override when one is stored,
+otherwise the settings default. **Use default** clears that session key.
+A saved session writes the choice with `PATCH`. A draft keeps it in the client
+until the first send, which stores it on `POST /chat_sessions` before the
+instruction. The dropdowns stay usable while a turn is running. The actor
+already built keeps its model; the next one reads the new choice. The catalog
+comes from `GET /api/v1/models`. Settings still holds the default model and effort.

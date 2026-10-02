@@ -4,12 +4,14 @@ use robi_core::ids::SessionId;
 
 use crate::domain::{
     chat_session::{
-        model::{ChatSession, CreateChatSessionCommand, UpdateChatSessionCommand},
+        model::{ChatSession, CreateChatSessionCommand, ModelConfig, UpdateChatSessionCommand},
         repo::ChatSessionRepository,
     },
     error::ServiceError,
     workspace::repo::WorkspaceRepository,
 };
+use crate::providers::catalog::ModelCatalog;
+use crate::providers::config::{ModelId, ReasoningEffort};
 
 /// A chat session title longer than this is rejected before it is written.
 pub const CHAT_SESSION_TITLE_MAX_CHARS: usize = 200;
@@ -33,10 +35,12 @@ impl ChatSessionService {
             return Err(ServiceError::NotFound(command.workspace_id.to_string()));
         }
         let title = normalize_new_title(command.title)?;
+        let model_config = normalize_model_config(command.model_config)?;
         self.repository
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: command.workspace_id,
                 title,
+                model_config,
             })
             .await
     }
@@ -57,7 +61,7 @@ impl ChatSessionService {
 
     pub async fn update_chat_session(
         &self,
-        command: UpdateChatSessionCommand,
+        mut command: UpdateChatSessionCommand,
     ) -> Result<ChatSession, ServiceError> {
         if let Some(title) = &command.title {
             validate_title(title)?;
@@ -65,6 +69,14 @@ impl ChatSessionService {
         command
             .validate_patterns()
             .map_err(ServiceError::BadRequest)?;
+        if let Some(update) = &mut command.model_config {
+            if let Some(model) = &update.model {
+                update.model = Some(normalize_model(model.clone())?);
+            }
+            if let Some(effort) = &update.reasoning_effort {
+                update.reasoning_effort = Some(normalize_effort(effort.clone())?);
+            }
+        }
         if command.is_empty() {
             return self.get_chat_session(command.id).await;
         }
@@ -107,6 +119,41 @@ fn normalize_new_title(title: Option<String>) -> Result<Option<String>, ServiceE
     }
 }
 
+fn normalize_model_config(config: ModelConfig) -> Result<ModelConfig, ServiceError> {
+    Ok(ModelConfig {
+        model: normalize_model(config.model)?,
+        reasoning_effort: normalize_effort(config.reasoning_effort)?,
+    })
+}
+
+fn normalize_model(model: Option<String>) -> Result<Option<String>, ServiceError> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    if model.is_empty() {
+        return Err(ServiceError::BadRequest("model must not be empty".into()));
+    }
+    let catalog = ModelCatalog::opencode_go();
+    if catalog.get(&ModelId::new(model.as_str())).is_none() {
+        return Err(ServiceError::BadRequest(format!("unknown model: {model}")));
+    }
+    Ok(Some(model))
+}
+
+fn normalize_effort(effort: Option<String>) -> Result<Option<String>, ServiceError> {
+    let Some(effort) = effort else {
+        return Ok(None);
+    };
+    match effort.to_ascii_lowercase().as_str() {
+        "low" => Ok(Some(ReasoningEffort::Low.as_str().to_owned())),
+        "medium" => Ok(Some(ReasoningEffort::Medium.as_str().to_owned())),
+        "high" => Ok(Some(ReasoningEffort::High.as_str().to_owned())),
+        _ => Err(ServiceError::BadRequest(format!(
+            "reasoning_effort must be low, medium, or high: {effort}"
+        ))),
+    }
+}
+
 fn validate_title(title: &str) -> Result<(), ServiceError> {
     let chars = title.chars().count();
     if chars > CHAT_SESSION_TITLE_MAX_CHARS {
@@ -128,7 +175,9 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        chat_session::model::{apply_session_update, PathRules, UpdateChatSessionCommand},
+        chat_session::model::{
+            apply_session_update, ModelConfigUpdate, PathRules, UpdateChatSessionCommand,
+        },
         workspace::repo::AnyWorkspace,
     };
 
@@ -160,6 +209,7 @@ mod tests {
                 workspace_id: command.workspace_id,
                 title: command.title,
                 path_rules: PathRules::default(),
+                model_config: command.model_config,
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,
@@ -296,6 +346,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Notes".into()),
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap_err();
@@ -312,6 +363,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Notes".into()),
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -337,6 +389,7 @@ mod tests {
                 .create_chat_session(CreateChatSessionCommand {
                     workspace_id: WorkspaceId::new(),
                     title,
+                    model_config: ModelConfig::default(),
                 })
                 .await
                 .unwrap();
@@ -352,6 +405,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: Some(title),
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap_err();
@@ -382,6 +436,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: keep,
                 title: Some("keep".into()),
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -389,6 +444,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: drop,
                 title: Some("drop".into()),
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -406,6 +462,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -442,6 +499,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -482,6 +540,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -497,6 +556,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();
@@ -508,6 +568,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                model_config: None,
             })
             .await
             .unwrap_err();
@@ -523,12 +584,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_merges_model_config_and_a_null_key_clears_it() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                model_config: ModelConfig {
+                    model: Some("glm-5.2".into()),
+                    reasoning_effort: Some("low".into()),
+                },
+            })
+            .await
+            .unwrap();
+
+        let updated = service
+            .update_chat_session(UpdateChatSessionCommand {
+                id: session.id,
+                title: None,
+                allow_read: None,
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+                model_config: Some(ModelConfigUpdate {
+                    model: None,
+                    reasoning_effort: Some(Some("HIGH".into())),
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated.model_config.model.as_deref(), Some("glm-5.2"));
+        assert_eq!(
+            updated.model_config.reasoning_effort.as_deref(),
+            Some("high")
+        );
+
+        let cleared = service
+            .update_chat_session(UpdateChatSessionCommand {
+                id: session.id,
+                title: None,
+                allow_read: None,
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+                model_config: Some(ModelConfigUpdate {
+                    model: Some(None),
+                    reasoning_effort: None,
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            cleared.model_config,
+            ModelConfig {
+                model: None,
+                reasoning_effort: Some("high".into()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rejects_an_unknown_model() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+        let error = service
+            .update_chat_session(UpdateChatSessionCommand {
+                id: session.id,
+                title: None,
+                allow_read: None,
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+                model_config: Some(ModelConfigUpdate {
+                    model: Some(Some("not-a-model".into())),
+                    reasoning_effort: None,
+                }),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("unknown model: not-a-model".into())
+        );
+    }
+
+    #[tokio::test]
     async fn delete_chat_session_removes_it_and_missing_is_not_found() {
         let service = service();
         let session = service
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                model_config: ModelConfig::default(),
             })
             .await
             .unwrap();

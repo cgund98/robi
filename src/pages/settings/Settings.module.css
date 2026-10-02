@@ -135,6 +135,14 @@
   border-color: var(--ink-faint);
 }
 
+.select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  text-align: left;
+}
+
 .segments {
   display: flex;
   gap: var(--space-1);

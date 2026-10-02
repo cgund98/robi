@@ -139,6 +139,7 @@ mod tests {
                     workspace_id: WorkspaceId::new(),
                     title: None,
                     path_rules: crate::domain::chat_session::model::PathRules::default(),
+                    model_config: crate::domain::chat_session::model::ModelConfig::default(),
                     created_at: now,
                     updated_at: now,
                     last_used_at: now,

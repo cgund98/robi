@@ -69,11 +69,23 @@ impl AgentFactory {
     async fn session_registry(
         &self,
         session: SessionId,
-    ) -> Result<(Arc<ToolRegistry>, Option<std::path::PathBuf>), ServiceError> {
+    ) -> Result<
+        (
+            Arc<ToolRegistry>,
+            Option<std::path::PathBuf>,
+            crate::domain::chat_session::model::ModelConfig,
+        ),
+        ServiceError,
+    > {
         let Some(sessions) = &self.sessions else {
-            return Ok((Arc::clone(&self.tools), None));
+            return Ok((
+                Arc::clone(&self.tools),
+                None,
+                crate::domain::chat_session::model::ModelConfig::default(),
+            ));
         };
         let chat = sessions.get_chat_session(session).await?;
+        let choice = chat.model_config.clone();
         let workspace = sessions
             .workspaces
             .get_workspace(chat.workspace_id)
@@ -96,11 +108,15 @@ impl AgentFactory {
             tracing::error!(%err, "failed to register read tools");
             ServiceError::Unknown
         })?;
-        crate::tools::register_edit_tools(&registry, ctx).map_err(|err| {
+        crate::tools::register_edit_tools(&registry, Arc::clone(&ctx)).map_err(|err| {
             tracing::error!(%err, "failed to register edit tools");
             ServiceError::Unknown
         })?;
-        Ok((Arc::new(registry), Some(root)))
+        crate::tools::register_shell_tool(&registry, ctx).map_err(|err| {
+            tracing::error!(%err, "failed to register the shell tool");
+            ServiceError::Unknown
+        })?;
+        Ok((Arc::new(registry), Some(root), choice))
     }
 }
 
@@ -222,11 +238,11 @@ impl ChatRuntime for SerializedChatRuntime {
 
         // Resolve before the slot is marked running, so a missing key does not
         // leave an actor that will never start.
-        let (tools, workspace) = self.factory.session_registry(session).await?;
+        let (tools, workspace, choice) = self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace)
+            .model(Arc::clone(&tools), workspace, choice)
             .await?;
         self.start_actor(session, instruction, model, tools).await
     }
@@ -240,11 +256,11 @@ impl ChatRuntime for SerializedChatRuntime {
         if self.actor_running(session).await {
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
-        let (tools, workspace) = self.factory.session_registry(session).await?;
+        let (tools, workspace, choice) = self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace)
+            .model(Arc::clone(&tools), workspace, choice)
             .await?;
         self.start_decision(session, call, reject, model, tools)
             .await
@@ -402,7 +418,7 @@ mod tests {
     use crate::adapters::model_source::{FixedModelSource, ModelSource};
     use crate::domain::chat_message::runtime::{ChatRuntime, SubmitOutcome};
     use crate::domain::chat_session::{
-        model::{ChatSession, CreateChatSessionCommand},
+        model::{ChatSession, CreateChatSessionCommand, ModelConfig},
         repo::ChatSessionRepository,
         service::ChatSessionService,
     };
@@ -713,6 +729,7 @@ mod tests {
             &self,
             _tools: Arc<ToolRegistry>,
             _workspace: Option<std::path::PathBuf>,
+            _choice: crate::domain::chat_session::model::ModelConfig,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             Err(ServiceError::BadRequest(
                 "opencode_go_api_key is not set".into(),
@@ -780,6 +797,61 @@ mod tests {
             }
             Ok(ModelStream::new(rx))
         }
+    }
+
+    struct ChoiceSource {
+        seen: Arc<Mutex<Option<ModelConfig>>>,
+        model: Arc<dyn Model>,
+    }
+
+    #[async_trait]
+    impl ModelSource for ChoiceSource {
+        async fn model(
+            &self,
+            _tools: Arc<ToolRegistry>,
+            _workspace: Option<std::path::PathBuf>,
+            choice: ModelConfig,
+        ) -> Result<Arc<dyn Model>, ServiceError> {
+            *self.seen.lock().expect("choice") = Some(choice);
+            Ok(Arc::clone(&self.model))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_actor_is_built_with_the_session_model_config() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let choice = ModelConfig {
+            model: Some("glm-5.2".into()),
+            reasoning_effort: Some("high".into()),
+        };
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
+            workspaces: Arc::new(AnyWorkspace),
+        });
+        let seen = Arc::new(Mutex::new(None));
+        let runtime = SerializedChatRuntime::new(AgentFactory {
+            store,
+            events: Arc::new(NopSink),
+            models: Arc::new(ChoiceSource {
+                seen: Arc::clone(&seen),
+                model: Arc::new(TitleModel {
+                    calls: AtomicUsize::new(0),
+                    prompts: Mutex::new(Vec::new()),
+                    fail_user_turns: false,
+                }),
+            }),
+            tools: Arc::new(ToolRegistry::new()),
+            config: LoopConfig::default(),
+            sessions: Some(sessions),
+            file_changes: Some(Arc::new(
+                crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
+            )),
+            fanout: None,
+        });
+
+        runtime.submit(session, "hello".into()).await.unwrap();
+        assert_eq!(seen.lock().expect("choice").clone(), Some(choice));
     }
 
     fn titled_runtime(
@@ -974,6 +1046,18 @@ mod tests {
             Self::named_option(id, Some(title.to_owned()))
         }
 
+        fn with_model_config(id: SessionId, model_config: ModelConfig) -> Self {
+            let sessions = Self::new(id);
+            sessions
+                .sessions
+                .lock()
+                .expect("sessions")
+                .get_mut(&id)
+                .expect("session")
+                .model_config = model_config;
+            sessions
+        }
+
         fn named_option(id: SessionId, title: Option<String>) -> Self {
             let now = chrono::Utc::now();
             let session = ChatSession {
@@ -981,6 +1065,7 @@ mod tests {
                 workspace_id: WorkspaceId::new(),
                 title,
                 path_rules: crate::domain::chat_session::model::PathRules::default(),
+                model_config: crate::domain::chat_session::model::ModelConfig::default(),
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,

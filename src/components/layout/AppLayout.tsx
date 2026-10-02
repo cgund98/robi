@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { sessionDisplayTitle } from '../../api/sessions'
+import { listModels, type CatalogModel } from '../../api/models'
+import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
+import { getSetting, SETTING_KEYS } from '../../api/settings'
 import { useAgentEventsSSE } from '../../app/useAgentEventsSSE'
 import { useChatStore, type AgentPhase } from '../../state/chatStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
@@ -12,6 +14,20 @@ import { RenameSessionDialog } from '../chat/RenameSessionDialog'
 import { Transcript } from '../chat/Transcript'
 import { Sidebar } from './Sidebar'
 import styles from './AppLayout.module.css'
+
+function runningSessionIds(
+  sessions: ChatSession[],
+  phaseBySession: Record<string, AgentPhase>
+): ReadonlySet<string> {
+  const running = new Set<string>()
+  for (const session of sessions) {
+    const phase = phaseBySession[session.id]
+    if (session.has_pending_agent || (phase !== undefined && phase !== 'idle')) {
+      running.add(session.id)
+    }
+  }
+  return running
+}
 
 export function AppLayout() {
   const sessions = useChatStore((state) => state.sessions)
@@ -35,7 +51,12 @@ export function AppLayout() {
   const navigate = useNavigate()
   const selectSession = useChatStore((state) => state.selectSession)
   const selectDraft = useChatStore((state) => state.selectDraft)
+  const draftModel = useChatStore((state) => state.draftModel)
+  const draftEffort = useChatStore((state) => state.draftEffort)
+  const setModelChoice = useChatStore((state) => state.setModelChoice)
+  const setEffortChoice = useChatStore((state) => state.setEffortChoice)
   const sendInstruction = useChatStore((state) => state.sendInstruction)
+  const { models, defaultModelId, defaultEffort } = useModelDefaults()
   const decideCall = useChatStore((state) => state.decideCall)
   const renameSession = useChatStore((state) => state.renameSession)
   const removeSession = useChatStore((state) => state.removeSession)
@@ -113,6 +134,7 @@ export function AppLayout() {
         activeSessionId={draftSelected ? '' : (activeSession?.id ?? '')}
         draftSelected={draftSelected}
         disabled={loading || busy}
+        runningSessionIds={runningSessionIds(sessions, phaseBySession)}
         onSelectSession={(id) => void selectSession(id)}
         onNewSession={selectDraft}
         onRenameSession={(id) => {
@@ -145,6 +167,13 @@ export function AppLayout() {
               disabled={composerLocked}
               phase={phase}
               onSubmit={sendInstruction}
+              models={models}
+              modelId={draftSelected || !activeSession ? draftModel : sessionModel(activeSession)}
+              effort={draftSelected || !activeSession ? draftEffort : sessionEffort(activeSession)}
+              defaultModelId={defaultModelId}
+              defaultEffort={defaultEffort}
+              onModelChange={(model) => void setModelChoice(model)}
+              onEffortChange={(effort) => void setEffortChoice(effort)}
             />
           </div>
         ) : (
@@ -161,7 +190,18 @@ export function AppLayout() {
                 }
               }}
             />
-            <Composer disabled={composerLocked} phase={phase} onSubmit={sendInstruction} />
+            <Composer
+              disabled={composerLocked}
+              phase={phase}
+              onSubmit={sendInstruction}
+              models={models}
+              modelId={draftSelected || !activeSession ? draftModel : sessionModel(activeSession)}
+              effort={draftSelected || !activeSession ? draftEffort : sessionEffort(activeSession)}
+              defaultModelId={defaultModelId}
+              defaultEffort={defaultEffort}
+              onModelChange={(model) => void setModelChoice(model)}
+              onEffortChange={(effort) => void setEffortChoice(effort)}
+            />
           </>
         )}
       </div>
@@ -181,4 +221,52 @@ export function AppLayout() {
       ) : null}
     </div>
   )
+}
+
+function sessionModel(session: ChatSession): string | null {
+  return session.model_config.model ?? null
+}
+
+function sessionEffort(session: ChatSession): string | null {
+  return session.model_config.reasoning_effort ?? null
+}
+
+function useModelDefaults(): {
+  models: CatalogModel[]
+  defaultModelId: string
+  defaultEffort: string | null
+} {
+  const [models, setModels] = useState<CatalogModel[]>([])
+  const [defaultModelId, setDefaultModelId] = useState('glm-5.3')
+  const [defaultEffort, setDefaultEffort] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void listModels()
+      .then((next) => {
+        if (!cancelled) {
+          setModels(next)
+        }
+      })
+      .catch(() => {})
+    void getSetting(SETTING_KEYS.model)
+      .then((setting) => {
+        if (!cancelled && setting.value) {
+          setDefaultModelId(setting.value)
+        }
+      })
+      .catch(() => {})
+    void getSetting(SETTING_KEYS.reasoningEffort)
+      .then((setting) => {
+        if (!cancelled) {
+          setDefaultEffort(setting.value)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return { models, defaultModelId, defaultEffort }
 }

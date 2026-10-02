@@ -395,6 +395,29 @@
         }
       }
     },
+    "/api/v1/models": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "list_models",
+        "responses": {
+          "200": {
+            "description": "Tool-capable models the provider can drive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/settings/{key}": {
       "get": {
         "tags": [
@@ -586,6 +609,21 @@
           }
         }
       },
+      "CatalogModel": {
+        "type": "object",
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
       "ChatMessage": {
         "type": "object",
         "required": [
@@ -627,6 +665,7 @@
           "path_allow_write",
           "path_deny_read",
           "path_deny_write",
+          "model_config",
           "created_at",
           "updated_at",
           "last_used_at",
@@ -645,6 +684,9 @@
           },
           "last_used_at": {
             "type": "string"
+          },
+          "model_config": {
+            "$ref": "#/components/schemas/ModelConfigBody"
           },
           "path_allow_read": {
             "type": "array",
@@ -723,6 +765,17 @@
           "workspace_id"
         ],
         "properties": {
+          "model_config": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelConfigBody",
+                "description": "Session overrides. Omitted keys inherit the settings default."
+              }
+            ]
+          },
           "title": {
             "type": [
               "string",
@@ -763,6 +816,44 @@
               "null"
             ],
             "description": "Shown to the model when `decision` is `reject`. Omitted uses a default."
+          }
+        }
+      },
+      "ModelConfigBody": {
+        "type": "object",
+        "description": "Stored session override. Absent keys inherit the settings default.",
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ModelConfigPatch": {
+        "type": "object",
+        "description": "One key of a session model override.\n\n`None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.",
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Catalog model id. Null clears the session override."
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`low`, `medium`, or `high`. Null clears the session override."
           }
         }
       },
@@ -818,6 +909,17 @@
       "UpdateChatSession": {
         "type": "object",
         "properties": {
+          "model_config": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelConfigPatch",
+                "description": "Merge into the stored override. A null key clears that override. An omitted key stays."
+              }
+            ]
+          },
           "path_allow_read": {
             "type": [
               "array",

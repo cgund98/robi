@@ -111,4 +111,68 @@ describe('ToolCallCard', () => {
     expect(screen.getAllByText('extra')).toHaveLength(21)
     expect(screen.getByText('9 more lines')).toBeTruthy()
   })
+
+  it('shows the last four output lines until the shell card is opened', () => {
+    const command = 'make lint && cargo fmt --all -- --check && cargo clippy --workspace'
+    const stdout = ['one', 'two', 'three', 'four', 'five', 'six'].join('\n')
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'shell',
+          args: { command },
+          result: { stdout, stderr: '', exit_code: 0, sandboxed: true }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    const summary = screen.getByRole('button', { name: /Run/ })
+    expect(summary.querySelector('[class*="target"]')?.textContent).toBe('make')
+    const panel = screen.getByText(/three/).closest('pre')
+    expect(panel?.textContent).toBe('three\nfour\nfive\nsix')
+    expect(panel?.getAttribute('data-more-above')).toBe('true')
+    expect(panel?.getAttribute('data-more-below')).toBe('false')
+    expect(screen.queryByText('$')).toBeNull()
+    fireEvent.click(summary)
+    const opened = screen.getByText('$').closest('pre')
+    expect(opened?.textContent).toContain(command)
+    expect(opened?.textContent).toContain('one')
+    expect(opened?.textContent).toContain('six')
+  })
+
+  it('opens a shell approval on the full command', () => {
+    const { rerender } = render(
+      <ToolCallCard
+        call={call({
+          name: 'shell',
+          execution_status: 'running',
+          result: undefined,
+          args: { command: 'make lint', unsandboxed: true }
+        })}
+        phase="responding"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.queryByText('$')).toBeNull()
+    rerender(
+      <ToolCallCard
+        call={call({
+          name: 'shell',
+          execution_status: 'not_started',
+          result: undefined,
+          args: { command: 'make lint', unsandboxed: true }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    const card = screen.getByText('$').closest('pre')?.parentElement
+    expect(card?.textContent).toContain('Run unsandboxed')
+    expect(card?.textContent).toContain('Approve')
+    expect(card?.querySelector('[class*="target"]')?.textContent).toBe('make')
+    expect(card?.textContent).toContain('make lint')
+  })
 })

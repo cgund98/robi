@@ -11,6 +11,7 @@ pub mod chat_message;
 pub mod chat_session;
 pub mod error;
 pub mod events;
+pub mod models;
 pub mod settings;
 pub mod state;
 pub mod workspace;
@@ -23,6 +24,7 @@ pub fn router(state: AppState) -> Router {
         .merge(chat_session::router(state.clone()))
         .merge(chat_message::router(state.clone()))
         .merge(settings::router(state.clone()))
+        .merge(models::router(state.clone()))
         .merge(events::router(state))
 }
 
@@ -60,6 +62,7 @@ async fn health_check() -> &'static str {
         chat_message::decide_tool_call,
         settings::get_setting,
         settings::set_setting,
+        models::list_models,
         events::stream_events
     ),
     components(schemas(
@@ -68,13 +71,16 @@ async fn health_check() -> &'static str {
         chat_session::CreateChatSession,
         chat_session::UpdateChatSession,
         chat_session::ChatSession,
+        chat_session::ModelConfigBody,
+        chat_session::ModelConfigPatch,
         chat_message::SubmitInstruction,
         chat_message::DecideToolCall,
         chat_message::AcceptedInstruction,
         chat_message::ChatMessage,
         chat_message::ChatToolCall,
         settings::SetSetting,
-        settings::SettingResponse
+        settings::SettingResponse,
+        models::CatalogModel
     )),
     tags(
         (name = "robi", description = "Robi API")

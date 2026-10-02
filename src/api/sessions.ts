@@ -43,14 +43,21 @@ export async function listSessions(workspaceId: string): Promise<ChatSession[]> 
   )
 }
 
+export type ModelConfigBody = {
+  model?: string | null
+  reasoning_effort?: string | null
+}
+
 export async function createSession(
   workspaceId: string,
-  title?: string | null
+  title?: string | null,
+  modelConfig?: ModelConfigBody
 ): Promise<ChatSession> {
   const result = await api.POST('/api/v1/chat_sessions', {
     body: {
       workspace_id: workspaceId,
-      ...(title === undefined ? {} : { title })
+      ...(title === undefined ? {} : { title }),
+      ...(modelConfig === undefined ? {} : { model_config: modelConfig })
     }
   })
   if (result.data) {
@@ -76,16 +83,23 @@ export async function getSession(id: string): Promise<ChatSession> {
 }
 
 export async function updateSession(id: string, title: string): Promise<ChatSession> {
+  return patchSession(id, { title })
+}
+
+export async function patchSession(
+  id: string,
+  body: { title?: string; model_config?: ModelConfigBody }
+): Promise<ChatSession> {
   const result = await api.PATCH('/api/v1/chat_sessions/{id}', {
     params: { path: { id } },
-    body: { title }
+    body
   })
   if (result.data) {
     return result.data
   }
   throw new ApiError(
     statusOf(result.response as { status: number } | undefined),
-    errorMessage(result.error, 'Failed to rename chat session')
+    errorMessage(result.error, 'Failed to update chat session')
   )
 }
 

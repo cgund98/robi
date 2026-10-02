@@ -18,13 +18,13 @@ use crate::domain::{
 };
 use crate::review::{hunks_for_session, reject, FileStatus};
 
-struct Harness {
-    ctx: Arc<ToolContext>,
-    root: std::path::PathBuf,
-    session_id: SessionId,
+pub(crate) struct Harness {
+    pub(crate) ctx: Arc<ToolContext>,
+    pub(crate) root: std::path::PathBuf,
+    pub(crate) session_id: SessionId,
 }
 
-async fn harness() -> Harness {
+pub(crate) async fn harness() -> Harness {
     let url = format!(
         "sqlite://file:robi-edit-{}?mode=memory&cache=shared",
         Uuid::now_v7().simple()
@@ -47,6 +47,7 @@ async fn harness() -> Harness {
         .create_chat_session(CreateChatSessionCommand {
             workspace_id: opened.workspace.id,
             title: None,
+            model_config: crate::domain::chat_session::model::ModelConfig::default(),
         })
         .await
         .unwrap();

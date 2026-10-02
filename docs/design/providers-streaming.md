@@ -308,49 +308,23 @@ as the settings, because the request body carries the tool definitions and
 `Model::generate` is handed only the transcript. A live test builds the same way and
 reads the key from the environment itself, which keeps this boundary honest.
 
-**Switching models goes through a `ModelRouter`.** It is a `Model` itself, so
-`Agent` keeps holding one `Arc<dyn Model>` and never learns that switching exists.
-It resolves the session's model — session override, then provider default — and
-dispatches:
-
-```rust
-// providers/router.rs (M2)
-pub struct ModelRouter {
-    client: reqwest::Client,          // shared: one connection pool, one TLS setup
-    catalog: Arc<ModelCatalog>,
-    settings: Arc<dyn SessionSettingsSource>, // where a session's choice is stored
-    defaults: ProviderSettings,
-}
-
-#[async_trait]
-impl Model for ModelRouter {
-    async fn generate(&self, session: SessionId, transcript: &[Message],
-                      cancel: CancellationToken) -> Result<ModelStream, ModelError> {
-        let resolved = self.resolve(session).await?;
-        self.model_for(resolved).generate(session, transcript, cancel).await
-    }
-}
-```
-
-Building a model assembles a settings struct, so a switch costs nothing per turn;
-cache the per-session model rather than re-resolving settings on every `generate`.
-Sharing one `reqwest::Client` across every model is what keeps a switch from
-duplicating the connection pool.
+**Switching is resolved when the actor is built, not inside `generate`.**
+`SettingsModelSource` reads the session override, then the settings store, then
+the built-in default, and `build_model` returns one `Arc<dyn Model>`. `Agent`
+keeps holding that model and never learns that switching exists. A turn calls
+`generate` several times, so resolving again on each call would let a mid-turn
+change split one exchange across two models. The next actor, built when the
+session goes idle, reads the choice again. One `reqwest::Client` is still built
+per model; the actor's lifetime is the cache.
 
 **Not** by swapping the `Arc<dyn Model>` on the `Agent`. That produces a global
 switch rather than a per-session one, and it needs `&mut self` or interior
 mutability on an agent that several calls already drive concurrently.
 
-**Deferred to M2:** the router, and the picker that writes a session's choice.
-M1 has no UI and one provider, so `Arc<dyn OpenAiCompatibleModel>` already behaves
-as a router with a single entry; wiring it is `Agent::new(Arc::new(router))`. D4's
-signature change is what makes the router writable at all: it receives the
-`SessionId` it needs to pick a model, so it waits on the UI, not on a missing input.
-
-**Deferred to M2:** the switch taking effect at a turn boundary. A turn calls
-`generate` several times in the tool loop, so a change landing mid-turn would run
-half an exchange on one model. The UI knows the boundaries from `TurnStarted` and
-`TurnFinished`, so the composer gates the picker and no trait change is needed.
+**Not** by a `ModelRouter` that dispatches inside `generate`. The actor is
+already rebuilt per execution, which is the turn boundary. The picker writes
+`model_config` on the session; see [persistence.md](persistence.md) and
+[chat-runtime.md](chat-runtime.md).
 
 ### D9 — The catalog is vendored, tool-capable models only, and owns the window
 
@@ -383,8 +357,7 @@ crates/robi-core/src/message.rs   # + ToolCall.provider_call_id (D3)
 crates/robi/src/providers/
   mod.rs          # re-exports, ProviderId, ModelId
   config.rs       # ProviderSettings, redacting ApiKey
-  factory.rs      # build_model(settings); M2 fills where a settings object comes from
-  router.rs       # (M2) maps a session to its configured model, for switching (D8)
+  factory.rs      # build_model(settings). The session choice is resolved earlier, in adapters::model_source (D8)
   error.rs        # ProviderError, and its mapping into ModelError
   retry.rs        # RetryPolicy, backoff, classify
   catalog/        # mod.rs, opencode_go.rs — vendored, generated
@@ -642,8 +615,9 @@ Recorded rather than papered over:
 - **The catalog's figures are not verified against the endpoint.** A window that is
   larger than the provider enforces means a context meter that under-reports.
 - **The system prompt is invisible to a session record** (D2).
-- **Per-session model selection has no implementation** (D8); the `ModelRouter`
-  arrives with M2, and so does the rule for the turn boundary it applies at.
+- **A model switch applies to the next actor** (D8). The one already running
+  keeps the model it was built with, including an interrupt that only replaces
+  the pending instruction.
 - **A tool-call id can outlive the model that issued it.** `provider_call_id` is
   recorded from whichever model answered, so after a switch a stored id was issued
   by a different model. A stateless endpoint only needs internal consistency, so
@@ -679,8 +653,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Next, in order: run one real turn against OpenCode Go with the entrypoint below,
-then F1.4's selection (which needs the `ModelRouter` from D8), then Anthropic's own
-wire format under F1.1.
+then Anthropic's own wire format under F1.1. F1.4's selection is the actor-start
+chain in D8.
 
 ## Trying it by hand
 

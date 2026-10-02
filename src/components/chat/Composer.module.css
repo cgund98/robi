@@ -114,12 +114,16 @@
 }
 
 .control {
+  display: inline-flex;
+  align-items: center;
+  max-width: 12rem;
   border: 0;
   background: transparent;
   color: var(--ink-muted);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   font-size: 13px;
+  cursor: pointer;
 }
 
 .control:hover {

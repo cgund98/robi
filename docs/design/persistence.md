@@ -78,7 +78,8 @@ and no `user_id`.
 
 Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
 chat sessions, and chat messages. `0002_session_file_baselines.sql` creates the
-baseline table. The four path-rule columns default to `[]`.
+baseline table. `0003_session_model_config.sql` adds the session model override.
+The four path-rule columns default to `[]`.
 They store session additions. The built-in secret and `.git` patterns are
 applied in code and are not written on the row.
 
@@ -104,8 +105,9 @@ Index: `(created_at DESC, id DESC)`.
 | `path_allow_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that write through a deny |
 | `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
 | `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
+| `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `model` and `reasoning_effort`. An absent key inherits the setting, then the built-in default |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
-| `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change or a path-rule edit |
+| `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, or a model-config edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
 
 Index: `(workspace_id, last_used_at DESC, id DESC)`.
@@ -155,23 +157,27 @@ Base path `/api/v1`. One error body, `{ "error": "..." }`.
 | `POST` | `/workspaces` | `201` when the root is new, `200` when that canonical directory is already stored | `400` if `root` is empty, missing, or not a directory |
 | `GET` | `/workspaces/{id}` | `200` workspace | `404` if missing, `400` if `id` is not a UUID |
 | `DELETE` | `/workspaces/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. Sessions and their messages go with it |
-| `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID or `title` is longer than 200 characters, `404` if that workspace does not exist |
+| `GET` | `/models` | `200` catalog | The tool-capable models, each `{ "id", "display_name" }` |
+| `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID, `title` is longer than 200 characters, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high`. `404` if that workspace does not exist |
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
-| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, or a path pattern is not a regex |
+| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
 | `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID |
 
 `POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
 so a symlink and its target are one workspace. `name` is the last path
 component. `GET /workspaces` orders by `created_at DESC, id DESC`.
 
-`POST` body for a chat session is `{ "workspace_id", "title"? }`. Omitted, null, and `""` are stored
+`POST` body for a chat session is `{ "workspace_id", "title"?, "model_config"? }`. Omitted, null, and `""` are stored
 as null. After a turn completes, the model writes a title when the column is
 still null. A title passed on create is kept, and the model does not replace
 it. That call is specified in [chat-runtime.md](chat-runtime.md).
-`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"? }`.
+`model_config` is `{ "model"?, "reasoning_effort"? }`. Omitted stores `{}`.
+`model` must be a catalog id. `reasoning_effort` is `low`, `medium`, or `high`.
+`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"?, "model_config"? }`.
 Each field is optional. An omitted field stays as stored. A present path list
-replaces that list. `updated_at` moves when any field is present.
+replaces that list. Inside `model_config`, an omitted key stays, a string sets
+that override, and `null` clears it. `updated_at` moves when any field is present.
 `last_used_at` and `workspace_id` stay put. An empty body returns the session
 unchanged. A body Axum cannot deserialize is rejected by Axum (422), which is
 separate from a title or a pattern the service refuses. The lists and how

@@ -1,7 +1,15 @@
 import { useState } from 'react'
 
+import type { CatalogModel } from '../../api/models'
 import type { AgentPhase } from '../../state/chatStore'
+import { ChoiceMenu } from './ChoiceMenu'
 import styles from './Composer.module.css'
+
+const EFFORTS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' }
+]
 
 type ComposerProps = {
   disabled: boolean
@@ -9,6 +17,25 @@ type ComposerProps = {
   onSubmit: (text: string) => Promise<boolean>
   /** Centered card on an empty chat. Dock keeps the field at the bottom of a thread. */
   placement?: 'dock' | 'welcome'
+  models: CatalogModel[]
+  /** Session override. Null inherits the settings default. */
+  modelId: string | null
+  effort: string | null
+  defaultModelId: string
+  defaultEffort: string | null
+  onModelChange: (model: string | null) => void
+  onEffortChange: (effort: string | null) => void
+}
+
+function modelLabel(models: CatalogModel[], id: string | null, fallback: string): string {
+  if (!id) {
+    return fallback
+  }
+  return models.find((model) => model.id === id)?.displayName ?? id
+}
+
+function effortLabel(value: string | null): string {
+  return EFFORTS.find((effort) => effort.value === value)?.label ?? 'Default'
 }
 
 function statusLabel(phase: AgentPhase): string {
@@ -21,7 +48,19 @@ function statusLabel(phase: AgentPhase): string {
   return 'Idle'
 }
 
-export function Composer({ disabled, phase, onSubmit, placement = 'dock' }: ComposerProps) {
+export function Composer({
+  disabled,
+  phase,
+  onSubmit,
+  placement = 'dock',
+  models,
+  modelId,
+  effort,
+  defaultModelId,
+  defaultEffort,
+  onModelChange,
+  onEffortChange
+}: ComposerProps) {
   const [draft, setDraft] = useState('')
   const label = statusLabel(phase)
   const canSend = !disabled && draft.trim().length > 0
@@ -37,14 +76,31 @@ export function Composer({ disabled, phase, onSubmit, placement = 'dock' }: Comp
     }
   }
 
+  const resolvedModel = modelId ?? defaultModelId
+  const resolvedEffort = effort ?? defaultEffort
+  const modelOptions = models.map((model) => ({ value: model.id, label: model.displayName }))
+  if (resolvedModel && !modelOptions.some((option) => option.value === resolvedModel)) {
+    modelOptions.unshift({ value: resolvedModel, label: resolvedModel })
+  }
+
   const controls = (
     <div className={styles.cluster}>
-      <button type="button" className={styles.control}>
-        Model ▾
-      </button>
-      <button type="button" className={styles.control}>
-        Extra high ▾
-      </button>
+      <ChoiceMenu
+        label={modelLabel(models, resolvedModel, 'Model')}
+        ariaLabel="Model"
+        value={modelId ?? ''}
+        options={modelOptions}
+        onSelect={onModelChange}
+        triggerClassName={styles.control}
+      />
+      <ChoiceMenu
+        label={effortLabel(resolvedEffort)}
+        ariaLabel="Reasoning effort"
+        value={effort ?? ''}
+        options={EFFORTS}
+        onSelect={onEffortChange}
+        triggerClassName={styles.control}
+      />
       <span
         className={`${styles.status} ${phase === 'idle' ? '' : styles.statusBusy}`}
         title={label}

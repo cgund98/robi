@@ -384,7 +384,9 @@ that a trait is only "fixed" once a real implementation has exercised it.
 - Port gopi's model catalog of context windows. They are not decoration: M3's
   context meter depends on them. The table is vendored, not fetched, so startup
   does not need the network — and it lists only tool-capable models, because a
-  model that cannot call tools cannot drive the loop (D9). Prices are deferred
+  model that cannot call tools cannot drive the loop. That catalog rule is the
+  local "D9" in [providers-streaming.md](design/providers-streaming.md), not the
+  sandbox [D9](#d9). Prices are deferred
   until something displays them.
 - **Settled** — one HTTP client with per-provider request and response mapping,
   not a typed SDK per provider, because the delta mapping and tool-call assembly
@@ -429,12 +431,10 @@ that a trait is only "fixed" once a real implementation has exercised it.
 - Per-session model and reasoning effort, with provider-level defaults.
 - Switching model mid-session is allowed; the transcript is provider-agnostic.
 - The active model is visible where the user types, not buried in settings.
-- **Switching goes through a `ModelRouter`** in `crates/robi::providers`, which is
-  itself a `Model` that resolves a session's model and dispatches. `Agent` keeps
-  holding one `Arc<dyn Model>` and never learns that switching exists. The concrete
-  design is under **D8** in
+- **The choice is resolved when a session actor is built.** Session override,
+  then the settings default, then the built-in model. `Agent` keeps holding one
+  `Arc<dyn Model>` for that execution. The concrete design is under **D8** in
   [design/providers-streaming.md](design/providers-streaming.md).
-  It arrives with M2, since M1 ships one provider and no UI.
 
 **Exit criteria for M1** — the M0 loop, with only the three core changes listed
 above, driving a real provider: streaming tokens and partial tool arguments,
@@ -451,8 +451,9 @@ Two things remain before M1 is done:
 - **No live turn has been run.** Every test uses a scripted loopback server, so
   the vendor's exact framing is still an assumption. The example is how to check
   it; run it once with a real key.
-- **F1.4 is not started.** One provider is wired and no UI selects a model, so
-  per-session model and effort selection arrive with M2.
+- **F1.4 is in the chat shell.** Settings hold the default model and effort.
+  A session stores an override, and the next actor reads it. See
+  [persistence.md](design/persistence.md) and [chat-ui.md](design/chat-ui.md).
 
 Running the example by hand already paid for itself: it exposed a core bug where
 `pending_tool_calls` offered an already-executed call for approval, because it
@@ -625,23 +626,20 @@ milestone.
 ### F4.4 Sandboxed shell tool
 
 - The one tool with unbounded blast radius, and the only tool that runs inside an
-  OS sandbox. gopi's model is the reference: deny by default, scrubbed
-  environment, allowlisted network, audit log, and workspace-rooted cwd.
-- **The sandbox is a requirement, not an option.** A shell that runs a model's
-  command unsandboxed on a developer's machine is a different product, so this
-  tool does not ship on a platform with no sandbox; it reports that platform as
-  unsupported. What D9 decides is the *mechanism* per platform and *how the tool
-  degrades* where there is none — not whether to sandbox at all.
-- The sandbox bounds the process; it does not replace approval. F3.3's three gates
-  compose: a command still needs a decision, still clears the policy floor, and
-  still runs under the sandbox.
+  OS sandbox. Settled in [D9](#d9) and [shell-tool.md](design/shell-tool.md):
+  deny by default, a constructed `PATH`, scrubbed environment, workspace-rooted
+  cwd, and `unsandboxed: true` only after approval.
+- **The sandbox is a requirement, not an option.** A sandboxed call is refused
+  where no mechanism exists. An approved `unsandboxed: true` call is the only
+  way that command still runs. macOS uses Seatbelt. Linux uses bubblewrap.
+  Windows has no sandbox in this design.
+- The sandbox bounds the process; it does not replace approval. A command that
+  leaves the default profile still needs a decision, still clears the policy
+  floor, and still runs under the sandbox unless the user approved
+  `unsandboxed`.
 - Output is a bounded artifact, not a stream into the transcript: a build can
   produce megabytes, so the tool reports a truncation like every other tool
   (`LoopConfig::max_tool_result_bytes`) rather than appending all of it.
-- **Open decision** — (D9) the mechanism per platform. Seatbelt on macOS;
-  bubblewrap plus landlock on Linux; AppContainer on Windows, or an explicit
-  "unsupported" if that proves too costly to build. Settle it before F4.4, not
-  during.
 
 **Design docs needed for** F4.1, F4.2, and F4.4.
 See `docs/design/editing-tools.md`, `docs/design/checkpoints.md`, and
@@ -940,7 +938,7 @@ resolve them.
 | D6 | Embeddings: local vs. hosted | F7.2 | Product decision about code leaving the machine |
 | D7 | Vector store | F7.2 | `sqlite-vec`, LanceDB, or Qdrant |
 | D8 | LSP client approach | F7.1 | Hand-rolled with `lsp-types` vs. an off-the-shelf client |
-| D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Seatbelt has no direct Windows analogue. The sandbox itself is required; only the mechanism and the degrade path are open |
+| D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Settled: Seatbelt on macOS, bubblewrap on Linux, no Windows sandbox. A sandboxed call is refused when the mechanism is missing. `unsandboxed: true` runs only after approval. See below and `docs/design/shell-tool.md`. The catalog "D9" in `providers-streaming.md` is a different decision |
 | D10 | MCP in v1 or later | M8 | Affects the tool registry's dynamism from M0 |
 | D11 | Learned text compression vs. structural compressors only | M9 | A local model is a heavy optional dependency. The first cut is deterministic compressors for JSON, logs, and search hits |
 | D12 | Where a compressed result and its original live | M9 | The model reads the compressed form; retrieval has to survive restart without rewriting earlier turns |
@@ -967,6 +965,23 @@ were rejected for the same reason. A write must not succeed when `old` is not
 the bytes in the file. `replace_all` is the explicit opt-in when every match
 should change.
 
+<a id="d9"></a>
+
+### D9: Sandbox mechanism per platform
+
+Settled. A `shell` command starts inside an OS sandbox. macOS uses Seatbelt
+through `/usr/bin/sandbox-exec`. Linux uses bubblewrap, and Landlock is not a
+second layer. Windows has no sandbox in this design. When the mechanism is
+missing or cannot be applied, the sandboxed call is refused and does not run
+outside the profile. `unsandboxed: true` is a separate call, and it runs only
+after the user approves that call.
+
+The profile, the constructed `PATH`, the floor, and the approval rules are in
+[shell-tool.md](design/shell-tool.md).
+
+[providers-streaming.md](design/providers-streaming.md) uses its own "D9"
+heading for the vendored model catalog. That decision is not this one.
+
 ---
 
 ## Breakout design docs
@@ -990,7 +1005,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
 | `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | done |
 | `docs/design/checkpoints.md` | Edit journal, undo, relation to git | M4 | done |
-| `docs/design/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, audit log, output limits | M4 | needed |
+| `docs/design/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, output limits | M4 | done |
 | `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | needed |
 | `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | needed |
 | `docs/design/code-review.md` | Diff engine, review object, inline comments, apply path | M6 | later |
@@ -1015,12 +1030,12 @@ What to take, what to leave. Names refer to `../gopi`.
 | `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt`, `crates/robi::prompt` | Rendering and the byte cap are in core. File sources are in `crates/robi`. Mode prefixes and the skill catalog stay later |
 | `internal/tools/` (13 tools) | `crates/robi::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
 | `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::adapters` | Port the glob floor and redaction; replace the secrets file with a keychain |
-| `internal/sandbox/` | `crates/robi::tools::shell` | macOS-only in gopi, and the only part gopi never generalizes. Port the policy, not the profile. See D9 |
+| `internal/sandbox/` | `crates/robi::sandbox`, `crates/robi::tools::shell` | Port the deny-default policy. The profile is Seatbelt on macOS and bubblewrap on Linux. See [D9](#d9) |
 | `internal/session/` | `crates/robi::domain::chat_session`, `crates/robi::adapters` | Port the shape, drop the 50-session cap |
 | `internal/review/` | `crates/robi::review` | Port the diff; the review object is new |
 | `internal/app/` mode wiring | `robi-core::mode` | Port the registry-per-mode idea; drop the TUI coupling |
 | `internal/tui/` | `src/` (React) | Behavior only: what a tool card shows, when approval pauses |
-| `internal/models/` catalog | `crates/robi::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all (D9) |
+| `internal/models/` catalog | `crates/robi::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all. That catalog rule is the local "D9" in `providers-streaming.md`, not the sandbox D9 |
 | `docs/` (mdbook, 30 pages) | `docs/` | Adopt the taxonomy: **guides teach, concepts explain, reference states facts.** One job per page |
 | — | new | Streaming, cancellation API, checkpoints, LSP, index, tool-output compression |
 

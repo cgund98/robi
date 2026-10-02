@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::{
     domain::{
         chat_session::model::{
-            ChatSession as DomainChatSession, CreateChatSessionCommand, UpdateChatSessionCommand,
+            ChatSession as DomainChatSession, CreateChatSessionCommand, ModelConfig,
+            ModelConfigUpdate, UpdateChatSessionCommand,
         },
         error::ServiceError,
     },
@@ -55,6 +56,10 @@ pub async fn create_chat_session(
         .create_chat_session(CreateChatSessionCommand {
             workspace_id,
             title: payload.title,
+            model_config: payload
+                .model_config
+                .map(ModelConfig::from)
+                .unwrap_or_default(),
         })
         .await?;
     let running = running_sessions(&state).await;
@@ -136,6 +141,7 @@ pub async fn update_chat_session(
             allow_write: payload.path_allow_write,
             deny_read: payload.path_deny_read,
             deny_write: payload.path_deny_write,
+            model_config: payload.model_config.map(ModelConfigUpdate::from),
         })
         .await?;
     let running = running_sessions(&state).await;
@@ -180,6 +186,7 @@ fn to_response(session: DomainChatSession, running: &HashSet<SessionId>) -> Chat
         path_allow_write: session.path_rules.allow_write,
         path_deny_read: session.path_rules.deny_read,
         path_deny_write: session.path_rules.deny_write,
+        model_config: ModelConfigBody::from(session.model_config),
         created_at: rfc3339(session.created_at),
         updated_at: rfc3339(session.updated_at),
         last_used_at: rfc3339(session.last_used_at),
@@ -207,6 +214,36 @@ pub struct CreateChatSession {
     /// is rejected.
     #[serde(default)]
     pub title: Option<String>,
+    /// Session overrides. Omitted keys inherit the settings default.
+    #[serde(default)]
+    pub model_config: Option<ModelConfigBody>,
+}
+
+/// Stored session override. Absent keys inherit the settings default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModelConfigBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+impl From<ModelConfig> for ModelConfigBody {
+    fn from(config: ModelConfig) -> Self {
+        Self {
+            model: config.model,
+            reasoning_effort: config.reasoning_effort,
+        }
+    }
+}
+
+impl From<ModelConfigBody> for ModelConfig {
+    fn from(body: ModelConfigBody) -> Self {
+        Self {
+            model: body.model,
+            reasoning_effort: body.reasoning_effort,
+        }
+    }
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -226,6 +263,40 @@ pub struct UpdateChatSession {
     /// Regexes matched against the workspace-relative path. A match denies a write.
     #[serde(default)]
     pub path_deny_write: Option<Vec<String>>,
+    /// Merge into the stored override. A null key clears that override. An omitted key stays.
+    #[serde(default)]
+    pub model_config: Option<ModelConfigPatch>,
+}
+
+/// One key of a session model override.
+///
+/// `None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ModelConfigPatch {
+    /// Catalog model id. Null clears the session override.
+    #[serde(default, deserialize_with = "some_or_absent")]
+    pub model: Option<Option<String>>,
+    /// `low`, `medium`, or `high`. Null clears the session override.
+    #[serde(default, deserialize_with = "some_or_absent")]
+    pub reasoning_effort: Option<Option<String>>,
+}
+
+/// `None` when the key is absent. `Some(None)` when the key is null.
+fn some_or_absent<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl From<ModelConfigPatch> for ModelConfigUpdate {
+    fn from(patch: ModelConfigPatch) -> Self {
+        Self {
+            model: patch.model,
+            reasoning_effort: patch.reasoning_effort,
+        }
+    }
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -245,6 +316,7 @@ pub struct ChatSession {
     pub path_allow_write: Vec<String>,
     pub path_deny_read: Vec<String>,
     pub path_deny_write: Vec<String>,
+    pub model_config: ModelConfigBody,
     pub created_at: String,
     pub updated_at: String,
     pub last_used_at: String,
@@ -254,4 +326,21 @@ pub struct ChatSession {
 
 fn rfc3339(timestamp: DateTime<Utc>) -> String {
     timestamp.to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelConfigPatch;
+
+    #[test]
+    fn a_null_key_clears_and_an_omitted_key_stays() {
+        let cleared: ModelConfigPatch =
+            serde_json::from_str(r#"{"reasoning_effort":null}"#).unwrap();
+        assert_eq!(cleared.model, None);
+        assert_eq!(cleared.reasoning_effort, Some(None));
+
+        let set: ModelConfigPatch = serde_json::from_str(r#"{"model":"glm-5.2"}"#).unwrap();
+        assert_eq!(set.model, Some(Some("glm-5.2".into())));
+        assert_eq!(set.reasoning_effort, None);
+    }
 }

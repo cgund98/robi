@@ -9,6 +9,8 @@ type SidebarProps = {
   activeSessionId: string
   draftSelected?: boolean
   disabled?: boolean
+  /** Sessions whose agent is still running. */
+  runningSessionIds?: ReadonlySet<string>
   onSelectSession: (id: string) => void
   onNewSession: () => void
   onRenameSession: (id: string) => void
@@ -20,6 +22,7 @@ export function Sidebar({
   activeSessionId,
   draftSelected = false,
   disabled = false,
+  runningSessionIds,
   onSelectSession,
   onNewSession,
   onRenameSession,
@@ -30,8 +33,6 @@ export function Sidebar({
   return (
     <aside className={styles.sidebar}>
       <WorkspaceSwitcher />
-
-
 
       <button
         type="button"
@@ -90,16 +91,19 @@ export function Sidebar({
           {sessions.map((session) => {
             const active = session.id === activeSessionId
             const title = sessionDisplayTitle(session)
+            const running = runningSessionIds?.has(session.id) ?? false
             return (
               <li key={session.id} className={styles.sessionRow}>
                 <button
                   type="button"
                   className={`${styles.sessionButton} ${active ? styles.sessionButtonActive : ''}`}
                   onClick={() => onSelectSession(session.id)}
-                  title={title}
+                  title={running ? `${title} (running)` : title}
+                  aria-label={running ? `${title}, agent running` : undefined}
                   disabled={disabled}
                 >
-                  {title}
+                  {running ? <span className={styles.spinner} aria-hidden /> : null}
+                  <span className={styles.sessionTitle}>{title}</span>
                 </button>
                 <div className={styles.sessionActions}>
                   <button

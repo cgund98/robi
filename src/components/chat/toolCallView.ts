@@ -28,6 +28,11 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
       return { verb: 'Edit', target: path || 'file' }
     case 'delete_file':
       return { verb: 'Delete', target: path || 'file' }
+    case 'shell':
+      return {
+        verb: args?.unsandboxed === true ? 'Run unsandboxed' : 'Run',
+        target: shellProgram(stringField(args, 'command'))
+      }
     default:
       return { verb: call.name, target: path || pattern }
   }
@@ -271,9 +276,18 @@ function numberField(value: Record<string, unknown> | null, key: string): number
 export type ToolDetail =
   | { kind: 'code'; startLine: number; lines: string[] }
   | { kind: 'lines'; lines: string[] }
+  | { kind: 'shell'; command: string; output: string }
   | { kind: 'error'; text: string }
 
 export function toolDetail(call: ChatToolCall): ToolDetail | null {
+  if (call.name === 'shell') {
+    const command = stringField(record(call.args), 'command')
+    const result = record(call.result)
+    const stdout = typeof result?.stdout === 'string' ? result.stdout : ''
+    const stderr = typeof result?.stderr === 'string' ? result.stderr : ''
+    const output = [stdout, stderr, call.error ?? ''].filter((text) => text.length > 0).join('\n')
+    return { kind: 'shell', command, output }
+  }
   if (call.error) {
     return { kind: 'error', text: call.error }
   }
@@ -330,6 +344,12 @@ function record(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>
   }
   return null
+}
+
+function shellProgram(command: string): string {
+  const token = command.trim().split(/\s+/)[0] ?? ''
+  const name = token.split('/').pop() ?? ''
+  return name || 'command'
 }
 
 function stringField(value: Record<string, unknown> | null, key: string): string {

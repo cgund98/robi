@@ -74,6 +74,33 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
         .map_err(|err| format!("invalid path pattern `{pattern}`: {err}"))
 }
 
+/// Per-session model and effort.
+///
+/// An absent key inherits the settings value, then the built-in default.
+/// `{}` means both keys inherit.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// Merge into a stored [`ModelConfig`].
+///
+/// `None` leaves that key. `Some(None)` clears it. `Some(Some)` sets it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelConfigUpdate {
+    pub model: Option<Option<String>>,
+    pub reasoning_effort: Option<Option<String>>,
+}
+
+impl ModelConfigUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.reasoning_effort.is_none()
+    }
+}
+
 /// One conversation in one workspace.
 ///
 /// `title` stays unset until something writes one. The model does that after
@@ -84,6 +111,7 @@ pub struct ChatSession {
     pub workspace_id: WorkspaceId,
     pub title: Option<String>,
     pub path_rules: PathRules,
+    pub model_config: ModelConfig,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
@@ -97,9 +125,10 @@ pub struct ChatSession {
 pub struct CreateChatSessionCommand {
     pub workspace_id: WorkspaceId,
     pub title: Option<String>,
+    pub model_config: ModelConfig,
 }
 
-/// Change a chat session's title or path rules. The workspace stays put.
+/// Change a chat session's title, path rules, or model config. The workspace stays put.
 ///
 /// A `None` field is left as stored. `updated_at` moves only when a field is
 /// present. `last_used_at` does not move.
@@ -111,6 +140,7 @@ pub struct UpdateChatSessionCommand {
     pub allow_write: Option<Vec<String>>,
     pub deny_read: Option<Vec<String>>,
     pub deny_write: Option<Vec<String>>,
+    pub model_config: Option<ModelConfigUpdate>,
 }
 
 impl UpdateChatSessionCommand {
@@ -122,6 +152,7 @@ impl UpdateChatSessionCommand {
             allow_write: None,
             deny_read: None,
             deny_write: None,
+            model_config: None,
         }
     }
 
@@ -131,6 +162,10 @@ impl UpdateChatSessionCommand {
             && self.allow_write.is_none()
             && self.deny_read.is_none()
             && self.deny_write.is_none()
+            && self
+                .model_config
+                .as_ref()
+                .is_none_or(ModelConfigUpdate::is_empty)
     }
 
     /// Validate the patterns this command would write.
@@ -171,6 +206,14 @@ pub fn apply_session_update(session: &mut ChatSession, command: &UpdateChatSessi
     }
     if let Some(patterns) = &command.deny_write {
         session.path_rules.deny_write.clone_from(patterns);
+    }
+    if let Some(update) = &command.model_config {
+        if let Some(model) = &update.model {
+            session.model_config.model.clone_from(model);
+        }
+        if let Some(effort) = &update.reasoning_effort {
+            session.model_config.reasoning_effort.clone_from(effort);
+        }
     }
     true
 }

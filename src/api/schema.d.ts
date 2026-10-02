@@ -116,6 +116,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/{key}": {
         parameters: {
             query?: never;
@@ -171,6 +187,10 @@ export interface components {
         AcceptedInstruction: {
             status: string;
         };
+        CatalogModel: {
+            display_name: string;
+            id: string;
+        };
         ChatMessage: {
             content: string;
             id: string;
@@ -184,6 +204,7 @@ export interface components {
             has_pending_agent: boolean;
             id: string;
             last_used_at: string;
+            model_config: components["schemas"]["ModelConfigBody"];
             path_allow_read: string[];
             path_allow_write: string[];
             path_deny_read: string[];
@@ -206,6 +227,7 @@ export interface components {
             result?: unknown;
         };
         CreateChatSession: {
+            model_config?: null | components["schemas"]["ModelConfigBody"];
             /**
              * @description Omitted, null, or empty leaves the chat session unnamed. The model writes a
              *     title after the first turn. Longer than
@@ -225,6 +247,22 @@ export interface components {
             /** @description Shown to the model when `decision` is `reject`. Omitted uses a default. */
             reason?: string | null;
         };
+        /** @description Stored session override. Absent keys inherit the settings default. */
+        ModelConfigBody: {
+            model?: string | null;
+            reasoning_effort?: string | null;
+        };
+        /**
+         * @description One key of a session model override.
+         *
+         *     `None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.
+         */
+        ModelConfigPatch: {
+            /** @description Catalog model id. Null clears the session override. */
+            model?: string | null;
+            /** @description `low`, `medium`, or `high`. Null clears the session override. */
+            reasoning_effort?: string | null;
+        };
         SetSetting: {
             /**
              * @description When true, the value is written to the secrets file and later reads
@@ -243,6 +281,7 @@ export interface components {
             instruction: string;
         };
         UpdateChatSession: {
+            model_config?: null | components["schemas"]["ModelConfigPatch"];
             /** @description Extra read-allow regexes, appended after the built-in list. The furthest match wins; at the same end byte, more literals win. */
             path_allow_read?: string[] | null;
             /** @description Regexes. Ranked the same way as read allows. A parent match does not outrank a more specific write deny. */
@@ -559,6 +598,26 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+        };
+    };
+    list_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tool-capable models the provider can drive */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogModel"][];
                 };
             };
         };

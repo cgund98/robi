@@ -27,7 +27,7 @@ export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps)
   const decision = needsDecision(call, phase)
   const preview = editPreview(call)
   const detail = toolDetail(call)
-  const expandable = (preview != null || hasDetail(call)) && !decision
+  const expandable = (preview != null || hasDetail(call) || detail?.kind === 'shell') && !decision
   const [open, setOpen] = useState(false)
 
   if (decision) {
@@ -35,6 +35,17 @@ export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps)
     const actions = <ApprovalActions busy={busy} onDecide={onDecide} />
     if (suggestion) {
       return <EditDiff preview={suggestion} actions={actions} />
+    }
+    if (detail?.kind === 'shell') {
+      return (
+        <ShellCard
+          summary={summary}
+          command={detail.command}
+          output={detail.output}
+          actions={actions}
+          defaultOpen
+        />
+      )
     }
     return (
       <div className={styles.approval}>
@@ -51,6 +62,17 @@ export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps)
 
   if (preview && status !== 'failed') {
     return <EditDiff preview={preview} />
+  }
+
+  if (detail?.kind === 'shell') {
+    return (
+      <ShellCard
+        summary={summary}
+        command={detail.command}
+        output={detail.output}
+        status={<StatusMark status={status} />}
+      />
+    )
   }
 
   return (
@@ -102,6 +124,27 @@ function StatusMark({ status }: { status: 'running' | 'failed' | null }) {
 }
 
 function ToolIcon({ name }: { name: string }) {
+  if (name === 'shell') {
+    return (
+      <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
+        <path
+          d="M3 4.5 6.8 8 3 11.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M8.5 12.5h5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    )
+  }
   if (name === 'grep' || name === 'find') {
     return (
       <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
@@ -208,7 +251,90 @@ function DiffView({ lines, hidden }: { lines: DiffLine[]; hidden: number }) {
   )
 }
 
-function Detail({ detail }: { detail: NonNullable<ReturnType<typeof toolDetail>> }) {
+function ShellCard({
+  summary,
+  command,
+  output,
+  actions,
+  status,
+  defaultOpen = false
+}: {
+  summary: { verb: string; target: string }
+  command: string
+  output: string
+  actions?: ReactNode
+  status?: ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const [openedForApproval, setOpenedForApproval] = useState(defaultOpen)
+  if (defaultOpen && !openedForApproval) {
+    setOpenedForApproval(true)
+    setOpen(true)
+  }
+  const preview = outputPreview(output, 4)
+  return (
+    <div className={styles.shell}>
+      <div className={styles.editHead}>
+        <button
+          type="button"
+          className={styles.editRow}
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <ToolIcon name="shell" />
+          <span className={styles.verb}>{summary.verb}</span>
+          {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+          {status}
+        </button>
+        {actions}
+      </div>
+      {open ? <ShellBody command={command} output={output} /> : null}
+      {!open && preview.text ? (
+        <pre
+          className={`${styles.shellBody} ${styles.shellPreview}`}
+          data-more-above={preview.moreAbove}
+          data-more-below={preview.moreBelow}
+        >
+          {preview.text}
+        </pre>
+      ) : null}
+    </div>
+  )
+}
+
+function outputPreview(
+  output: string,
+  count: number
+): { text: string; moreAbove: boolean; moreBelow: boolean } {
+  const lines = output.split('\n')
+  if (lines.at(-1) === '') {
+    lines.pop()
+  }
+  const start = Math.max(0, lines.length - count)
+  return {
+    text: lines.slice(start).join('\n'),
+    moreAbove: start > 0,
+    moreBelow: false
+  }
+}
+
+function ShellBody({ command, output }: { command: string; output: string }) {
+  return (
+    <pre className={styles.shellBody}>
+      <span className={styles.shellCommand}>
+        <span className={styles.prompt}>$</span> {command}
+      </span>
+      {output}
+    </pre>
+  )
+}
+
+function Detail({
+  detail
+}: {
+  detail: Exclude<NonNullable<ReturnType<typeof toolDetail>>, { kind: 'shell' }>
+}) {
   if (detail.kind === 'error') {
     return <pre className={styles.error}>{detail.text}</pre>
   }

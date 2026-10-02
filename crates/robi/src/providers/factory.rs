@@ -20,10 +20,8 @@ use super::openai::OpenAiCompatibleModel;
 /// Refuses a model the catalog does not list, and one that cannot call tools, so a
 /// misconfiguration fails here with the model's name rather than on the first turn.
 ///
-/// **Switching models.** A later milestone adds a `ModelRouter` here: a `Model`
-/// itself that resolves a session's configured model and dispatches, so `Agent`
-/// keeps holding one `Arc<dyn Model>`. `Model::generate` already receives the
-/// `SessionId` that router needs, so the router is additive — see D8 in
+/// **Switching models.** The session actor resolves the choice before it calls
+/// this, and keeps the model for that execution. See D8 in
 /// `docs/design/providers-streaming.md`.
 pub fn build_model(
     settings: ProviderSettings,

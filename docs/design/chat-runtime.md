@@ -46,7 +46,10 @@ same time. They share the factory, not an agent.
 The process stores an `AgentFactory`: the message store, the event sink, a
 `ModelSource`, the tool registry, and `LoopConfig`. Building the actor calls
 `Agent::new` from those pieces. The source is read when the actor starts, so
-the agent receives the settings that are current then. The agent is moved into
+the agent receives the model and effort that are current then. Each field
+resolves on its own: the session `model_config` key, then the settings value
+(`model`, `reasoning_effort`), then the built-in default (`glm-5.3`, and no
+effort). The agent is moved into
 the actor task and dropped when the actor goes idle. The next instruction for
 that session builds another actor and another agent from the same factory. One
 agent serves every instruction that actor drains before it goes idle.
@@ -236,11 +239,13 @@ rename return the same field from the same snapshot.
 | `sessions` | `Option<Arc<ChatSessionService>>`. The title task reads and writes the row. Absent in tests that do not name sessions |
 | `fanout` | `Option<Arc<EventFanOut>>`. Publishes `session_updated` after a title is stored |
 
-`submit` builds the session tool registry, then asks `models` for a model
-with that registry, before it marks the session running. `build` receives
-both. A missing session, a missing key, or a bad effort returns the error
+`submit` builds the session tool registry and reads that session's
+`model_config`, then asks `models` for a model with that registry and that
+choice, before it marks the session running. `build` receives both. A missing
+session, a missing key, an unknown model, or a bad effort returns the error
 and leaves the slot idle. An actor that is already running keeps its model
-and its tools; the instruction replaces the pending one. Path rules are
+and its tools; the instruction replaces the pending one. A choice changed
+while it runs applies to the next actor. Path rules are
 reloaded on each tool call, so a `PATCH` applies to the next call without
 starting a new actor.
 
