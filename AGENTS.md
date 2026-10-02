@@ -39,13 +39,20 @@ Add the directory when its milestone starts, not before.
 | Module | Milestone | Role |
 |--------|-----------|------|
 | `providers/` | M1 | Model clients, streaming, retries |
-| `store/` | M2 | Session persistence and settings |
+| `domain/` | M2 | Chat session models, repository traits, and services. No I/O |
+| `adapters/` | M2 | SQLite behind those traits. Settings and the keychain land here later |
+| `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI. The `robi-api` binary wires them |
 | `tools/` | M3 | Built-in tools |
 | `workspace/` | M3 | Root resolution, path confinement, policy |
 | `review/` | M6 | Diff engine and review objects |
 | `lsp/` | M7 | Language server client |
 | `index/` | M7 | AST chunking, embeddings, vector search |
 | `compress/` | M9 | Tool-output compression and the original store |
+
+Inside `crates/robi`, `web_api` and `adapters` depend on `domain`, and `domain`
+depends on neither. The `robi-api` binary is the composition root. Schema,
+routes, and the chat session lifecycle are in
+[docs/design/persistence.md](docs/design/persistence.md).
 
 `crates/robi-index` and `crates/robi-lsp` are the likely first splits, because
 their dependencies — an embedding runtime, tree-sitter grammars, a JSON-RPC
@@ -116,15 +123,26 @@ variables; do not invent one-off hex or import another product's theme.
 
 | Task | Command |
 |------|---------|
-| Web-only Vite dev | `pnpm dev` (port **1430**, strict) |
+| Web-only Vite dev | `pnpm dev` (port **1430**, strict; proxies `/api` → `127.0.0.1:1431`) |
+| Local API | `cargo run -p robi --bin robi-api` (default `127.0.0.1:1431`) |
 | Desktop app | `pnpm tauri dev` |
 | Production web build | `pnpm build` |
 | Lint (ESLint + Prettier) | `pnpm run lint` |
 | Format | `pnpm run format` |
 | Typecheck | `pnpm run typecheck` |
+| Generate API client types | `pnpm run generate:api` (from `openapi/openapi.json`) |
 
 `pnpm dev` serves the web UI alone. `pnpm tauri dev` opens the desktop window
-against that same server.
+against that same server. Chat-session HTTP goes through the Vite `/api` proxy
+to `robi-api`; run the API alongside the web UI. Never hand-edit
+`src/api/schema.d.ts` — regenerate it after `make openapi-spec` when routes
+change.
+
+Workspace commands live in the root `Makefile`. `make api` runs the local API.
+`make dev-api` restarts it when the Rust crates change. `make lint` checks
+formatting and lints for Rust and the frontend. `make fix` writes formatting
+and lint fixes. `make test` runs `cargo test --workspace`. `make openapi-spec`
+writes `openapi/openapi.json`.
 
 ## Working rules
 
@@ -141,5 +159,4 @@ against that same server.
   or make the code match the intent and state which.
 - **Test the loop with fakes.** `cargo test -p robi-core` runs against a stub
   model and an in-memory store, and touches no network and no file.
-- **Format and lint before finishing:** `cargo fmt`, then
-  `cargo clippy --workspace`.
+- **Format and lint before finishing:** `make fix`, then `make lint`.

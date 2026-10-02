@@ -1,0 +1,266 @@
+# Chat runtime
+
+This page defines how a submitted instruction becomes one turn of the agent
+loop, and how a newer instruction interrupts the one already running. It is
+the design doc for the chat-instruction half of **M2** in the
+[roadmap](../roadmap.md). Read it before writing code in
+`crates/robi::domain::chat_message` or `crates/robi::adapters::chat_runtime`.
+
+## What this page does not cover
+
+| Topic | Where it belongs |
+|---|---|
+| The turn state machine, cancellation inside a model turn, and how a tool call is settled | [agent-loop.md](agent-loop.md) (M0) |
+| Schema, migrations, chat-session CRUD, and the message route table | [persistence.md](persistence.md) (M2) |
+| Provider wire format, retries, and the delta stream | [providers-streaming.md](providers-streaming.md) (M1) |
+| Streaming those deltas to the window | `docs/design/architecture.md` and `docs/design/chat-ui.md` (M2). This slice has no SSE |
+| Which tools need approval | `docs/design/permissions.md` (M3) |
+| The model writing a title after the first turn | Still deferred. [persistence.md](persistence.md) fixes that the title starts unset |
+
+## Problem
+
+`Agent::user_input` is safe for one caller. Two overlapping calls on one chat
+session both append and both drive the model, and the transcript those calls
+leave is not one a provider will accept.
+
+The HTTP handler has to return before the model finishes. A second instruction
+typed while the first is in flight has to replace it, not run beside it. An
+instruction typed while the transcript is waiting on a tool decision must not
+be appended ahead of that decision. The loop already enforces that last rule
+inside `user_input`; the runtime has to surface it before it starts a turn.
+
+The agent is not process state. One `Agent` kept for the life of the server
+would be shared across chat sessions and would outlive the turn it was driving.
+
+## Decision
+
+`ChatRuntime` is a domain port. `SerializedChatRuntime` implements it. HTTP
+talks only to `ChatMessageService`, which checks the chat session and the
+instruction, then calls the port. `GET` of the transcript reads `MessageStore`
+and does not take the actor lock.
+
+One actor per chat session. That actor is the only `user_input` caller for the
+session. Two chat sessions each have an actor, and those actors run at the
+same time. They share the factory, not an agent.
+
+The process stores an `AgentFactory`: the message store, the event sink, the
+model, the tool registry, and `LoopConfig`. Building the actor calls
+`Agent::new` from those pieces. The agent is moved into the actor task and
+dropped when the actor goes idle. The next instruction for that session builds
+another actor and another agent from the same factory. One agent serves every
+instruction that actor drains before it goes idle.
+
+`robi-api` fills the factory with `SqliteMessageStore`, `NopSink`, the model
+from `build_model`, an empty `ToolRegistry`, and `LoopConfig::default()`. The
+event sink drops every event. The window sees the turn by reading the
+transcript. An empty registry means a tool name the model emits fails as
+`NotFound` inside the loop; the runtime's approval check still reads whatever
+the transcript already contains.
+
+### Slot
+
+Per session, under one `tokio::sync::Mutex` over a map of `SessionId` to slot:
+
+| Field | Meaning |
+|---|---|
+| `running` | An actor task exists for this session |
+| `pending` | The newest instruction the actor has not taken. A later submit replaces it |
+| `cancel` | The token of the `user_input` the actor has entered. `None` until that call starts |
+
+The lock is held across the idle-to-running transition, and across taking
+`pending` and storing the new token. It is not held across `user_input` or
+across the transcript read. Slots are not removed. One slot per session that
+has been submitted to, for the life of the process.
+
+### Submit
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Running: submit, transcript is not awaiting approval
+  Idle --> Idle: submit while awaiting approval
+  Running --> Running: newer instruction cancels and replaces pending
+  Running --> Idle: actor finishes and pending is empty
+```
+
+`submit` does this, in order:
+
+1. If `running` is set, cancel the stored token when there is one, replace
+   `pending` with this instruction, and return `Accepted`. The transcript is
+   not read.
+2. Otherwise read the transcript. If the newest unresolved assistant message
+   has a `pending_approval` call, check `running` again. A turn that started
+   during the read is interrupted as in step 1. If the session is still idle,
+   return `AwaitingApproval`. The instruction is not stored.
+3. Otherwise take the lock. If `running` became set while the transcript was
+   being read, interrupt as in step 1. If it is still idle, set `running`,
+   store the instruction as `pending`, drop the lock, spawn the actor, and
+   return `Accepted`.
+
+`Accepted` means the slot holds the instruction. The model has not run.
+`AwaitingApproval` is the same predicate the loop uses before it refuses to
+append: `unresolved_turn` finds the newest assistant message with unfinished
+tool calls, and that message has at least one `pending_approval` call. Calls
+that are approved and not yet run are not this state. `user_input` will settle
+those, then append.
+
+A blank or whitespace instruction never reaches `submit`.
+`ChatMessageService` returns `BadRequest` first, and it also returns
+`NotFound` when the chat session row is missing. The web layer maps
+`Accepted` to `202` `{ "status": "accepted" }`, `AwaitingApproval` to `409`
+with `{ "error": "chat session is awaiting approval" }`, `BadRequest` to
+`400`, and `NotFound` to `404`.
+
+### Actor
+
+```mermaid
+sequenceDiagram
+    participant H as HTTP
+    participant R as Runtime
+    participant A as Actor
+    participant G as Agent
+
+    H->>R: submit "first"
+    R->>R: running, pending = first
+    R->>A: spawn, Agent::new
+    R-->>H: Accepted
+    A->>A: take pending, mint token
+    A->>G: user_input "first"
+    H->>R: submit "second"
+    R->>R: cancel token, pending = second
+    R-->>H: Accepted
+    G-->>A: Cancelled
+    A->>G: user_input "second"
+    G-->>A: Complete
+    A->>A: pending empty, exit
+    Note over A,G: Agent drops with the task
+```
+
+The actor loops:
+
+1. Take the lock. If `pending` is empty, clear `running` and `cancel` and
+   return. The agent drops with the task.
+2. Take `pending`, mint a `CancellationToken`, store it on the slot, and drop
+   the lock.
+3. Call `user_input` with that token.
+4. Log `Failed` at warn and any other `TurnOutcome` at debug, then loop.
+
+Because the token is stored before the lock is dropped, a submit that arrives
+during `user_input` cancels that call. A submit that arrives before step 2
+finds `cancel` still empty and only replaces `pending`. The replaced text is
+never passed to `user_input`.
+
+### What an interrupt leaves in the transcript
+
+The loop owns these outcomes. The runtime depends on them.
+
+- An instruction still sitting in `pending` is replaced. It is never appended.
+- Once `user_input` has appended the user message, cancellation during the
+  model turn returns `Cancelled` and does not append a partial assistant
+  message. The actor then runs the replacement, which appends the newer user
+  message. The model's second transcript contains both user messages.
+- `user_input` returns `Paused` without appending when the transcript is
+  waiting on approval. Settle maps cancellation during tool execution to that
+  same `Paused` result. The actor has already taken the instruction out of
+  `pending`, so that text is not retried. The HTTP call already returned `202`
+  if the slot was `running` when it was submitted.
+
+The idle path avoids the third case by reading the transcript before it
+spawns. The running path cannot: the decision to accept was made while a turn
+was still in flight.
+
+## Interfaces
+
+`ChatRuntime` (`crates/robi/src/domain/chat_message/runtime.rs`):
+
+```text
+submit(session, instruction) -> Result<SubmitOutcome, ServiceError>
+running_session_ids() -> Vec<SessionId>
+```
+
+`SubmitOutcome` is `Accepted` or `AwaitingApproval`.
+`running_session_ids` is the sessions whose slot has `running` set. Idle
+slots stay in the map and are left out. Nothing about this list is written
+to the database.
+
+`ChatMessageService` checks the instruction and the chat session, then calls
+`submit` or `MessageStore::messages`. `list_messages` does not call the
+runtime. Chat session responses copy `running_session_ids` into
+`has_pending_agent` on each returned session. Get and list are the reads the
+window uses; create and rename return the same field from the same snapshot.
+
+`AgentFactory` (`crates/robi/src/adapters/chat_runtime.rs`) holds:
+
+| Field | Role |
+|---|---|
+| `store` | `Arc<dyn MessageStore>` shared by every actor |
+| `events` | `Arc<dyn EventSink>` |
+| `model` | `Arc<dyn Model>` |
+| `tools` | `Arc<ToolRegistry>` |
+| `config` | `LoopConfig`, copied into each agent |
+
+`build` is called from `spawn_actor` and nowhere else. `SerializedChatRuntime`
+stores the factory and the slot map. It does not store an `Agent`.
+
+The composition root is `robi-api`. Model settings are the variables in
+[persistence.md](persistence.md#configuration): `OPENCODE_GO_API_KEY` is
+required, `ROBI_MODEL` defaults to `glm-5.3`, and `ROBI_BASE_URL` and
+`ROBI_EFFORT` are optional.
+
+## Rejected alternatives
+
+1. **One `Agent` on the process, shared by every session.** Rejected. Sessions
+   would share a turn, and the agent would outlive the actor that should own
+   it. The factory is the process state.
+2. **A new `Agent` on every `user_input` inside a busy actor.** Rejected. The
+   agent is ephemeral to the actor. The actor builds one when it starts and
+   drops it when it goes idle.
+3. **A queue of every instruction.** Rejected. Latest wins. An instruction that
+   has not started is replaced, and the replaced text is not run.
+4. **The actor inside `robi-core`.** Rejected. Core stays the loop and its four
+   traits. The runtime is an adapter over `user_input`.
+5. **Holding the HTTP request until the turn finishes.** Rejected. `202` means
+   the actor has the instruction.
+6. **SSE in this slice.** Rejected for now. `GET` reads the persisted
+   transcript, including while a turn is writing it.
+7. **One actor for the whole process.** Rejected. Serialization is per chat
+   session. Two sessions run concurrently.
+
+## Failure modes
+
+- Two idle submits that both pass the approval read: the lock lets one set
+  `running` and spawn. The other sees `running` and becomes `pending`. One
+  actor, one `user_input` at a time.
+- A submit that lands before the actor stores a token replaces `pending` and
+  has nothing to cancel. The actor then takes the newer text. The older text
+  never starts.
+- A submit while a turn is in flight returns `202`, cancels that turn, and
+  leaves the replacement in `pending`. The user message already appended
+  stays.
+- A submit while idle and awaiting approval returns `409`. The transcript is
+  unchanged, and nothing is cancelled.
+- A submit whose `user_input` then returns `Paused` was already accepted. The
+  text is not appended and is not put back in `pending`.
+- A store error while reading the transcript for the approval check is
+  `NotFound` or `Unknown`. The instruction is not stored. A SQL failure is
+  logged; the client sees the fixed `Unknown` message.
+- `user_input` returning `Failed` is logged. The actor then takes the next
+  `pending` instruction, or exits if there is none. The HTTP response was
+  already `202`.
+- The actor is a detached task. Process shutdown drops it. A restart has no
+  slots. The next submit builds a new actor, and a transcript that is waiting
+  on approval gets `409` again.
+- `GET` during a write is a normal SQLite read. It does not wait on the actor.
+
+## Testing
+
+- `SerializedChatRuntime` with a model that blocks until released: two
+  overlapping submits run one `user_input` at a time, the first turn observes
+  cancel, and the second transcript contains both the original user message
+  and the newer instruction.
+- A transcript with a pending tool call returns `AwaitingApproval` and the
+  message list is unchanged.
+- `ChatMessageService` with a fake `ChatRuntime`: a blank instruction is
+  `BadRequest` and the runtime is not called; a missing chat session is
+  `NotFound` for submit and for list; a real instruction is passed through and
+  list reads the store.

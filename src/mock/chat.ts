@@ -1,8 +1,3 @@
-export type MockSession = {
-  id: string
-  title: string
-}
-
 export type MockFileEdit = {
   path: string
   additions: number
@@ -23,15 +18,7 @@ export type MockTranscriptItem =
       files: MockFileEdit[]
     }
 
-export const MOCK_SESSIONS: MockSession[] = [
-  { id: 's1', title: 'Fix the double-charge bug in checkout' },
-  { id: 's2', title: 'Add a dark mode toggle to settings' },
-  { id: 's3', title: 'Wire session persistence for M2' },
-  { id: 's4', title: 'Sketch the tool-card layout' }
-]
-
-export const MOCK_WORKSPACE = 'acme-storefront'
-
+/** Placeholder transcript until message HTTP exists. */
 export const MOCK_TRANSCRIPT: MockTranscriptItem[] = [
   {
     kind: 'user',

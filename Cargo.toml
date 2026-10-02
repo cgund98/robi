@@ -27,8 +27,13 @@ tokio-util = "0.7.19"
 tracing = "0.1.41"
 uuid = { version = "1.24.0", features = ["v7", "serde"] }
 
-# Test-only, for the fake SSE server that stands in for a provider.
+# Local HTTP API (`robi-api`) and the fake SSE server in provider tests.
 axum = "0.8.4"
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
+sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+utoipa = { version = "5.4.0", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 # The desktop shell. Versions stay here so they cannot drift.
 tauri = { version = "2", features = [] }

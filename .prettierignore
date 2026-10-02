@@ -9,3 +9,7 @@ pnpm-lock.yaml
 
 # Markdown is owned by the docs, not Prettier.
 *.md
+
+# Generated API document and TypeScript types.
+openapi/
+src/api/schema.d.ts

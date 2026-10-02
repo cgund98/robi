@@ -33,6 +33,13 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }]
     }
   },
+  {
+    files: ['scripts/**/*.{js,mjs,cjs}'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node
+    }
+  },
   // Disable ESLint rules that conflict with Prettier formatting
   eslintConfigPrettier
 )

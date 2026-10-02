@@ -15,6 +15,7 @@ and its failure modes. It is the design doc for **M0** in the
 | Provider wire formats, SSE parsing, retries, the delta enum's full definition | `docs/design/providers-streaming.md` (M1) |
 | Which paths need approval, grants, the policy floor | `docs/design/permissions.md` (M3) |
 | Store schema, migrations, how a session is listed and resumed | `docs/design/persistence.md` (M2) |
+| Who may call `user_input`, and how a newer instruction interrupts a running one | [chat-runtime.md](chat-runtime.md) (M2) |
 | IPC transport between the loop and the UI | `docs/design/architecture.md` (M2) |
 
 This page defines the *shape* of the delta and the seams that persistence and the

@@ -102,9 +102,10 @@ Tauri, no HTTP client, and no provider SDK:
   `MessageStore`, and M3 onward supply real `Tool`s. The loop never changes when
   one of those arrives.
 - **One crate for implementations, not one per concern.** `crates/robi` holds
-  everything that does I/O: `providers` first (M1), then `store` (M2), `tools` and
-  `workspace` (M3), `review` (M6), `lsp` and `index` (M7) — each a module, split
-  into its own crate only if a module outgrows the crate.
+  the implementations: `providers` first (M1), then the session API's `domain`,
+  `adapters`, and `web_api` (M2), `tools` and `workspace` (M3), `review` (M6),
+  `lsp` and `index` (M7) — each a module, split into its own crate only if a
+  module outgrows the crate.
   `docs/design/providers-streaming.md` records why providers did not become
   `robi-providers`.
 
@@ -493,24 +494,24 @@ made. The fix and its tests are in `robi-core`; see
 
 ### F2.3 Sessions and persistence
 
-- Session list with titles, last-used time, and workspace; auto-title from the
-  first user message.
+- Session list with titles, last-used time, and workspace. The model generates
+  the title after the first turn; creation leaves it unset unless the client
+  supplies one.
 - `MessageStore` gets its real implementation here. Nothing in `robi-core`
   changes.
 - Secrets go in an OS keychain rather than a plaintext file. gopi reads
   `secrets.toml` and refuses it unless the mode is 0600; a desktop app has a
   better option and should use it from the start.
-- **Open decisions** — (D4) SQLite (queryable, one file, migrations) vs. JSON
-  files, which is what gopi writes under `~/.gopi/`. Token-usage history and the
-  M7 index lean toward SQLite. Also: where the app's home directory lives, and
-  whether a workspace needs the explicit trust decision gopi records in
-  `trust.json`.
+- **Open decisions** — where the app's home directory lives, and whether a
+  workspace needs the explicit trust decision gopi records in `trust.json`.
+  The session store is SQLite; see `docs/design/persistence.md`. Token-usage
+  history and the M7 index lean toward that same file.
 
 **Exit criteria for M2** — send a message in the app, watch it stream, restart,
 and find the session intact.
 
 **Design docs** — `docs/design/visual-style.md`, `docs/design/chat-ui.md`,
-`docs/design/persistence.md`.
+`docs/design/persistence.md`, `docs/design/chat-runtime.md`.
 
 ---
 
@@ -927,7 +928,7 @@ resolve them.
 | D1 | IPC transport and event ordering | F2.1 | Tauri events vs. channel + events; how deltas order against persistence |
 | D2 | Delta serialization and IPC encoding | F1.2 | The variant list is fixed in M0; these are the wire details. Expensive to change once the UI depends on them |
 | D3 | In-process loop vs. sidecar | F2.1 | Gate on headless mode (M8) being a goal |
-| D4 | Persistence: SQLite vs. JSON | F2.3, F3.4, M7 | Usage history and the index lean SQLite |
+| D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/design/persistence.md`. App home directory is still open. Usage history and the M7 index lean the same file; the index engine is D7 |
 | D5 | Editing: search-and-replace vs. diff-based | F4.1 | The highest-leverage decision in the roadmap; see below |
 | D6 | Embeddings: local vs. hosted | F7.2 | Product decision about code leaving the machine |
 | D7 | Vector store | F7.2 | `sqlite-vec`, LanceDB, or Qdrant |
@@ -973,7 +974,8 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/architecture.md` | Crate layout, IPC protocol, thread/runtime model, event ordering | M2 | needed |
 | `docs/design/visual-style.md` | Dark theme tokens, shell layout, chat chrome look (Claude Code-view reference) | M2 | done |
 | `docs/design/chat-ui.md` | Streaming render, scroll behavior, message list, tool-card layout | M2 | needed |
-| `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | needed |
+| `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | done |
+| `docs/design/chat-runtime.md` | Per-session actor, agent factory, interrupt, approval refusal | M2 | done |
 | `docs/design/permissions.md` | Approval, policy floor, grants, protected paths | M3 | needed |
 | `docs/design/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
 | `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | needed |
@@ -1002,9 +1004,9 @@ What to take, what to leave. Names refer to `../gopi`.
 | `gogent` `Message`, `Tool`, `ToolRegistry` | `robi-core` | Port the shapes and the status enums; the trait signatures stay fixed from M0 through M5 |
 | `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt` | Port the `base + user + project + skills` concatenation and the per-section byte cap |
 | `internal/tools/` (13 tools) | `crates/robi::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
-| `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::store` | Port the glob floor and redaction; replace the secrets file with a keychain |
+| `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::adapters` | Port the glob floor and redaction; replace the secrets file with a keychain |
 | `internal/sandbox/` | `crates/robi::tools::shell` | macOS-only in gopi, and the only part gopi never generalizes. Port the policy, not the profile. See D9 |
-| `internal/session/` | `crates/robi::store` | Port the shape, drop the 50-session cap |
+| `internal/session/` | `crates/robi::domain::chat_session`, `crates/robi::adapters` | Port the shape, drop the 50-session cap |
 | `internal/review/` | `crates/robi::review` | Port the diff; the review object is new |
 | `internal/app/` mode wiring | `robi-core::mode` | Port the registry-per-mode idea; drop the TUI coupling |
 | `internal/tui/` | `src/` (React) | Behavior only: what a tool card shows, when approval pauses |
@@ -1023,6 +1025,7 @@ Stated so they do not creep back in:
 - **Not** a code editor. Robi reads, edits, and reviews; the user edits in their
   own editor. No buffer management, no keybindings, no tabs of open files.
 - **Not** a terminal emulator. Shell runs as a tool, not a pane.
-- **Not** multi-user. No server, no accounts, no shared workspaces.
+- **Not** multi-user. No accounts and no shared workspaces. A process may listen
+  on loopback for this machine; that is not a multi-user server.
 - **Not** an autonomous background agent. Every turn starts from a user message,
   and every side effect is approved or explicitly granted.

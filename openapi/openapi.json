@@ -1,0 +1,425 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "robi",
+    "description": "I/O behind the Robi loop: model providers and the local session API",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/chat_sessions": {
+      "get": {
+        "tags": [
+          "chat_session"
+        ],
+        "operationId": "list_chat_sessions",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chat sessions listed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatSession"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "chat_session"
+        ],
+        "operationId": "create_chat_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChatSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Chat session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat_sessions/{id}": {
+      "get": {
+        "tags": [
+          "chat_session"
+        ],
+        "operationId": "get_chat_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chat session found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "chat_session"
+        ],
+        "operationId": "delete_chat_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Chat session deleted"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "chat_session"
+        ],
+        "operationId": "update_chat_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateChatSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Chat session updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat_sessions/{id}/messages": {
+      "get": {
+        "tags": [
+          "chat_message"
+        ],
+        "operationId": "list_chat_messages",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chat messages listed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatMessage"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "chat_message"
+        ],
+        "operationId": "submit_instruction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitInstruction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Instruction accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedInstruction"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Chat session is awaiting approval"
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [],
+        "operationId": "health_check",
+        "responses": {
+          "200": {
+            "description": "Health check",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AcceptedInstruction": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "content",
+          "tool_calls"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatToolCall"
+            }
+          }
+        }
+      },
+      "ChatSession": {
+        "type": "object",
+        "required": [
+          "id",
+          "workspace_id",
+          "created_at",
+          "updated_at",
+          "last_used_at",
+          "has_pending_agent"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "has_pending_agent": {
+            "type": "boolean",
+            "description": "True while this session's actor is running. Read from memory, not the database."
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent until the model names the chat session after the first turn, or a\ncreate/rename supplies one."
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ChatToolCall": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "args",
+          "approval_status",
+          "execution_status"
+        ],
+        "properties": {
+          "approval_status": {
+            "type": "string"
+          },
+          "args": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "execution_status": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "result": {}
+        }
+      },
+      "CreateChatSession": {
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Omitted, null, or empty leaves the chat session unnamed. The model writes a\ntitle after the first turn. Longer than\n[`CHAT_SESSION_TITLE_MAX_CHARS`](crate::domain::chat_session::service::CHAT_SESSION_TITLE_MAX_CHARS)\nis rejected."
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SubmitInstruction": {
+        "type": "object",
+        "required": [
+          "instruction"
+        ],
+        "properties": {
+          "instruction": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateChatSession": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "robi",
+      "description": "Robi API"
+    }
+  ]
+}

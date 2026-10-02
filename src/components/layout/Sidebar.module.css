@@ -78,9 +78,21 @@
   gap: 2px;
 }
 
+.sessionRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-md);
+}
+
+.sessionRow:hover {
+  background: var(--bg-surface-hover);
+}
+
 .sessionButton {
   display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -92,13 +104,54 @@
   text-overflow: ellipsis;
 }
 
-.sessionButton:hover {
-  background: var(--bg-surface-hover);
+.sessionButton:hover:not(:disabled) {
+  background: transparent;
+}
+
+.sessionButton:disabled,
+.newSession:disabled,
+.settings:disabled,
+.sessionAction:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .sessionButtonActive {
   background: var(--bg-surface-active);
   color: var(--ink-strong);
+}
+
+.sessionRow:has(.sessionButtonActive) {
+  background: var(--bg-surface-active);
+}
+
+.sessionActions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: var(--space-1);
+  opacity: 0;
+}
+
+.sessionRow:hover .sessionActions,
+.sessionRow:focus-within .sessionActions {
+  opacity: 1;
+}
+
+.sessionAction {
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.sessionAction:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg-surface-active);
 }
 
 .footer {
