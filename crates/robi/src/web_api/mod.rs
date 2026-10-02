@@ -57,6 +57,7 @@ async fn health_check() -> &'static str {
         chat_message::submit_instruction,
         chat_message::list_chat_messages,
         chat_message::get_chat_message,
+        chat_message::decide_tool_call,
         settings::get_setting,
         settings::set_setting,
         events::stream_events
@@ -68,6 +69,7 @@ async fn health_check() -> &'static str {
         chat_session::UpdateChatSession,
         chat_session::ChatSession,
         chat_message::SubmitInstruction,
+        chat_message::DecideToolCall,
         chat_message::AcceptedInstruction,
         chat_message::ChatMessage,
         chat_message::ChatToolCall,

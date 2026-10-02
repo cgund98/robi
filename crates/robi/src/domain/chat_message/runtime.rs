@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use robi_core::ids::SessionId;
+use robi_core::ids::{SessionId, ToolCallId};
 
 use crate::domain::error::ServiceError;
 
@@ -28,4 +28,14 @@ pub trait ChatRuntime: Send + Sync {
 
     /// Sessions whose actor is running. Not persisted; idle sessions are absent.
     async fn running_session_ids(&self) -> Vec<SessionId>;
+
+    /// Approve or reject one call, then resume the paused turn.
+    ///
+    /// `reject` is the reason the model reads. `None` approves the call.
+    async fn decide(
+        &self,
+        session: SessionId,
+        call: ToolCallId,
+        reject: Option<String>,
+    ) -> Result<(), ServiceError>;
 }

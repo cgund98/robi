@@ -16,6 +16,7 @@ pub mod event;
 pub mod ids;
 pub mod message;
 pub mod model;
+pub mod prompt;
 pub mod segments;
 pub mod store;
 pub mod tool;

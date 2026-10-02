@@ -132,6 +132,10 @@ pub async fn update_chat_session(
         .update_chat_session(UpdateChatSessionCommand {
             id,
             title: payload.title,
+            allow_read: payload.path_allow_read,
+            allow_write: payload.path_allow_write,
+            deny_read: payload.path_deny_read,
+            deny_write: payload.path_deny_write,
         })
         .await?;
     let running = running_sessions(&state).await;
@@ -172,6 +176,10 @@ fn to_response(session: DomainChatSession, running: &HashSet<SessionId>) -> Chat
         id: session.id.to_string(),
         workspace_id: session.workspace_id.to_string(),
         title: session.title,
+        path_allow_read: session.path_rules.allow_read,
+        path_allow_write: session.path_rules.allow_write,
+        path_deny_read: session.path_rules.deny_read,
+        path_deny_write: session.path_rules.deny_write,
         created_at: rfc3339(session.created_at),
         updated_at: rfc3339(session.updated_at),
         last_used_at: rfc3339(session.last_used_at),
@@ -203,7 +211,21 @@ pub struct CreateChatSession {
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateChatSession {
-    pub title: String,
+    /// When set, replaces the title. Omitted leaves the stored title alone.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Extra read-allow regexes, appended after the built-in list. The furthest match wins; at the same end byte, more literals win.
+    #[serde(default)]
+    pub path_allow_read: Option<Vec<String>>,
+    /// Regexes. Ranked the same way as read allows. A parent match does not outrank a more specific write deny.
+    #[serde(default)]
+    pub path_allow_write: Option<Vec<String>>,
+    /// Regexes matched against the workspace-relative path. A match denies a read.
+    #[serde(default)]
+    pub path_deny_read: Option<Vec<String>>,
+    /// Regexes matched against the workspace-relative path. A match denies a write.
+    #[serde(default)]
+    pub path_deny_write: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -219,6 +241,10 @@ pub struct ChatSession {
     /// Absent until the model names the chat session after the first turn, or a
     /// create/rename supplies one.
     pub title: Option<String>,
+    pub path_allow_read: Vec<String>,
+    pub path_allow_write: Vec<String>,
+    pub path_deny_read: Vec<String>,
+    pub path_deny_write: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_used_at: String,

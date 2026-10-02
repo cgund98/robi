@@ -7,6 +7,7 @@ import { useChatStore, type AgentPhase } from '../../state/chatStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
 import { ChatHeader } from '../chat/ChatHeader'
 import { Composer } from '../chat/Composer'
+import { EmptyGreeting } from '../chat/EmptyGreeting'
 import { RenameSessionDialog } from '../chat/RenameSessionDialog'
 import { Transcript } from '../chat/Transcript'
 import { Sidebar } from './Sidebar'
@@ -35,6 +36,7 @@ export function AppLayout() {
   const selectSession = useChatStore((state) => state.selectSession)
   const selectDraft = useChatStore((state) => state.selectDraft)
   const sendInstruction = useChatStore((state) => state.sendInstruction)
+  const decideCall = useChatStore((state) => state.decideCall)
   const renameSession = useChatStore((state) => state.renameSession)
   const removeSession = useChatStore((state) => state.removeSession)
 
@@ -73,6 +75,7 @@ export function AppLayout() {
       ? pendingEcho.text
       : null
   const composerLocked = loading || busy || phase !== 'idle'
+  const fresh = messages.length === 0 && echo === null
 
   const renameTarget = renameId
     ? (sessions.find((session) => session.id === renameId) ?? null)
@@ -108,6 +111,7 @@ export function AppLayout() {
       <Sidebar
         sessions={sessions}
         activeSessionId={draftSelected ? '' : (activeSession?.id ?? '')}
+        draftSelected={draftSelected}
         disabled={loading || busy}
         onSelectSession={(id) => void selectSession(id)}
         onNewSession={selectDraft}
@@ -133,9 +137,33 @@ export function AppLayout() {
             </button>
           </div>
         ) : null}
-        <ChatHeader sessionTitle={sessionTitle} />
-        <Transcript messages={messages} echo={echo} phase={phase} />
-        <Composer disabled={composerLocked} phase={phase} onSubmit={sendInstruction} />
+        {fresh ? (
+          <div className={styles.welcome}>
+            <EmptyGreeting />
+            <Composer
+              placement="welcome"
+              disabled={composerLocked}
+              phase={phase}
+              onSubmit={sendInstruction}
+            />
+          </div>
+        ) : (
+          <>
+            <ChatHeader sessionTitle={sessionTitle} />
+            <Transcript
+              messages={messages}
+              echo={echo}
+              phase={phase}
+              deciding={busy}
+              onDecide={(callId, decision) => {
+                if (activeSessionId) {
+                  void decideCall(activeSessionId, callId, decision)
+                }
+              }}
+            />
+            <Composer disabled={composerLocked} phase={phase} onSubmit={sendInstruction} />
+          </>
+        )}
       </div>
       {renameTarget ? (
         <RenameSessionDialog

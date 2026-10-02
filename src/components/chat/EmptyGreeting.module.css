@@ -1,0 +1,20 @@
+.greeting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 0;
+  color: var(--ink-bright);
+  font-family: ui-serif, Georgia, 'Iowan Old Style', Palatino, serif;
+  font-size: 32px;
+  font-weight: 450;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  color: var(--mark);
+  flex-shrink: 0;
+}

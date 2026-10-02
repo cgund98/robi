@@ -76,14 +76,15 @@ One composition. Two columns. No third panel in M2.
 
 | Region | Role | M2 content |
 |---|---|---|
-| **Sidebar** | Session navigation | Workspace dropdown at the top, New session, Recents list, active-session highlight, rename dialog, Workspaces and Settings links |
+| **Sidebar** | Session navigation | Workspace dropdown at the top, Workspaces link under it, New chat, Recents list, active-session highlight, rename dialog, Settings link |
 | **Header** | Orientation | Session title |
 | **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards (empty until M3) |
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
 
 Sidebar width stays roughly **240–280px** at default window size. The transcript
-column takes the rest. The composer is anchored to the bottom of the main column,
-not a floating overlay.
+column takes the rest. After the first message, the composer is anchored to
+the bottom of the main column, not a floating overlay. Before that, it sits
+under the greeting in the center of the column.
 
 ## Color tokens
 
@@ -101,10 +102,12 @@ Do not sprinkle raw hex in components.
 | `--bg-user` | `#15202c` | User message bubble |
 | `--ink` | `#c3c2b8` | Primary body text (warm, not pure white) |
 | `--ink-strong` | `#ecece8` | Titles, emphasis |
+| `--ink-bright` | `#f7f6f2` | Assistant prose |
 | `--ink-muted` | `#8a8983` | Labels, timestamps, activity lines |
 | `--ink-faint` | `#5c5c57` | Placeholders, disabled |
 | `--accent` | `#55a2fb` | Focus ring, send/active status, links |
 | `--accent-muted` | `#3a6fa8` | Accent on dark fills (icons in quiet states) |
+| `--mark` | `#e07a5f` | Empty-chat greeting mark |
 | `--code-bg` | `#1a1a19` | Inline code chip background |
 | `--code-ink` | `#d4d3cb` | Inline code text |
 | `--rule` | `#2a2a28` | Hairline separators (use sparingly) |
@@ -132,9 +135,10 @@ blue. User messages stay navy (`--bg-user`); assistant messages stay unbubbled o
 | Body size | ~14–15px | Comfortable reading; avoid 12px transcript |
 | Activity line | ~12–13px, `--ink-muted` | Quieter than assistant prose |
 | Sidebar item | ~13–14px | Truncate with ellipsis; full title on hover |
+| Empty greeting | ~32px, `ui-serif` | One line on a chat that has no messages yet |
 
-Line height ~1.5 for assistant prose. Do not use a display serif or a marketing
-font for the shell.
+Line height ~1.5 for assistant prose. The empty-chat greeting is the one serif
+line. The rest of the shell stays on the UI sans.
 
 ## Shape and spacing
 
@@ -165,7 +169,7 @@ These are the chrome pieces the style owns. Behavior of each is specified in
 
 ### Assistant message
 
-- No bubble. Prose sits on `--bg-canvas` in `--ink`.
+- No bubble. Prose sits on `--bg-canvas` in `--ink-bright`.
 - Inline code: `--code-bg` chip, `--radius-sm`, mono stack.
 - Fenced code blocks: same surface family, slightly taller padding; syntax
   highlighting comes later and must stay readable on `#0b0b0b`.
@@ -191,6 +195,8 @@ text. Not cards. Tool **results** that need inspection become tool cards
 - Below the field: right cluster (model, effort, run status). Controls are quiet
   text + chevron, not colored pills — except the active run indicator, which may
   use `--accent`. No mode toggle or attach control in the shell mock.
+- An empty chat lifts that same field into one bordered card under the greeting.
+  The model row sits inside the card. The greeting mark uses `--mark`.
 
 ### Settings
 
@@ -211,8 +217,7 @@ The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
 Both are styled with these tokens. The active workspace uses an open folder. The others use a closed folder. The closed control matches the sidebar, with a
 chevron. A border appears on hover and while the list is open. The open list is the darker canvas color, with a stronger
 edge. The chevron opens the list of workspaces, plus add. Add opens the system folder dialog in the
-desktop window, and asks for a path in a normal browser. **Workspaces** in the
-sidebar footer opens the full list.
+desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses the compose mark, a rounded square with a pencil. Workspaces sits under the dropdown and opens the full list.
 
 ### Workspaces page
 

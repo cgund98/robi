@@ -27,53 +27,43 @@
   box-sizing: border-box;
 }
 
-.assistant {
-  color: var(--ink);
-  white-space: pre-wrap;
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   width: 100%;
 }
 
-.assistant code,
-.user code {
-  display: inline-block;
-  padding: 0.1em 0.4em;
-  border-radius: var(--radius-sm);
-  background: var(--code-bg);
-  color: var(--code-ink);
-  font-size: 0.9em;
+.prose {
+  margin: var(--space-3) 0;
+}
+
+.turn > .prose:first-child {
+  margin-top: 0;
 }
 
 .activity {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  align-items: baseline;
   color: var(--ink-muted);
   font-size: 12.5px;
 }
 
-.activityIcon {
-  color: var(--ink-faint);
-  font-size: 11px;
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
 }
 
-.activityIconLive {
-  color: var(--accent);
-  animation: activityPulse 1.2s ease-in-out infinite;
+.worked {
+  color: var(--ink-muted);
+  font-size: 12.5px;
 }
 
-@keyframes activityPulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .activityIconLive {
-    animation: none;
-    opacity: 1;
-  }
+.dots {
+  display: inline-block;
+  width: 3ch;
+  text-align: left;
 }

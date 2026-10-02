@@ -218,8 +218,11 @@ async fn insert_session(
     let timestamp = Utc::now().to_rfc3339();
     sqlx::query(
         r#"
-        INSERT INTO chat_sessions (id, workspace_id, title, created_at, updated_at, last_used_at)
-        VALUES (?1, ?2, NULL, ?3, ?3, ?3)
+        INSERT INTO chat_sessions (
+            id, workspace_id, title, path_allow_read, path_allow_write,
+            path_deny_read, path_deny_write, created_at, updated_at, last_used_at
+        )
+        VALUES (?1, ?2, NULL, '[]', '[]', '[]', '[]', ?3, ?3, ?3)
         "#,
     )
     .bind(id.to_string())

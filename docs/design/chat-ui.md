@@ -11,15 +11,16 @@ delivery stays in [events-sse.md](events-sse.md).
 |---|---|
 | Streaming caret and painting `message_delta` text | Later on this page. The assistant row is stored only when the model stream finishes, so this cut does not paint tokens |
 | Scroll-lock that yields when the user scrolls up | Later on this page. The list follows the latest row |
-| Markdown, syntax highlighting, copy, retry, edit-and-resend | Later on this page |
-| Tool-call cards and approval prompts | This page, when tools exist (M3). A tool message with text renders as a muted line |
+| Syntax highlighting, copy, retry, edit-and-resend | Later on this page. Assistant text is Markdown; highlighting is not |
+| Grant and session-allow editing | `docs/design/permissions.md` (M3) |
 | Creating the session row | [persistence.md](persistence.md). The shell delays that call |
 
 ## Draft session
 
 **New session** does not `POST /chat_sessions`. It selects a client-only draft:
 no database row, no sidebar entry, header title “New session”. Choosing it
-again while it is already open does nothing.
+again while it is already open does nothing. While that draft is selected,
+**New chat** uses the same active pill as a recent session.
 
 The first send creates the session, then `POST /chat_sessions/{id}/messages`
 with `{ "instruction" }`. On `202` the shell selects that session, marks it
@@ -30,6 +31,11 @@ the message post.
 
 App load lists sessions and selects the most recent. An empty list opens the
 draft.
+
+Until a prompt is submitted, the main column has no session title. A greeting
+sits in the center — **Good morning**, **Good afternoon**, or **Good evening**,
+from the local hour — with the composer in a card under it. The first echo or
+stored message returns the title, the transcript, and the bottom composer.
 
 The pencil on a session opens a rename dialog with the stored title. The dialog
 is a Radix dialog. An unset title starts the field empty. Save sends `PATCH`
@@ -60,12 +66,39 @@ Opening the stream refetches even on the first connect. A frame published
 before the socket existed is recovered from the store. Reconnect does not
 replay deltas.
 
+## Tool calls
+
+An assistant message renders its text as Markdown, then one row per tool
+call. Headings, lists, tables, links, and fenced code are elements. Syntax
+highlighting is not applied. A `tool` message is not shown again; the result
+lives on the call. User text stays plain. The bottom of a turn is one row: **Worked for Ns** on the left, and a copy
+icon on the right when the turn has assistant text. Hovering it says **Copy markdown**.
+After a click the tooltip says **Copied**. The button copies that message's
+Markdown as stored. A finished turn ends with a muted line, **Worked for
+Ns**, measured from the user message to the last message in that turn.
+A turn that is still running, or waiting on approval, does not show it.
+
+Tool rows from later iterations of the same turn sit in that same stack, with
+no extra gap between them. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
+`Listed`), and the path or pattern. A running call shows a spinner.
+A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
+the body: numbered file text, match lines, paths, or the error. The row stays
+closed until that click.
+
+A call that is still `pending` approval and `not_started`, while the session
+phase is idle, is the approval bar. It shows the same verb and target, then
+**Reject** and **Run**. Run posts `approve`. Reject posts `reject`. The phase
+becomes **Thinking** until the resumed turn reports back. A call that ran
+without asking stays a result row: `pending` approval with `succeeded`
+execution is not a prompt.
+
 ## Activity and the composer
 
 While the phase is not `idle`, the transcript shows a muted line, **Thinking**
-or **Responding**, with a small accent pulse. The composer status ring spins
-in `--accent`. Idle keeps the quiet ring. Reduced motion leaves the color and
-drops the animation.
+or **Responding**, then **for Ns** counted from that turn's user message, with
+dots that step `.`, `..`, `...` beside it. The count waits until one second
+has passed. The composer status ring spins in `--accent`. Idle keeps the quiet ring. Reduced
+motion shows `...` and does not step.
 
 The textarea and send control are disabled for that whole stretch, and during
 session load and other in-flight session requests. Enter does not submit.

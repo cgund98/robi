@@ -53,11 +53,17 @@ agent serves every instruction that actor drains before it goes idle.
 
 `robi-api` fills the factory with `SqliteMessageStore`, `FanOutEventSink`, a
 `SettingsModelSource` over the settings store, an empty `ToolRegistry`, and
-`LoopConfig::default()`. The sink publishes each loop event on the in-process
-fan-out. The window follows that stream and still reads the transcript with
-GET. An empty registry means a tool name the model emits fails as `NotFound`
-inside the loop; the runtime's approval check still reads whatever the
-transcript already contains.
+`LoopConfig::default()`. The empty registry is the fallback for a factory
+with no chat session service. When the service is present, the actor builds
+a session registry of the read tools and passes that same registry, plus the
+workspace root, to `ModelSource::model`. The provider is offered those tools,
+and the system prompt is assembled for them at the same time. See
+[instructions.md](instructions.md).
+The sink publishes each loop event on the in-process fan-out. The window
+follows that stream and still reads the transcript with GET. A tool name the
+model emits that is not in that registry fails as `NotFound` inside the loop;
+the runtime's approval check still reads whatever the transcript already
+contains. The tools themselves are in [read-tools.md](read-tools.md).
 
 ### Slot
 
@@ -225,15 +231,18 @@ rename return the same field from the same snapshot.
 | `store` | `Arc<dyn MessageStore>` shared by every actor |
 | `events` | `Arc<dyn EventSink>` |
 | `models` | `Arc<dyn ModelSource>`, read when an actor starts |
-| `tools` | `Arc<ToolRegistry>` |
+| `tools` | `Arc<ToolRegistry>`. Used when `sessions` is absent. A session actor builds its own registry of read tools |
 | `config` | `LoopConfig`, copied into each agent |
 | `sessions` | `Option<Arc<ChatSessionService>>`. The title task reads and writes the row. Absent in tests that do not name sessions |
 | `fanout` | `Option<Arc<EventFanOut>>`. Publishes `session_updated` after a title is stored |
 
-`submit` asks `models` for a model before it marks the session running, then
-`build` receives that model. A missing key or a bad effort returns the error
-and leaves the slot idle. An actor that is already running keeps its model;
-the instruction replaces the pending one.
+`submit` builds the session tool registry, then asks `models` for a model
+with that registry, before it marks the session running. `build` receives
+both. A missing session, a missing key, or a bad effort returns the error
+and leaves the slot idle. An actor that is already running keeps its model
+and its tools; the instruction replaces the pending one. Path rules are
+reloaded on each tool call, so a `PATCH` applies to the next call without
+starting a new actor.
 
 `SerializedChatRuntime` stores the factory and the slot map. It does not store
 an `Agent`.
@@ -273,6 +282,8 @@ to the factory.
 - A submit while a turn is in flight returns `202`, cancels that turn, and
   leaves the replacement in `pending`. The user message already appended
   stays.
+- `decide` while the actor is running returns `409`. While idle, it approves
+  or rejects that call and resumes the turn.
 - A submit while idle and awaiting approval returns `409`. The transcript is
   unchanged, and nothing is cancelled.
 - A submit whose `user_input` then returns `Paused` was already accepted. The

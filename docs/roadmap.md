@@ -535,7 +535,7 @@ Port from gopi's `internal/tools/`, keeping names and semantics:
 | `read_file` | Line ranges, offset/limit, truncation reporting |
 | `find` | Path substring or glob walk |
 | `grep` | Content search, regex optional |
-| `list_dir` | Directory listing with ignore rules applied |
+| `list_dir` | One directory, with the session path rules applied |
 
 Two details from gopi worth copying rather than reinventing:
 
@@ -543,6 +543,9 @@ Two details from gopi worth copying rather than reinventing:
   from. A silently truncated read is how an agent confidently edits the wrong
   thing.
 - Search results cap at a match count and a byte budget, and say so.
+
+Tool arguments, path resolution, the session path filter, and the ripgrep
+fallback are in [docs/design/read-tools.md](docs/design/read-tools.md).
 
 ### F3.2 Workspace confinement
 
@@ -796,8 +799,9 @@ Lower priority. Sequence by user demand, not by this order.
   Rust SDK is `rmcp` ([rust-sdk](https://github.com/modelcontextprotocol/rust-sdk)).
 - **Skills** — markdown instruction files with frontmatter, catalogued in the
   prompt and read on demand, as gopi does.
-- **Project instructions** — an `AGENTS.md`-style chain from repo root to the
-  working directory.
+- **Project instructions** — the assembler and the `AGENTS.md` chain are in
+  [instructions.md](docs/design/instructions.md). Skills and a trust decision
+  before reading a project file stay later.
 - **Web tools** — `web_search` and `web_fetch`, both requiring approval and both
   treating page content as untrusted input.
 - **Headless / CI mode** — the agent loop without the UI. Another reason to keep
@@ -981,6 +985,8 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | done |
 | `docs/design/chat-runtime.md` | Per-session actor, agent factory, interrupt, approval refusal | M2 | done |
 | `docs/design/events-sse.md` | **D1**, CloudEvents envelope, fan-out, `GET /api/v1/events/stream`, shell EventSource | M2 | done |
+| `docs/design/read-tools.md` | Read tools, path resolution, session path filter, ripgrep fallback | M3 | done |
+| `docs/design/instructions.md` | System prompt sources: built-in tool list, user text, global and project `AGENTS.md` | M3 | done |
 | `docs/design/permissions.md` | Approval, policy floor, grants, protected paths | M3 | needed |
 | `docs/design/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
 | `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | needed |
@@ -1007,7 +1013,7 @@ What to take, what to leave. Names refer to `../gopi`.
 |---|---|---|
 | `gogent` loop (`agent.go`, `tool_execution.go`, `tool_turn.go`) | `robi-core` | **The spec for M0.** Port the state machine and the three-phase tool execution; rewrite in Rust with async traits and a real cancellation path |
 | `gogent` `Message`, `Tool`, `ToolRegistry` | `robi-core` | Port the shapes and the status enums; the trait signatures stay fixed from M0 through M5 |
-| `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt` | Port the `base + user + project + skills` concatenation and the per-section byte cap |
+| `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt`, `crates/robi::prompt` | Rendering and the byte cap are in core. File sources are in `crates/robi`. Mode prefixes and the skill catalog stay later |
 | `internal/tools/` (13 tools) | `crates/robi::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
 | `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::adapters` | Port the glob floor and redaction; replace the secrets file with a keychain |
 | `internal/sandbox/` | `crates/robi::tools::shell` | macOS-only in gopi, and the only part gopi never generalizes. Port the policy, not the profile. See D9 |

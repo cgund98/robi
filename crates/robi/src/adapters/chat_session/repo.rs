@@ -9,11 +9,16 @@ use uuid::Uuid;
 
 use crate::domain::{
     chat_session::{
-        model::{ChatSession, CreateChatSessionCommand, UpdateChatSessionCommand},
+        model::{
+            apply_session_update, ChatSession, CreateChatSessionCommand, PathRules,
+            UpdateChatSessionCommand,
+        },
         repo::ChatSessionRepository,
     },
     error::ServiceError,
 };
+
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
     error!(?err, %context, "sqlite chat session repository error");
@@ -38,6 +43,12 @@ fn chat_session_from_row(
     let title: Option<String> = row
         .try_get("title")
         .map_err(|err| log_unknown(context, err))?;
+    let path_rules = PathRules {
+        allow_read: decode_patterns(context, &row_text(context, &row, "path_allow_read")?)?,
+        allow_write: decode_patterns(context, &row_text(context, &row, "path_allow_write")?)?,
+        deny_read: decode_patterns(context, &row_text(context, &row, "path_deny_read")?)?,
+        deny_write: decode_patterns(context, &row_text(context, &row, "path_deny_write")?)?,
+    };
     let created_at: String = row
         .try_get("created_at")
         .map_err(|err| log_unknown(context, err))?;
@@ -52,10 +63,27 @@ fn chat_session_from_row(
         id: SessionId::from_uuid(parse_uuid(context, &id)?),
         workspace_id: WorkspaceId::from_uuid(parse_uuid(context, &workspace_id)?),
         title,
+        path_rules,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
         last_used_at: parse_timestamp(context, &last_used_at)?,
     })
+}
+
+fn row_text(
+    context: &'static str,
+    row: &SqliteRow,
+    column: &'static str,
+) -> Result<String, ServiceError> {
+    row.try_get(column).map_err(|err| log_unknown(context, err))
+}
+
+fn decode_patterns(context: &'static str, value: &str) -> Result<Vec<String>, ServiceError> {
+    serde_json::from_str(value).map_err(|err| log_unknown(context, err))
+}
+
+fn encode_patterns(patterns: &[String]) -> Result<String, ServiceError> {
+    serde_json::to_string(patterns).map_err(|err| log_unknown("encode path rules", err))
 }
 
 fn parse_uuid(context: &'static str, value: &str) -> Result<Uuid, ServiceError> {
@@ -87,16 +115,28 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let id = SessionId::new();
         let now = Utc::now();
         let timestamp = now.to_rfc3339();
+        let path_rules = PathRules::default();
+        let allow_read = encode_patterns(&path_rules.allow_read)?;
+        let allow_write = encode_patterns(&path_rules.allow_write)?;
+        let deny_read = encode_patterns(&path_rules.deny_read)?;
+        let deny_write = encode_patterns(&path_rules.deny_write)?;
 
         sqlx::query(
             r#"
-            INSERT INTO chat_sessions (id, workspace_id, title, created_at, updated_at, last_used_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO chat_sessions (
+                id, workspace_id, title, path_allow_read, path_allow_write,
+                path_deny_read, path_deny_write, created_at, updated_at, last_used_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
         )
         .bind(id.to_string())
         .bind(command.workspace_id.to_string())
         .bind(&command.title)
+        .bind(&allow_read)
+        .bind(&allow_write)
+        .bind(&deny_read)
+        .bind(&deny_write)
         .bind(&timestamp)
         .bind(&timestamp)
         .bind(&timestamp)
@@ -113,6 +153,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             id,
             workspace_id: command.workspace_id,
             title: command.title,
+            path_rules,
             created_at: now,
             updated_at: now,
             last_used_at: now,
@@ -120,13 +161,9 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
     }
 
     async fn get_chat_session(&self, id: SessionId) -> Result<Option<ChatSession>, ServiceError> {
-        let row = sqlx::query(
-            r#"
-            SELECT id, workspace_id, title, created_at, updated_at, last_used_at
-            FROM chat_sessions
-            WHERE id = ?1
-            "#,
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {SESSION_COLUMNS} FROM chat_sessions WHERE id = ?1"
+        ))
         .bind(id.to_string())
         .fetch_optional(self.pool.as_ref())
         .await
@@ -140,14 +177,9 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         &self,
         workspace_id: Option<WorkspaceId>,
     ) -> Result<Vec<ChatSession>, ServiceError> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, workspace_id, title, created_at, updated_at, last_used_at
-            FROM chat_sessions
-            WHERE (?1 IS NULL OR workspace_id = ?1)
-            ORDER BY last_used_at DESC, id DESC
-            "#,
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {SESSION_COLUMNS} FROM chat_sessions WHERE (?1 IS NULL OR workspace_id = ?1) ORDER BY last_used_at DESC, id DESC"
+        ))
         .bind(workspace_id.map(|id| id.to_string()))
         .fetch_all(self.pool.as_ref())
         .await
@@ -162,28 +194,41 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         &self,
         command: UpdateChatSessionCommand,
     ) -> Result<ChatSession, ServiceError> {
-        let updated_at = Utc::now().to_rfc3339();
-        let result = sqlx::query(
+        let Some(mut session) = self.get_chat_session(command.id).await? else {
+            return Err(ServiceError::NotFound(command.id.to_string()));
+        };
+        if !apply_session_update(&mut session, &command) {
+            return Ok(session);
+        }
+        session.updated_at = Utc::now();
+        let allow_read = encode_patterns(&session.path_rules.allow_read)?;
+        let allow_write = encode_patterns(&session.path_rules.allow_write)?;
+        let deny_read = encode_patterns(&session.path_rules.deny_read)?;
+        let deny_write = encode_patterns(&session.path_rules.deny_write)?;
+        sqlx::query(
             r#"
             UPDATE chat_sessions
-            SET title = ?1, updated_at = ?2
-            WHERE id = ?3
+            SET title = ?1,
+                path_allow_read = ?2,
+                path_allow_write = ?3,
+                path_deny_read = ?4,
+                path_deny_write = ?5,
+                updated_at = ?6
+            WHERE id = ?7
             "#,
         )
-        .bind(&command.title)
-        .bind(&updated_at)
+        .bind(&session.title)
+        .bind(&allow_read)
+        .bind(&allow_write)
+        .bind(&deny_read)
+        .bind(&deny_write)
+        .bind(session.updated_at.to_rfc3339())
         .bind(command.id.to_string())
         .execute(self.pool.as_ref())
         .await
         .map_err(|err| log_unknown("update_chat_session: update", err))?;
 
-        if result.rows_affected() == 0 {
-            return Err(ServiceError::NotFound(command.id.to_string()));
-        }
-
-        self.get_chat_session(command.id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(command.id.to_string()))
+        Ok(session)
     }
 
     async fn set_title_if_unset(
@@ -412,10 +457,7 @@ mod tests {
             .unwrap();
 
         let updated = repo
-            .update_chat_session(UpdateChatSessionCommand {
-                id: created.id,
-                title: "After".into(),
-            })
+            .update_chat_session(UpdateChatSessionCommand::rename(created.id, "After"))
             .await
             .unwrap();
 
@@ -427,12 +469,9 @@ mod tests {
 
         let missing = SessionId::new();
         assert_eq!(
-            repo.update_chat_session(UpdateChatSessionCommand {
-                id: missing,
-                title: "Nope".into(),
-            })
-            .await
-            .unwrap_err(),
+            repo.update_chat_session(UpdateChatSessionCommand::rename(missing, "Nope"))
+                .await
+                .unwrap_err(),
             ServiceError::NotFound(missing.to_string())
         );
     }
@@ -481,6 +520,45 @@ mod tests {
                 .unwrap_err(),
             ServiceError::NotFound(missing.to_string())
         );
+    }
+
+    #[test]
+    fn path_rule_columns_default_to_empty_lists() {
+        let sql = include_str!("../../../migrations/0001_chat_sessions.sql");
+        assert!(sql.contains("path_deny_read TEXT NOT NULL DEFAULT '[]'"));
+        assert!(sql.contains("path_deny_write TEXT NOT NULL DEFAULT '[]'"));
+    }
+
+    #[tokio::test]
+    async fn create_stores_default_path_rules_and_patch_replaces_one_list() {
+        let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
+        let created = repo
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id,
+                title: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.path_rules, PathRules::default());
+
+        let updated = repo
+            .update_chat_session(UpdateChatSessionCommand {
+                id: created.id,
+                title: None,
+                allow_read: Some(vec![r"^src/\.env$".into()]),
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated.path_rules.allow_read, vec![r"^src/\.env$"]);
+        assert!(updated.path_rules.allow_write.is_empty());
+        assert_eq!(updated.path_rules.deny_read, created.path_rules.deny_read);
+        assert_eq!(updated.last_used_at, created.last_used_at);
+        assert!(updated.updated_at >= created.updated_at);
     }
 
     #[tokio::test]

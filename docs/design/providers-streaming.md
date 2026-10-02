@@ -112,8 +112,10 @@ transcript holds no system message. Build the request with
 `{"role":"system","content": settings.system_prompt}` prepended.
 
 **Rejected:** adding `Role::System` to `robi-core`. That is a core change for a
-provider-shaped concern, and prompt assembly belongs in a `robi-core::prompt`
-module, which M3's project-instructions work will introduce anyway.
+provider-shaped concern. `robi-core::prompt` renders ordered blocks.
+`crates/robi::prompt` loads the sources, including the registered tools, and
+the model source stores the result on `settings.system_prompt`. See
+[instructions.md](instructions.md).
 
 **Consequence, accepted:** a session record cannot show what the model was told,
 because the system prompt never enters the transcript.

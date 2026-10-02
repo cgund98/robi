@@ -82,10 +82,7 @@ async fn main() {
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
         events: Arc::new(FanOutEventSink::new(Arc::clone(&event_fanout))),
-        models: Arc::new(SettingsModelSource::new(
-            Arc::clone(&settings),
-            Arc::clone(&tools),
-        )),
+        models: Arc::new(SettingsModelSource::new(Arc::clone(&settings))),
         tools,
         config: LoopConfig::default(),
         sessions: Some(Arc::clone(&chat_session_service)),

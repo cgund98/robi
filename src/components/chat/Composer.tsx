@@ -7,6 +7,8 @@ type ComposerProps = {
   disabled: boolean
   phase: AgentPhase
   onSubmit: (text: string) => Promise<boolean>
+  /** Centered card on an empty chat. Dock keeps the field at the bottom of a thread. */
+  placement?: 'dock' | 'welcome'
 }
 
 function statusLabel(phase: AgentPhase): string {
@@ -19,10 +21,11 @@ function statusLabel(phase: AgentPhase): string {
   return 'Idle'
 }
 
-export function Composer({ disabled, phase, onSubmit }: ComposerProps) {
+export function Composer({ disabled, phase, onSubmit, placement = 'dock' }: ComposerProps) {
   const [draft, setDraft] = useState('')
   const label = statusLabel(phase)
   const canSend = !disabled && draft.trim().length > 0
+  const welcome = placement === 'welcome'
 
   async function submit() {
     if (!canSend) {
@@ -34,13 +37,28 @@ export function Composer({ disabled, phase, onSubmit }: ComposerProps) {
     }
   }
 
+  const controls = (
+    <div className={styles.cluster}>
+      <button type="button" className={styles.control}>
+        Model ▾
+      </button>
+      <button type="button" className={styles.control}>
+        Extra high ▾
+      </button>
+      <span
+        className={`${styles.status} ${phase === 'idle' ? '' : styles.statusBusy}`}
+        title={label}
+      />
+    </div>
+  )
+
   return (
-    <div className={styles.composer}>
+    <div className={welcome ? styles.welcome : styles.composer}>
       <div className={styles.column}>
-        <div className={styles.field}>
+        <div className={welcome ? styles.card : styles.field}>
           <textarea
-            className={styles.input}
-            rows={1}
+            className={welcome ? styles.cardInput : styles.input}
+            rows={welcome ? 2 : 1}
             placeholder="Describe a task or ask a question"
             value={draft}
             disabled={disabled}
@@ -53,31 +71,33 @@ export function Composer({ disabled, phase, onSubmit }: ComposerProps) {
             }}
             aria-label="Message"
           />
-          <button
-            type="button"
-            className={styles.send}
-            disabled={!canSend}
-            aria-label="Send"
-            onClick={() => void submit()}
-          >
-            ⏎
-          </button>
+          {welcome ? (
+            <div className={styles.cardBar}>
+              {controls}
+              <button
+                type="button"
+                className={styles.send}
+                disabled={!canSend}
+                aria-label="Send"
+                onClick={() => void submit()}
+              >
+                ⏎
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className={styles.send}
+              disabled={!canSend}
+              aria-label="Send"
+              onClick={() => void submit()}
+            >
+              ⏎
+            </button>
+          )}
         </div>
 
-        <div className={styles.toolbar}>
-          <div className={styles.cluster}>
-            <button type="button" className={styles.control}>
-              Model ▾
-            </button>
-            <button type="button" className={styles.control}>
-              Extra high ▾
-            </button>
-            <span
-              className={`${styles.status} ${phase === 'idle' ? '' : styles.statusBusy}`}
-              title={label}
-            />
-          </div>
-        </div>
+        {welcome ? null : <div className={styles.toolbar}>{controls}</div>}
       </div>
     </div>
   )

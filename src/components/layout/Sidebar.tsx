@@ -7,6 +7,7 @@ import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 type SidebarProps = {
   sessions: ChatSession[]
   activeSessionId: string
+  draftSelected?: boolean
   disabled?: boolean
   onSelectSession: (id: string) => void
   onNewSession: () => void
@@ -17,6 +18,7 @@ type SidebarProps = {
 export function Sidebar({
   sessions,
   activeSessionId,
+  draftSelected = false,
   disabled = false,
   onSelectSession,
   onNewSession,
@@ -31,14 +33,53 @@ export function Sidebar({
 
       <button
         type="button"
-        className={styles.newSession}
+        className={styles.navLink}
+        disabled={disabled}
+        onClick={() => navigate('/workspaces')}
+      >
+        <span className={styles.navIcon} aria-hidden>
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+        </span>
+        Workspaces
+      </button>
+
+      <button
+        type="button"
+        className={`${styles.navLink} ${draftSelected ? styles.navLinkActive : ''}`}
         onClick={onNewSession}
         disabled={disabled}
+        aria-current={draftSelected ? 'page' : undefined}
       >
-        <span className={styles.newSessionIcon} aria-hidden>
-          +
+        <span className={styles.navIcon} aria-hidden>
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+          </svg>
         </span>
-        New
+        New chat
       </button>
 
       <div className={styles.section}>
@@ -89,39 +130,14 @@ export function Sidebar({
       <div className={styles.footer}>
         <button
           type="button"
-          className={styles.settings}
-          disabled={disabled}
-          onClick={() => navigate('/workspaces')}
-        >
-          <span className={styles.settingsIcon} aria-hidden>
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <rect x="3" y="3" width="7" height="7" rx="1.5" />
-              <rect x="14" y="3" width="7" height="7" rx="1.5" />
-              <rect x="3" y="14" width="7" height="7" rx="1.5" />
-              <rect x="14" y="14" width="7" height="7" rx="1.5" />
-            </svg>
-          </span>
-          Workspaces
-        </button>
-        <button
-          type="button"
-          className={styles.settings}
+          className={styles.navLink}
           disabled={disabled}
           onClick={() => navigate('/settings/providers')}
         >
-          <span className={styles.settingsIcon} aria-hidden>
+          <span className={styles.navIcon} aria-hidden>
             <svg
-              width="14"
-              height="14"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"

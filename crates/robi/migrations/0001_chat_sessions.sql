@@ -1,7 +1,21 @@
+CREATE TABLE workspaces (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    root TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_workspaces_created
+ON workspaces(created_at DESC, id DESC);
+
 CREATE TABLE chat_sessions (
     id TEXT PRIMARY KEY NOT NULL,
-    workspace_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     title TEXT,
+    path_allow_read TEXT NOT NULL DEFAULT '[]',
+    path_allow_write TEXT NOT NULL DEFAULT '[]',
+    path_deny_read TEXT NOT NULL DEFAULT '[]',
+    path_deny_write TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_used_at TEXT NOT NULL

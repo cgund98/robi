@@ -1,0 +1,160 @@
+.call {
+  width: 100%;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  margin: 0;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:disabled {
+  cursor: default;
+}
+
+.icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ink-muted);
+}
+
+.verb {
+  flex: none;
+  color: var(--ink);
+}
+
+.target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+}
+
+.rowFailed .verb,
+.rowFailed .target {
+  color: var(--danger);
+}
+
+.spinner {
+  margin-left: auto;
+  flex: none;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--rule);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.detail,
+.error {
+  margin: var(--space-1) 0 var(--space-2);
+  padding: var(--space-3);
+  max-height: 18rem;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  color: var(--code-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.error {
+  color: var(--danger);
+}
+
+.codeLine,
+.plainLine {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.lineNo {
+  width: 2.5rem;
+  flex: none;
+  color: var(--ink-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.approval {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  box-sizing: border-box;
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+}
+
+.approvalText {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.reject,
+.run {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.reject {
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.run {
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg-surface-active);
+  color: var(--ink-strong);
+  border-radius: var(--radius-sm);
+}
+
+.reject:disabled,
+.run:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-top-color: var(--accent);
+  }
+}

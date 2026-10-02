@@ -13,11 +13,13 @@
 
   --ink: #c3c2b8;
   --ink-strong: #ecece8;
+  --ink-bright: #f7f6f2;
   --ink-muted: #8a8983;
   --ink-faint: #5c5c57;
 
   --accent: #55a2fb;
   --accent-muted: #3a6fa8;
+  --mark: #e07a5f;
 
   --code-bg: #1a1a19;
   --code-ink: #d4d3cb;

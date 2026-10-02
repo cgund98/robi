@@ -76,10 +76,10 @@ and no `user_id`.
 
 ### Schema
 
-Migration `crates/robi/migrations/0001_chat_sessions.sql` creates the chat
-tables. `0002_workspaces.sql` adds workspaces and rebuilds `chat_sessions` so
-`workspace_id` references that table. Rows written before a workspace had a
-root are deleted by that migration.
+Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
+chat sessions, and chat messages. The four path-rule columns default to `[]`.
+They store session additions. The built-in secret and `.git` patterns are
+applied in code and are not written on the row.
 
 `workspaces`:
 
@@ -99,8 +99,12 @@ Index: `(created_at DESC, id DESC)`.
 | `id` | `TEXT PRIMARY KEY` | `SessionId`, UUIDv7, minted in the adapter |
 | `workspace_id` | `TEXT NOT NULL` | `WorkspaceId`. References `workspaces(id)` `ON DELETE CASCADE`. A chat session does not move workspaces |
 | `title` | `TEXT` | Null until set. At most 200 characters. The model writes it after the first turn when it is still null |
+| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny |
+| `path_allow_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that write through a deny |
+| `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
+| `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
-| `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on title change |
+| `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change or a path-rule edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
 
 Index: `(workspace_id, last_used_at DESC, id DESC)`.
@@ -140,7 +144,7 @@ Base path `/api/v1`. One error body, `{ "error": "..." }`.
 | `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID or `title` is longer than 200 characters, `404` if that workspace does not exist |
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
-| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` or `title` is invalid |
+| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, or a path pattern is not a regex |
 | `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID |
 
 `POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
@@ -151,9 +155,13 @@ component. `GET /workspaces` orders by `created_at DESC, id DESC`.
 as null. After a turn completes, the model writes a title when the column is
 still null. A title passed on create is kept, and the model does not replace
 it. That call is specified in [chat-runtime.md](chat-runtime.md).
-`PATCH` body is `{ "title" }`. It updates `updated_at` and leaves
-`last_used_at` and `workspace_id` alone. A body Axum cannot deserialize is
-rejected by Axum (422), which is separate from a title the service refuses.
+`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"? }`.
+Each field is optional. An omitted field stays as stored. A present path list
+replaces that list. `updated_at` moves when any field is present.
+`last_used_at` and `workspace_id` stay put. An empty body returns the session
+unchanged. A body Axum cannot deserialize is rejected by Axum (422), which is
+separate from a title or a pattern the service refuses. The lists and how
+tools match them are in [read-tools.md](read-tools.md).
 
 `GET /chat_sessions` orders by `last_used_at DESC, id DESC`. An optional
 `workspace_id` query parameter limits the list to one workspace. There is no
@@ -171,10 +179,14 @@ is read from the runtime's in-memory slots. It is not a column.
 | `POST` | `/chat_sessions/{id}/messages` | `202` `{ "status": "accepted" }` | `400` if `id` is not a UUID or `instruction` is empty or whitespace, `404` if the chat session is missing, `409` if the transcript is waiting on a tool approval |
 | `GET` | `/chat_sessions/{id}/messages` | `200` transcript, in order | `404` if the chat session is missing, `400` if `id` is not a UUID |
 | `GET` | `/chat_sessions/{id}/messages/{message_id}` | `200` one message | `404` if the chat session or the message is missing, `400` if either id is not a UUID |
+| `POST` | `/chat_sessions/{id}/tool_calls/{call_id}` | `202` `{ "status": "accepted" }` | `400` if an id is not a UUID or `decision` is not `approve` or `reject`, `404` if the chat session is missing, `409` if the actor is running |
 
-`POST` body is `{ "instruction" }`. The handler returns once the session actor
-has taken the instruction. The actor, the factory, and the interrupt rules are
-in [chat-runtime.md](chat-runtime.md).
+`POST` of a message body is `{ "instruction" }`. The handler returns once the
+session actor has taken the instruction. `POST` of a tool call body is
+`{ "decision": "approve" | "reject", "reason"?: string }`. `approve` runs the
+call. `reject` refuses it; an empty reason becomes `rejected by the user`. The
+actor then resumes the paused turn. The actor, the factory, and the interrupt
+rules are in [chat-runtime.md](chat-runtime.md).
 
 `GET` of the list and `GET` of one message return each message's id, role,
 content, tool calls, and tool-call id. The list calls `MessageStore::messages`.
@@ -210,6 +222,7 @@ that is not in this list is `400`.
 | `model` | no | `glm-5.3`, written on the first read when the key is absent |
 | `reasoning_effort` | no | None. Optional `low`, `medium`, or `high` |
 | `base_url` | no | None. Optional provider base URL |
+| `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
 
 A read of an absent key that has a default calls the same write as `PUT`: the
 value is stored in memory and both files are rewritten, then the read returns
@@ -268,7 +281,7 @@ path.
 
 The shell shows one workspace at a time. The active id is
 `localStorage` key `robi.activeWorkspaceId`. `/workspaces` is the list: search,
-sort, create, and open. The sidebar footer links there, and an empty list
+sort, create, and open. The sidebar links there under the workspace dropdown, and an empty list
 opens that page instead of the chat. The workspace dropdown at the top of the
 sidebar still switches the active workspace without leaving the chat. Add opens the system
 folder dialog in the desktop window, and asks for a path in a normal browser.
@@ -337,11 +350,13 @@ rules are in [events-sse.md](events-sse.md).
   of a missing path and of a file, list order, and delete cascading to
   `chat_sessions` and `chat_messages`.
 - `ChatSessionService` tests use a fake `ChatSessionRepository`: create with and without
-  a title, missing get, list filter, missing update, a null title written once
+  a title, empty path lists on create, a path pattern that does not compile,
+  missing get, list filter, missing update, a null title written once
   and not replaced, an empty or oversized generated title refused, delete, and create against
   an unknown workspace.
 - `SqliteChatSessionRepository` tests use a shared-cache in-memory pool: round trip, list order,
-  title update leaving `last_used_at` in place, a null title written once and
+  title update leaving `last_used_at` in place, empty path lists on create,
+  a patch of one list leaving the others, a null title written once and
   not replaced, delete of a missing row,
   create when the workspace row is absent, and
   cascade from `chat_sessions` to `chat_messages`.

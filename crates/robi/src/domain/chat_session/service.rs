@@ -59,7 +59,15 @@ impl ChatSessionService {
         &self,
         command: UpdateChatSessionCommand,
     ) -> Result<ChatSession, ServiceError> {
-        validate_title(&command.title)?;
+        if let Some(title) = &command.title {
+            validate_title(title)?;
+        }
+        command
+            .validate_patterns()
+            .map_err(ServiceError::BadRequest)?;
+        if command.is_empty() {
+            return self.get_chat_session(command.id).await;
+        }
         self.repository.update_chat_session(command).await
     }
 
@@ -120,7 +128,8 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        chat_session::model::UpdateChatSessionCommand, workspace::repo::AnyWorkspace,
+        chat_session::model::{apply_session_update, PathRules, UpdateChatSessionCommand},
+        workspace::repo::AnyWorkspace,
     };
 
     struct FakeRepo {
@@ -150,6 +159,7 @@ mod tests {
                 id: SessionId::new(),
                 workspace_id: command.workspace_id,
                 title: command.title,
+                path_rules: PathRules::default(),
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,
@@ -195,8 +205,9 @@ mod tests {
             let session = sessions
                 .get_mut(&command.id)
                 .ok_or_else(|| ServiceError::NotFound(command.id.to_string()))?;
-            session.title = Some(command.title);
-            session.updated_at = Utc::now();
+            if apply_session_update(session, &command) {
+                session.updated_at = Utc::now();
+            }
             Ok(session.clone())
         }
 
@@ -458,13 +469,57 @@ mod tests {
         let service = service();
         let id = SessionId::new();
         let error = service
-            .update_chat_session(UpdateChatSessionCommand {
-                id,
-                title: "Renamed".into(),
-            })
+            .update_chat_session(UpdateChatSessionCommand::rename(id, "Renamed"))
             .await
             .unwrap_err();
         assert_eq!(error, ServiceError::NotFound(id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn create_stores_the_default_path_rules() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(session.path_rules, PathRules::default());
+        assert!(session.path_rules.deny_read.is_empty());
+        assert!(session.path_rules.deny_write.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_rejects_an_invalid_path_pattern() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        let error = service
+            .update_chat_session(UpdateChatSessionCommand {
+                id: session.id,
+                title: None,
+                allow_read: Some(vec!["[".into()]),
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ServiceError::BadRequest(_)));
+        assert_eq!(
+            service
+                .get_chat_session(session.id)
+                .await
+                .unwrap()
+                .path_rules,
+            PathRules::default()
+        );
     }
 
     #[tokio::test]

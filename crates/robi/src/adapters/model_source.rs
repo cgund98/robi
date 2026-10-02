@@ -22,7 +22,15 @@ use crate::providers::{build_model, ApiKey, ModelId, ProviderSettings, Reasoning
 /// The model a new session actor should hold.
 #[async_trait]
 pub trait ModelSource: Send + Sync {
-    async fn model(&self) -> Result<Arc<dyn Model>, ServiceError>;
+    /// Build the model for one actor.
+    ///
+    /// `tools` is the registry that actor will execute, so the provider is
+    /// offered the same tools.
+    async fn model(
+        &self,
+        tools: Arc<ToolRegistry>,
+        workspace: Option<std::path::PathBuf>,
+    ) -> Result<Arc<dyn Model>, ServiceError>;
 }
 
 /// Returns one model. Runtime tests use this so they do not need settings files.
@@ -38,7 +46,11 @@ impl FixedModelSource {
 
 #[async_trait]
 impl ModelSource for FixedModelSource {
-    async fn model(&self) -> Result<Arc<dyn Model>, ServiceError> {
+    async fn model(
+        &self,
+        _tools: Arc<ToolRegistry>,
+        _workspace: Option<std::path::PathBuf>,
+    ) -> Result<Arc<dyn Model>, ServiceError> {
         Ok(Arc::clone(&self.model))
     }
 }
@@ -46,12 +58,11 @@ impl ModelSource for FixedModelSource {
 /// Resolves provider settings from the store, then builds a model.
 pub struct SettingsModelSource {
     settings: Arc<dyn SettingsStore>,
-    tools: Arc<ToolRegistry>,
 }
 
 impl SettingsModelSource {
-    pub fn new(settings: Arc<dyn SettingsStore>, tools: Arc<ToolRegistry>) -> Self {
-        Self { settings, tools }
+    pub fn new(settings: Arc<dyn SettingsStore>) -> Self {
+        Self { settings }
     }
 
     async fn provider_settings(&self) -> Result<ProviderSettings, ServiceError> {
@@ -85,9 +96,24 @@ impl SettingsModelSource {
 
 #[async_trait]
 impl ModelSource for SettingsModelSource {
-    async fn model(&self) -> Result<Arc<dyn Model>, ServiceError> {
-        let settings = self.provider_settings().await?;
-        build_model(settings, Arc::clone(&self.tools))
+    async fn model(
+        &self,
+        tools: Arc<ToolRegistry>,
+        workspace: Option<std::path::PathBuf>,
+    ) -> Result<Arc<dyn Model>, ServiceError> {
+        let mut settings = self.provider_settings().await?;
+        let user_prompt = match self.settings.get(keys::SYSTEM_PROMPT).await? {
+            Some(setting) if !setting.value.trim().is_empty() => Some(setting.value),
+            _ => None,
+        };
+        settings.system_prompt = crate::prompt::assemble_session(crate::prompt::SessionPrompt {
+            tools: &tools,
+            user_prompt,
+            config_dir: crate::adapters::settings::home_dir().ok(),
+            workspace,
+            max_bytes: crate::prompt::DEFAULT_MAX_BYTES,
+        });
+        build_model(settings, tools)
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }
 }
@@ -124,9 +150,10 @@ mod tests {
             .set(keys::REASONING_EFFORT, "low".into(), false)
             .await
             .unwrap();
-        let source = SettingsModelSource::new(store.clone(), Arc::new(ToolRegistry::new()));
+        let source = SettingsModelSource::new(store.clone());
+        let tools = Arc::new(ToolRegistry::new());
 
-        let first = source.model().await.unwrap();
+        let first = source.model(Arc::clone(&tools), None).await.unwrap();
         let first_settings = source.provider_settings().await.unwrap();
         assert_eq!(first_settings.api_key.expose(), "sk-one");
         assert_eq!(first_settings.model.as_str(), keys::DEFAULT_MODEL);
@@ -145,7 +172,7 @@ mod tests {
             .await
             .unwrap();
 
-        let second = source.model().await.unwrap();
+        let second = source.model(tools, None).await.unwrap();
         let second_settings = source.provider_settings().await.unwrap();
         assert_eq!(second_settings.api_key.expose(), "sk-two");
         assert_eq!(second_settings.model.as_str(), "glm-5.2");
@@ -158,11 +185,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_key_refuses_to_build() {
-        let source = SettingsModelSource::new(
-            Arc::new(MemorySettingsStore::new()),
-            Arc::new(ToolRegistry::new()),
-        );
-        let error = match source.model().await {
+        let source = SettingsModelSource::new(Arc::new(MemorySettingsStore::new()));
+        let error = match source.model(Arc::new(ToolRegistry::new()), None).await {
             Ok(_) => panic!("a missing key must not build a model"),
             Err(error) => error,
         };

@@ -282,6 +282,59 @@
         }
       }
     },
+    "/api/v1/chat_sessions/{id}/tool_calls/{call_id}": {
+      "post": {
+        "tags": [
+          "chat_message"
+        ],
+        "operationId": "decide_tool_call",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "Tool call id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideToolCall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Decision accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedInstruction"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Chat session is running"
+          }
+        }
+      }
+    },
     "/api/v1/events/stream": {
       "get": {
         "tags": [
@@ -570,6 +623,10 @@
         "required": [
           "id",
           "workspace_id",
+          "path_allow_read",
+          "path_allow_write",
+          "path_deny_read",
+          "path_deny_write",
           "created_at",
           "updated_at",
           "last_used_at",
@@ -588,6 +645,30 @@
           },
           "last_used_at": {
             "type": "string"
+          },
+          "path_allow_read": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path_allow_write": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path_deny_read": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path_deny_write": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "title": {
             "type": [
@@ -666,6 +747,25 @@
           }
         }
       },
+      "DecideToolCall": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "description": "`approve` runs the call. `reject` refuses it."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Shown to the model when `decision` is `reject`. Omitted uses a default."
+          }
+        }
+      },
       "SetSetting": {
         "type": "object",
         "required": [
@@ -717,12 +817,53 @@
       },
       "UpdateChatSession": {
         "type": "object",
-        "required": [
-          "title"
-        ],
         "properties": {
+          "path_allow_read": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Extra read-allow regexes, appended after the built-in list. The furthest match wins; at the same end byte, more literals win."
+          },
+          "path_allow_write": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Regexes. Ranked the same way as read allows. A parent match does not outrank a more specific write deny."
+          },
+          "path_deny_read": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Regexes matched against the workspace-relative path. A match denies a read."
+          },
+          "path_deny_write": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Regexes matched against the workspace-relative path. A match denies a write."
+          },
           "title": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When set, replaces the title. Omitted leaves the stored title alone."
           }
         }
       },

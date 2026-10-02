@@ -2,11 +2,15 @@
 //!
 //! `providers` reaches model APIs. `domain` is the HTTP API's model and
 //! services, `adapters` is SQLite and the settings files, and `web_api` is the
-//! Axum surface. The `robi-api` binary wires those three. Tools and workspace
-//! follow in later milestones, each as its own module here rather than a new
-//! crate.
+//! Axum surface. `workspace` resolves paths and applies session path rules.
+//! `tools` is the read-only workspace tools. `prompt` assembles the system
+//! prompt from the built-in text, user settings, and instruction files. The
+//! `robi-api` binary wires them.
 
 pub mod adapters;
 pub mod domain;
+pub mod prompt;
 pub mod providers;
+pub mod tools;
 pub mod web_api;
+pub mod workspace;

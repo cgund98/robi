@@ -13,7 +13,7 @@ use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
 use robi_core::error::{StoreError, TurnOutcome};
 use robi_core::event::EventSink;
-use robi_core::ids::SessionId;
+use robi_core::ids::{SessionId, ToolCallId};
 use robi_core::message::{unresolved_turn, Message};
 use robi_core::model::Model;
 use robi_core::store::MessageStore;
@@ -49,21 +49,61 @@ pub struct AgentFactory {
 }
 
 impl AgentFactory {
-    fn build(&self, model: Arc<dyn Model>) -> Agent {
+    fn build(&self, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) -> Agent {
         Agent::new(
             Arc::clone(&self.store),
             Arc::clone(&self.events),
             model,
-            Arc::clone(&self.tools),
+            tools,
             self.config,
         )
     }
+
+    /// The tools this session's actor will run.
+    ///
+    /// A factory without chat session rows keeps the registry it was given.
+    /// Otherwise the actor gets the read tools closed over this session.
+    async fn session_registry(
+        &self,
+        session: SessionId,
+    ) -> Result<(Arc<ToolRegistry>, Option<std::path::PathBuf>), ServiceError> {
+        let Some(sessions) = &self.sessions else {
+            return Ok((Arc::clone(&self.tools), None));
+        };
+        let chat = sessions.get_chat_session(session).await?;
+        let workspace = sessions
+            .workspaces
+            .get_workspace(chat.workspace_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(chat.workspace_id.to_string()))?;
+        let root = std::path::PathBuf::from(&workspace.root);
+        let root = root.canonicalize().unwrap_or(root);
+        let registry = ToolRegistry::new();
+        let ctx = Arc::new(crate::tools::ToolContext {
+            session_id: session,
+            root: root.clone(),
+            sessions: Arc::clone(sessions),
+        });
+        crate::tools::register_read_tools(&registry, ctx).map_err(|err| {
+            tracing::error!(%err, "failed to register read tools");
+            ServiceError::Unknown
+        })?;
+        Ok((Arc::new(registry), Some(root)))
+    }
+}
+
+enum Work {
+    Instruction(String),
+    Decision {
+        call: ToolCallId,
+        reject: Option<String>,
+    },
 }
 
 #[derive(Default)]
 struct Slot {
     cancel: Option<CancellationToken>,
-    pending: Option<String>,
+    pending: Option<Work>,
     running: bool,
 }
 
@@ -81,8 +121,8 @@ impl SerializedChatRuntime {
         }
     }
 
-    fn spawn_actor(&self, session: SessionId, model: Arc<dyn Model>) {
-        let agent = self.factory.build(Arc::clone(&model));
+    fn spawn_actor(&self, session: SessionId, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) {
+        let agent = self.factory.build(Arc::clone(&model), tools);
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
@@ -97,6 +137,7 @@ impl SerializedChatRuntime {
         session: SessionId,
         instruction: String,
         model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
     ) -> Result<SubmitOutcome, ServiceError> {
         let mut slots = self.slots.lock().await;
         let slot = slots.entry(session).or_default();
@@ -105,10 +146,30 @@ impl SerializedChatRuntime {
             return Ok(SubmitOutcome::Accepted);
         }
         slot.running = true;
-        slot.pending = Some(instruction);
+        slot.pending = Some(Work::Instruction(instruction));
         drop(slots);
-        self.spawn_actor(session, model);
+        self.spawn_actor(session, model, tools);
         Ok(SubmitOutcome::Accepted)
+    }
+
+    async fn start_decision(
+        &self,
+        session: SessionId,
+        call: ToolCallId,
+        reject: Option<String>,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+    ) -> Result<(), ServiceError> {
+        let mut slots = self.slots.lock().await;
+        let slot = slots.entry(session).or_default();
+        if slot.running {
+            return Err(ServiceError::Conflict("chat session is running".into()));
+        }
+        slot.running = true;
+        slot.pending = Some(Work::Decision { call, reject });
+        drop(slots);
+        self.spawn_actor(session, model, tools);
+        Ok(())
     }
 
     async fn actor_running(&self, session: SessionId) -> bool {
@@ -149,8 +210,32 @@ impl ChatRuntime for SerializedChatRuntime {
 
         // Resolve before the slot is marked running, so a missing key does not
         // leave an actor that will never start.
-        let model = self.factory.models.model().await?;
-        self.start_actor(session, instruction, model).await
+        let (tools, workspace) = self.factory.session_registry(session).await?;
+        let model = self
+            .factory
+            .models
+            .model(Arc::clone(&tools), workspace)
+            .await?;
+        self.start_actor(session, instruction, model, tools).await
+    }
+
+    async fn decide(
+        &self,
+        session: SessionId,
+        call: ToolCallId,
+        reject: Option<String>,
+    ) -> Result<(), ServiceError> {
+        if self.actor_running(session).await {
+            return Err(ServiceError::Conflict("chat session is running".into()));
+        }
+        let (tools, workspace) = self.factory.session_registry(session).await?;
+        let model = self
+            .factory
+            .models
+            .model(Arc::clone(&tools), workspace)
+            .await?;
+        self.start_decision(session, call, reject, model, tools)
+            .await
     }
 
     async fn running_session_ids(&self) -> Vec<SessionId> {
@@ -185,7 +270,7 @@ fn replace_pending(slot: &mut Slot, instruction: String) {
     if let Some(cancel) = &slot.cancel {
         cancel.cancel();
     }
-    slot.pending = Some(instruction);
+    slot.pending = Some(Work::Instruction(instruction));
 }
 
 async fn awaiting_approval(
@@ -199,6 +284,23 @@ async fn awaiting_approval(
 fn transcript_awaits_approval(messages: &[Message]) -> bool {
     unresolved_turn(messages)
         .is_some_and(|index| messages[index].pending_approval_calls().next().is_some())
+}
+
+async fn decide_then_resume(
+    agent: &Agent,
+    session: SessionId,
+    call: ToolCallId,
+    reject: Option<String>,
+    cancel: CancellationToken,
+) -> TurnOutcome {
+    let settled = match &reject {
+        Some(reason) => agent.reject(session, call, reason).await,
+        None => agent.approve(session, call).await,
+    };
+    if let Err(error) = settled {
+        return TurnOutcome::Failed(error);
+    }
+    agent.resume(session, cancel).await
 }
 
 fn map_store(error: StoreError) -> ServiceError {
@@ -221,22 +323,27 @@ async fn run_actor(
     session: SessionId,
 ) {
     loop {
-        let (instruction, cancel) = {
+        let (work, cancel) = {
             let mut guard = slots.lock().await;
             let Some(slot) = guard.get_mut(&session) else {
                 return;
             };
-            let Some(instruction) = slot.pending.take() else {
+            let Some(work) = slot.pending.take() else {
                 slot.running = false;
                 slot.cancel = None;
                 return;
             };
             let cancel = CancellationToken::new();
             slot.cancel = Some(cancel.clone());
-            (instruction, cancel)
+            (work, cancel)
         };
 
-        let outcome = agent.user_input(session, &instruction, cancel).await;
+        let outcome = match work {
+            Work::Instruction(instruction) => agent.user_input(session, &instruction, cancel).await,
+            Work::Decision { call, reject } => {
+                decide_then_resume(&agent, session, call, reject, cancel).await
+            }
+        };
         match &outcome {
             TurnOutcome::Failed(error) => {
                 tracing::warn!(%session, %error, "chat turn failed");
@@ -589,7 +696,11 @@ mod tests {
 
     #[async_trait]
     impl ModelSource for FailSource {
-        async fn model(&self) -> Result<Arc<dyn Model>, ServiceError> {
+        async fn model(
+            &self,
+            _tools: Arc<ToolRegistry>,
+            _workspace: Option<std::path::PathBuf>,
+        ) -> Result<Arc<dyn Model>, ServiceError> {
             Err(ServiceError::BadRequest(
                 "opencode_go_api_key is not set".into(),
             ))
@@ -852,6 +963,7 @@ mod tests {
                 id,
                 workspace_id: WorkspaceId::new(),
                 title,
+                path_rules: crate::domain::chat_session::model::PathRules::default(),
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,

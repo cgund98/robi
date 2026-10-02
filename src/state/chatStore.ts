@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import { listMessages, submitInstruction, type ChatMessage } from '../api/messages'
+import { decideToolCall, listMessages, submitInstruction, type ChatMessage } from '../api/messages'
 import {
   ApiError,
   createSession,
@@ -33,6 +33,7 @@ type ChatState = {
   selectSession: (id: string) => Promise<void>
   selectDraft: () => void
   sendInstruction: (instruction: string) => Promise<boolean>
+  decideCall: (sessionId: string, callId: string, decision: 'approve' | 'reject') => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
   removeSession: (id: string) => Promise<void>
   upsertMessage: (sessionId: string, message: ChatMessage) => void
@@ -302,6 +303,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set({ busy: false, error: errorText(err, 'Failed to send message') })
       return false
+    }
+  },
+
+  decideCall: async (sessionId, callId, decision) => {
+    set((state) => ({
+      busy: true,
+      error: null,
+      phaseBySession: { ...state.phaseBySession, [sessionId]: 'thinking' }
+    }))
+    try {
+      await decideToolCall(sessionId, callId, decision)
+      set({ busy: false })
+    } catch (err) {
+      set((state) => ({
+        busy: false,
+        error: errorText(err, 'Failed to settle the tool call'),
+        phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
+      }))
     }
   },
 

@@ -1,0 +1,35 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.button:hover {
+  color: var(--ink);
+  background: var(--bg-surface-hover);
+}
+
+.button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tooltip {
+  z-index: 20;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+}

@@ -16,6 +16,9 @@ pub const REASONING_EFFORT: &str = "reasoning_effort";
 /// Optional provider base URL. Not a secret. Unset leaves the provider default.
 pub const BASE_URL: &str = "base_url";
 
+/// Extra system-prompt text. Not a secret. Unset adds no user block.
+pub const SYSTEM_PROMPT: &str = "system_prompt";
+
 /// Used when [`MODEL`] has not been stored yet.
 pub const DEFAULT_MODEL: &str = "glm-5.3";
 
@@ -37,7 +40,7 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
             secret: false,
             default_value: Some(DEFAULT_MODEL),
         }),
-        REASONING_EFFORT | BASE_URL => Some(KnownSetting {
+        REASONING_EFFORT | BASE_URL | SYSTEM_PROMPT => Some(KnownSetting {
             secret: false,
             default_value: None,
         }),

@@ -30,6 +30,24 @@ export async function getMessage(sessionId: string, messageId: string): Promise<
   )
 }
 
+export async function decideToolCall(
+  sessionId: string,
+  callId: string,
+  decision: 'approve' | 'reject'
+): Promise<void> {
+  const result = await api.POST('/api/v1/chat_sessions/{id}/tool_calls/{call_id}', {
+    params: { path: { id: sessionId, call_id: callId } },
+    body: { decision }
+  })
+  if (result.response.ok) {
+    return
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to settle the tool call')
+  )
+}
+
 export async function submitInstruction(sessionId: string, instruction: string): Promise<void> {
   const result = await api.POST('/api/v1/chat_sessions/{id}/messages', {
     params: { path: { id: sessionId } },

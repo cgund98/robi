@@ -68,6 +68,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat_sessions/{id}/tool_calls/{call_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["decide_tool_call"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events/stream": {
         parameters: {
             query?: never;
@@ -168,6 +184,10 @@ export interface components {
             has_pending_agent: boolean;
             id: string;
             last_used_at: string;
+            path_allow_read: string[];
+            path_allow_write: string[];
+            path_deny_read: string[];
+            path_deny_write: string[];
             /**
              * @description Absent until the model names the chat session after the first turn, or a
              *     create/rename supplies one.
@@ -199,6 +219,12 @@ export interface components {
             /** @description Absolute or relative directory. Stored as its canonical path. */
             root: string;
         };
+        DecideToolCall: {
+            /** @description `approve` runs the call. `reject` refuses it. */
+            decision: string;
+            /** @description Shown to the model when `decision` is `reject`. Omitted uses a default. */
+            reason?: string | null;
+        };
         SetSetting: {
             /**
              * @description When true, the value is written to the secrets file and later reads
@@ -217,7 +243,16 @@ export interface components {
             instruction: string;
         };
         UpdateChatSession: {
-            title: string;
+            /** @description Extra read-allow regexes, appended after the built-in list. The furthest match wins; at the same end byte, more literals win. */
+            path_allow_read?: string[] | null;
+            /** @description Regexes. Ranked the same way as read allows. A parent match does not outrank a more specific write deny. */
+            path_allow_write?: string[] | null;
+            /** @description Regexes matched against the workspace-relative path. A match denies a read. */
+            path_deny_read?: string[] | null;
+            /** @description Regexes matched against the workspace-relative path. A match denies a write. */
+            path_deny_write?: string[] | null;
+            /** @description When set, replaces the title. Omitted leaves the stored title alone. */
+            title?: string | null;
         };
         Workspace: {
             created_at: string;
@@ -433,6 +468,42 @@ export interface operations {
             };
             /** @description Chat session or message is missing */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decide_tool_call: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+                /** @description Tool call id */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideToolCall"];
+            };
+        };
+        responses: {
+            /** @description Decision accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcceptedInstruction"];
+                };
+            };
+            /** @description Chat session is running */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

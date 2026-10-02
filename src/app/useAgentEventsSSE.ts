@@ -48,7 +48,8 @@ export function useAgentEventsSSE(): void {
         useChatStore.getState().setPhase(sessionId, 'thinking')
         return
       case 'robi.agent.v1.message_added':
-      case 'robi.agent.v1.message_updated': {
+      case 'robi.agent.v1.message_updated':
+      case 'robi.agent.v1.tool_call_updated': {
         const messageId = data?.message_id
         if (!messageId) {
           return

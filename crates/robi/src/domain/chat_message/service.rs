@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use robi_core::error::StoreError;
-use robi_core::ids::{MessageId, SessionId};
+use robi_core::ids::{MessageId, SessionId, ToolCallId};
 use robi_core::message::Message;
 use robi_core::store::MessageStore;
 
@@ -35,6 +35,31 @@ impl ChatMessageService {
         }
         self.sessions.get_chat_session(session).await?;
         self.runtime.submit(session, instruction.to_owned()).await
+    }
+
+    /// Approve or reject one paused call and resume that turn.
+    pub async fn decide_tool_call(
+        &self,
+        session: SessionId,
+        call: ToolCallId,
+        decision: &str,
+        reason: Option<String>,
+    ) -> Result<(), ServiceError> {
+        self.sessions.get_chat_session(session).await?;
+        let reject = match decision {
+            "approve" => None,
+            "reject" => Some(
+                reason
+                    .filter(|reason| !reason.trim().is_empty())
+                    .unwrap_or_else(|| "rejected by the user".to_owned()),
+            ),
+            _ => {
+                return Err(ServiceError::BadRequest(
+                    "decision must be approve or reject".into(),
+                ));
+            }
+        };
+        self.runtime.decide(session, call, reject).await
     }
 
     pub async fn list_messages(&self, session: SessionId) -> Result<Vec<Message>, ServiceError> {
@@ -113,6 +138,7 @@ mod tests {
                     id: session,
                     workspace_id: WorkspaceId::new(),
                     title: None,
+                    path_rules: crate::domain::chat_session::model::PathRules::default(),
                     created_at: now,
                     updated_at: now,
                     last_used_at: now,
@@ -199,6 +225,15 @@ mod tests {
 
         async fn running_session_ids(&self) -> Vec<SessionId> {
             self.running.lock().expect("fake runtime").clone()
+        }
+
+        async fn decide(
+            &self,
+            _session: SessionId,
+            _call: ToolCallId,
+            _reject: Option<String>,
+        ) -> Result<(), ServiceError> {
+            Ok(())
         }
     }
 

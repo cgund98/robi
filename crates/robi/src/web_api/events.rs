@@ -292,6 +292,15 @@ mod tests {
         async fn running_session_ids(&self) -> Vec<SessionId> {
             Vec::new()
         }
+
+        async fn decide(
+            &self,
+            _session: SessionId,
+            _call: robi_core::ids::ToolCallId,
+            _reject: Option<String>,
+        ) -> Result<(), ServiceError> {
+            unreachable!("events stream does not settle tool calls")
+        }
     }
 
     #[async_trait]

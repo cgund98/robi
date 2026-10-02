@@ -25,6 +25,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chat_sessions/{id}/messages/{message_id}",
             get(get_chat_message),
         )
+        .route(
+            "/api/v1/chat_sessions/{id}/tool_calls/{call_id}",
+            axum::routing::post(decide_tool_call),
+        )
         .with_state(state)
 }
 
@@ -112,10 +116,49 @@ pub async fn get_chat_message(
     Ok(Json(ChatMessage::from(message)))
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    post,
+    path = "/api/v1/chat_sessions/{id}/tool_calls/{call_id}",
+    params(
+        ("id" = String, Path, description = "Chat session id"),
+        ("call_id" = String, Path, description = "Tool call id")
+    ),
+    request_body = DecideToolCall,
+    responses(
+        (status = 202, description = "Decision accepted", body = AcceptedInstruction),
+        (status = 409, description = "Chat session is running")
+    )
+)]
+pub async fn decide_tool_call(
+    State(state): State<AppState>,
+    Path((id, call_id)): Path<(String, String)>,
+    Json(payload): Json<DecideToolCall>,
+) -> Result<(StatusCode, Json<AcceptedInstruction>), ServiceError> {
+    let session = parse_session_id(&id)?;
+    let call = parse_tool_call_id(&call_id)?;
+    state
+        .chat_message_service
+        .decide_tool_call(session, call, &payload.decision, payload.reason)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AcceptedInstruction {
+            status: "accepted".into(),
+        }),
+    ))
+}
+
 fn parse_session_id(value: &str) -> Result<robi_core::ids::SessionId, ServiceError> {
     let id =
         Uuid::parse_str(value).map_err(|_| ServiceError::BadRequest("id must be a UUID".into()))?;
     Ok(robi_core::ids::SessionId::from_uuid(id))
+}
+
+fn parse_tool_call_id(value: &str) -> Result<robi_core::ids::ToolCallId, ServiceError> {
+    let id = Uuid::parse_str(value)
+        .map_err(|_| ServiceError::BadRequest("call_id must be a UUID".into()))?;
+    Ok(robi_core::ids::ToolCallId::from_uuid(id))
 }
 
 fn parse_message_id(value: &str) -> Result<robi_core::ids::MessageId, ServiceError> {
@@ -127,6 +170,15 @@ fn parse_message_id(value: &str) -> Result<robi_core::ids::MessageId, ServiceErr
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SubmitInstruction {
     pub instruction: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DecideToolCall {
+    /// `approve` runs the call. `reject` refuses it.
+    pub decision: String,
+    /// Shown to the model when `decision` is `reject`. Omitted uses a default.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
