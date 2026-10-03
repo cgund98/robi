@@ -60,9 +60,9 @@ One composition. Two columns. No third panel in M2.
 
 ```text
 ┌────────────┬──────────────────────────────────────────┐
-│ ○ ○ ○      │                                          │
-│  Workspace │  Header (session title)                  │
-│            ├──────────────────────────────────────────┤
+│ ○ ○ ○      │  Header (session title)                  │
+│  Workspace ├──────────────────────────────────────────┤
+│            │                                          │
 │  New       │                                          │
 │  Recents   │  Transcript                              │
 │            │    user bubble                           │
@@ -76,13 +76,12 @@ One composition. Two columns. No third panel in M2.
 └────────────┴──────────────────────────────────────────┘
 ```
 
-The top row is the window bar. It is the same height on every page. On the chat shell its left `--sidebar-width` is `--bg-sidebar` and the rest is `--bg-canvas`, so the row continues the columns under it. On Settings the split follows the settings rail. On Workspaces the whole row is `--bg-canvas`. macOS window buttons sit in that row, inset from the window corner. The workspace dropdown starts just under them. The desktop window uses an overlay title bar so those buttons draw on the app fill instead of a separate system bar.
+The top row is the window bar. It is the same height on every page. On the chat shell its left `--sidebar-width` is `--bg-sidebar` and the rest is `--bg-canvas`, so the row continues the columns under it. The session title sits in that row, over the chat column, and the transcript starts on the next row. On Settings the split follows the settings rail. On Workspaces the whole row is `--bg-canvas`. macOS window buttons sit in that row, inset from the window corner. The workspace dropdown starts just under them. The desktop window uses an overlay title bar so those buttons draw on the app fill instead of a separate system bar.
 
 | Region | Role | M2 content |
 |---|---|---|
-| **Window bar** | Drag region | macOS window controls, inset from the corner |
+| **Window bar** | Drag region | macOS window controls, inset from the corner. On a chat, the session title |
 | **Sidebar** | Session navigation | Workspace dropdown at the top, Workspaces link under it, New chat, Recents list, active-session highlight, rename dialog, Settings link |
-| **Header** | Orientation | Session title |
 | **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards (empty until M3) |
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
 
@@ -233,7 +232,7 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line. No toolbar of icons.
+The session title is a single quiet line in the window bar, over the chat column. No toolbar of icons. The transcript starts on the next row, level with the workspace dropdown.
 
 The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.

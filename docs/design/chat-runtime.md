@@ -54,7 +54,7 @@ the actor task and dropped when the actor goes idle. The next instruction for
 that session builds another actor and another agent from the same factory. One
 agent serves every instruction that actor drains before it goes idle.
 
-`robi-api` fills the factory with `SqliteMessageStore`, `FanOutEventSink`, a
+`robi-api` fills the factory with `SqliteMessageStore`, `BusEventSink`, a
 `SettingsModelSource` over the settings store, an empty `ToolRegistry`, and
 `LoopConfig::default()`. The empty registry is the fallback for a factory
 with no chat session service. When the service is present, the actor builds
@@ -62,7 +62,7 @@ a session registry for the stored mode and passes that same registry, the
 workspace root, and the mode to `ModelSource::model`. The provider is offered
 those tools, and the system prompt is assembled for them at the same time. See
 [instructions.md](instructions.md) and [agent-modes.md](agent-modes.md).
-The sink publishes each loop event on the in-process fan-out. The window
+The sink publishes each loop event on the in-process bus. The window
 follows that stream and still reads the transcript with GET. A tool name the
 model emits that is not in that registry fails as `NotFound` inside the loop;
 the runtime's approval check still reads whatever the transcript already
@@ -224,8 +224,8 @@ The write is `UPDATE ... WHERE title IS NULL`. It moves `updated_at` and leaves
 `last_used_at` alone. A rename that lands while the model is answering keeps
 the renamed title.
 
-After the row is stored, the task publishes `robi.agent.v1.session_updated`
-on the fan-out. The shell refetches that session. The actor has already been
+After the row is stored, the task publishes `robi.session.v1.updated`
+on the bus. The shell refetches that session. The actor has already been
 free to take the next instruction; the title task does not hold the slot.
 
 ## Interfaces
@@ -262,7 +262,7 @@ rename return the same field from the same snapshot.
 | `tools` | `Arc<ToolRegistry>`. Used when `sessions` is absent. A session actor builds its own registry for the stored mode |
 | `config` | `LoopConfig`, copied into each agent |
 | `sessions` | `Option<Arc<ChatSessionService>>`. The title task reads and writes the row. Absent in tests that do not name sessions |
-| `fanout` | `Option<Arc<EventFanOut>>`. Publishes `session_updated` after a title is stored |
+| `bus` | `Option<Arc<EventBus>>`. Publishes `robi.session.v1.updated` after a title is stored |
 
 `submit` builds the session tool registry for the stored mode and reads that
 mode's override, then asks `models` for a model with that registry, mode, and
@@ -368,5 +368,5 @@ to the factory.
   and list reads the store. Get returns the message with that id, and a
   missing message id is `NotFound`.
 - A completed turn on an unnamed session stores the model's title and publishes
-  `session_updated`. A session that already has a title does not ask the model
+  `robi.session.v1.updated`. A session that already has a title does not ask the model
   again. A failed turn leaves the title null.

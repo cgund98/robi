@@ -196,6 +196,65 @@ describe('ToolCallCard', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
   })
 
+  it('opens an MCP approval on the full arguments', () => {
+    const args = { issue: 'ENG-1', includeArchived: true }
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'mcp_linear_get_issue',
+          execution_status: 'not_started',
+          result: undefined,
+          args
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('MCP call')).toBeTruthy()
+    expect(screen.getByText('linear_get_issue')).toBeTruthy()
+    expect(screen.getByText(/ENG-1/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
+  })
+
+  it('collapses a finished MCP result', () => {
+    const args = { issue: 'ENG-1' }
+    const { rerender } = render(
+      <ToolCallCard
+        call={call({
+          name: 'mcp_linear_get_issue',
+          approval_status: 'pending',
+          execution_status: 'not_started',
+          result: undefined,
+          args
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText(/ENG-1/)).toBeTruthy()
+    rerender(
+      <ToolCallCard
+        call={call({
+          name: 'mcp_linear_get_issue',
+          approval_status: 'approved',
+          execution_status: 'succeeded',
+          result: 'done',
+          args
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.queryByText(/ENG-1/)).toBeNull()
+    expect(screen.queryByText('done')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /MCP call/ }))
+    expect(screen.getByText(/ENG-1/)).toBeTruthy()
+    expect(screen.getByText(/done/)).toBeTruthy()
+  })
+
   it('opens a shell approval on the full command', () => {
     const { rerender } = render(
       <ToolCallCard

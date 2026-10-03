@@ -21,9 +21,20 @@ pub const MESSAGE_DELTA: &str = "robi.agent.v1.message_delta";
 pub const TOOL_CALL_UPDATED: &str = "robi.agent.v1.tool_call_updated";
 pub const AWAITING_APPROVAL: &str = "robi.agent.v1.awaiting_approval";
 pub const TURN_FINISHED: &str = "robi.agent.v1.turn_finished";
-pub const SESSION_UPDATED: &str = "robi.agent.v1.session_updated";
+pub const SESSION_SOURCE: &str = "robi/session";
+pub const SESSION_CREATED: &str = "robi.session.v1.created";
+pub const SESSION_UPDATED: &str = "robi.session.v1.updated";
+pub const SESSION_DELETED: &str = "robi.session.v1.deleted";
+pub const APP_SOURCE: &str = "robi/app";
+pub const APP_SUBJECT: &str = "app";
+pub const APP_ERROR: &str = "robi.app.v1.error";
 pub const INDEX_PROGRESS: &str = "robi.index.v1.progress";
 pub const INDEX_SOURCE: &str = "robi/index";
+
+/// Types a `session_id` stream filter still delivers. They are not about the
+/// selected session: another window's list, or a process-wide failure.
+pub const SESSION_FILTER_EXCEPTIONS: &[&str] =
+    &[SESSION_CREATED, SESSION_UPDATED, SESSION_DELETED, APP_ERROR];
 
 /// Every agent type the shell asks for. Order is the type map in the design.
 pub const AGENT_EVENT_TYPES: &[&str] = &[
@@ -34,7 +45,10 @@ pub const AGENT_EVENT_TYPES: &[&str] = &[
     TOOL_CALL_UPDATED,
     AWAITING_APPROVAL,
     TURN_FINISHED,
+    SESSION_CREATED,
     SESSION_UPDATED,
+    SESSION_DELETED,
+    APP_ERROR,
 ];
 
 /// One event on the wire.
@@ -52,6 +66,25 @@ pub struct EventEnvelope {
 }
 
 impl EventEnvelope {
+    /// CloudEvents attributes around a JSON payload. `id` and `time` are new
+    /// on every call.
+    pub fn from_payload(
+        source: impl Into<String>,
+        event_type: impl Into<String>,
+        subject: impl Into<String>,
+        data: impl Serialize,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            specversion: SPEC_VERSION.to_owned(),
+            id: Uuid::now_v7(),
+            source: source.into(),
+            event_type: event_type.into(),
+            time: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            subject: subject.into(),
+            data: serde_json::to_value(data)?,
+        })
+    }
+
     /// Wrap a loop event. `id` and `time` are new on every call.
     pub fn from_core_event(event: Event) -> Self {
         let (event_type, subject, data) = match event {
@@ -106,46 +139,50 @@ impl EventEnvelope {
             ),
         };
 
-        Self {
-            specversion: SPEC_VERSION.to_owned(),
-            id: Uuid::now_v7(),
-            source: SOURCE.to_owned(),
-            event_type: event_type.to_owned(),
-            time: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-            subject,
-            data,
-        }
+        Self::from_payload(SOURCE, event_type, subject, data).expect("event payload")
     }
 
-    /// A chat session's stored title changed. Not a loop event: the runtime
-    /// publishes this after the title row is written.
-    pub fn session_updated(session: SessionId, title: &str) -> Self {
-        Self {
-            specversion: SPEC_VERSION.to_owned(),
-            id: Uuid::now_v7(),
-            source: SOURCE.to_owned(),
-            event_type: SESSION_UPDATED.to_owned(),
-            time: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-            subject: session.to_string(),
-            data: json!({
-                "session_id": session.to_string(),
-                "title": title,
-            }),
-        }
+    /// A chat session row was stored.
+    pub fn session_created(session: SessionId) -> Self {
+        session_ref(SESSION_CREATED, session)
+    }
+
+    /// A stored field on a chat session changed, including a generated title.
+    pub fn session_updated(session: SessionId) -> Self {
+        session_ref(SESSION_UPDATED, session)
+    }
+
+    /// A chat session row was removed.
+    pub fn session_deleted(session: SessionId) -> Self {
+        session_ref(SESSION_DELETED, session)
+    }
+
+    /// A failure the shell should show. `subject` is [`APP_SUBJECT`].
+    pub fn user_error(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::from_payload(
+            APP_SOURCE,
+            APP_ERROR,
+            APP_SUBJECT,
+            json!({ "message": message }),
+        )
+        .expect("error payload")
     }
 
     /// Index build progress. `subject` is the workspace id.
     pub fn index_progress(workspace_id: &str, data: Value) -> Self {
-        Self {
-            specversion: SPEC_VERSION.to_owned(),
-            id: Uuid::now_v7(),
-            source: INDEX_SOURCE.to_owned(),
-            event_type: INDEX_PROGRESS.to_owned(),
-            time: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-            subject: workspace_id.to_owned(),
-            data,
-        }
+        Self::from_payload(INDEX_SOURCE, INDEX_PROGRESS, workspace_id, data).expect("index payload")
     }
+}
+
+fn session_ref(event_type: &str, session: SessionId) -> EventEnvelope {
+    EventEnvelope::from_payload(
+        SESSION_SOURCE,
+        event_type,
+        session.to_string(),
+        json!({ "session_id": session.to_string() }),
+    )
+    .expect("session payload")
 }
 
 fn message_ref(session: SessionId, message: MessageId) -> Value {
@@ -349,5 +386,23 @@ mod tests {
             let envelope = EventEnvelope::from_core_event(Event::TurnFinished { session, outcome });
             assert_eq!(envelope.data["outcome"], expected);
         }
+    }
+
+    #[test]
+    fn from_payload_fills_the_envelope() {
+        let envelope = EventEnvelope::from_payload(
+            "robi/app",
+            "robi.app.v1.error",
+            "app",
+            json!({ "message": "MCP server demo failed to start" }),
+        )
+        .unwrap();
+        assert_eq!(envelope.specversion, SPEC_VERSION);
+        assert_eq!(envelope.source, "robi/app");
+        assert_eq!(envelope.event_type, "robi.app.v1.error");
+        assert_eq!(envelope.subject, "app");
+        assert_eq!(envelope.data["message"], "MCP server demo failed to start");
+        assert!(chrono::DateTime::parse_from_rfc3339(&envelope.time).is_ok());
+        assert_ne!(envelope.id, Uuid::nil());
     }
 }

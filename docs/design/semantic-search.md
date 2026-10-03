@@ -213,7 +213,13 @@ the file count. One task per workspace
 owns the writer connection. Readers use other connections. WAL mode lets
 a search run during a write.
 
-The first run walks the tree. After that, `notify` watches the root.
+The first run lists the tree, then hashes every file before it embeds
+any of them. A hash that matches `files.content_hash`, and a file that
+is skipped, counts as finished in that pass. Only files that still need
+an embedding are queued, and each of those counts as finished when its
+vectors are stored. `files_done` is that finished count, so one changed
+file in the middle of the tree leaves the counter at the unchanged
+total while that file embeds. After the scan, `notify` watches the root.
 Events for one path collapse for 500 ms. The file is hashed, and a hash
 that matches `files.content_hash` does not parse or embed. A changed or
 new file deletes that path's chunks and inserts the new ones in one
@@ -235,7 +241,7 @@ clears it and resumes the scan.
 | Field | Meaning |
 |---|---|
 | `state` | `downloading`, `indexing`, `ready`, `paused`, or `failed` |
-| `files_done` | Files hashed during this scan |
+| `files_done` | Files finished in this scan. Unchanged and skipped files are counted after the hash pass, before changed files are embedded |
 | `files_total` | Files the walk has seen |
 | `error` | Short text when `state` is `failed`, otherwise null |
 

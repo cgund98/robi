@@ -20,6 +20,25 @@
   max-width: var(--chat-column-width);
 }
 
+.skill {
+  margin-top: var(--space-2);
+  font-size: 0.85em;
+  color: var(--ink-muted);
+}
+
+.skill summary {
+  cursor: pointer;
+}
+
+.skillPath {
+  font-family: var(--font-mono);
+}
+
+.skill pre {
+  white-space: pre-wrap;
+  margin: var(--space-2) 0 0;
+}
+
 .user {
   contain: layout style;
   align-self: flex-end;

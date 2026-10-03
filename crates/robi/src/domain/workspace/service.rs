@@ -154,6 +154,7 @@ mod tests {
                 id: WorkspaceId::new(),
                 name: name.to_string(),
                 root: root.to_string(),
+                mcp_project_sha256: None,
                 created_at: Utc::now(),
             };
             self.by_root
@@ -190,6 +191,14 @@ mod tests {
                 return Err(ServiceError::NotFound(id.to_string()));
             };
             rows.remove(&root);
+            Ok(())
+        }
+
+        async fn set_mcp_project_sha256(
+            &self,
+            _id: WorkspaceId,
+            _hash: Option<String>,
+        ) -> Result<(), ServiceError> {
             Ok(())
         }
     }
@@ -349,6 +358,14 @@ mod tests {
         async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError> {
             Err(ServiceError::NotFound(id.to_string()))
         }
+
+        async fn set_mcp_project_sha256(
+            &self,
+            _id: WorkspaceId,
+            _hash: Option<String>,
+        ) -> Result<(), ServiceError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -357,6 +374,7 @@ mod tests {
             id: WorkspaceId::new(),
             name: "robi".into(),
             root: "/work/robi".into(),
+            mcp_project_sha256: None,
             created_at: Utc::now(),
         };
         let service = WorkspaceService {

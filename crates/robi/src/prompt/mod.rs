@@ -114,7 +114,8 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
     if let Some(text) = input.user_prompt {
         assembler = assembler.source(UserPrompt { text, max_bytes });
     }
-    if let Some(dir) = input.config_dir {
+    let config_dir = input.config_dir.clone();
+    if let Some(dir) = config_dir.clone() {
         assembler = assembler
             .source(InstructionFile {
                 path: dir.join("system.md"),
@@ -135,6 +136,11 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
         });
         assembler = assembler.source(WorkingDirectory { path: workspace });
     }
+    let skill_home = config_dir.and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
+    let skills = crate::skills::scan(skill_home.as_deref(), input.workspace.as_deref());
+    if let Some(body) = crate::skills::catalog_block(&skills) {
+        assembler = assembler.source(SkillCatalog { body });
+    }
     let lsp = input.tools.names().iter().any(|name| name == "diagnostics");
     assembler = assembler.source(ModePrefix {
         mode: input.mode,
@@ -148,6 +154,20 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
         }
     }
     assembler.render()
+}
+
+/// The skill catalog, already wrapped.
+struct SkillCatalog {
+    body: String,
+}
+
+impl PromptSource for SkillCatalog {
+    fn load(&self) -> Option<PromptBlock> {
+        Some(PromptBlock {
+            tag: None,
+            body: self.body.clone(),
+        })
+    }
 }
 
 /// The open checklist, already wrapped, so the path can sit on the tag.

@@ -4,6 +4,7 @@ import styles from './Settings.module.css'
 
 const ITEMS = [
   { to: '/settings/providers', label: 'Model Providers' },
+  { to: '/settings/mcp', label: 'MCP' },
   { to: '/settings/general', label: 'General' }
 ] as const
 

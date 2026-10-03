@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
     chat_session::{normalize_generated_title, service::ChatSessionService},
-    events::{EventEnvelope, EventFanOut},
+    events::{EventBus, EventEnvelope},
 };
 
 const EXCERPT_CHARS: usize = 1_500;
@@ -24,7 +24,7 @@ pub async fn title_completed_turn(
     model: Arc<dyn Model>,
     store: Arc<dyn MessageStore>,
     sessions: Arc<ChatSessionService>,
-    fanout: Option<Arc<EventFanOut>>,
+    bus: Option<Arc<EventBus>>,
 ) {
     let current = match sessions.get_chat_session(session).await {
         Ok(session) => session,
@@ -52,8 +52,8 @@ pub async fn title_completed_turn(
     match sessions.set_title_if_unset(session, title.clone()).await {
         Ok(Some(_)) => {
             tracing::info!(%session, %title, "session title stored");
-            if let Some(fanout) = fanout {
-                fanout.publish(EventEnvelope::session_updated(session, &title));
+            if let Some(bus) = bus {
+                bus.publish(EventEnvelope::session_updated(session));
             }
         }
         Ok(None) => {}

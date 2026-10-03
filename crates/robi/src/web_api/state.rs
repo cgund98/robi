@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::{
     chat_message::service::ChatMessageService, chat_session::service::ChatSessionService,
-    events::EventFanOut, file_change::repo::FileChangeRepository, settings::SettingsService,
+    events::EventBus, file_change::repo::FileChangeRepository, settings::SettingsService,
     workspace::service::WorkspaceService,
 };
 use crate::index::IndexHub;
@@ -15,7 +15,9 @@ pub struct AppState {
     pub chat_session_service: Arc<ChatSessionService>,
     pub chat_message_service: Arc<ChatMessageService>,
     pub settings_service: Arc<SettingsService>,
-    pub event_fanout: Arc<EventFanOut>,
+    pub event_bus: Arc<EventBus>,
     pub file_changes: Arc<dyn FileChangeRepository>,
     pub index: Arc<IndexHub>,
+    /// MCP client supervisor. Absent in tests that do not list servers.
+    pub mcp: Option<Arc<crate::mcp::McpHub>>,
 }

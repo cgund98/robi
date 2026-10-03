@@ -228,6 +228,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_mcp_servers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/mcp/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_mcp_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_skills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -248,6 +296,7 @@ export interface components {
             content: string;
             id: string;
             role: string;
+            skills?: components["schemas"]["ChatSkill"][];
             tool_call_id?: string | null;
             tool_calls: components["schemas"]["ChatToolCall"][];
             usage?: null | components["schemas"]["ChatUsage"];
@@ -274,6 +323,14 @@ export interface components {
             title?: string | null;
             updated_at: string;
             workspace_id: string;
+        };
+        /** @description A skill loaded because the user wrote `@id`. */
+        ChatSkill: {
+            body: string;
+            description: string;
+            directory: string;
+            files: string[];
+            id: string;
         };
         /** @description The child run attached to a parent `delegate` call. */
         ChatSubagent: {
@@ -352,6 +409,26 @@ export interface components {
             /** Format: int64 */
             files_total: number;
             state: string;
+        };
+        /** @description The MCP JSON files for one workspace. Text is the file on disk. Secrets are not resolved. */
+        McpConfig: {
+            /** @description True when the stored project hash matches the file's current bytes. */
+            project_enabled: boolean;
+            project_path: string;
+            project_text?: string | null;
+            user_path: string;
+            user_text?: string | null;
+        };
+        /** @description One MCP server this workspace is configured to use. Header and env values are omitted. */
+        McpServer: {
+            /** @description `https` URL or `data:image` URI from the server handshake. */
+            icon?: string | null;
+            id: string;
+            /** @description `disconnected`, `starting`, `connected`, or `failed`. */
+            status: string;
+            title?: string | null;
+            /** Format: int32 */
+            tool_count: number;
         };
         /** @description Model and effort for one mode. Absent keys inherit the setting. */
         ModeOverrideBody: {
@@ -440,6 +517,15 @@ export interface components {
             secret: boolean;
             /** @description `null` when the key is unset and has no default. Omitted when the stored value is a secret. */
             value?: string | null;
+        };
+        SkillEntry: {
+            description: string;
+            id: string;
+            label: string;
+            model_invocable: boolean;
+            path: string;
+            /** @description `user` or `project`. */
+            scope: string;
         };
         StoppedAgent: {
             status: string;
@@ -1091,6 +1177,75 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    list_mcp_servers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configured MCP servers and connection status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServer"][];
+                };
+            };
+        };
+    };
+    get_mcp_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MCP JSON files as stored on disk */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpConfig"];
+                };
+            };
+        };
+    };
+    list_skills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User-invocable skills */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillEntry"][];
+                };
             };
         };
     };

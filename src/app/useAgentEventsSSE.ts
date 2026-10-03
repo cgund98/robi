@@ -15,6 +15,7 @@ type DeltaData = {
   session_id?: string
   message_id?: string
   tool_call_id?: string
+  message?: string
   delta?: { kind?: string }
   outcome?: { kind?: string; message?: string }
 }
@@ -142,9 +143,26 @@ export function useAgentEventsSSE(): void {
         void useChatStore.getState().finishTurn(sessionId, failed)
         return
       }
-      case 'robi.agent.v1.session_updated':
-        void useChatStore.getState().refreshSession(sessionId)
+      case 'robi.session.v1.created':
+      case 'robi.session.v1.updated': {
+        const id = typeof data?.session_id === 'string' ? data.session_id : sessionId
+        void useChatStore.getState().refreshSession(id)
         return
+      }
+      case 'robi.session.v1.deleted': {
+        const id = typeof data?.session_id === 'string' ? data.session_id : null
+        if (id) {
+          void useChatStore.getState().forgetSession(id)
+        }
+        return
+      }
+      case 'robi.app.v1.error': {
+        const message = data?.message
+        if (typeof message === 'string' && message.length > 0) {
+          useChatStore.setState({ error: message })
+        }
+        return
+      }
       default:
         return
     }

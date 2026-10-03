@@ -26,6 +26,13 @@ pub trait WorkspaceRepository: Send + Sync {
     async fn list_workspaces(&self) -> Result<Vec<Workspace>, ServiceError>;
 
     async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError>;
+
+    /// Store the SHA-256 of the project MCP file, or clear it.
+    async fn set_mcp_project_sha256(
+        &self,
+        id: WorkspaceId,
+        hash: Option<String>,
+    ) -> Result<(), ServiceError>;
 }
 
 /// A repository that reports every id as present. Tests that are not about
@@ -46,6 +53,7 @@ impl WorkspaceRepository for AnyWorkspace {
             id,
             name: "any".to_string(),
             root: "/any".to_string(),
+            mcp_project_sha256: None,
             created_at: chrono::Utc::now(),
         }))
     }
@@ -59,6 +67,7 @@ impl WorkspaceRepository for AnyWorkspace {
             id: WorkspaceId::new(),
             name: name.to_string(),
             root: root.to_string(),
+            mcp_project_sha256: None,
             created_at: chrono::Utc::now(),
         })
     }
@@ -69,5 +78,13 @@ impl WorkspaceRepository for AnyWorkspace {
 
     async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError> {
         Err(ServiceError::NotFound(id.to_string()))
+    }
+
+    async fn set_mcp_project_sha256(
+        &self,
+        _id: WorkspaceId,
+        _hash: Option<String>,
+    ) -> Result<(), ServiceError> {
+        Ok(())
     }
 }

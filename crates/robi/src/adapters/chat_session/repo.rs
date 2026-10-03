@@ -10,15 +10,15 @@ use uuid::Uuid;
 use crate::domain::{
     chat_session::{
         model::{
-            apply_session_update, AgentMode, ChatSession, CreateChatSessionCommand, ModelConfig,
-            PathRules, UpdateChatSessionCommand,
+            apply_session_update, AgentMode, ChatSession, CreateChatSessionCommand, McpAllow,
+            ModelConfig, PathRules, UpdateChatSessionCommand,
         },
         repo::ChatSessionRepository,
     },
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mode, model_config, plan_path, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, plan_path, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
     error!(?err, %context, "sqlite chat session repository error");
@@ -50,6 +50,7 @@ fn chat_session_from_row(
         deny_write: decode_patterns(context, &row_text(context, &row, "path_deny_write")?)?,
     };
     let allow_hosts = decode_patterns(context, &row_text(context, &row, "allow_hosts")?)?;
+    let mcp_allows = decode_allows(context, &row_text(context, &row, "mcp_allows")?)?;
     let mode = AgentMode::parse(&row_text(context, &row, "mode")?)
         .map_err(|err| log_unknown(context, err))?;
     let model_config = decode_model_config(context, &row_text(context, &row, "model_config")?)?;
@@ -72,6 +73,7 @@ fn chat_session_from_row(
         title,
         path_rules,
         allow_hosts,
+        mcp_allows,
         mode,
         model_config,
         plan_path,
@@ -95,6 +97,14 @@ fn decode_patterns(context: &'static str, value: &str) -> Result<Vec<String>, Se
 
 fn encode_patterns(patterns: &[String]) -> Result<String, ServiceError> {
     serde_json::to_string(patterns).map_err(|err| log_unknown("encode path rules", err))
+}
+
+fn decode_allows(context: &'static str, value: &str) -> Result<Vec<McpAllow>, ServiceError> {
+    serde_json::from_str(value).map_err(|err| log_unknown(context, err))
+}
+
+fn encode_allows(allows: &[McpAllow]) -> Result<String, ServiceError> {
+    serde_json::to_string(allows).map_err(|err| log_unknown("encode mcp allows", err))
 }
 
 fn decode_model_config(context: &'static str, value: &str) -> Result<ModelConfig, ServiceError> {
@@ -146,10 +156,10 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             r#"
             INSERT INTO chat_sessions (
                 id, workspace_id, title, path_allow_read, path_allow_write,
-                path_deny_read, path_deny_write, allow_hosts, mode, model_config, created_at,
+                path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, created_at,
                 updated_at, last_used_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
         )
         .bind(id.to_string())
@@ -160,6 +170,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&deny_read)
         .bind(&deny_write)
         .bind(&allow_hosts)
+        .bind("[]")
         .bind(command.mode.as_str())
         .bind(&model_config)
         .bind(&timestamp)
@@ -180,6 +191,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             title: command.title,
             path_rules,
             allow_hosts: Vec::new(),
+            mcp_allows: Vec::new(),
             mode: command.mode,
             model_config: command.model_config,
             plan_path: None,
@@ -245,10 +257,11 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
                 path_deny_read = ?4,
                 path_deny_write = ?5,
                 allow_hosts = ?6,
-                mode = ?7,
-                model_config = ?8,
-                updated_at = ?9
-            WHERE id = ?10
+                mcp_allows = ?7,
+                mode = ?8,
+                model_config = ?9,
+                updated_at = ?10
+            WHERE id = ?11
             "#,
         )
         .bind(&session.title)
@@ -257,6 +270,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&deny_read)
         .bind(&deny_write)
         .bind(&allow_hosts)
+        .bind(&encode_allows(&session.mcp_allows)?)
         .bind(session.mode.as_str())
         .bind(&model_config)
         .bind(session.updated_at.to_rfc3339())
@@ -633,6 +647,7 @@ mod tests {
                 deny_read: None,
                 deny_write: None,
                 allow_hosts: None,
+                mcp_allows: None,
                 mode: None,
                 model_config: None,
             })

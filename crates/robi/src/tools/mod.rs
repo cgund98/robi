@@ -19,6 +19,7 @@ mod read_file;
 mod replace;
 mod semantic_search;
 mod shell;
+mod skill;
 mod subagent;
 mod todos;
 mod web_fetch;
@@ -131,6 +132,7 @@ pub fn register_tools_for_mode(
     search: Arc<dyn SearchEngine>,
 ) -> Result<(), RegistryError> {
     register_read_tools(registry, Arc::clone(&ctx))?;
+    register(registry, Arc::new(skill::Skill::new(Arc::clone(&ctx))))?;
     register_web_tools(registry, Arc::clone(&ctx), search)?;
     match mode {
         AgentMode::Ask => {}

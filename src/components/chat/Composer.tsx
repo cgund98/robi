@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import type { CatalogModel } from '../../api/models'
 import type { ChatMessage } from '../../api/messages'
 import type { AgentMode } from '../../api/sessions'
 import { ChoiceMenu } from './ChoiceMenu'
+import { SkillMenu } from './SkillMenu'
 import { ContextMeter } from './ContextMeter'
 import styles from './Composer.module.css'
 
@@ -48,6 +49,7 @@ type ComposerProps = {
   messages: ChatMessage[]
   /** Instruction echoed in the transcript before the stored user row exists. */
   pendingText?: string | null
+  workspaceId?: string | null
 }
 
 function modelLabel(models: CatalogModel[], id: string | null, fallback: string): string {
@@ -78,9 +80,12 @@ export function Composer({
   onModelChange,
   onEffortChange,
   messages,
-  pendingText = null
+  pendingText = null,
+  workspaceId = null
 }: ComposerProps) {
   const [draft, setDraft] = useState('')
+  const [caret, setCaret] = useState(0)
+  const fieldRef = useRef<HTMLTextAreaElement>(null)
   const canSend = !disabled && draft.trim().length > 0
   const welcome = placement === 'welcome'
 
@@ -148,12 +153,18 @@ export function Composer({
       <div className={styles.column}>
         <div className={welcome ? styles.card : styles.field}>
           <textarea
+            ref={fieldRef}
             className={welcome ? styles.cardInput : styles.input}
             rows={welcome ? 2 : 1}
             placeholder="Describe a task or ask a question"
             value={draft}
             disabled={disabled}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              setCaret(event.target.selectionStart)
+            }}
+            onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+            onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -161,6 +172,19 @@ export function Composer({
               }
             }}
             aria-label="Message"
+          />
+          <SkillMenu
+            workspaceId={workspaceId}
+            draft={draft}
+            caret={caret}
+            onInsert={(next, caretNext) => {
+              setDraft(next)
+              setCaret(caretNext)
+              requestAnimationFrame(() => {
+                fieldRef.current?.focus()
+                fieldRef.current?.setSelectionRange(caretNext, caretNext)
+              })
+            }}
           />
           {welcome ? (
             <div className={styles.cardBar}>

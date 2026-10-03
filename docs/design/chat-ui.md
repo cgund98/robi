@@ -61,7 +61,9 @@ The transcript is HTTP, not the event stream.
 | Select a session, or the event stream opens | `GET /chat_sessions` and `GET /chat_sessions/{id}/messages` |
 | `message_added`, `message_updated` | `GET /chat_sessions/{id}/messages/{message_id}`, then upsert that row |
 | `turn_finished` | The session and the message list again |
-| `session_updated` | That session again. The message list is left as it is |
+| `robi.session.v1.created`, `robi.session.v1.updated` | That session again. The message list is left as it is |
+| `robi.session.v1.deleted` | Drop that session from the list |
+| `robi.app.v1.error` | Show `message` on the shell error line |
 | Phase is `thinking` or `responding`, and no frame has arrived for 2 seconds | The session and the message list again |
 
 `message_delta` does not change message text. `kind: "reasoning"` sets

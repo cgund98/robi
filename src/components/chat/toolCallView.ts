@@ -53,6 +53,9 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
     case 'todos':
       return { verb: 'Update', target: 'tasks' }
     default:
+      if (call.name.startsWith('mcp_')) {
+        return { verb: 'MCP call', target: call.name.slice('mcp_'.length) }
+      }
       return { verb: call.name, target: path || pattern }
   }
 }
@@ -296,9 +299,18 @@ export type ToolDetail =
   | { kind: 'code'; startLine: number; lines: string[] }
   | { kind: 'lines'; lines: string[] }
   | { kind: 'shell'; command: string; output: string }
+  | { kind: 'mcp'; args: string; output: string }
   | { kind: 'error'; text: string }
 
 export function toolDetail(call: ChatToolCall): ToolDetail | null {
+  if (call.name.startsWith('mcp_')) {
+    const result = typeof call.result === 'string' ? call.result : ''
+    return {
+      kind: 'mcp',
+      args: JSON.stringify(call.args ?? {}, null, 2),
+      output: [result, call.error ?? ''].filter((text) => text.length > 0).join('\n')
+    }
+  }
   if (call.name === 'shell') {
     const command = stringField(record(call.args), 'command')
     const result = record(call.result)

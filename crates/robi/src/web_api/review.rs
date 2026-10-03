@@ -247,7 +247,7 @@ mod tests {
                 service::ChatSessionService,
             },
             error::ServiceError,
-            events::EventFanOut,
+            events::EventBus,
             file_change::repo::FileChangeRepository,
             settings::{memory::MemorySettingsStore, store::SettingsStore, SettingsService},
             workspace::service::WorkspaceService,
@@ -338,6 +338,7 @@ mod tests {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
+            events: None,
         });
         let session = sessions
             .create_chat_session(CreateChatSessionCommand {
@@ -372,13 +373,14 @@ mod tests {
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
             }),
-            event_fanout: Arc::new(EventFanOut::new()),
+            event_bus: Arc::new(EventBus::new()),
             file_changes,
             index: Arc::new(crate::index::IndexHub::new(
                 std::env::temp_dir(),
-                Arc::new(EventFanOut::new()),
+                Arc::new(EventBus::new()),
                 Arc::new(robi_index::FakeEmbedder::new(4)),
             )),
+            mcp: None,
         };
 
         let body = get_session_review(State(state), Path(session.id.to_string()))

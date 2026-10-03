@@ -238,7 +238,7 @@ mod tests {
 
     use super::SemanticSearch;
     use crate::domain::chat_session::model::UpdateChatSessionCommand;
-    use crate::domain::events::EventFanOut;
+    use crate::domain::events::EventBus;
     use crate::index::IndexHub;
     use crate::tools::apply_tests::harness;
     use crate::tools::context::ToolContext;
@@ -272,6 +272,7 @@ mod tests {
                 deny_read: Some(vec![r"^nested/hidden\.rs$".into()]),
                 deny_write: None,
                 allow_hosts: None,
+                mcp_allows: None,
                 mode: None,
                 model_config: None,
             })
@@ -279,7 +280,7 @@ mod tests {
             .unwrap();
         let hub = Arc::new(IndexHub::new(
             std::env::temp_dir(),
-            Arc::new(EventFanOut::new()),
+            Arc::new(EventBus::new()),
             Arc::new(FakeEmbedder::new(4)),
         ));
         let lease = hub.acquire(session.workspace_id, harness.root.clone());

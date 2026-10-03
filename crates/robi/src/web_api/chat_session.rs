@@ -149,6 +149,7 @@ pub async fn update_chat_session(
             deny_read: payload.path_deny_read,
             deny_write: payload.path_deny_write,
             allow_hosts: payload.allow_hosts,
+            mcp_allows: None,
             mode: match payload.mode {
                 Some(mode) => Some(parse_mode(Some(mode.as_str()))?),
                 None => None,

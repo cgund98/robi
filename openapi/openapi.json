@@ -786,6 +786,105 @@
           }
         }
       }
+    },
+    "/api/v1/workspaces/{id}/mcp": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "list_mcp_servers",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configured MCP servers and connection status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/McpServer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/mcp/config": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "get_mcp_config",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP JSON files as stored on disk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/skills": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "list_skills",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User-invocable skills",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SkillEntry"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -840,6 +939,12 @@
           },
           "role": {
             "type": "string"
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatSkill"
+            }
           },
           "tool_call_id": {
             "type": [
@@ -946,6 +1051,37 @@
             "type": "string"
           },
           "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ChatSkill": {
+        "type": "object",
+        "description": "A skill loaded because the user wrote `@id`.",
+        "required": [
+          "id",
+          "description",
+          "directory",
+          "files",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
             "type": "string"
           }
         }
@@ -1197,6 +1333,75 @@
           },
           "state": {
             "type": "string"
+          }
+        }
+      },
+      "McpConfig": {
+        "type": "object",
+        "description": "The MCP JSON files for one workspace. Text is the file on disk. Secrets are not resolved.",
+        "required": [
+          "user_path",
+          "project_path",
+          "project_enabled"
+        ],
+        "properties": {
+          "project_enabled": {
+            "type": "boolean",
+            "description": "True when the stored project hash matches the file's current bytes."
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "project_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_path": {
+            "type": "string"
+          },
+          "user_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "McpServer": {
+        "type": "object",
+        "description": "One MCP server this workspace is configured to use. Header and env values are omitted.",
+        "required": [
+          "id",
+          "status",
+          "tool_count"
+        ],
+        "properties": {
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`https` URL or `data:image` URI from the server handshake."
+          },
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`disconnected`, `starting`, `connected`, or `failed`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -1474,6 +1679,38 @@
               "null"
             ],
             "description": "`null` when the key is unset and has no default. Omitted when the stored value is a secret."
+          }
+        }
+      },
+      "SkillEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "description",
+          "scope",
+          "model_invocable",
+          "path"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "model_invocable": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "description": "`user` or `project`."
           }
         }
       },

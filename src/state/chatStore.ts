@@ -58,6 +58,8 @@ type ChatState = {
   decideCall: (sessionId: string, callId: string, decision: 'approve' | 'reject') => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
   removeSession: (id: string) => Promise<void>
+  /** Drop a session another window deleted. Does not call the API. */
+  forgetSession: (id: string) => Promise<void>
   upsertMessage: (sessionId: string, message: ChatMessage) => void
   setPhase: (sessionId: string, phase: AgentPhase) => void
   noteDelta: (sessionId: string, kind: string) => void
@@ -554,11 +556,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
 
+    set({ busy: false })
+    await get().forgetSession(id)
+  },
+
+  forgetSession: async (id) => {
     const epoch = bumpHydrate()
     const next = get().sessions.filter((session) => session.id !== id)
     const wasActive = get().activeSessionId === id && !get().draftSelected
     set((state) => ({
-      busy: false,
       sessions: next,
       messagesBySession: omitRecordKey(state.messagesBySession, id),
       phaseBySession: omitRecordKey(state.phaseBySession, id),

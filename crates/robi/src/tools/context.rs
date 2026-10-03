@@ -32,7 +32,20 @@ impl ToolContext {
             .get_chat_session(self.session_id)
             .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
-        PathFilter::for_session(&session.path_rules, self.session_id).map_err(ToolError::Failed)
+        let mut rules = session.path_rules;
+        for skill in self.skills() {
+            if skill.directory.as_os_str().is_empty() {
+                continue;
+            }
+            let relative = crate::workspace::workspace_relative(&self.root, &skill.directory);
+            rules.allow_read.push(crate::skills::read_allow(&relative));
+        }
+        PathFilter::for_session(&rules, self.session_id).map_err(ToolError::Failed)
+    }
+
+    /// Skills for this workspace, including home and the bundled creator.
+    pub fn skills(&self) -> Vec<crate::skills::Skill> {
+        crate::skills::scan(super::skill::skill_home().as_deref(), Some(&self.root))
     }
 
     pub fn resolve(&self, argument: &str) -> Result<ResolvedPath, ToolError> {

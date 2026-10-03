@@ -1,29 +1,29 @@
-//! `EventSink` that publishes CloudEvents on the fan-out.
+//! `EventSink` that publishes CloudEvents on the bus.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use robi_core::event::{Event, EventSink};
 
-use crate::domain::events::{envelope::EventEnvelope, fanout::EventFanOut};
+use crate::domain::events::{bus::EventBus, envelope::EventEnvelope};
 
 /// Maps a core event and publishes it. A disconnected subscriber is not the
 /// loop's problem.
-pub struct FanOutEventSink {
-    fanout: Arc<EventFanOut>,
+pub struct BusEventSink {
+    bus: Arc<EventBus>,
 }
 
-impl FanOutEventSink {
-    pub fn new(fanout: Arc<EventFanOut>) -> Self {
-        Self { fanout }
+impl BusEventSink {
+    pub fn new(bus: Arc<EventBus>) -> Self {
+        Self { bus }
     }
 }
 
 #[async_trait]
-impl EventSink for FanOutEventSink {
+impl EventSink for BusEventSink {
     async fn emit(&self, event: Event) {
         log_event(&event);
-        self.fanout.publish(EventEnvelope::from_core_event(event));
+        self.bus.publish(EventEnvelope::from_core_event(event));
     }
 }
 
@@ -59,10 +59,10 @@ mod tests {
 
     #[tokio::test]
     async fn emit_publishes_the_envelope() {
-        let fanout = Arc::new(EventFanOut::new());
-        let mut subscription = fanout.subscribe();
+        let bus = Arc::new(EventBus::new());
+        let mut subscription = bus.subscribe();
         let session = SessionId::new();
-        let sink = FanOutEventSink::new(Arc::clone(&fanout));
+        let sink = BusEventSink::new(Arc::clone(&bus));
 
         sink.emit(Event::TurnStarted { session }).await;
 

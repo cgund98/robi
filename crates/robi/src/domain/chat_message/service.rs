@@ -146,6 +146,7 @@ mod tests {
                     title: None,
                     path_rules: crate::domain::chat_session::model::PathRules::default(),
                     allow_hosts: Vec::new(),
+                    mcp_allows: Vec::new(),
                     mode: AgentMode::Agent,
                     model_config: crate::domain::chat_session::model::ModelConfig::default(),
                     plan_path: None,
@@ -326,6 +327,7 @@ mod tests {
             sessions: Arc::new(ChatSessionService {
                 repository: sessions.clone(),
                 workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
+                events: None,
             }),
             runtime: runtime.clone(),
             store: store.clone(),

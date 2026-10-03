@@ -10,7 +10,7 @@ use robi_index::{
     index_db_path, set_stored_pause, stored_pause, Embedder, Index, IndexState, IndexStatus,
 };
 
-use crate::domain::events::{EventEnvelope, EventFanOut};
+use crate::domain::events::{EventBus, EventEnvelope};
 
 struct Slot {
     index: Arc<Index>,
@@ -20,16 +20,16 @@ struct Slot {
 pub struct IndexHub {
     home: PathBuf,
     embedder: Arc<dyn Embedder>,
-    fanout: Arc<EventFanOut>,
+    bus: Arc<EventBus>,
     slots: Mutex<HashMap<WorkspaceId, Slot>>,
 }
 
 impl IndexHub {
-    pub fn new(home: PathBuf, fanout: Arc<EventFanOut>, embedder: Arc<dyn Embedder>) -> Self {
+    pub fn new(home: PathBuf, bus: Arc<EventBus>, embedder: Arc<dyn Embedder>) -> Self {
         Self {
             home,
             embedder,
-            fanout,
+            bus,
             slots: Mutex::new(HashMap::new()),
         }
     }
@@ -39,7 +39,7 @@ impl IndexHub {
         if let Some(slot) = slots.get_mut(&id) {
             slot.users += 1;
         } else {
-            let fanout = Arc::clone(&self.fanout);
+            let bus = Arc::clone(&self.bus);
             let workspace = id.to_string();
             let reported_ready = Arc::new(AtomicU8::new(0));
             let index = Index::start(
@@ -58,7 +58,7 @@ impl IndexHub {
                     }
                     let data =
                         serde_json::to_value(&status).unwrap_or_else(|_| serde_json::json!({}));
-                    fanout.publish(EventEnvelope::index_progress(&workspace, data));
+                    bus.publish(EventEnvelope::index_progress(&workspace, data));
                 }),
             );
             tracing::info!(%id, root = %root.display(), "workspace index started");

@@ -283,6 +283,21 @@ the id, then `starting` or `failed`. A failed line has **Retry**, which
 resets that server's restart budget and connects again. A connected
 server shows no line. The line is not a transcript row.
 
+The sidebar, above Recents, shows every configured server for the open
+workspace. The MCP heading opens the MCP tab under Settings. That tab
+shows `~/.robi/mcp.json` and `<workspace>/.robi/mcp.json` as stored.
+Refresh rereads the files. Secret objects stay unresolved. `GET
+/api/v1/workspaces/{id}/mcp/config` returns the paths, the file text,
+and whether the project file's bytes match the stored hash. `GET /api/v1/workspaces/{id}/mcp` returns `{ id, status, title,
+icon, tool_count }`. `status` is `disconnected` until an agent-mode actor
+starts the server, then `starting`, `connected`, or `failed`. `title` and
+`icon` come from the server handshake when it sent them. `icon` is an
+`https` URL or a `data:image` URI. A received icon is written to
+`~/.robi/mcp-icons.json`, keyed by server id, and the list keeps using
+that copy after a restart until a later handshake replaces it. An icon
+over 256 KiB is not stored. The response omits commands, URLs,
+headers, and env values. A server with no icon is drawn as its id.
+
 ```mermaid
 flowchart TD
   actor["Agent-mode actor starts"] --> files["Read user and project JSON"]

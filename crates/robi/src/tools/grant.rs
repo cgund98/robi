@@ -89,6 +89,7 @@ impl Tool for Grant {
             deny_read: None,
             deny_write: None,
             allow_hosts: None,
+            mcp_allows: None,
             mode: None,
             model_config: None,
         };

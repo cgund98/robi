@@ -13,7 +13,10 @@ export const AGENT_EVENT_TYPES = [
   'robi.agent.v1.tool_call_updated',
   'robi.agent.v1.awaiting_approval',
   'robi.agent.v1.turn_finished',
-  'robi.agent.v1.session_updated',
+  'robi.session.v1.created',
+  'robi.session.v1.updated',
+  'robi.session.v1.deleted',
+  'robi.app.v1.error',
   'robi.index.v1.progress'
 ] as const
 

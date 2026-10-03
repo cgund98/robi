@@ -201,12 +201,27 @@ impl ToolCall {
     }
 }
 
+/// A skill the host loaded because the user wrote `@id`.
+///
+/// The typed text stays in [`Message::content`]. The provider appends one
+/// block per load. An old row has no field and deserializes as an empty list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillLoad {
+    pub id: String,
+    pub description: String,
+    pub directory: String,
+    pub files: Vec<String>,
+    pub body: String,
+}
+
 /// One message in a transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: MessageId,
     pub role: Role,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillLoad>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     /// Set on a `Role::Tool` message, naming the call it answers.
@@ -222,10 +237,16 @@ impl Message {
             id: MessageId::new(),
             role: Role::User,
             content: content.into(),
+            skills: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
         }
+    }
+
+    pub fn with_skills(mut self, skills: Vec<SkillLoad>) -> Self {
+        self.skills = skills;
+        self
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -233,6 +254,7 @@ impl Message {
             id: MessageId::new(),
             role: Role::Assistant,
             content: content.into(),
+            skills: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
@@ -254,6 +276,7 @@ impl Message {
             id: MessageId::new(),
             role: Role::Tool,
             content: content.into(),
+            skills: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id),
             usage: None,

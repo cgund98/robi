@@ -56,6 +56,18 @@
   font-size: 12px;
 }
 
+.mcpHeader {
+  display: block;
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.mcpHeader:hover {
+  color: var(--ink);
+}
+
 .sessionList {
   list-style: none;
   margin: 0;
@@ -212,4 +224,52 @@
   margin-top: auto;
   padding: var(--space-3) 0 var(--space-1);
   border-top: 1px solid var(--rule);
+}
+
+.mcpSection {
+  padding-top: var(--space-2);
+}
+
+.mcpTray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+.mcpMark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--rule);
+  overflow: hidden;
+}
+
+.mcpMark img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.mcpConnected {
+  box-shadow: inset 0 0 0 1px var(--ink-strong);
+  color: var(--ink-strong);
+}
+
+.mcpStarting {
+  opacity: 0.7;
+}
+
+.mcpFailed {
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
+.mcpDisconnected {
+  opacity: 0.45;
 }

@@ -42,6 +42,9 @@ fn workspace_from_row(context: &'static str, row: SqliteRow) -> Result<Workspace
     let root: String = row
         .try_get("root")
         .map_err(|err| log_unknown(context, err))?;
+    let mcp_project_sha256: Option<String> = row
+        .try_get("mcp_project_sha256")
+        .map_err(|err| log_unknown(context, err))?;
     let created_at: String = row
         .try_get("created_at")
         .map_err(|err| log_unknown(context, err))?;
@@ -50,6 +53,7 @@ fn workspace_from_row(context: &'static str, row: SqliteRow) -> Result<Workspace
         id: WorkspaceId::from_uuid(parse_uuid(context, &id)?),
         name,
         root,
+        mcp_project_sha256,
         created_at: parse_timestamp(context, &created_at)?,
     })
 }
@@ -87,7 +91,7 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
     async fn get_workspace(&self, id: WorkspaceId) -> Result<Option<Workspace>, ServiceError> {
         let row = sqlx::query(
             r#"
-            SELECT id, name, root, created_at
+            SELECT id, name, root, mcp_project_sha256, created_at
             FROM workspaces
             WHERE id = ?1
             "#,
@@ -104,7 +108,7 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
     async fn get_workspace_by_root(&self, root: &str) -> Result<Option<Workspace>, ServiceError> {
         let row = sqlx::query(
             r#"
-            SELECT id, name, root, created_at
+            SELECT id, name, root, mcp_project_sha256, created_at
             FROM workspaces
             WHERE root = ?1
             "#,
@@ -140,6 +144,7 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
                 id,
                 name: name.to_string(),
                 root: root.to_string(),
+                mcp_project_sha256: None,
                 created_at: now,
             }),
             Err(err) if is_unique(&err) => Err(ServiceError::Conflict(root.to_string())),
@@ -150,7 +155,7 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
     async fn list_workspaces(&self) -> Result<Vec<Workspace>, ServiceError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, root, created_at
+            SELECT id, name, root, mcp_project_sha256, created_at
             FROM workspaces
             ORDER BY created_at DESC, id DESC
             "#,
@@ -175,6 +180,23 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
             return Err(ServiceError::NotFound(id.to_string()));
         }
 
+        Ok(())
+    }
+
+    async fn set_mcp_project_sha256(
+        &self,
+        id: WorkspaceId,
+        hash: Option<String>,
+    ) -> Result<(), ServiceError> {
+        let result = sqlx::query("UPDATE workspaces SET mcp_project_sha256 = ?1 WHERE id = ?2")
+            .bind(hash)
+            .bind(id.to_string())
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|err| log_unknown("set_mcp_project_sha256", err))?;
+        if result.rows_affected() == 0 {
+            return Err(ServiceError::NotFound(id.to_string()));
+        }
         Ok(())
     }
 }

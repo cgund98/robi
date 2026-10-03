@@ -133,6 +133,13 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Drop one tool. `false` means the name was not registered.
+    ///
+    /// A call already holding the `Arc` finishes. A later lookup misses the name.
+    pub fn remove(&self, name: &str) -> bool {
+        self.write().remove(name).is_some()
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.read().get(name).cloned()
     }

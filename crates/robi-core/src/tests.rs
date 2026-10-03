@@ -1292,6 +1292,35 @@ async fn a_reporter_records_child_steps_and_the_model_does_not_see_them() {
     );
 }
 
+#[tokio::test]
+async fn a_tool_registered_after_the_agent_is_built_is_the_one_execute_finds() {
+    let timeline = Arc::new(Timeline::default());
+    let sink = Arc::new(RecordingSink::new(timeline.clone()));
+    let store = Arc::new(InMemoryStore::new(timeline));
+    let registry = Arc::new(ToolRegistry::new());
+    let probe = Probe::new();
+    let agent = Agent::new(
+        store,
+        sink,
+        Arc::new(asking_then(&["later"], "done")),
+        Arc::clone(&registry),
+        LoopConfig::default(),
+    );
+    let session = agent.new_chat(WorkspaceId::new());
+    registry
+        .register(FunctionTool::new("later").probed(probe.clone()).arc())
+        .expect("a late registration succeeds");
+
+    assert_eq!(
+        agent.user_input(session, "go", no_cancel()).await,
+        TurnOutcome::Complete
+    );
+    assert!(probe.ran("later"));
+    assert!(registry.remove("later"));
+    assert!(registry.get("later").is_none());
+    assert!(!registry.remove("later"));
+}
+
 #[test]
 fn the_registry_refuses_a_duplicate_name() {
     let registry = ToolRegistry::new();

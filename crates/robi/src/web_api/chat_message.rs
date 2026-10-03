@@ -230,12 +230,24 @@ pub struct ChatMessage {
     pub id: String,
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<ChatSkill>,
     pub tool_calls: Vec<ChatToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Present when the provider reported tokens for this model turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ChatUsage>,
+}
+
+/// A skill loaded because the user wrote `@id`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatSkill {
+    pub id: String,
+    pub description: String,
+    pub directory: String,
+    pub files: Vec<String>,
+    pub body: String,
 }
 
 /// Token counts for one model turn. `input` is the prompt size, not a session total.
@@ -286,6 +298,17 @@ impl From<Message> for ChatMessage {
             id: message.id.to_string(),
             role: role_name(message.role).to_owned(),
             content: message.content,
+            skills: message
+                .skills
+                .into_iter()
+                .map(|skill| ChatSkill {
+                    id: skill.id,
+                    description: skill.description,
+                    directory: skill.directory,
+                    files: skill.files,
+                    body: skill.body,
+                })
+                .collect(),
             tool_calls: message
                 .tool_calls
                 .into_iter()

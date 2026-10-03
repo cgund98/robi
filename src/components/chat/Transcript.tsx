@@ -230,6 +230,14 @@ const TurnView = memo(function TurnView({
       {start ? (
         <li key={start.id} className={styles.user}>
           {start.content}
+          {start.skills?.map((skill) => (
+            <details key={skill.id} className={styles.skill}>
+              <summary>Using {skill.id}</summary>
+              <p>{skill.description}</p>
+              <p className={styles.skillPath}>{skill.directory}</p>
+              <pre>{skill.body}</pre>
+            </details>
+          ))}
         </li>
       ) : null}
       {assistant.length > 0 ? (

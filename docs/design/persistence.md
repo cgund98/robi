@@ -93,6 +93,7 @@ applied in code and are not written on the row.
 | `id` | `TEXT PRIMARY KEY` | `WorkspaceId`, UUIDv7, minted in the adapter |
 | `name` | `TEXT NOT NULL` | Final path component of `root`. The sidebar workspace header shows this |
 | `root` | `TEXT NOT NULL UNIQUE` | Canonical absolute directory. Opening the same directory again returns this row |
+| `mcp_project_sha256` | `TEXT` | SHA-256 of `<workspace>/.robi/mcp.json` after the user enables that file. Null until then. See [mcp.md](mcp.md) |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
 
 Index: `(created_at DESC, id DESC)`.
@@ -109,6 +110,7 @@ Index: `(created_at DESC, id DESC)`.
 | `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
 | `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
 | `allow_hosts` | `TEXT NOT NULL` | JSON array of hostnames. `[]` on create. `web_fetch` appends a host after the user approves that call. See [web-tools.md](web-tools.md) |
+| `mcp_allows` | `TEXT NOT NULL` | JSON array of `{ "server", "tool" }`. `[]` on create. An MCP approval that allows the tool for this session appends one pair. See [mcp.md](mcp.md) |
 | `mode` | `TEXT NOT NULL` | `ask`, `plan`, or `agent`. `agent` on create. Selects the tool registry and the prompt prefix |
 | `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `agent`, `ask`, and `plan` objects, each with optional `model` and `reasoning_effort`. An absent key inherits that mode's setting, then the fallback setting, then the built-in model |
 | `plan_path` | `TEXT` | Null until `write_plan` or `todos` writes a plan. Stored as `~/.robi/plans/<session_id>/<file>.md`. A later write replaces it. `updated_at` and `last_used_at` do not move |

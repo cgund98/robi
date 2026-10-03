@@ -232,33 +232,42 @@ async fn scan(shared: &Shared) -> Result<(), IndexError> {
         status.files_total = files.len() as u64;
         status.error = None;
     });
-    let mut embedded = 0u64;
+    let mut pending = Vec::new();
+    let mut done = 0u64;
     let mut failures = 0u64;
     for path in &files {
-        if shared.stop.is_cancelled() {
+        if !wait_if_paused(shared).await {
             return Ok(());
         }
-        if shared.pause.load(Ordering::SeqCst) {
-            set_status(shared, |status| status.state = IndexState::Paused);
-            wait_until_running(shared).await;
-            if shared.stop.is_cancelled() {
-                return Ok(());
-            }
-            set_status(shared, |status| status.state = IndexState::Indexing);
-        }
-        match index_path(shared, path).await {
-            Ok(IndexOutcome::Embedded) => embedded += 1,
-            Ok(IndexOutcome::Skipped) => {}
+        match classify_path(shared, path) {
+            Ok(Classified::Finished) => done += 1,
+            Ok(Classified::Pending(job)) => pending.push(job),
             Err(err) => {
                 failures += 1;
+                done += 1;
                 set_status(shared, |status| {
                     status.error = Some(format!("{}: {err}", display_rel(&shared.root, path)));
                 });
             }
         }
-        set_status(shared, |status| {
-            status.files_done = status.files_done.saturating_add(1);
-        });
+        set_status(shared, |status| status.files_done = done);
+    }
+    let mut embedded = 0u64;
+    for job in pending {
+        if !wait_if_paused(shared).await {
+            return Ok(());
+        }
+        match embed_pending(shared, &job).await {
+            Ok(()) => embedded += 1,
+            Err(err) => {
+                failures += 1;
+                set_status(shared, |status| {
+                    status.error = Some(format!("{}: {err}", job.relative));
+                });
+            }
+        }
+        done += 1;
+        set_status(shared, |status| status.files_done = done);
     }
     if failures > 0 && embedded == 0 && !files.is_empty() {
         set_status(shared, |status| status.state = IndexState::Failed);
@@ -273,48 +282,88 @@ async fn scan(shared: &Shared) -> Result<(), IndexError> {
     Ok(())
 }
 
-enum IndexOutcome {
-    Embedded,
-    Skipped,
+async fn wait_if_paused(shared: &Shared) -> bool {
+    if shared.stop.is_cancelled() {
+        return false;
+    }
+    if shared.pause.load(Ordering::SeqCst) {
+        set_status(shared, |status| status.state = IndexState::Paused);
+        wait_until_running(shared).await;
+        if shared.stop.is_cancelled() {
+            return false;
+        }
+        set_status(shared, |status| status.state = IndexState::Indexing);
+    }
+    true
 }
 
-async fn index_path(shared: &Shared, path: &Path) -> Result<IndexOutcome, IndexError> {
+struct PendingEmbed {
+    relative: String,
+    hash: String,
+    language: String,
+    chunks: Vec<Chunk>,
+}
+
+enum Classified {
+    /// Skipped, unchanged, or stored with no chunks. Already finished.
+    Finished,
+    Pending(PendingEmbed),
+}
+
+fn classify_path(shared: &Shared, path: &Path) -> Result<Classified, IndexError> {
     let relative = display_rel(&shared.root, path);
     let Some(language) = language_for_path(&relative) else {
-        return Ok(IndexOutcome::Skipped);
+        return Ok(Classified::Finished);
     };
     if is_secret(&relative) {
-        return Ok(IndexOutcome::Skipped);
+        return Ok(Classified::Finished);
     }
     let meta = std::fs::metadata(path)?;
     if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
-        return Ok(IndexOutcome::Skipped);
+        return Ok(Classified::Finished);
     }
     let bytes = std::fs::read(path)?;
     if bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0) {
-        return Ok(IndexOutcome::Skipped);
+        return Ok(Classified::Finished);
     }
     let hash = store::content_hash(&bytes);
     let connection = store::open_connection(&shared.db_path)?;
     if store::stored_hash(&connection, &relative)?.as_deref() == Some(hash.as_str()) {
-        return Ok(IndexOutcome::Skipped);
+        return Ok(Classified::Finished);
     }
     let source = String::from_utf8_lossy(&bytes).into_owned();
     let chunks = chunk_source(language, &relative, &source)?;
     if chunks.is_empty() {
         store::replace_file(&connection, &relative, &hash, language.as_str(), &[], &[])?;
-        return Ok(IndexOutcome::Skipped);
+        return Ok(Classified::Finished);
     }
-    let vectors = embed_chunks(&shared.embedder, &chunks).await?;
+    Ok(Classified::Pending(PendingEmbed {
+        relative,
+        hash,
+        language: language.as_str().to_string(),
+        chunks,
+    }))
+}
+
+async fn embed_pending(shared: &Shared, job: &PendingEmbed) -> Result<(), IndexError> {
+    let vectors = embed_chunks(&shared.embedder, &job.chunks).await?;
+    let connection = store::open_connection(&shared.db_path)?;
     store::replace_file(
         &connection,
-        &relative,
-        &hash,
-        language.as_str(),
-        &chunks,
+        &job.relative,
+        &job.hash,
+        &job.language,
+        &job.chunks,
         &vectors,
     )?;
-    Ok(IndexOutcome::Embedded)
+    Ok(())
+}
+
+async fn index_path(shared: &Shared, path: &Path) -> Result<(), IndexError> {
+    if let Classified::Pending(job) = classify_path(shared, path)? {
+        embed_pending(shared, &job).await?;
+    }
+    Ok(())
 }
 
 async fn embed_chunks(

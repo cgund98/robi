@@ -272,6 +272,7 @@ export function AppLayout() {
               onEffortChange={(next) => void setEffortChoice(next)}
               messages={messages}
               pendingText={echo}
+              workspaceId={activeWorkspaceId}
             />
           </div>
         ) : (
@@ -318,6 +319,7 @@ export function AppLayout() {
                   onEffortChange={(next) => void setEffortChoice(next)}
                   messages={messages}
                   pendingText={echo}
+                  workspaceId={activeWorkspaceId}
                 />
               </div>
             </div>

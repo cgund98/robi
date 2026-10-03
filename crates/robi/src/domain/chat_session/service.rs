@@ -11,6 +11,7 @@ use crate::domain::{
         repo::ChatSessionRepository,
     },
     error::ServiceError,
+    events::{EventBus, EventEnvelope},
     workspace::repo::WorkspaceRepository,
 };
 use crate::providers::catalog::ModelCatalog;
@@ -22,6 +23,8 @@ pub const CHAT_SESSION_TITLE_MAX_CHARS: usize = 200;
 pub struct ChatSessionService {
     pub repository: Arc<dyn ChatSessionRepository>,
     pub workspaces: Arc<dyn WorkspaceRepository>,
+    /// Publishes session create, update, and delete. Absent in tests.
+    pub events: Option<Arc<EventBus>>,
 }
 
 impl ChatSessionService {
@@ -39,14 +42,17 @@ impl ChatSessionService {
         }
         let title = normalize_new_title(command.title)?;
         let model_config = normalize_model_config(command.model_config)?;
-        self.repository
+        let session = self
+            .repository
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: command.workspace_id,
                 title,
                 mode: command.mode,
                 model_config,
             })
-            .await
+            .await?;
+        self.publish(EventEnvelope::session_created(session.id));
+        Ok(session)
     }
 
     pub async fn get_chat_session(&self, id: SessionId) -> Result<ChatSession, ServiceError> {
@@ -84,7 +90,10 @@ impl ChatSessionService {
         if command.is_empty() {
             return self.get_chat_session(command.id).await;
         }
-        self.repository.update_chat_session(command).await
+        let id = command.id;
+        let session = self.repository.update_chat_session(command).await?;
+        self.publish(EventEnvelope::session_updated(id));
+        Ok(session)
     }
 
     /// Name a chat session that does not have a title yet.
@@ -114,11 +123,21 @@ impl ChatSessionService {
                 "plan_path must not be empty".into(),
             ));
         }
-        self.repository.set_plan_path(id, path.to_owned()).await
+        self.repository.set_plan_path(id, path.to_owned()).await?;
+        self.publish(EventEnvelope::session_updated(id));
+        Ok(())
     }
 
     pub async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
-        self.repository.delete_chat_session(id).await
+        self.repository.delete_chat_session(id).await?;
+        self.publish(EventEnvelope::session_deleted(id));
+        Ok(())
+    }
+
+    fn publish(&self, envelope: EventEnvelope) {
+        if let Some(bus) = &self.events {
+            bus.publish(envelope);
+        }
     }
 }
 
@@ -257,6 +276,7 @@ mod tests {
                 title: command.title,
                 path_rules: PathRules::default(),
                 allow_hosts: Vec::new(),
+                mcp_allows: Vec::new(),
                 mode: command.mode,
                 model_config: command.model_config,
                 plan_path: None,
@@ -349,6 +369,7 @@ mod tests {
         ChatSessionService {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
+            events: None,
         }
     }
 
@@ -391,6 +412,14 @@ mod tests {
         async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError> {
             Err(ServiceError::NotFound(id.to_string()))
         }
+
+        async fn set_mcp_project_sha256(
+            &self,
+            _id: WorkspaceId,
+            _hash: Option<String>,
+        ) -> Result<(), ServiceError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -399,6 +428,7 @@ mod tests {
         let service = ChatSessionService {
             repository: repository.clone(),
             workspaces: Arc::new(MissingWorkspace),
+            events: None,
         };
         let workspace_id = WorkspaceId::new();
         let error = service
@@ -638,6 +668,7 @@ mod tests {
                 deny_read: None,
                 deny_write: None,
                 allow_hosts: None,
+                mcp_allows: None,
                 mode: None,
                 model_config: None,
             })
@@ -682,6 +713,7 @@ mod tests {
                 deny_read: None,
                 deny_write: None,
                 allow_hosts: None,
+                mcp_allows: None,
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     agent: Some(ModeOverrideUpdate {
@@ -708,6 +740,7 @@ mod tests {
                 deny_read: None,
                 deny_write: None,
                 allow_hosts: None,
+                mcp_allows: None,
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     agent: Some(ModeOverrideUpdate {
@@ -752,6 +785,7 @@ mod tests {
                 deny_read: None,
                 deny_write: None,
                 allow_hosts: None,
+                mcp_allows: None,
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     ask: Some(ModeOverrideUpdate {

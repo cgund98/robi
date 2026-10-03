@@ -10,6 +10,10 @@ pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
     pub root: String,
+    /// SHA-256 of `<workspace>/.robi/mcp.json` after the user enables it.
+    ///
+    /// Null until then. A changed file no longer matches, so those servers stay off.
+    pub mcp_project_sha256: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

@@ -45,6 +45,7 @@ pub(crate) async fn harness() -> Harness {
     let sessions = Arc::new(ChatSessionService {
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces,
+        events: None,
     });
     let chat = sessions
         .create_chat_session(CreateChatSessionCommand {

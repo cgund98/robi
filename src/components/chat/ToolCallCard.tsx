@@ -66,6 +66,18 @@ export function ToolCallCard({
         />
       )
     }
+    if (detail?.kind === 'mcp') {
+      return (
+        <McpCard
+          key="mcp-approval"
+          summary={summary}
+          args={detail.args}
+          output={detail.output}
+          actions={actions}
+          defaultOpen
+        />
+      )
+    }
     if (call.name === 'web_search' || call.name === 'web_fetch') {
       const headline = call.name === 'web_search' ? 'the web' : fetchHost(summary.target)
       const detail =
@@ -130,6 +142,19 @@ export function ToolCallCard({
         command={detail.command}
         output={detail.output}
         status={<StatusMark status={status} />}
+      />
+    )
+  }
+
+  if (detail?.kind === 'mcp') {
+    return (
+      <McpCard
+        key="mcp-result"
+        summary={summary}
+        args={detail.args}
+        output={detail.output}
+        status={<StatusMark status={status} />}
+        defaultOpen={false}
       />
     )
   }
@@ -506,6 +531,52 @@ function outputPreview(
   }
 }
 
+function McpCard({
+  summary,
+  args,
+  output,
+  actions,
+  status,
+  defaultOpen = false
+}: {
+  summary: { verb: string; target: string }
+  args: string
+  output: string
+  actions?: ReactNode
+  status?: ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const [openedForApproval, setOpenedForApproval] = useState(defaultOpen)
+  if (defaultOpen && !openedForApproval) {
+    setOpenedForApproval(true)
+    setOpen(true)
+  }
+  return (
+    <div className={styles.shell}>
+      <div className={styles.editHead}>
+        <button
+          type="button"
+          className={styles.editRow}
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className={styles.verb}>{summary.verb}</span>
+          <SummaryLabel summary={summary} />
+          {status}
+        </button>
+        {actions}
+      </div>
+      {open ? (
+        <pre className={styles.shellBody}>
+          {args}
+          {output ? `\n${output}` : ''}
+        </pre>
+      ) : null}
+    </div>
+  )
+}
+
 function ShellBody({ command, output }: { command: string; output: string }) {
   return (
     <pre className={styles.shellBody}>
@@ -520,7 +591,7 @@ function ShellBody({ command, output }: { command: string; output: string }) {
 function Detail({
   detail
 }: {
-  detail: Exclude<NonNullable<ReturnType<typeof toolDetail>>, { kind: 'shell' }>
+  detail: Exclude<NonNullable<ReturnType<typeof toolDetail>>, { kind: 'shell' } | { kind: 'mcp' }>
 }) {
   if (detail.kind === 'error') {
     return <pre className={styles.error}>{detail.text}</pre>

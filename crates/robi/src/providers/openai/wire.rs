@@ -99,6 +99,17 @@ fn wire_call_id(call: &ToolCall) -> String {
         .unwrap_or_else(|| call.id.to_string())
 }
 
+fn user_content(message: &Message) -> String {
+    if message.skills.is_empty() {
+        return message.content.clone();
+    }
+    let mut content = message.content.clone();
+    for skill in &message.skills {
+        content.push_str(&crate::skills::skill_block(skill));
+    }
+    content
+}
+
 /// The `arguments` string for one call.
 ///
 /// A call whose arguments never assembled sends `{}` rather than its error text:
@@ -133,7 +144,7 @@ pub fn build_request(
         messages.push(match message.role {
             Role::User => ChatMessage {
                 role: "user",
-                content: message.content.clone(),
+                content: user_content(message),
                 tool_calls: None,
                 tool_call_id: None,
             },

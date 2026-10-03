@@ -47,6 +47,7 @@ Add the directory when its milestone starts, not before.
 | `review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
 | `lsp/` | M7 | Language server client |
 | `index/` | M7 | AST chunking, embeddings, vector search |
+| `skills/` | M8 | Skill scan, catalog, and `@id` loads. See [docs/design/skills.md](docs/design/skills.md) |
 | `mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/design/mcp.md](docs/design/mcp.md) |
 | `compress/` | M9 | Tool-output compression and the original store |
 

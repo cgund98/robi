@@ -46,7 +46,7 @@ network. It is done when its tests pass. See
 | M5 | Modes and subagents | Ask, plan, and agent modes; read-only exploration | Modes, plan artifacts, `tasks`, `explore`, `delegate` |
 | M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments |
 | M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search |
-| M8 | Reach | Integrations and headless use | MCP client, skills, web tools, headless/CI mode |
+| M8 | Reach | Integrations and headless use | MCP client, skills, web tools |
 | M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
 
 The line between "usable" and "differentiated" falls after M5. M1–M3 produce a
@@ -779,9 +779,10 @@ Lower priority. Sequence by user demand, not by this order.
 - **MCP client** — Robi as an MCP host, so tools come from outside. Settled in
   [mcp.md](design/mcp.md). The official Rust SDK is `rmcp`
   ([rust-sdk](https://github.com/modelcontextprotocol/rust-sdk)).
-- **Skills** — markdown instruction files with frontmatter, catalogued in the
-  prompt and loaded on demand. The user names one with `@id`. The model may
-  load one with the `skill` tool. A bundled `create-skill` writes a new one.
+- **Skills** — implemented. Markdown instruction files with frontmatter,
+  catalogued in the prompt and loaded on demand. The user names one with
+  `@id`. The model may load one with the `skill` tool. A bundled
+  `create-skill` writes a new one.
 Discovery roots include `.robi/skills`,
   `.agents/skills`, and the Claude, Codex, Cursor, and OpenCode directories,
   at home and in the workspace. See [design/skills.md](design/skills.md).
@@ -792,9 +793,6 @@ Discovery roots include `.robi/skills`,
   [web-tools.md](design/web-tools.md). Every search waits, because each call
   spends Brave quota. A fetch waits the first time a host is used in the
   session, then remembers that host. Page text and snippets are untrusted.
-- **Headless / CI mode** — the agent loop without the UI. Another reason to keep
-  core out of the Tauri crate (F0.1).
-- **Plugins / custom tools** — a registration API, as `gopi.WithTool` provides.
 
 ---
 

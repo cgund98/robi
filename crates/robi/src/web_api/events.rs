@@ -16,7 +16,6 @@ use axum::{
 use futures_util::stream::Stream;
 use http::{header::HeaderName, HeaderValue};
 use serde::Deserialize;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{
@@ -54,7 +53,7 @@ pub async fn stream_events(
     // `.`. Event types are dotted, and the shell repeats `event_types`.
     let mut filter = StreamFilter::from_query(parse_query(raw.as_deref()))?;
     let lease = open_index(&state, &mut filter).await;
-    let subscription = state.event_fanout.subscribe();
+    let subscription = state.event_bus.subscribe();
     let stream = event_stream(subscription, filter, lease);
     let response = (
         [(
@@ -114,7 +113,9 @@ impl StreamFilter {
                 envelope.event_type == crate::domain::events::INDEX_PROGRESS
                     && envelope.subject == *workspace
             });
-            if !same_session && !same_workspace {
+            let list_or_app = crate::domain::events::SESSION_FILTER_EXCEPTIONS
+                .contains(&envelope.event_type.as_str());
+            if !same_session && !same_workspace && !list_or_app {
                 return false;
             }
         }
@@ -217,16 +218,13 @@ fn event_stream(
         (subscription, filter, lease),
         |(mut subscription, filter, lease)| async move {
             loop {
-                match subscription.recv().await {
-                    Ok(envelope) => {
-                        if !filter.matches(&envelope) {
-                            continue;
-                        }
-                        return Some((Ok(frame(&envelope)), (subscription, filter, lease)));
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => return None,
+                let Some(envelope) = subscription.recv().await else {
+                    return None;
+                };
+                if !filter.matches(&envelope) {
+                    continue;
                 }
+                return Some((Ok(frame(&envelope)), (subscription, filter, lease)));
             }
         },
     )
@@ -262,7 +260,7 @@ mod tests {
             service::ChatSessionService,
         },
         error::ServiceError,
-        events::{EventEnvelope, EventFanOut, TURN_STARTED},
+        events::{EventBus, EventEnvelope, APP_ERROR, SESSION_CREATED, TURN_STARTED},
         settings::{memory::MemorySettingsStore, store::SettingsStore, SettingsService},
     };
     use crate::web_api::state::AppState;
@@ -375,10 +373,11 @@ mod tests {
         }
     }
 
-    fn test_state(fanout: Arc<EventFanOut>) -> AppState {
+    fn test_state(fanout: Arc<EventBus>) -> AppState {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(Unused),
             workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
+            events: None,
         });
         let settings: Arc<dyn SettingsStore> = Arc::new(MemorySettingsStore::new());
         AppState {
@@ -392,7 +391,7 @@ mod tests {
                 store: Arc::new(Unused),
             }),
             settings_service: Arc::new(SettingsService { store: settings }),
-            event_fanout: Arc::clone(&fanout),
+            event_bus: Arc::clone(&fanout),
             file_changes: Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             ),
@@ -401,6 +400,7 @@ mod tests {
                 Arc::clone(&fanout),
                 Arc::new(robi_index::FakeEmbedder::new(4)),
             )),
+            mcp: None,
         }
     }
 
@@ -458,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishes_one_sse_frame() {
-        let fanout = Arc::new(EventFanOut::new());
+        let fanout = Arc::new(EventBus::new());
         let response = open_stream(test_state(Arc::clone(&fanout)), "").await;
 
         assert_eq!(
@@ -484,7 +484,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_id_query_drops_a_different_subject() {
-        let fanout = Arc::new(EventFanOut::new());
+        let fanout = Arc::new(EventBus::new());
         let wanted = SessionId::new().to_string();
         let other = SessionId::new().to_string();
         let response = open_stream(
@@ -509,8 +509,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_id_query_keeps_session_list_and_app_errors() {
+        let bus = Arc::new(EventBus::new());
+        let wanted = SessionId::new().to_string();
+        let other = SessionId::new().to_string();
+        let response = open_stream(
+            test_state(Arc::clone(&bus)),
+            &format!("?session_id={wanted}"),
+        )
+        .await;
+        assert!(response.status().is_success());
+
+        let created = sample(&other, SESSION_CREATED);
+        let error = sample("app", APP_ERROR);
+        bus.publish(created.clone());
+        bus.publish(error.clone());
+
+        let mut body = response.bytes_stream();
+        let first: EventEnvelope =
+            serde_json::from_str(field(&read_frame(&mut body).await, "data")).unwrap();
+        let second: EventEnvelope =
+            serde_json::from_str(field(&read_frame(&mut body).await, "data")).unwrap();
+        assert_eq!(first, created);
+        assert_eq!(second, error);
+    }
+
+    #[tokio::test]
     async fn event_types_query_drops_other_types() {
-        let fanout = Arc::new(EventFanOut::new());
+        let fanout = Arc::new(EventBus::new());
         let session = SessionId::new().to_string();
         let response = open_stream(
             test_state(Arc::clone(&fanout)),
@@ -531,7 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn bad_session_id_is_rejected() {
-        let fanout = Arc::new(EventFanOut::new());
+        let fanout = Arc::new(EventBus::new());
         let response = open_stream(test_state(fanout), "?session_id=nope").await;
         assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
     }

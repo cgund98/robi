@@ -27,8 +27,8 @@ describe them. Process placement of the loop (in-process vs. sidecar) stays
 
 ```mermaid
 flowchart LR
-  Agent[Agent loop] -->|emit Event| Sink[FanOutEventSink]
-  Sink --> Hub[EventFanOut]
+  Agent[Agent loop] -->|emit Event| Sink[BusEventSink]
+  Sink --> Hub[EventBus]
   Hub --> Sse["GET /api/v1/events/stream"]
   Sse -->|CloudEvents JSON| ES[EventSource in shell]
   ES --> Store[Session and transcript UI]
@@ -46,7 +46,7 @@ review ready) need a common envelope. CloudEvents 1.0 is that envelope.
 
 ## Decision
 
-**One in-process fan-out under `domain/events/`, one SSE route, one shell
+**One in-process bus under `domain/events/`, one SSE route, one shell
 `EventSource`.**
 
 `robi-core` keeps `Event` and `EventSink` unchanged. `domain` depends on
@@ -55,15 +55,15 @@ socket and not a file.
 
 | Module | Role |
 |---|---|
-| `domain/events/envelope.rs` | `EventEnvelope` and `from_core_event` |
-| `domain/events/fanout.rs` | `EventFanOut`: publish and subscribe |
-| `domain/events/sink.rs` | `FanOutEventSink` implements `EventSink` |
+| `domain/events/envelope.rs` | `EventEnvelope`, `from_payload`, and `from_core_event` |
+| `domain/events/bus.rs` | `EventBus`: publish and subscribe |
+| `domain/events/sink.rs` | `BusEventSink` implements `EventSink` |
 | `domain/events/mod.rs` | Re-exports for the composition root |
 | `web_api/events.rs` | Axum handler only: subscribe, filter, write frames |
 
-`AppState` holds `event_fanout: Arc<EventFanOut>`. When the agent runtime is
-wired into `robi-api`, it receives `FanOutEventSink`. Until then the endpoint
-is testable with a publisher that calls `publish` directly.
+`AppState` holds `event_bus: Arc<EventBus>`. The agent runtime receives
+`BusEventSink`. The endpoint is also testable with a publisher that calls
+`publish` directly.
 
 Rejected alternatives:
 
@@ -76,7 +76,7 @@ Rejected alternatives:
    One shell connection carries every agent type.
 4. **Replay of `message_delta` on reconnect.** Rejected. Deltas are ephemeral.
    Reconnect refetches the transcript over HTTP, then follows the live stream.
-5. **An unbounded fan-out queue.** Rejected. A slow tab must not stall the
+5. **An unbounded subscriber queue.** Rejected. A slow tab must not stall the
    loop or grow without bound. Drop the oldest frame.
 
 ## Wire contract
@@ -88,7 +88,7 @@ Rejected alternatives:
 | Query | Rule |
 |---|---|
 | `event_types` | Repeated. Optional. When present, only envelopes whose `type` is in the list. When absent, every agent type. |
-| `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id. |
+| `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id, plus index progress for that session's workspace, session create/update/delete, and `robi.app.v1.error`. |
 
 Response headers:
 
@@ -145,9 +145,18 @@ Source enum: `crates/robi-core/src/event.rs`.
 | `AwaitingApproval` | `robi.agent.v1.awaiting_approval` | `{ "session_id", "tool_call_id" }` |
 | `TurnFinished` | `robi.agent.v1.turn_finished` | `{ "session_id", "outcome" }` |
 
-`robi.agent.v1.session_updated` is not a core `Event`. The runtime publishes it
-after a generated title is stored. `data` is `{ "session_id", "title" }`.
-`subject` is the session id.
+These are not core `Event`s. Build them with `EventEnvelope::from_payload`.
+`data` is a cue, not the stored row.
+
+| `type` | `source` | `subject` | `data` | When |
+|---|---|---|---|---|
+| `robi.session.v1.created` | `robi/session` | session id | `{ "session_id" }` | After a session row is stored |
+| `robi.session.v1.updated` | `robi/session` | session id | `{ "session_id" }` | After any stored field changes, including a generated title |
+| `robi.session.v1.deleted` | `robi/session` | session id | `{ "session_id" }` | After the session row is removed |
+| `robi.app.v1.error` | `robi/app` | `app` | `{ "message" }` | A failure the user should see. `message` is short text. The first publisher is an MCP server that failed to start |
+
+A `session_id` query still delivers these four types. They are the session list
+and process-wide failures, so a window filtered to one session must see them.
 
 `outcome` is one of:
 
@@ -181,17 +190,17 @@ A reconnect does not replay deltas. On `EventSource` `open`, including the
 first connect, the shell refetches the session list and the active transcript.
 A frame published before the socket existed is recovered from the store.
 
-## Fan-out
+## Bus
 
-`EventFanOut::subscribe` returns a bounded queue (capacity **1024**) and a
-drop handle that unsubscribes. `publish` clones the envelope into every
-subscriber.
+`EventBus::subscribe` returns that subscriber's own bounded queue (capacity
+**1024**) and a drop handle that unsubscribes. `publish` clones the envelope
+into every queue.
 
 When a queue is full, **drop the oldest** frame and keep the newest. The loop's
 `emit` must not wait on a slow client. A dropped `message_delta` is recovered
 by the next successful hydrate, not by blocking the agent.
 
-`FanOutEventSink::emit` maps `Event` to `EventEnvelope` and publishes. A
+`BusEventSink::emit` maps `Event` to `EventEnvelope` and publishes. A
 subscriber that has disconnected is removed; that is not an error for the loop.
 
 ## React
@@ -217,7 +226,9 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 | `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. `tool_call_updated` also refreshes the review strip |
 | `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
 | `robi.agent.v1.turn_finished` | Phase `idle`, then refetch the session and the message list. A `failed` outcome shows its `message`. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared |
-| `robi.agent.v1.session_updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
+| `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
+| `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
+| `robi.app.v1.error` | Show `message` on the shell error line |
 
 Do not open a second `EventSource` per feature.
 
@@ -244,9 +255,9 @@ does not connect.
 
 ## Testing
 
-- `domain/events`: `from_core_event` covers every `Event` variant; fan-out
-  delivers to two subscribers; a full queue drops the oldest and keeps the
-  newest; unsubscribe stops delivery.
+- `domain/events`: `from_core_event` covers every `Event` variant; `from_payload`
+  fills the envelope; the bus delivers to two subscribers; a full queue drops
+  the oldest and keeps the newest; unsubscribe stops delivery.
 - `web_api`: an Axum test publishes one envelope and reads one SSE frame with
   the `id`, `event`, and JSON `data` lines. A `session_id` query drops a
   different subject.
@@ -256,7 +267,7 @@ does not connect.
 
 ## Implementation order
 
-1. `domain/events` (`EventEnvelope`, `EventFanOut`, `FanOutEventSink`) and unit tests.
+1. `domain/events` (`EventEnvelope`, `EventBus`, `BusEventSink`) and unit tests.
 2. `GET /api/v1/events/stream` and a synthetic publish test.
 3. `useReconnectingEventSource` and `useAgentEventsSSE` in the shell. Handlers
    may no-op until the transcript state is real.

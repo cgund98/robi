@@ -258,6 +258,13 @@ impl ModelConfigUpdate {
     }
 }
 
+/// One MCP tool the session may call without asking again.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpAllow {
+    pub server: String,
+    pub tool: String,
+}
+
 /// One conversation in one workspace.
 ///
 /// `title` stays unset until something writes one. The model does that after
@@ -272,6 +279,10 @@ pub struct ChatSession {
     ///
     /// Exact match after lowercasing and stripping a trailing dot.
     pub allow_hosts: Vec<String>,
+    /// MCP tools this session may call without another approval.
+    ///
+    /// Each entry is one server id and the remote tool name. `[]` on create.
+    pub mcp_allows: Vec<McpAllow>,
     pub mode: AgentMode,
     pub model_config: ModelConfig,
     /// Workspace-relative plan last written by `write_plan` or `todos`.
@@ -309,6 +320,7 @@ pub struct UpdateChatSessionCommand {
     pub deny_read: Option<Vec<String>>,
     pub deny_write: Option<Vec<String>>,
     pub allow_hosts: Option<Vec<String>>,
+    pub mcp_allows: Option<Vec<McpAllow>>,
     pub mode: Option<AgentMode>,
     pub model_config: Option<ModelConfigUpdate>,
 }
@@ -323,6 +335,7 @@ impl UpdateChatSessionCommand {
             deny_read: None,
             deny_write: None,
             allow_hosts: None,
+            mcp_allows: None,
             mode: None,
             model_config: None,
         }
@@ -335,6 +348,7 @@ impl UpdateChatSessionCommand {
             && self.deny_read.is_none()
             && self.deny_write.is_none()
             && self.allow_hosts.is_none()
+            && self.mcp_allows.is_none()
             && self.mode.is_none()
             && self
                 .model_config
@@ -383,6 +397,9 @@ pub fn apply_session_update(session: &mut ChatSession, command: &UpdateChatSessi
     }
     if let Some(hosts) = &command.allow_hosts {
         session.allow_hosts.clone_from(hosts);
+    }
+    if let Some(allows) = &command.mcp_allows {
+        session.mcp_allows.clone_from(allows);
     }
     if let Some(mode) = command.mode {
         session.mode = mode;

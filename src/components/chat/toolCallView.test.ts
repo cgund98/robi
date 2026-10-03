@@ -25,6 +25,25 @@ function call(overrides: Partial<ChatToolCall> = {}): ChatToolCall {
   }
 }
 
+describe('mcp calls', () => {
+  it('labels the call and keeps the full arguments', () => {
+    const args = { query: 'status', limit: 5 }
+    expect(toolSummary(call({ name: 'mcp_linear_list_issues', args }))).toEqual({
+      verb: 'MCP call',
+      target: 'linear_list_issues'
+    })
+    expect(
+      toolDetail(
+        call({ name: 'mcp_linear_list_issues', args, result: undefined, error: undefined })
+      )
+    ).toEqual({
+      kind: 'mcp',
+      args: JSON.stringify(args, null, 2),
+      output: ''
+    })
+  })
+})
+
 describe('toolSummary', () => {
   it('names read, grep, find, and list', () => {
     expect(toolSummary(call())).toEqual({ verb: 'Read', target: 'src/main.rs' })

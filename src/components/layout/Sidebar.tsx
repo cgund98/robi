@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
 import styles from './Sidebar.module.css'
 import { IndexStatusLine } from './IndexStatusLine'
+import { McpTray } from './McpTray'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 type SidebarProps = {
@@ -85,6 +86,8 @@ export function Sidebar({
         </span>
         Workspaces
       </button>
+
+      <McpTray />
 
       <div className={styles.section}>
         <div className={styles.sectionLabel}>Recents</div>

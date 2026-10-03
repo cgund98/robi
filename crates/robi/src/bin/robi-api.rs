@@ -21,7 +21,7 @@ use robi::{
     domain::{
         chat_message::service::ChatMessageService,
         chat_session::service::ChatSessionService,
-        events::{EventFanOut, FanOutEventSink},
+        events::{BusEventSink, EventBus},
         file_change::repo::FileChangeRepository,
         settings::{store::SettingsStore, SettingsService},
         workspace::service::WorkspaceService,
@@ -86,10 +86,10 @@ async fn main() {
         reqwest::Client::new(),
     ));
     let tools = Arc::new(ToolRegistry::new());
-    let event_fanout = Arc::new(EventFanOut::new());
+    let event_bus = Arc::new(EventBus::new());
     let index = Arc::new(robi::index::IndexHub::new(
         settings_dir.clone(),
-        Arc::clone(&event_fanout),
+        Arc::clone(&event_bus),
         Arc::new(robi_index::LocalEmbedder::new(robi_index::model_cache_dir(
             &settings_dir,
         ))),
@@ -100,22 +100,29 @@ async fn main() {
     let chat_session_service = Arc::new(ChatSessionService {
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces: workspaces.clone(),
+        events: Some(Arc::clone(&event_bus)),
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
+    let mcp = Arc::new(robi::mcp::McpHub::new(
+        Arc::clone(&settings),
+        settings_dir.clone(),
+        Arc::clone(&event_bus),
+    ));
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
-        events: Arc::new(FanOutEventSink::new(Arc::clone(&event_fanout))),
+        events: Arc::new(BusEventSink::new(Arc::clone(&event_bus))),
         models: Arc::new(SettingsModelSource::new(Arc::clone(&settings))),
         tools,
         config: LoopConfig::default(),
         sessions: Some(Arc::clone(&chat_session_service)),
         file_changes: Some(Arc::clone(&file_changes)),
-        fanout: Some(Arc::clone(&event_fanout)),
+        bus: Some(Arc::clone(&event_bus)),
         search,
         index: Some(Arc::clone(&index)),
         lsp: Some(robi::lsp::LspHub::new()),
         settings: Some(Arc::clone(&settings)),
+        mcp: Some(Arc::clone(&mcp)),
     }));
     let state = AppState {
         workspace_service: Arc::new(WorkspaceService {
@@ -128,9 +135,10 @@ async fn main() {
             store,
         }),
         settings_service,
-        event_fanout,
+        event_bus,
         file_changes,
         index,
+        mcp: Some(mcp),
     };
 
     let app = Router::new()

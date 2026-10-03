@@ -24,6 +24,12 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/workspaces/{id}",
             get(get_workspace).delete(delete_workspace),
         )
+        .route("/api/v1/workspaces/{id}/skills", get(list_skills))
+        .route("/api/v1/workspaces/{id}/mcp", get(list_mcp_servers))
+        .route(
+            "/api/v1/workspaces/{id}/mcp/config",
+            get(get_mcp_config),
+        )
         .with_state(state)
 }
 
@@ -111,6 +117,44 @@ pub async fn delete_workspace(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/skills",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses(
+        (status = 200, description = "User-invocable skills", body = Vec<SkillEntry>)
+    )
+)]
+pub async fn list_skills(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SkillEntry>>, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let root = std::path::PathBuf::from(&workspace.root);
+    let root = root.canonicalize().unwrap_or(root);
+    let home = crate::adapters::settings::home_dir()
+        .ok()
+        .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
+    let skills = crate::skills::scan(home.as_deref(), Some(&root))
+        .into_iter()
+        .filter(|skill| skill.user_invocable)
+        .map(|skill| {
+            let scope = skill.scope_name().to_owned();
+            SkillEntry {
+                id: skill.id,
+                label: skill.label,
+                description: skill.description,
+                scope,
+                model_invocable: skill.model_invocable,
+                path: skill.directory.display().to_string(),
+            }
+        })
+        .collect();
+    Ok(Json(skills))
+}
+
 fn to_response(workspace: DomainWorkspace) -> Workspace {
     Workspace {
         id: workspace.id.to_string(),
@@ -118,6 +162,78 @@ fn to_response(workspace: DomainWorkspace) -> Workspace {
         root: workspace.root,
         created_at: rfc3339(workspace.created_at),
     }
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/mcp",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses(
+        (status = 200, description = "Configured MCP servers and connection status", body = Vec<McpServer>)
+    )
+)]
+pub async fn list_mcp_servers(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<McpServer>>, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let Some(mcp) = &state.mcp else {
+        return Ok(Json(Vec::new()));
+    };
+    let root = std::path::PathBuf::from(&workspace.root);
+    let root = root.canonicalize().unwrap_or(root);
+    let rows = mcp
+        .status(id, &root, workspace.mcp_project_sha256.as_deref())
+        .await;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| McpServer {
+                id: row.id,
+                status: row.status,
+                title: row.title,
+                icon: row.icon,
+                tool_count: row.tool_count,
+            })
+            .collect(),
+    ))
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/mcp/config",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses(
+        (status = 200, description = "MCP JSON files as stored on disk", body = McpConfig)
+    )
+)]
+pub async fn get_mcp_config(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<McpConfig>, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let Some(mcp) = &state.mcp else {
+        return Ok(Json(McpConfig {
+            user_path: String::new(),
+            user_text: None,
+            project_path: String::new(),
+            project_text: None,
+            project_enabled: false,
+        }));
+    };
+    let root = std::path::PathBuf::from(&workspace.root);
+    let root = root.canonicalize().unwrap_or(root);
+    let files = mcp.config_files(&root, workspace.mcp_project_sha256.as_deref());
+    Ok(Json(McpConfig {
+        user_path: files.user_path,
+        user_text: files.user_text,
+        project_path: files.project_path,
+        project_text: files.project_text,
+        project_enabled: files.project_enabled,
+    }))
 }
 
 pub(crate) fn parse_workspace_id(value: &str) -> Result<WorkspaceId, ServiceError> {
@@ -134,6 +250,44 @@ fn rfc3339(timestamp: DateTime<Utc>) -> String {
 pub struct CreateWorkspace {
     /// Absolute or relative directory. Stored as its canonical path.
     pub root: String,
+}
+
+/// The MCP JSON files for one workspace. Text is the file on disk. Secrets are not resolved.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct McpConfig {
+    pub user_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_text: Option<String>,
+    pub project_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_text: Option<String>,
+    /// True when the stored project hash matches the file's current bytes.
+    pub project_enabled: bool,
+}
+
+/// One MCP server this workspace is configured to use. Header and env values are omitted.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct McpServer {
+    pub id: String,
+    /// `disconnected`, `starting`, `connected`, or `failed`.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `https` URL or `data:image` URI from the server handshake.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub tool_count: u32,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SkillEntry {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    /// `user` or `project`.
+    pub scope: String,
+    pub model_invocable: bool,
+    pub path: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

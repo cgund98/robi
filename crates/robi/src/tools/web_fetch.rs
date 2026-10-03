@@ -147,6 +147,7 @@ impl WebFetch {
                 deny_read: None,
                 deny_write: None,
                 allow_hosts: Some(hosts),
+                mcp_allows: None,
                 mode: None,
                 model_config: None,
             })

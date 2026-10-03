@@ -223,13 +223,25 @@ impl Agent {
         text: &str,
         cancel: CancellationToken,
     ) -> TurnOutcome {
+        self.user_input_with_skills(session, text, Vec::new(), cancel)
+            .await
+    }
+
+    /// [`user_input`](Self::user_input) with skill bodies the host already loaded.
+    pub async fn user_input_with_skills(
+        &self,
+        session: SessionId,
+        text: &str,
+        skills: Vec<crate::message::SkillLoad>,
+        cancel: CancellationToken,
+    ) -> TurnOutcome {
         match self.settle_unresolved(&session, &cancel).await {
             Ok(Settle::Paused) => return TurnOutcome::Paused,
             Ok(_) => {}
             Err(error) => return TurnOutcome::Failed(error),
         }
 
-        let message = Message::user(text);
+        let message = Message::user(text).with_skills(skills);
         if let Err(error) = self.store.append(session, message.clone()).await {
             return TurnOutcome::Failed(error.into());
         }

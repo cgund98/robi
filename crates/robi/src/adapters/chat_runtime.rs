@@ -30,7 +30,7 @@ use crate::{
             service::ChatSessionService,
         },
         error::ServiceError,
-        events::EventFanOut,
+        events::EventBus,
         file_change::repo::FileChangeRepository,
         settings::store::SettingsStore,
     },
@@ -52,9 +52,9 @@ pub struct AgentFactory {
     pub file_changes: Option<Arc<dyn FileChangeRepository>>,
     /// Brave, or a fake in tests. `web_search` calls this.
     pub search: Arc<dyn crate::web::SearchEngine>,
-    /// Publishes `session_updated` after a title is stored. Absent when there is
-    /// no fan-out.
-    pub fanout: Option<Arc<EventFanOut>>,
+    /// Publishes `robi.session.v1.updated` after a title is stored. Absent when
+    /// there is no bus.
+    pub bus: Option<Arc<EventBus>>,
     /// Workspace semantic index. Absent in tests that do not search.
     pub index: Option<Arc<crate::index::IndexHub>>,
     /// Language servers shared by sessions on one workspace. Absent in tests
@@ -62,6 +62,8 @@ pub struct AgentFactory {
     pub lsp: Option<Arc<crate::lsp::LspHub>>,
     /// Global settings. Absent in tests, which leave language-server tools on.
     pub settings: Option<Arc<dyn SettingsStore>>,
+    /// MCP host. Absent in tests. Agent mode attaches its tools before the model runs.
+    pub mcp: Option<Arc<crate::mcp::McpHub>>,
 }
 
 impl AgentFactory {
@@ -142,6 +144,23 @@ impl AgentFactory {
             tracing::error!(%session, %err, "failed to register tools");
             ServiceError::Unknown
         })?;
+        if mode == AgentMode::Agent {
+            if let Some(mcp) = &self.mcp {
+                let allows = Arc::new(crate::mcp::SessionAllows {
+                    sessions: Arc::clone(sessions),
+                    session,
+                });
+                mcp.attach(
+                    workspace.id,
+                    &root,
+                    workspace.mcp_project_sha256.as_deref(),
+                    &registry,
+                    allows,
+                    &crate::mcp::RmcpOpener,
+                )
+                .await;
+            }
+        }
         tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
         Ok((Arc::new(registry), Some(root), mode, choice, chat.plan_path))
     }
@@ -202,10 +221,10 @@ impl SerializedChatRuntime {
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
-        let fanout = self.factory.fanout.clone();
+        let bus = self.factory.bus.clone();
         tracing::info!(%session, "session actor started");
         tokio::spawn(async move {
-            run_actor(agent, model, store, sessions, fanout, slots, session).await;
+            run_actor(agent, model, store, sessions, bus, slots, session).await;
         });
     }
 
@@ -446,6 +465,29 @@ async fn decide_then_resume(
     agent.resume(session, cancel).await
 }
 
+async fn skill_loads(
+    sessions: Option<&Arc<ChatSessionService>>,
+    session: SessionId,
+    instruction: &str,
+) -> Vec<robi_core::message::SkillLoad> {
+    let Some(sessions) = sessions else {
+        return Vec::new();
+    };
+    let Ok(chat) = sessions.get_chat_session(session).await else {
+        return Vec::new();
+    };
+    let Ok(Some(workspace)) = sessions.workspaces.get_workspace(chat.workspace_id).await else {
+        return Vec::new();
+    };
+    let root = std::path::PathBuf::from(&workspace.root);
+    let root = root.canonicalize().unwrap_or(root);
+    let home = crate::adapters::settings::home_dir()
+        .ok()
+        .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
+    let skills = crate::skills::scan(home.as_deref(), Some(&root));
+    crate::skills::loads_for_text(instruction, &skills)
+}
+
 fn map_store(error: StoreError) -> ServiceError {
     match error {
         StoreError::SessionNotFound(id) => ServiceError::NotFound(id.to_string()),
@@ -461,7 +503,7 @@ async fn run_actor(
     model: Arc<dyn Model>,
     store: Arc<dyn MessageStore>,
     sessions: Option<Arc<ChatSessionService>>,
-    fanout: Option<Arc<EventFanOut>>,
+    bus: Option<Arc<EventBus>>,
     slots: Arc<Slots>,
     session: SessionId,
 ) {
@@ -490,7 +532,10 @@ async fn run_actor(
         let outcome = match work {
             Work::Instruction(instruction) => {
                 tracing::info!(%session, "session actor started a turn");
-                agent.user_input(session, &instruction, cancel).await
+                let skills = skill_loads(sessions.as_ref(), session, &instruction).await;
+                agent
+                    .user_input_with_skills(session, &instruction, skills, cancel)
+                    .await
             }
             Work::Decision { call, reject } => {
                 tracing::info!(
@@ -524,9 +569,9 @@ async fn run_actor(
         if let Some(sessions) = title_sessions {
             let model = Arc::clone(&model);
             let store = Arc::clone(&store);
-            let fanout = fanout.clone();
+            let bus = bus.clone();
             tokio::spawn(async move {
-                title_completed_turn(session, model, store, sessions, fanout).await;
+                title_completed_turn(session, model, store, sessions, bus).await;
             });
         }
     }
@@ -559,7 +604,7 @@ mod tests {
         service::ChatSessionService,
     };
     use crate::domain::error::ServiceError;
-    use crate::domain::events::{EventFanOut, SESSION_UPDATED};
+    use crate::domain::events::{EventBus, SESSION_UPDATED};
     use crate::domain::settings::store::SettingsStore;
     use crate::domain::workspace::repo::AnyWorkspace;
 
@@ -705,11 +750,12 @@ mod tests {
             config: LoopConfig::default(),
             sessions: None,
             file_changes: None,
-            fanout: None,
+            bus: None,
             search: idle_search(),
             index: None,
             lsp: None,
             settings: None,
+            mcp: None,
         })
     }
 
@@ -1037,11 +1083,12 @@ mod tests {
             config: LoopConfig::default(),
             sessions: None,
             file_changes: None,
-            fanout: None,
+            bus: None,
             search: idle_search(),
             index: None,
             lsp: None,
             settings: None,
+            mcp: None,
         });
 
         let error = runtime.submit(session, "hello".into()).await.unwrap_err();
@@ -1125,6 +1172,7 @@ mod tests {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
             workspaces: Arc::new(AnyWorkspace),
+            events: None,
         });
         let seen = Arc::new(Mutex::new(None));
         let runtime = SerializedChatRuntime::new(AgentFactory {
@@ -1144,11 +1192,12 @@ mod tests {
             file_changes: Some(Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             )),
-            fanout: None,
+            bus: None,
             search: idle_search(),
             index: None,
             lsp: None,
             settings: None,
+            mcp: None,
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -1165,6 +1214,7 @@ mod tests {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
+            events: None,
         });
         let settings = Arc::new(crate::domain::settings::memory::MemorySettingsStore::new());
         settings
@@ -1194,11 +1244,12 @@ mod tests {
             file_changes: Some(Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             )),
-            fanout: None,
+            bus: None,
             search: idle_search(),
             index: None,
             lsp: None,
             settings: Some(settings),
+            mcp: None,
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -1231,7 +1282,7 @@ mod tests {
         store: Arc<dyn MessageStore>,
         model: Arc<dyn Model>,
         sessions: Arc<ChatSessionService>,
-        fanout: Arc<EventFanOut>,
+        bus: Arc<EventBus>,
     ) -> SerializedChatRuntime {
         SerializedChatRuntime::new(AgentFactory {
             store,
@@ -1243,11 +1294,12 @@ mod tests {
             file_changes: Some(Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             )),
-            fanout: Some(fanout),
+            bus: Some(bus),
             search: idle_search(),
             index: None,
             lsp: None,
             settings: None,
+            mcp: None,
         })
     }
 
@@ -1274,9 +1326,10 @@ mod tests {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
+            events: None,
         });
-        let fanout = Arc::new(EventFanOut::new());
-        let mut subscription = fanout.subscribe();
+        let bus = Arc::new(EventBus::new());
+        let mut subscription = bus.subscribe();
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
             prompts: Mutex::new(Vec::new()),
@@ -1286,7 +1339,7 @@ mod tests {
             store.clone(),
             model.clone(),
             Arc::clone(&sessions),
-            Arc::clone(&fanout),
+            Arc::clone(&bus),
         );
 
         runtime
@@ -1318,7 +1371,7 @@ mod tests {
             .expect("envelope");
         assert_eq!(envelope.event_type, SESSION_UPDATED);
         assert_eq!(envelope.subject, session.to_string());
-        assert_eq!(envelope.data["title"], "Parser cleanup");
+        assert_eq!(envelope.data["session_id"], session.to_string());
 
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1345,6 +1398,7 @@ mod tests {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::named(session, "Kept")),
             workspaces: Arc::new(AnyWorkspace),
+            events: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1355,7 +1409,7 @@ mod tests {
             store,
             model.clone(),
             sessions.clone(),
-            Arc::new(EventFanOut::new()),
+            Arc::new(EventBus::new()),
         );
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -1392,6 +1446,7 @@ mod tests {
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
+            events: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1402,7 +1457,7 @@ mod tests {
             store,
             model.clone(),
             sessions.clone(),
-            Arc::new(EventFanOut::new()),
+            Arc::new(EventBus::new()),
         );
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -1459,6 +1514,7 @@ mod tests {
                 title,
                 path_rules: crate::domain::chat_session::model::PathRules::default(),
                 allow_hosts: Vec::new(),
+                mcp_allows: Vec::new(),
                 mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
                 plan_path: None,
