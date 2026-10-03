@@ -16,7 +16,7 @@ JSON arrays and search hits are not this page. They remain
 |---|---|
 | Whether the command runs, and the 256 KiB cap on each stream | [shell-tool.md](shell-tool.md) |
 | Folding a source file | [code-outline.md](code-outline.md) |
-| Which MCP result uses this collapser | [mcp.md](mcp.md). JSON takes a different pass |
+| Which MCP result uses this collapser | [mcp-output.md](mcp-output.md). The line pass calls this collapser. JSON takes that page's own pass |
 | Crushing JSON or a `grep` result | `docs/design/tool-output-compression.md` |
 | The context meter drawing the saving | [roadmap](../roadmap.md) F3.4. This page says the compressor reports bytes in and bytes out |
 
@@ -54,11 +54,11 @@ trait. The shell implementation and the table live in `crates/robi`. A
 failing compressor returns the tool result unchanged and does not fail the
 turn.
 
-`shell` does not compress its own result. The pipeline below runs for every
-tool. A `shell` result takes this path on both streams. Line-oriented MCP
-text takes the same line collapser and the same head, tail, and error
-windows; which MCP shapes do that is in [mcp.md](mcp.md). Every other tool
-is unchanged until its own compressor exists.
+`shell` does not compress its own result. The pipeline below runs for a
+`shell` result, on both streams. Line-oriented MCP text calls the same
+collapser; which MCP shapes do that, and how the original is stored, is
+in [mcp-output.md](mcp-output.md). Every other tool is unchanged until
+its own compressor exists.
 
 ## Pipeline
 

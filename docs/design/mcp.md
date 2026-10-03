@@ -11,7 +11,7 @@ approval bar is in [chat-ui.md](chat-ui.md). Child agents are in
 | Topic | Where it belongs |
 |---|---|
 | Built-in read, edit, and shell tools | [read-tools.md](read-tools.md), [editing-tools.md](editing-tools.md), [shell-tool.md](shell-tool.md) |
-| How a shell log or a JSON body is crushed | [shell-output.md](shell-output.md), and `docs/design/tool-output-compression.md` for the JSON pass. This page says which of those an MCP result uses |
+| How a large MCP result is crushed | [mcp-output.md](mcp-output.md) |
 | Robi as an MCP server | Later. This page is the host: Robi connects to servers other people run |
 | A skill file | [skills.md](skills.md). A server prompt template is not a skill |
 
@@ -228,21 +228,12 @@ true` is a tool error whose message is that text. Empty content is a tool
 error. The tool's own bound is 256 KiB of that text. A call that exceeds
 `timeout_seconds` is a tool error, and the server is left connected.
 
-That bounded text then takes the same compression path as any other tool
-result. The MCP client does not crush it. The compressor picks a pass from
-the shape of the text:
-
-| Shape | Pass |
-|---|---|
-| A JSON array or object | Schema, a sample of elements, and counts for the rest. That pass is `docs/design/tool-output-compression.md` |
-| Line-oriented text | The shell line collapser, then head, tail, and error windows when the collapse is still large. [shell-output.md](shell-output.md) |
-| Anything else over 4 KiB | The first 12 lines and the last 20. The same omission marker |
-
-A stream under 4 KiB, and a result that does not shrink by at least 1 KiB,
-stays byte-identical. The original the model can `retrieve` is this 256 KiB
-text, not the rest of what the server sent. The row, the marker, and the
-tool card are the ones shell output uses. The core backstop still applies
-to the compressed result.
+That bounded text then takes the MCP compression path. The client does
+not crush it. Routing, the JSON pass, the line pass, and the `kind: "mcp"`
+row are in [mcp-output.md](mcp-output.md). A string under 4 KiB, and a
+pass that saves under 1 KiB, stays byte-identical. The original the model
+can `retrieve` is this 256 KiB text, not the rest of what the server sent.
+The core backstop still applies to the compressed result.
 
 ### Roots
 

@@ -57,6 +57,7 @@ pub(crate) async fn run_child(
     model: Arc<dyn Model>,
     registry: Arc<ToolRegistry>,
     cancel: tokio_util::sync::CancellationToken,
+    compressor: Option<Arc<dyn robi_core::compress::Compressor>>,
 ) -> Result<ChildSummary, ToolError> {
     tracing::info!(mode = mode_name(mode), "subagent started");
     let store = Arc::new(MemoryStore::default());
@@ -64,13 +65,16 @@ pub(crate) async fn run_child(
         SubagentMode::Explore => EXPLORE_ITERATIONS,
         SubagentMode::General => GENERAL_ITERATIONS,
     };
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         store.clone(),
         Arc::new(NopSink),
         model,
         registry,
         LoopConfig::default().with_max_iterations(iterations),
     );
+    if let Some(compressor) = compressor {
+        agent = agent.with_compressor(compressor);
+    }
     let session = agent.new_chat(WorkspaceId::new());
     let child_cancel = cancel.child_token();
     let run_cancel = child_cancel.clone();
@@ -159,7 +163,8 @@ pub(crate) fn register_child_tools(
         ))))?;
     }
     if mode == SubagentMode::General {
-        registry.register(read(Arc::new(Shell::new(ctx))))?;
+        registry.register(read(Arc::new(Shell::new(Arc::clone(&ctx)))))?;
+        registry.register(read(Arc::new(super::retrieve::Retrieve::new(ctx))))?;
     }
     Ok(())
 }

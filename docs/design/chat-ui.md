@@ -15,6 +15,7 @@ delivery stays in [events-sse.md](events-sse.md).
 | Creating the session row | [persistence.md](persistence.md). The shell delays that call |
 | `@id` skill mentions and the **Using** row | [skills.md](skills.md) |
 | A shell card showing the uncompressed command output | [shell-output.md](shell-output.md). The transcript body the model sees may be the compressed view |
+| An MCP card showing the bounded server text | [mcp-output.md](mcp-output.md). The transcript body the model sees may be the compressed view |
 
 ## Draft session
 

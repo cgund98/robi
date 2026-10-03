@@ -96,6 +96,9 @@ async fn main() {
     ));
     let store: Arc<dyn robi_core::store::MessageStore> =
         Arc::new(SqliteMessageStore::new(Arc::clone(&pool)));
+    let originals: Arc<dyn robi::compress::OriginalStore> = Arc::new(
+        robi::adapters::originals::SqliteOriginals::new(Arc::clone(&pool)),
+    );
     let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
     let chat_session_service = Arc::new(ChatSessionService {
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
@@ -123,6 +126,7 @@ async fn main() {
         lsp: Some(robi::lsp::LspHub::new()),
         settings: Some(Arc::clone(&settings)),
         mcp: Some(Arc::clone(&mcp)),
+        originals: Some(Arc::clone(&originals)),
     }));
     let state = AppState {
         workspace_service: Arc::new(WorkspaceService {
@@ -139,6 +143,7 @@ async fn main() {
         file_changes,
         index,
         mcp: Some(mcp),
+        originals,
     };
 
     let app = Router::new()

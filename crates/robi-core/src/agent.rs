@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use crate::compress::{CompressOutcome, CompressRequest, Compressor};
 use crate::config::LoopConfig;
 use crate::error::{AgentError, ModelError, StoreError, ToolError, TurnOutcome};
 use crate::event::{Event, EventSink};
@@ -136,6 +137,7 @@ pub struct Agent {
     model: Arc<dyn Model>,
     tools: Arc<ToolRegistry>,
     config: LoopConfig,
+    compressor: Option<Arc<dyn Compressor>>,
 }
 
 impl Agent {
@@ -152,7 +154,14 @@ impl Agent {
             model,
             tools,
             config,
+            compressor: None,
         }
+    }
+
+    /// Compress large tool results before they are stored. Absent in tests.
+    pub fn with_compressor(mut self, compressor: Arc<dyn Compressor>) -> Self {
+        self.compressor = Some(compressor);
+        self
     }
 
     pub fn config(&self) -> LoopConfig {
@@ -582,8 +591,13 @@ impl Agent {
                         .unwrap_or(Err(ToolError::Cancelled));
                     match outcome {
                         Ok(value) => {
-                            let (value, truncated) = self.enforce_result_ceiling(value);
+                            let name = call.name.clone();
+                            let call_id = call.id.to_string();
+                            let compressed =
+                                self.compress_result(session, &name, &call_id, value).await;
+                            let (value, truncated) = self.enforce_result_ceiling(compressed.result);
                             call.execution_status = ExecutionStatus::Succeeded;
+                            call.original_id = compressed.original_id;
                             call.result = Some(value);
                             if truncated {
                                 call.truncation = Some(Truncation {
@@ -689,6 +703,30 @@ impl Agent {
             results.push((position, result));
         }
         results
+    }
+
+    /// Shrink a large result. A missing compressor, or a compressor error,
+    /// leaves the value unchanged and records no original.
+    async fn compress_result(
+        &self,
+        session: &SessionId,
+        tool: &str,
+        tool_call_id: &str,
+        value: serde_json::Value,
+    ) -> CompressOutcome {
+        let Some(compressor) = &self.compressor else {
+            return CompressOutcome::unchanged(value);
+        };
+        let request = CompressRequest {
+            tool: tool.to_owned(),
+            tool_call_id: tool_call_id.to_owned(),
+            session_id: session.to_string(),
+            result: value.clone(),
+        };
+        match compressor.compress(request).await {
+            Ok(outcome) => outcome,
+            Err(_) => CompressOutcome::unchanged(value),
+        }
     }
 
     /// Cut a tool result that exceeds the backstop.

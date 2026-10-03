@@ -23,6 +23,8 @@ pub struct ToolContext {
     /// When false, language-server tools are not registered and writes do not
     /// notify a server. Read once, when the actor builds its registry.
     pub lsp_enabled: bool,
+    /// Capped shell streams. Absent in tests that do not compress.
+    pub originals: Option<Arc<dyn crate::compress::OriginalStore>>,
 }
 
 impl ToolContext {

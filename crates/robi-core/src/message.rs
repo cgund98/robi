@@ -152,6 +152,9 @@ pub struct ToolCall {
     /// finishes. Absent on every other tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<SubagentSnapshot>,
+    /// The `tool_originals` id when compression replaced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_id: Option<String>,
 }
 
 impl ToolCall {
@@ -169,6 +172,7 @@ impl ToolCall {
             truncation: None,
             provider_call_id: None,
             subagent: None,
+            original_id: None,
         }
     }
 

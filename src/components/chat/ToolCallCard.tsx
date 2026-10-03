@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
-import type { AgentPhase } from '../../state/chatStore'
+import { getToolOriginal } from '../../api/messages'
+import { useChatStore, type AgentPhase } from '../../state/chatStore'
 import styles from './ToolCallCard.module.css'
 import {
   EDIT_VISIBLE_LINES,
@@ -15,6 +16,7 @@ import {
   subagentView,
   toolDetail,
   toolSummary,
+  type RetrieveView,
   type ChatToolCall,
   type ToolSummary,
   type DiffLine,
@@ -61,6 +63,7 @@ export function ToolCallCard({
           summary={summary}
           command={detail.command}
           output={detail.output}
+          originalId={call.original_id}
           actions={actions}
           defaultOpen
         />
@@ -141,8 +144,15 @@ export function ToolCallCard({
         summary={summary}
         command={detail.command}
         output={detail.output}
+        originalId={call.original_id}
         status={<StatusMark status={status} />}
       />
+    )
+  }
+
+  if (detail?.kind === 'retrieve') {
+    return (
+      <RetrieveCard summary={summary} view={detail.view} status={<StatusMark status={status} />} />
     )
   }
 
@@ -153,6 +163,7 @@ export function ToolCallCard({
         summary={summary}
         args={detail.args}
         output={detail.output}
+        originalId={call.original_id}
         status={<StatusMark status={status} />}
         defaultOpen={false}
       />
@@ -336,6 +347,19 @@ function fetchHost(url: string): string {
 }
 
 function ToolIcon({ name }: { name: string }) {
+  if (name === 'retrieve') {
+    return (
+      <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
+        <path
+          d="M3 4.5h10M3 8h10M3 11.5h6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    )
+  }
   if (name === 'shell') {
     return (
       <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
@@ -467,6 +491,7 @@ function ShellCard({
   summary,
   command,
   output,
+  originalId,
   actions,
   status,
   defaultOpen = false
@@ -474,67 +499,89 @@ function ShellCard({
   summary: { verb: string; target: string }
   command: string
   output: string
+  originalId?: string | null
   actions?: ReactNode
   status?: ReactNode
   defaultOpen?: boolean
 }) {
+  const sessionId = useChatStore((state) => state.activeSessionId)
+  const shown = useCappedOutput(sessionId, originalId, output)
   const [open, setOpen] = useState(defaultOpen)
   const [openedForApproval, setOpenedForApproval] = useState(defaultOpen)
   if (defaultOpen && !openedForApproval) {
     setOpenedForApproval(true)
     setOpen(true)
   }
-  const preview = outputPreview(output, 4)
+  const header = (
+    <div className={styles.editHead}>
+      <button
+        type="button"
+        className={open ? styles.editRow : styles.row}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <ToolIcon name="shell" />
+        <span className={styles.verb}>{summary.verb}</span>
+        <SummaryLabel summary={summary} />
+        {status}
+      </button>
+      {actions}
+    </div>
+  )
+  if (!open) {
+    return header
+  }
   return (
     <div className={styles.shell}>
-      <div className={styles.editHead}>
-        <button
-          type="button"
-          className={styles.editRow}
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-        >
-          <ToolIcon name="shell" />
-          <span className={styles.verb}>{summary.verb}</span>
-          <SummaryLabel summary={summary} />
-          {status}
-        </button>
-        {actions}
-      </div>
-      {open ? <ShellBody command={command} output={output} /> : null}
-      {!open && preview.text ? (
-        <pre
-          className={`${styles.shellBody} ${styles.shellPreview}`}
-          data-more-above={preview.moreAbove}
-          data-more-below={preview.moreBelow}
-        >
-          {preview.text}
-        </pre>
-      ) : null}
+      {header}
+      <ShellBody command={command} output={shown} />
     </div>
   )
 }
 
-function outputPreview(
-  output: string,
-  count: number
-): { text: string; moreAbove: boolean; moreBelow: boolean } {
-  const lines = output.split('\n')
-  if (lines[lines.length - 1] === '') {
-    lines.pop()
+function useCappedOutput(
+  sessionId: string | null,
+  originalId: string | null | undefined,
+  fallback: string
+): string {
+  const [loaded, setLoaded] = useState<{ id: string; text: string } | null>(null)
+  useEffect(() => {
+    if (!sessionId || !originalId) {
+      return
+    }
+    let cancelled = false
+    const id = originalId
+    getToolOriginal(sessionId, id)
+      .then((body) => {
+        if (cancelled) {
+          return
+        }
+        const text =
+          body.kind === 'mcp'
+            ? body.text
+            : [body.stdout, body.stderr].filter((part) => part.length > 0).join('\n')
+        if (text.length > 0) {
+          setLoaded({ id, text })
+        }
+      })
+      .catch(() => {
+        // A missing row shows the transcript text.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, originalId])
+  if (loaded && originalId && loaded.id === originalId) {
+    return loaded.text
   }
-  const start = Math.max(0, lines.length - count)
-  return {
-    text: lines.slice(start).join('\n'),
-    moreAbove: start > 0,
-    moreBelow: false
-  }
+  return fallback
 }
 
 function McpCard({
   summary,
   args,
   output,
+  originalId,
   actions,
   status,
   defaultOpen = false
@@ -542,37 +589,117 @@ function McpCard({
   summary: { verb: string; target: string }
   args: string
   output: string
+  originalId?: string | null
   actions?: ReactNode
   status?: ReactNode
   defaultOpen?: boolean
 }) {
+  const sessionId = useChatStore((state) => state.activeSessionId)
+  const shown = useCappedOutput(sessionId, originalId, output)
   const [open, setOpen] = useState(defaultOpen)
   const [openedForApproval, setOpenedForApproval] = useState(defaultOpen)
   if (defaultOpen && !openedForApproval) {
     setOpenedForApproval(true)
     setOpen(true)
   }
+  const header = (
+    <div className={styles.editHead}>
+      <button
+        type="button"
+        className={open ? styles.editRow : styles.row}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className={styles.verb}>{summary.verb}</span>
+        <SummaryLabel summary={summary} />
+        {status}
+      </button>
+      {actions}
+    </div>
+  )
+  if (!open) {
+    return header
+  }
   return (
     <div className={styles.shell}>
-      <div className={styles.editHead}>
-        <button
-          type="button"
-          className={styles.editRow}
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-        >
-          <span className={styles.verb}>{summary.verb}</span>
-          <SummaryLabel summary={summary} />
-          {status}
-        </button>
-        {actions}
+      {header}
+      <pre className={styles.shellBody}>
+        {args}
+        {shown ? `\n${shown}` : ''}
+      </pre>
+    </div>
+  )
+}
+
+function RetrieveCard({
+  summary,
+  view,
+  status
+}: {
+  summary: ToolSummary
+  view: RetrieveView
+  status?: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const page =
+    view.totalLines > 0
+      ? `lines ${view.startLine}–${view.endLine || view.startLine} of ${view.totalLines}`
+      : null
+  const facts = [
+    view.stream === 'both' ? 'stdout and stderr' : view.stream,
+    view.exitCode != null ? `exit ${view.exitCode}` : null,
+    view.truncated ? 'truncated' : null,
+    view.raw ? 'raw' : null,
+    page,
+    view.nextOffset != null ? `more from L${view.nextOffset}` : null
+  ].filter((fact): fact is string => fact != null && fact.length > 0)
+  const header = (
+    <button
+      type="button"
+      className={open ? styles.editRow : styles.row}
+      aria-expanded={open}
+      onClick={() => setOpen((current) => !current)}
+    >
+      <ToolIcon name="retrieve" />
+      <span className={styles.verb}>{summary.verb}</span>
+      <SummaryLabel summary={summary} />
+      {status}
+    </button>
+  )
+  if (!open) {
+    return header
+  }
+  return (
+    <div className={styles.shell}>
+      {header}
+      <div className={styles.retrieve}>
+        <p className={styles.retrieveMeta}>{facts.join(' · ')}</p>
+        {view.stdout ? <LogLines text={view.stdout} startLine={view.startLine} /> : null}
+        {view.stderr ? (
+          <>
+            <p className={styles.retrieveStream}>stderr</p>
+            <LogLines text={view.stderr} startLine={view.stream === 'stderr' ? view.startLine : 1} />
+          </>
+        ) : null}
+        {!view.stdout && !view.stderr ? <p className={styles.retrieveMeta}>Empty page</p> : null}
       </div>
-      {open ? (
-        <pre className={styles.shellBody}>
-          {args}
-          {output ? `\n${output}` : ''}
-        </pre>
-      ) : null}
+    </div>
+  )
+}
+
+function LogLines({ text, startLine }: { text: string; startLine: number }) {
+  const lines = text.split('\n')
+  return (
+    <div className={styles.retrieveLog}>
+      {lines.map((line, index) => (
+        <span
+          key={index}
+          className={line.startsWith('<<<ROBI_') ? styles.markerLine : styles.codeLine}
+        >
+          <span className={styles.lineNo}>{startLine + index}</span>
+          <span>{line}</span>
+        </span>
+      ))}
     </div>
   )
 }
@@ -591,7 +718,10 @@ function ShellBody({ command, output }: { command: string; output: string }) {
 function Detail({
   detail
 }: {
-  detail: Exclude<NonNullable<ReturnType<typeof toolDetail>>, { kind: 'shell' } | { kind: 'mcp' }>
+  detail: Exclude<
+    NonNullable<ReturnType<typeof toolDetail>>,
+    { kind: 'shell' } | { kind: 'mcp' } | { kind: 'retrieve' }
+  >
 }) {
   if (detail.kind === 'error') {
     return <pre className={styles.error}>{detail.text}</pre>

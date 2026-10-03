@@ -852,6 +852,7 @@ makes no model call.
 |---|---|
 | JSON arrays and objects | The schema, a sample of rows, and counts or aggregates for the rest |
 | Logs and shell output | The head, the tail, and collapsed repeated lines. The phases, the store, and the decision to keep a learned model last are in [shell-output.md](design/shell-output.md) |
+| MCP tool results | A JSON array or object keeps a sample, key types, and counts. Other text uses the shell line pass. The row is `kind: "mcp"`. See [mcp-output.md](design/mcp-output.md) |
 | Search hits | Paths, line numbers, and a capped set of matching lines |
 | Source, short text, errors | The original. These are already dense, and a crushed file is how an agent edits the wrong lines. An outline the model asked for is a different tool, [code-outline.md](design/code-outline.md). `read_file` stays on this row |
 
@@ -897,8 +898,9 @@ passes the original through; the tool card shows the full output; the meter
 shows the saving.
 
 **Design doc needed for** M9.
-Shell and log output is [shell-output.md](design/shell-output.md). JSON, search
-hits, and the other pass-through shapes are still
+Shell and log output is [shell-output.md](design/shell-output.md). MCP
+results are [mcp-output.md](design/mcp-output.md). JSON from built-in
+tools, search hits, and the other pass-through shapes are still
 `docs/design/tool-output-compression.md`.
 
 ---
@@ -1049,8 +1051,9 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/lsp.md` | **D8**, client, server discovery, host binaries on `PATH`, capability ladder, degradation | M7 | done |
 | `docs/design/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | done |
 | `docs/design/mcp.md` | **D10**, host, config and trust, registry names, approval | M8 | done |
-| `docs/design/tool-output-compression.md` | **D11, D12** for JSON and search hits, content routing beyond shell | M9 | later |
+| `docs/design/tool-output-compression.md` | **D11, D12** for built-in JSON and search hits, content routing beyond shell and MCP | M9 | later |
 | `docs/design/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
+| `docs/design/mcp-output.md` | MCP result compression: JSON samples and counts, the line pass, `kind: "mcp"` originals | M9 | done |
 | `docs/design/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit. Four slices: Rust with focus, then TypeScript, then Python and Go, then the depth and `compress` knobs | read tools | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives

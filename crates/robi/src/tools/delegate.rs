@@ -237,7 +237,13 @@ impl Tool for Delegate {
             .build(Arc::clone(&registry), prompt)
             .await
             .map_err(ToolError::Failed)?;
-        let summary = run_child(mode, task, model, registry, run.cancel).await?;
+        let compressor = self.ctx.originals.clone().map(|store| {
+            Arc::new(crate::compress::ShellCompressor::new(
+                store,
+                self.ctx.session_id,
+            )) as Arc<dyn robi_core::compress::Compressor>
+        });
+        let summary = run_child(mode, task, model, registry, run.cancel, compressor).await?;
         Ok(summary.json())
     }
 }
@@ -389,6 +395,7 @@ mod tests {
                 "read_code",
                 "read_file",
                 "references",
+                "retrieve",
                 "semantic_search",
                 "shell",
                 "workspace_symbol"

@@ -20,4 +20,6 @@ pub struct AppState {
     pub index: Arc<IndexHub>,
     /// MCP client supervisor. Absent in tests that do not list servers.
     pub mcp: Option<Arc<crate::mcp::McpHub>>,
+    /// Capped streams for the shell card.
+    pub originals: Arc<dyn crate::compress::OriginalStore>,
 }

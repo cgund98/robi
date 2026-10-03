@@ -238,6 +238,45 @@ describe('toolDetail', () => {
       )
     ).toEqual({ kind: 'shell', command: 'make lint', output: 'cargo fmt\n' })
   })
+
+  it('summarizes a retrieve page instead of the raw id', () => {
+    const retrieve = call({
+      name: 'retrieve',
+      args: {
+        id: '018f3b2c-7c1a-7a21-8c4e-9a21c4e8b0d1',
+        stream: 'stderr',
+        offset: 40
+      },
+      result: {
+        stdout: '',
+        stderr: 'thread panicked\nassertion failed',
+        exit_code: 1,
+        truncated: true,
+        start_line: 40,
+        end_line: 41,
+        total_lines: 900,
+        next_offset: 42
+      }
+    })
+    expect(toolSummary(retrieve)).toEqual({
+      verb: 'Retrieved',
+      target: '018f3b2c stderr',
+      range: 'L40-41'
+    })
+    expect(toolDetail(retrieve)).toMatchObject({
+      kind: 'retrieve',
+      view: {
+        stream: 'stderr',
+        exitCode: 1,
+        truncated: true,
+        startLine: 40,
+        endLine: 41,
+        totalLines: 900,
+        nextOffset: 42,
+        stderr: 'thread panicked\nassertion failed'
+      }
+    })
+  })
 })
 
 describe('editPreview', () => {

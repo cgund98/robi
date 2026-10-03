@@ -36,6 +36,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chat_sessions/{id}/stop",
             axum::routing::post(stop_agent),
         )
+        .route(
+            "/api/v1/chat_sessions/{id}/tool_originals/{original_id}",
+            get(get_tool_original),
+        )
         .with_state(state)
 }
 
@@ -124,6 +128,81 @@ pub async fn get_chat_message(
         .get_message(session, message)
         .await?;
     Ok(Json(ChatMessage::from(message)))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ToolOriginal {
+    #[serde(rename = "shell")]
+    Shell {
+        stdout: String,
+        stderr: String,
+        exit_code: i64,
+        truncated: bool,
+    },
+    #[serde(rename = "mcp")]
+    Mcp { text: String, truncated: bool },
+}
+
+fn original_body(body: &Value) -> ToolOriginal {
+    let truncated = body
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if body.get("kind").and_then(Value::as_str) == Some("mcp") {
+        return ToolOriginal::Mcp {
+            text: body
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            truncated,
+        };
+    }
+    ToolOriginal::Shell {
+        stdout: body
+            .get("stdout")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        stderr: body
+            .get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        exit_code: body.get("exit_code").and_then(Value::as_i64).unwrap_or(0),
+        truncated,
+    }
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/chat_sessions/{id}/tool_originals/{original_id}",
+    params(
+        ("id" = String, Path, description = "Chat session id"),
+        ("original_id" = String, Path, description = "Id from a ROBI_LOG header")
+    ),
+    responses(
+        (status = 200, description = "Capped streams stored for a compressed tool result", body = ToolOriginal),
+        (status = 404, description = "Original is missing")
+    )
+)]
+pub async fn get_tool_original(
+    State(state): State<AppState>,
+    Path((id, original_id)): Path<(String, String)>,
+) -> Result<Json<ToolOriginal>, ServiceError> {
+    let session = parse_session_id(&id)?;
+    match state.originals.lookup(session, &original_id).await {
+        Ok(crate::compress::Lookup::One(body)) => Ok(Json(original_body(&body))),
+        Ok(crate::compress::Lookup::Ambiguous(_)) | Ok(crate::compress::Lookup::Missing) => {
+            Err(ServiceError::NotFound(original_id))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "tool original lookup failed");
+            Err(ServiceError::Unknown)
+        }
+    }
 }
 
 #[axum::debug_handler]
@@ -272,6 +351,9 @@ pub struct ChatToolCall {
     /// Child tool calls for a `delegate` run. Absent on every other tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent: Option<ChatSubagent>,
+    /// Set when compression stored the capped streams for this call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_id: Option<String>,
 }
 
 /// One child tool call shown inside a delegate card.
@@ -340,6 +422,7 @@ impl From<ToolCall> for ChatToolCall {
             execution_status: execution_name(call.execution_status).to_owned(),
             result: call.result,
             error: call.error,
+            original_id: call.original_id,
             subagent: call.subagent.map(|snapshot| ChatSubagent {
                 mode: match snapshot.mode {
                     SubagentMode::Explore => "explore",

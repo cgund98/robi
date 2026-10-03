@@ -17,6 +17,24 @@ export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   )
 }
 
+export type ToolOriginal = components['schemas']['ToolOriginal']
+
+export async function getToolOriginal(
+  sessionId: string,
+  originalId: string
+): Promise<ToolOriginal> {
+  const result = await api.GET('/api/v1/chat_sessions/{id}/tool_originals/{original_id}', {
+    params: { path: { id: sessionId, original_id: originalId } }
+  })
+  if (result.data) {
+    return result.data
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to load command output')
+  )
+}
+
 export async function getMessage(sessionId: string, messageId: string): Promise<ChatMessage> {
   const result = await api.GET('/api/v1/chat_sessions/{id}/messages/{message_id}', {
     params: { path: { id: sessionId, message_id: messageId } }

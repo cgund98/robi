@@ -7,6 +7,7 @@ pub mod chat_runtime;
 pub mod chat_session;
 pub mod file_change;
 pub mod model_source;
+pub mod originals;
 pub mod session_title;
 pub mod settings;
 pub mod sqlite;

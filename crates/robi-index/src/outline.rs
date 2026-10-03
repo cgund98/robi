@@ -894,6 +894,108 @@ mod tests {
     }
 
     #[test]
+    fn typescript_focus_keeps_one_method_and_folds_the_interface() {
+        let source = r#"class PaymentService {
+  processCard(card: Card): Receipt {
+    return { id: card.id };
+  }
+
+  validateExpiry(card: Card): void {
+    if (card.expired) {
+      throw new Error("expired");
+    }
+  }
+}
+
+interface Card {
+  id: string;
+  expired: boolean;
+}
+"#;
+        let outline = outline(
+            source,
+            Language::TypeScript,
+            &["PaymentService.processCard".into()],
+            1,
+            false,
+        )
+        .unwrap();
+        assert!(outline.content.contains("return { id: card.id };"));
+        assert!(!outline.content.contains("card.expired"));
+        assert!(!outline.content.contains("expired: boolean"));
+        assert_eq!(outline.focused, vec!["PaymentService.processCard"]);
+        assert!(outline
+            .omitted
+            .iter()
+            .any(|item| item.symbol == "PaymentService.validateExpiry"));
+        assert!(outline.omitted.iter().any(|item| item.symbol == "Card"));
+    }
+
+    #[test]
+    fn go_focus_uses_the_receiver_and_folds_the_sibling() {
+        let source = r#"package pay
+
+func (s *PaymentService) ProcessCard(card Card) error {
+	return s.charge(card)
+}
+
+func (s *PaymentService) ValidateExpiry(card Card) error {
+	if card.Expired {
+		return errExpired
+	}
+	return nil
+}
+"#;
+        let outline = outline(
+            source,
+            Language::Go,
+            &["PaymentService::ProcessCard".into()],
+            1,
+            false,
+        )
+        .unwrap();
+        assert!(outline.content.contains("return s.charge(card)"));
+        assert!(!outline.content.contains("card.Expired"));
+        assert_eq!(outline.focused, vec!["PaymentService::ProcessCard"]);
+        assert_eq!(
+            outline
+                .omitted
+                .iter()
+                .map(|item| item.symbol.as_str())
+                .collect::<Vec<_>>(),
+            vec!["PaymentService::ValidateExpiry"]
+        );
+    }
+
+    #[test]
+    fn python_focus_keeps_one_method_and_folds_the_sibling() {
+        let source = r#"class PaymentService:
+    def process_card(self, card):
+        return card.charge()
+
+    def validate_expiry(self, card):
+        if card.expired:
+            raise PayError("expired")
+"#;
+        let outline = outline(
+            source,
+            Language::Python,
+            &["PaymentService.process_card".into()],
+            1,
+            false,
+        )
+        .unwrap();
+        assert!(outline.content.contains("return card.charge()"));
+        assert!(!outline.content.contains("card.expired"));
+        assert_eq!(outline.focused, vec!["PaymentService.process_card"]);
+        assert!(outline
+            .omitted
+            .iter()
+            .any(|item| item.symbol == "PaymentService.validate_expiry"));
+        assert!(outline.content.contains("class PaymentService:"));
+    }
+
+    #[test]
     fn a_parse_error_is_not_an_outline() {
         let err = outline("fn broken( {", Language::Rust, &[], 1, false).unwrap_err();
         assert_eq!(err.message, "file did not parse; use read_file");

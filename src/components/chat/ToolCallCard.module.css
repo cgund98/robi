@@ -340,6 +340,44 @@
     inset 0 -36px 28px -18px rgb(0 0 0 / 0.45);
 }
 
+.retrieve {
+  border-top: 1px solid var(--rule);
+}
+
+.retrieveMeta,
+.retrieveStream {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.retrieveStream {
+  padding-top: var(--space-3);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+
+.markerLine {
+  display: flex;
+  gap: var(--space-3);
+  color: var(--ink-faint);
+}
+
+.retrieveLog {
+  margin: 0;
+  max-height: 22rem;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  color: var(--code-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .shellBody {
   margin: 0;
   max-height: 22rem;

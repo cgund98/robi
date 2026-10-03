@@ -301,6 +301,7 @@ mod tests {
             index: Some(Arc::clone(&hub)),
             lsp: crate::lsp::LspHub::new(),
             lsp_enabled: true,
+            originals: None,
         });
         let tool = SemanticSearch::new(ctx);
         let all = tool

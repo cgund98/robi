@@ -116,6 +116,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat_sessions/{id}/tool_originals/{original_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_tool_original"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events/stream": {
         parameters: {
             query?: never;
@@ -356,6 +372,8 @@ export interface components {
             execution_status: string;
             id: string;
             name: string;
+            /** @description Set when compression stored the capped streams for this call. */
+            original_id?: string | null;
             result?: unknown;
             subagent?: null | components["schemas"]["ChatSubagent"];
         };
@@ -532,6 +550,20 @@ export interface components {
         };
         SubmitInstruction: {
             instruction: string;
+        };
+        ToolOriginal: {
+            /** Format: int64 */
+            exit_code: number;
+            /** @enum {string} */
+            kind: "shell";
+            stderr: string;
+            stdout: string;
+            truncated: boolean;
+        } | {
+            /** @enum {string} */
+            kind: "mcp";
+            text: string;
+            truncated: boolean;
         };
         UpdateChatSession: {
             /** @description Hostnames `web_fetch` may call without another approval. A present list replaces the stored list. */
@@ -878,6 +910,38 @@ export interface operations {
             };
             /** @description Chat session is running */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_tool_original: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+                /** @description Id from a ROBI_LOG header */
+                original_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capped streams stored for a compressed tool result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolOriginal"];
+                };
+            };
+            /** @description Original is missing */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

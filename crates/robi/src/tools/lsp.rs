@@ -717,6 +717,7 @@ mod tests {
             file_changes: Arc::clone(&harness.ctx.file_changes),
             index: None,
             lsp: hub,
+            originals: None,
             lsp_enabled: true,
         });
         (harness, ctx)
@@ -773,6 +774,7 @@ mod tests {
             file_changes: Arc::clone(&harness.ctx.file_changes),
             index: None,
             lsp: LspHub::build(Timing::fast(), Arc::new(|_| None)),
+            originals: None,
             lsp_enabled: true,
         });
         let missing = Diagnostics::new(Arc::clone(&ctx))

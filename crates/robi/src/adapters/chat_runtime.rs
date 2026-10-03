@@ -64,17 +64,26 @@ pub struct AgentFactory {
     pub settings: Option<Arc<dyn SettingsStore>>,
     /// MCP host. Absent in tests. Agent mode attaches its tools before the model runs.
     pub mcp: Option<Arc<crate::mcp::McpHub>>,
+    /// Capped shell streams. Absent in tests that do not compress.
+    pub originals: Option<Arc<dyn crate::compress::OriginalStore>>,
 }
 
 impl AgentFactory {
-    fn build(&self, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) -> Agent {
-        Agent::new(
+    fn build(&self, session: SessionId, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) -> Agent {
+        let agent = Agent::new(
             Arc::clone(&self.store),
             Arc::clone(&self.events),
             model,
             tools,
             self.config,
-        )
+        );
+        match &self.originals {
+            Some(store) => agent.with_compressor(Arc::new(crate::compress::ShellCompressor::new(
+                Arc::clone(store),
+                session,
+            ))),
+            None => agent,
+        }
     }
 
     /// The tools this session's actor will run.
@@ -127,6 +136,7 @@ impl AgentFactory {
             index: self.index.clone(),
             lsp: self.lsp.clone().unwrap_or_else(crate::lsp::LspHub::new),
             lsp_enabled,
+            originals: self.originals.clone(),
         });
         let models = Arc::new(crate::tools::SessionChildModels {
             session_id: session,
@@ -217,7 +227,7 @@ impl SerializedChatRuntime {
     }
 
     fn spawn_actor(&self, session: SessionId, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) {
-        let agent = self.factory.build(Arc::clone(&model), tools);
+        let agent = self.factory.build(session, Arc::clone(&model), tools);
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
@@ -756,6 +766,7 @@ mod tests {
             lsp: None,
             settings: None,
             mcp: None,
+            originals: None,
         })
     }
 
@@ -1089,6 +1100,7 @@ mod tests {
             lsp: None,
             settings: None,
             mcp: None,
+            originals: None,
         });
 
         let error = runtime.submit(session, "hello".into()).await.unwrap_err();
@@ -1198,6 +1210,7 @@ mod tests {
             lsp: None,
             settings: None,
             mcp: None,
+            originals: None,
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -1250,6 +1263,7 @@ mod tests {
             lsp: None,
             settings: Some(settings),
             mcp: None,
+            originals: None,
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -1300,6 +1314,7 @@ mod tests {
             lsp: None,
             settings: None,
             mcp: None,
+            originals: None,
         })
     }
 

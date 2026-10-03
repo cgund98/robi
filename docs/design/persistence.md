@@ -17,7 +17,7 @@ in the [roadmap](../roadmap.md). Read it before writing code in
 | API keys and other settings | This page, under [Settings](#settings). They do not go in this database. A later `SettingsStore` can keep secrets in the OS keychain |
 | Where the app's home directory lives | Settings use `~/.robi`. The database file stays on `ROBI_DATABASE_URL` |
 | Auto-title after a completed turn | [chat-runtime.md](chat-runtime.md). This page fixes that the title starts unset, and that a later write does not replace one already stored |
-| The `tool_originals` rows a compressed shell result points at | [shell-output.md](shell-output.md). Deleting the session deletes them |
+| The `tool_originals` rows a compressed result points at | [shell-output.md](shell-output.md) for a shell call. [mcp-output.md](mcp-output.md) for an MCP call. Deleting the session deletes them |
 
 ## Problem
 
@@ -81,7 +81,8 @@ Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
 chat sessions, and chat messages. `0002_session_file_baselines.sql` creates the
 baseline table. `0003_session_model_config.sql` adds the session model override.
 `0004_session_mode.sql` adds `mode` and rewrites `model_config` into per-mode
-objects.
+objects. `0008_tool_originals.sql` creates `tool_originals`. The columns are
+in [shell-output.md](shell-output.md).
 The four path-rule columns default to `[]`.
 They store session additions. The built-in secret and `.git` patterns are
 applied in code and are not written on the row.

@@ -19,6 +19,7 @@ pub(crate) mod plan_file;
 mod read_code;
 mod read_file;
 mod replace;
+mod retrieve;
 mod semantic_search;
 mod shell;
 mod skill;
@@ -98,7 +99,8 @@ pub fn register_shell_tool(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
 ) -> Result<(), RegistryError> {
-    register(registry, Arc::new(shell::Shell::new(ctx)))?;
+    register(registry, Arc::new(shell::Shell::new(Arc::clone(&ctx))))?;
+    register(registry, Arc::new(retrieve::Retrieve::new(ctx)))?;
     Ok(())
 }
 
@@ -261,6 +263,7 @@ mod registry_tests {
                 "read_code",
                 "read_file",
                 "references",
+                "retrieve",
                 "semantic_search",
                 "shell",
                 "skill",
@@ -286,6 +289,7 @@ mod registry_tests {
                 "read_code",
                 "read_file",
                 "references",
+                "retrieve",
                 "semantic_search",
                 "shell",
                 "skill",
@@ -327,6 +331,7 @@ mod registry_tests {
             index: None,
             lsp: crate::lsp::LspHub::new(),
             lsp_enabled: false,
+            originals: None,
         });
         let registry = ToolRegistry::new();
         register_tools_for_mode(

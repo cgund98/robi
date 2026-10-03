@@ -124,7 +124,7 @@ describe('ToolCallCard', () => {
     expect(screen.getByText('9 more lines')).toBeTruthy()
   })
 
-  it('shows the last four output lines until the shell card is opened', () => {
+  it('keeps a shell command as a row until it is opened', () => {
     const command = 'make lint && cargo fmt --all -- --check && cargo clippy --workspace'
     const stdout = ['one', 'two', 'three', 'four', 'five', 'six'].join('\n')
     render(
@@ -141,10 +141,7 @@ describe('ToolCallCard', () => {
     )
     const summary = screen.getByRole('button', { name: /Run/ })
     expect(summary.querySelector('[class*="target"]')?.textContent).toBe('make')
-    const panel = screen.getByText(/three/).closest('pre')
-    expect(panel?.textContent).toBe('three\nfour\nfive\nsix')
-    expect(panel?.getAttribute('data-more-above')).toBe('true')
-    expect(panel?.getAttribute('data-more-below')).toBe('false')
+    expect(screen.queryByText('six')).toBeNull()
     expect(screen.queryByText('$')).toBeNull()
     fireEvent.click(summary)
     const opened = screen.getByText('$').closest('pre')
@@ -414,5 +411,34 @@ describe('ToolCallCard', () => {
     expect(screen.getByText('Plan')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Plan/ }))
     expect(screen.getByText('plan file does not exist')).toBeTruthy()
+  })
+
+  it('opens a retrieve page with its stream, exit, and line numbers', () => {
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'retrieve',
+          args: { id: '018f3b2c-7c1a-7a21-8c4e-9a21c4e8b0d1', stream: 'stderr' },
+          result: {
+            stdout: '',
+            stderr: '<<<ROBI_LOG omitted=4 lines=1-4>>>\nassertion failed',
+            exit_code: 1,
+            truncated: false,
+            start_line: 40,
+            end_line: 41,
+            total_lines: 900
+          }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('018f3b2c stderr')).toBeTruthy()
+    expect(screen.getByText('L40-41')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Retrieved/ }))
+    expect(screen.getByText('stderr · exit 1 · lines 40–41 of 900')).toBeTruthy()
+    expect(screen.getByText('40')).toBeTruthy()
+    expect(screen.getByText('assertion failed')).toBeTruthy()
   })
 })

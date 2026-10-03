@@ -44,6 +44,8 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
         verb: args?.unsandboxed === true ? 'Run unsandboxed' : 'Run',
         target: shellProgram(stringField(args, 'command'))
       }
+    case 'retrieve':
+      return retrieveSummary(call)
     case 'delegate':
       return {
         verb: 'Delegate',
@@ -300,6 +302,7 @@ export type ToolDetail =
   | { kind: 'code'; startLine: number; lines: string[] }
   | { kind: 'lines'; lines: string[] }
   | { kind: 'shell'; command: string; output: string }
+  | { kind: 'retrieve'; view: RetrieveView }
   | { kind: 'mcp'; args: string; output: string }
   | { kind: 'error'; text: string }
 
@@ -311,6 +314,9 @@ export function toolDetail(call: ChatToolCall): ToolDetail | null {
       args: JSON.stringify(call.args ?? {}, null, 2),
       output: [result, call.error ?? ''].filter((text) => text.length > 0).join('\n')
     }
+  }
+  if (call.name === 'retrieve') {
+    return { kind: 'retrieve', view: retrieveView(call) }
   }
   if (call.name === 'shell') {
     const command = stringField(record(call.args), 'command')
@@ -359,6 +365,72 @@ export function toolDetail(call: ChatToolCall): ToolDetail | null {
     }
   }
   return { kind: 'lines', lines: [JSON.stringify(result, null, 2)] }
+}
+
+export type RetrieveView = {
+  id: string
+  stream: 'stdout' | 'stderr' | 'both'
+  exitCode: number | null
+  truncated: boolean
+  startLine: number
+  endLine: number
+  totalLines: number
+  nextOffset: number | null
+  stdout: string
+  stderr: string
+  raw: boolean
+}
+
+function retrieveSummary(call: ChatToolCall): ToolSummary {
+  const view = retrieveView(call)
+  const range =
+    view.totalLines > 0 && view.endLine >= view.startLine
+      ? view.startLine === view.endLine
+        ? `L${view.startLine}`
+        : `L${view.startLine}-${view.endLine}`
+      : undefined
+  const stream = view.stream === 'both' ? '' : view.stream
+  const target = [shortId(view.id), stream].filter((part) => part.length > 0).join(' ')
+  return { verb: 'Retrieved', target: target || 'log', ...(range ? { range } : {}) }
+}
+
+function retrieveView(call: ChatToolCall): RetrieveView {
+  const args = record(call.args)
+  const result = record(call.result)
+  const stream = streamField(args?.stream)
+  return {
+    id: stringField(args, 'id'),
+    stream,
+    exitCode: numberOrNull(result, 'exit_code'),
+    truncated: result?.truncated === true,
+    startLine: numberField(result, 'start_line') || 1,
+    endLine: numberField(result, 'end_line'),
+    totalLines: numberField(result, 'total_lines'),
+    nextOffset: numberOrNull(result, 'next_offset'),
+    stdout: typeof result?.stdout === 'string' ? result.stdout : '',
+    stderr: typeof result?.stderr === 'string' ? result.stderr : '',
+    raw: args?.raw === true
+  }
+}
+
+function streamField(value: unknown): 'stdout' | 'stderr' | 'both' {
+  if (value === 'stdout' || value === 'stderr') {
+    return value
+  }
+  return 'both'
+}
+
+function shortId(id: string): string {
+  const hex = id.replace(/-/g, '')
+  if (hex.length >= 8) {
+    return hex.slice(0, 8)
+  }
+  return id
+}
+
+function numberOrNull(value: Record<string, unknown> | null, key: string): number | null {
+  const field = value?.[key]
+  return typeof field === 'number' && Number.isFinite(field) ? field : null
 }
 
 function formatMatch(match: Record<string, unknown> | null): string {

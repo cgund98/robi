@@ -432,6 +432,49 @@
         }
       }
     },
+    "/api/v1/chat_sessions/{id}/tool_originals/{original_id}": {
+      "get": {
+        "tags": [
+          "chat_message"
+        ],
+        "operationId": "get_tool_original",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "original_id",
+            "in": "path",
+            "description": "Id from a ROBI_LOG header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Capped streams stored for a compressed tool result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolOriginal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Original is missing"
+          }
+        }
+      }
+    },
     "/api/v1/events/stream": {
       "get": {
         "tags": [
@@ -1165,6 +1208,13 @@
           "name": {
             "type": "string"
           },
+          "original_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when compression stored the capped streams for this call."
+          },
           "result": {},
           "subagent": {
             "oneOf": [
@@ -1735,6 +1785,63 @@
             "type": "string"
           }
         }
+      },
+      "ToolOriginal": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "stdout",
+              "stderr",
+              "exit_code",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "exit_code": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "shell"
+                ]
+              },
+              "stderr": {
+                "type": "string"
+              },
+              "stdout": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "mcp"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          }
+        ]
       },
       "UpdateChatSession": {
         "type": "object",

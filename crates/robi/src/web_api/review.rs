@@ -381,6 +381,7 @@ mod tests {
                 Arc::new(robi_index::FakeEmbedder::new(4)),
             )),
             mcp: None,
+            originals: Arc::new(crate::compress::MemoryOriginals::default()),
         };
 
         let body = get_session_review(State(state), Path(session.id.to_string()))

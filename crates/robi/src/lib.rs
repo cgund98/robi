@@ -10,6 +10,7 @@
 //! `robi-api` binary wires them.
 
 pub mod adapters;
+pub mod compress;
 pub mod domain;
 pub mod index;
 pub mod lsp;
