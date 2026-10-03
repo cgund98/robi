@@ -18,10 +18,11 @@ Dependencies point one way and never reverse.
   the tool trait and registry, approval state, the event sink. It declares four
   traits — `Model`, `Tool`, `MessageStore`, `EventSink` — and implements none of
   them. No network, no filesystem, no Tauri.
-- **`crates/robi`** — every implementation that does I/O: providers, the SQLite
-  adapters, the HTTP API, the tools, the sandbox, review, LSP, the semantic
-  index, skills, MCP, and compression. Each is a module, promoted to its own
-  crate only for a real reason.
+- **`crates/robi`** — every implementation that does I/O. The crate root is
+  `agent`, `domain`, `adapters`, and `web_api`. Providers, the prompt, tools,
+  the sandbox, review, LSP, the semantic index, skills, MCP, and compression
+  live under `agent`. Each is a module, promoted to its own crate only for a
+  real reason.
 - **`src-tauri`** — the Tauri application: commands, IPC, wiring.
 - **`src`** — the React + TypeScript front end.
 

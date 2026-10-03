@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use robi_core::model::Model;
 use robi_core::tool::ToolRegistry;
 
+use crate::agent::providers::{build_model, ApiKey, ModelId, ProviderSettings, ReasoningEffort};
 use crate::domain::{
     chat_session::model::{AgentMode, ModeOverride},
     error::ServiceError,
@@ -18,7 +19,6 @@ use crate::domain::{
         store::SettingsStore,
     },
 };
-use crate::providers::{build_model, ApiKey, ModelId, ProviderSettings, ReasoningEffort};
 
 /// The model a new session actor should hold.
 #[async_trait]
@@ -157,15 +157,16 @@ impl ModelSource for SettingsModelSource {
             Some(setting) if !setting.value.trim().is_empty() => Some(setting.value),
             _ => None,
         };
-        settings.system_prompt = crate::prompt::assemble_session(crate::prompt::SessionPrompt {
-            tools: &tools,
-            user_prompt,
-            config_dir: crate::adapters::settings::home_dir().ok(),
-            workspace,
-            mode,
-            plan_path,
-            max_bytes: crate::prompt::DEFAULT_MAX_BYTES,
-        });
+        settings.system_prompt =
+            crate::agent::prompt::assemble_session(crate::agent::prompt::SessionPrompt {
+                tools: &tools,
+                user_prompt,
+                config_dir: crate::adapters::settings::home_dir().ok(),
+                workspace,
+                mode,
+                plan_path,
+                max_bytes: crate::agent::prompt::DEFAULT_MAX_BYTES,
+            });
         build_model(settings, tools)
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }

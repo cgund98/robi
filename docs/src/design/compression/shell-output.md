@@ -48,7 +48,7 @@ so the store ships in the same change as phase 1.
 | 4 | A local line model | An ONNX runtime, feature-gated | Only the residue phases 1 and 2 still leave. Measure that residue before writing this |
 
 Phases 1 and 2 are pure functions of one `&str`. They live in
-`crates/robi/src/compress/shell.rs`. `robi-core` does not take a `regex`
+`crates/robi/src/agent/compress/shell.rs`. `robi-core` does not take a `regex`
 dependency and does not open the database. The loop calls a compressor
 trait. The shell implementation and the table live in `crates/robi`. A
 failing compressor returns the tool result unchanged and does not fail the

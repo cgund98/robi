@@ -90,7 +90,7 @@ core ceiling still applies
 tool card reads the row and shows the bounded text
 ```
 
-The walk lives in `crates/robi/src/compress/mcp.rs`. It calls
+The walk lives in `crates/robi/src/agent/compress/mcp.rs`. It calls
 `compress_stream` from the shell pass for the line shape. `robi-core` does
 not parse JSON to decide a shape and does not open the database. A failing
 insert returns the tool result unchanged and does not fail the turn.

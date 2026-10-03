@@ -13,11 +13,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::error::ServiceError,
-    review::{
+    agent::review::{
         decide_review, review_for_session, FileStatus, Hunk, ReviewDecision, ReviewFile,
         ReviewLine, ReviewLineKind,
     },
+    domain::error::ServiceError,
     web_api::{chat_session::parse_chat_session_id, state::AppState},
 };
 
@@ -375,13 +375,13 @@ mod tests {
             }),
             event_bus: Arc::new(EventBus::new()),
             file_changes,
-            index: Arc::new(crate::index::IndexHub::new(
+            index: Arc::new(crate::agent::index::IndexHub::new(
                 std::env::temp_dir(),
                 Arc::new(EventBus::new()),
                 Arc::new(robi_index::FakeEmbedder::new(4)),
             )),
             mcp: None,
-            originals: Arc::new(crate::compress::MemoryOriginals::default()),
+            originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
         };
 
         let body = get_session_review(State(state), Path(session.id.to_string()))

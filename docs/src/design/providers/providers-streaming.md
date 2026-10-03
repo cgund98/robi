@@ -5,7 +5,7 @@ delta protocol a response becomes, and how it retries, times out, cancels, and
 reports failure. It is the design doc for **M1** in the [roadmap](../../roadmap.md).
 
 The first implementation is one OpenAI-compatible chat-completions client, wired
-to **OpenCode Go**. Read this page before writing code in `crates/robi::providers`.
+to **OpenCode Go**. Read this page before writing code in `crates/robi::agent::providers`.
 
 ## What this page does not cover
 
@@ -113,7 +113,7 @@ transcript holds no system message. Build the request with
 
 **Rejected:** adding `Role::System` to `robi-core`. That is a core change for a
 provider-shaped concern. `robi-core::prompt` renders ordered blocks.
-`crates/robi::prompt` loads the sources, including the registered tools, and
+`crates/robi::agent::prompt` loads the sources, including the registered tools, and
 the model source stores the result on `settings.system_prompt`. See
 [instructions.md](../core/instructions.md).
 
@@ -354,7 +354,7 @@ M1 needs `id`, `display_name`, `context_window`, `max_output`, and
 crates/robi-core/src/model.rs     # Model::generate takes the session id (D4)
 crates/robi-core/src/agent.rs     # model_turn passes the id it already holds (D4)
 crates/robi-core/src/message.rs   # + ToolCall.provider_call_id (D3)
-crates/robi/src/providers/
+crates/robi/src/agent/providers/
   mod.rs          # re-exports, ProviderId, ModelId
   config.rs       # ProviderSettings, redacting ApiKey
   factory.rs      # build_model(settings). The session choice is resolved earlier, in adapters::model_source (D8)

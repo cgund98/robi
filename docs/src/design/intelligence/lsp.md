@@ -32,8 +32,8 @@ falls back to `grep` and `shell`, which already work.
 
 `async-lsp` speaks the protocol. `lsp-types` is the message shape. Both
 live in `crates/robi`. `robi-core` does not spawn a process and does not
-name a language. The client is a module, `crates/robi/src/lsp/`. The
-tools that call it live in `crates/robi/src/tools/`.
+name a language. The client is a module, `crates/robi/src/agent/lsp/`. The
+tools that call it live in `crates/robi/src/agent/tools/`.
 
 ### D8: `async-lsp` and `lsp-types`
 

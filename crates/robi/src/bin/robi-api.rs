@@ -81,13 +81,13 @@ async fn main() {
     let settings_service = Arc::new(SettingsService {
         store: Arc::clone(&settings),
     });
-    let search = Arc::new(robi::web::BraveSearch::new(
+    let search = Arc::new(robi::agent::web::BraveSearch::new(
         Arc::clone(&settings_service),
         reqwest::Client::new(),
     ));
     let tools = Arc::new(ToolRegistry::new());
     let event_bus = Arc::new(EventBus::new());
-    let index = Arc::new(robi::index::IndexHub::new(
+    let index = Arc::new(robi::agent::index::IndexHub::new(
         settings_dir.clone(),
         Arc::clone(&event_bus),
         Arc::new(robi_index::LocalEmbedder::new(robi_index::model_cache_dir(
@@ -96,7 +96,7 @@ async fn main() {
     ));
     let store: Arc<dyn robi_core::store::MessageStore> =
         Arc::new(SqliteMessageStore::new(Arc::clone(&pool)));
-    let originals: Arc<dyn robi::compress::OriginalStore> = Arc::new(
+    let originals: Arc<dyn robi::agent::compress::OriginalStore> = Arc::new(
         robi::adapters::originals::SqliteOriginals::new(Arc::clone(&pool)),
     );
     let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
@@ -107,7 +107,7 @@ async fn main() {
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
-    let mcp = Arc::new(robi::mcp::McpHub::new(
+    let mcp = Arc::new(robi::agent::mcp::McpHub::new(
         Arc::clone(&settings),
         settings_dir.clone(),
         Arc::clone(&event_bus),
@@ -123,7 +123,7 @@ async fn main() {
         bus: Some(Arc::clone(&event_bus)),
         search,
         index: Some(Arc::clone(&index)),
-        lsp: Some(robi::lsp::LspHub::new()),
+        lsp: Some(robi::agent::lsp::LspHub::new()),
         settings: Some(Arc::clone(&settings)),
         mcp: Some(Arc::clone(&mcp)),
         originals: Some(Arc::clone(&originals)),

@@ -27,7 +27,7 @@ still work when it is not.
 ## Decision
 
 `read_file`, `read_code`, `list_dir`, `find`, `grep`, and `grant` live in
-`crates/robi/src/tools/`. Each read resolves its path, then asks a
+`crates/robi/src/agent/tools/`. Each read resolves its path, then asks a
 `PathFilter` compiled from that session's rules. `grant` is exclusive and
 always needs approval. It appends one allow for the refused path, `read` or
 `write`, including a path outside the workspace such as `../gopi`. A directory

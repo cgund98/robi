@@ -36,20 +36,22 @@ graph LR
 
 Add the directory when its milestone starts, not before.
 
+The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O lives under `agent/`.
+
 | Module | Milestone | Role |
 |--------|-----------|------|
-| `providers/` | M1 | Model clients, streaming, retries |
+| `agent/providers/` | M1 | Model clients, streaming, retries |
 | `domain/` | M2 | Chat session models, repository traits, and services. No I/O |
 | `adapters/` | M2 | SQLite behind those traits, and the settings files. A keychain can replace the secret backend later |
 | `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI. The `robi-api` binary wires them |
-| `tools/` | M3 | Built-in tools |
-| `workspace/` | M3 | Root resolution, path confinement, policy |
-| `review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
-| `lsp/` | M7 | Language server client |
-| `index/` | M7 | AST chunking, embeddings, vector search |
-| `skills/` | M8 | Skill scan, catalog, and `@id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
-| `mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
-| `compress/` | M9 | Tool-output compression and the original store |
+| `agent/tools/` | M3 | Built-in tools |
+| `agent/workspace/` | M3 | Root resolution, path confinement, policy |
+| `agent/review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
+| `agent/lsp/` | M7 | Language server client |
+| `agent/index/` | M7 | AST chunking, embeddings, vector search |
+| `agent/skills/` | M8 | Skill scan, catalog, and `@id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
+| `agent/mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
+| `agent/compress/` | M9 | Tool-output compression and the original store |
 
 Inside `crates/robi`, `web_api` and `adapters` depend on `domain`, and `domain`
 depends on neither. The `robi-api` binary is the composition root. Schema,

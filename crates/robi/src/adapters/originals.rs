@@ -8,7 +8,7 @@ use robi_core::ids::SessionId;
 use serde_json::Value;
 use sqlx::SqlitePool;
 
-use crate::compress::{sha256_hex, Inserted, Lookup, OriginalStore};
+use crate::agent::compress::{sha256_hex, Inserted, Lookup, OriginalStore};
 
 pub struct SqliteOriginals {
     pool: Arc<SqlitePool>,
@@ -28,7 +28,7 @@ impl OriginalStore for SqliteOriginals {
         tool_call_id: &str,
         body: &str,
     ) -> Result<Inserted, String> {
-        let id = crate::compress::new_id();
+        let id = crate::agent::compress::new_id();
         let sha256 = sha256_hex(body);
         let created_at = Utc::now().to_rfc3339();
         sqlx::query(

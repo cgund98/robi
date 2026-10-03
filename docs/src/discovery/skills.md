@@ -9,9 +9,8 @@ Sources were read on 2 October 2026: the [Agent Skills
 specification](https://agentskills.io/specification), [OpenCode](https://opencode.ai/docs/skills/)
 and [OpenCode v2](https://opencode.ai/v2/docs/skills/), [Claude
 Code](https://code.claude.com/docs/en/skills), [Codex](https://developers.openai.com/codex/skills),
-[Cursor](https://cursor.com/docs/skills), [Gemini
-CLI](https://geminicli.com/docs/cli/skills/), and gopi's
-[skills](../../../../gopi/docs/src/concepts/skills.md) page.
+[Cursor](https://cursor.com/docs/skills), and [Gemini
+CLI](https://geminicli.com/docs/cli/skills/).
 
 ## What this page does not cover
 

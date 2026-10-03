@@ -27,7 +27,7 @@ write succeeds when `old` was not the bytes in the file.
 ## Decision
 
 Three tools, `write_file`, `edit_file`, and `delete_file`, live in
-`crates/robi/src/tools/`. Each call resolves its path the same way a read
+`crates/robi/src/agent/tools/`. Each call resolves its path the same way a read
 does. All three are `Exclusive`.
 
 The model edits with exact text. `edit_file` replaces `old` with `new`. It

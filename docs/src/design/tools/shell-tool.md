@@ -27,8 +27,8 @@ user learns to approve without reading.
 
 ## Decision
 
-One `shell` tool lives in `crates/robi/src/tools/`. The OS profile it builds
-lives in `crates/robi/src/sandbox/`. `robi-core` does not spawn a process.
+One `shell` tool lives in `crates/robi/src/agent/tools/`. The OS profile it builds
+lives in `crates/robi/src/agent/sandbox/`. `robi-core` does not spawn a process.
 The tool is `Exclusive`.
 
 Every command starts sandboxed. `unsandboxed: true` is the opt-out, and that

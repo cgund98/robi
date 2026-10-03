@@ -194,10 +194,9 @@ pub async fn get_tool_original(
 ) -> Result<Json<ToolOriginal>, ServiceError> {
     let session = parse_session_id(&id)?;
     match state.originals.lookup(session, &original_id).await {
-        Ok(crate::compress::Lookup::One(body)) => Ok(Json(original_body(&body))),
-        Ok(crate::compress::Lookup::Ambiguous(_)) | Ok(crate::compress::Lookup::Missing) => {
-            Err(ServiceError::NotFound(original_id))
-        }
+        Ok(crate::agent::compress::Lookup::One(body)) => Ok(Json(original_body(&body))),
+        Ok(crate::agent::compress::Lookup::Ambiguous(_))
+        | Ok(crate::agent::compress::Lookup::Missing) => Err(ServiceError::NotFound(original_id)),
         Err(error) => {
             tracing::warn!(%error, "tool original lookup failed");
             Err(ServiceError::Unknown)

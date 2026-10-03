@@ -28,7 +28,7 @@ or `delete_file` of that path. A file that did not exist stores `''` and
 `created`. The row is inserted before the rename or the remove, and a later
 change of the same path does not replace it.
 
-`crates/robi/src/review/` diffs that baseline against the file now on disk.
+`crates/robi/src/agent/review/` diffs that baseline against the file now on disk.
 `hunks_for_session` returns one file diff per path: status, additions,
 deletions, a unified patch, and the hunks inside it. A hunk is an id, the
 baseline line start, the current line start, the old lines, and the new

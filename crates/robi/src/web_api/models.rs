@@ -1,7 +1,7 @@
 use axum::{routing::get, Json, Router};
 use serde::Serialize;
 
-use crate::providers::ModelCatalog;
+use crate::agent::providers::ModelCatalog;
 use crate::web_api::state::AppState;
 
 pub fn router(state: AppState) -> Router {

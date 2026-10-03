@@ -51,21 +51,21 @@ pub struct AgentFactory {
     /// Baselines for files this session changes. Required when `sessions` is set.
     pub file_changes: Option<Arc<dyn FileChangeRepository>>,
     /// Brave, or a fake in tests. `web_search` calls this.
-    pub search: Arc<dyn crate::web::SearchEngine>,
+    pub search: Arc<dyn crate::agent::web::SearchEngine>,
     /// Publishes `robi.session.v1.updated` after a title is stored. Absent when
     /// there is no bus.
     pub bus: Option<Arc<EventBus>>,
     /// Workspace semantic index. Absent in tests that do not search.
-    pub index: Option<Arc<crate::index::IndexHub>>,
+    pub index: Option<Arc<crate::agent::index::IndexHub>>,
     /// Language servers shared by sessions on one workspace. Absent in tests
     /// that do not call them; those sessions get a hub of their own.
-    pub lsp: Option<Arc<crate::lsp::LspHub>>,
+    pub lsp: Option<Arc<crate::agent::lsp::LspHub>>,
     /// Global settings. Absent in tests, which leave language-server tools on.
     pub settings: Option<Arc<dyn SettingsStore>>,
     /// MCP host. Absent in tests. Agent mode attaches its tools before the model runs.
-    pub mcp: Option<Arc<crate::mcp::McpHub>>,
+    pub mcp: Option<Arc<crate::agent::mcp::McpHub>>,
     /// Capped shell streams. Absent in tests that do not compress.
-    pub originals: Option<Arc<dyn crate::compress::OriginalStore>>,
+    pub originals: Option<Arc<dyn crate::agent::compress::OriginalStore>>,
 }
 
 impl AgentFactory {
@@ -78,10 +78,9 @@ impl AgentFactory {
             self.config,
         );
         match &self.originals {
-            Some(store) => agent.with_compressor(Arc::new(crate::compress::ShellCompressor::new(
-                Arc::clone(store),
-                session,
-            ))),
+            Some(store) => agent.with_compressor(Arc::new(
+                crate::agent::compress::ShellCompressor::new(Arc::clone(store), session),
+            )),
             None => agent,
         }
     }
@@ -128,22 +127,25 @@ impl AgentFactory {
         })?;
         let registry = ToolRegistry::new();
         let lsp_enabled = self.lsp_enabled().await?;
-        let ctx = Arc::new(crate::tools::ToolContext {
+        let ctx = Arc::new(crate::agent::tools::ToolContext {
             session_id: session,
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
             index: self.index.clone(),
-            lsp: self.lsp.clone().unwrap_or_else(crate::lsp::LspHub::new),
+            lsp: self
+                .lsp
+                .clone()
+                .unwrap_or_else(crate::agent::lsp::LspHub::new),
             lsp_enabled,
             originals: self.originals.clone(),
         });
-        let models = Arc::new(crate::tools::SessionChildModels {
+        let models = Arc::new(crate::agent::tools::SessionChildModels {
             session_id: session,
             sessions: Arc::clone(sessions),
             models: Arc::clone(&self.models),
         });
-        crate::tools::register_tools_for_mode(
+        crate::agent::tools::register_tools_for_mode(
             &registry,
             ctx,
             mode,
@@ -156,7 +158,7 @@ impl AgentFactory {
         })?;
         if mode == AgentMode::Agent {
             if let Some(mcp) = &self.mcp {
-                let allows = Arc::new(crate::mcp::SessionAllows {
+                let allows = Arc::new(crate::agent::mcp::SessionAllows {
                     sessions: Arc::clone(sessions),
                     session,
                 });
@@ -166,7 +168,7 @@ impl AgentFactory {
                     workspace.mcp_project_sha256.as_deref(),
                     &registry,
                     allows,
-                    &crate::mcp::RmcpOpener,
+                    &crate::agent::mcp::RmcpOpener,
                 )
                 .await;
             }
@@ -494,8 +496,8 @@ async fn skill_loads(
     let home = crate::adapters::settings::home_dir()
         .ok()
         .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
-    let skills = crate::skills::scan(home.as_deref(), Some(&root));
-    crate::skills::loads_for_text(instruction, &skills)
+    let skills = crate::agent::skills::scan(home.as_deref(), Some(&root));
+    crate::agent::skills::loads_for_text(instruction, &skills)
 }
 
 fn map_store(error: StoreError) -> ServiceError {
@@ -1318,19 +1320,21 @@ mod tests {
         })
     }
 
-    fn idle_search() -> Arc<dyn crate::web::SearchEngine> {
+    fn idle_search() -> Arc<dyn crate::agent::web::SearchEngine> {
         Arc::new(IdleSearch)
     }
 
     struct IdleSearch;
 
     #[async_trait]
-    impl crate::web::SearchEngine for IdleSearch {
+    impl crate::agent::web::SearchEngine for IdleSearch {
         async fn search(
             &self,
             _query: &str,
-        ) -> Result<Vec<crate::web::SearchHit>, crate::web::SearchError> {
-            Err(crate::web::SearchError("search is not configured".into()))
+        ) -> Result<Vec<crate::agent::web::SearchHit>, crate::agent::web::SearchError> {
+            Err(crate::agent::web::SearchError(
+                "search is not configured".into(),
+            ))
         }
     }
 

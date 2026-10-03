@@ -2,7 +2,7 @@
 
 This page defines the system prompt sent with every model request. Rendering
 lives in `robi-core::prompt`. The sources that fill those blocks live in
-`crates/robi/src/prompt/`. The adapter still injects the finished string, as
+`crates/robi/src/agent/prompt/`. The adapter still injects the finished string, as
 [providers-streaming.md](../providers/providers-streaming.md) describes.
 
 ## What this page does not cover

@@ -332,7 +332,7 @@ passes the vector list and the FTS list.
 
 ### Tool
 
-`semantic_search` lives in `crates/robi/src/tools/` and is registered in
+`semantic_search` lives in `crates/robi/src/agent/tools/` and is registered in
 every mode that registers `grep`, including explore. It is
 `Concurrent`. `requires_approval` returns allow immediately. The tool
 closes over the session the same way the read tools do, and it reloads

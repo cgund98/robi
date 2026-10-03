@@ -33,7 +33,7 @@ file, is how a project takes over the session.
 
 Robi is an MCP host. `rmcp` speaks the protocol. It lives in `crates/robi`.
 `robi-core` does not spawn a process, open a socket, or name the protocol.
-The client is `crates/robi/src/mcp/`. Each remote tool is a `Tool` in the
+The client is `crates/robi/src/agent/mcp/`. Each remote tool is a `Tool` in the
 existing registry.
 
 ### D10: MCP stays out of the loop

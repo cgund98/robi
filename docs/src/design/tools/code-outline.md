@@ -120,7 +120,7 @@ depth to step down. A focused body that does not fit in 32 KB becomes a
 marker with `truncated: true`, not a cut function. An unfocused outline that
 does not fit is cut on the last complete marker under the cap.
 
-`read_code` lives in `crates/robi/src/tools/read_code.rs`. The schema is
+`read_code` lives in `crates/robi/src/agent/tools/read_code.rs`. The schema is
 `path` and optional `focus_symbols`. `compress`, `depth`, `expand_imports`,
 `offset`, and `limit` are `invalid arguments` until the slice that
 implements them. The description tells the model to pass `focus_symbols` for
@@ -199,7 +199,7 @@ then the model is not told about a flag it cannot send.
 
 ## Pipeline
 
-`read_code` runs in `crates/robi/src/tools/read_code.rs`. The fold is a pure
+`read_code` runs in `crates/robi/src/agent/tools/read_code.rs`. The fold is a pure
 function, `outline`, in `crates/robi-index/src/outline.rs`, next to the
 chunker. It takes the source `&str`, the language, the focus list, `depth`,
 and `expand_imports`. It returns the rendered string, the omitted spans, and

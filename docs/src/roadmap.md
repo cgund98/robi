@@ -1101,15 +1101,15 @@ What to take, what to leave. Names refer to `../gopi`.
 |---|---|---|
 | `gogent` loop (`agent.go`, `tool_execution.go`, `tool_turn.go`) | `robi-core` | **The spec for M0.** Port the state machine and the three-phase tool execution; rewrite in Rust with async traits and a real cancellation path |
 | `gogent` `Message`, `Tool`, `ToolRegistry` | `robi-core` | Port the shapes and the status enums; the trait signatures stay fixed from M0 through M5 |
-| `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt`, `crates/robi::prompt` | Rendering and the byte cap are in core. File sources are in `crates/robi`. The skill catalog is [design/skills.md](design/reach/skills.md) |
-| `internal/tools/` (13 tools) | `crates/robi::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
-| `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::adapters` | Port the glob floor and redaction; replace the secrets file with a keychain |
-| `internal/sandbox/` | `crates/robi::sandbox`, `crates/robi::tools::shell` | Port the deny-default policy. The profile is Seatbelt on macOS and bubblewrap on Linux. See [D9](#d9) |
+| `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt`, `crates/robi::agent::prompt` | Rendering and the byte cap are in core. File sources are in `crates/robi`. The skill catalog is [design/skills.md](design/reach/skills.md) |
+| `internal/tools/` (13 tools) | `crates/robi::agent::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
+| `internal/policy/`, `internal/secrets/` | `crates/robi::agent::workspace`, `crates/robi::adapters` | Port the glob floor and redaction; replace the secrets file with a keychain |
+| `internal/sandbox/` | `crates/robi::agent::sandbox`, `crates/robi::agent::tools::shell` | Port the deny-default policy. The profile is Seatbelt on macOS and bubblewrap on Linux. See [D9](#d9) |
 | `internal/session/` | `crates/robi::domain::chat_session`, `crates/robi::adapters` | Port the shape, drop the 50-session cap |
-| `internal/review/` | `crates/robi::review` | Port the diff; the review object is new |
+| `internal/review/` | `crates/robi::agent::review` | Port the diff; the review object is new |
 | `internal/app/` mode wiring | `robi-core::mode` | Port the registry-per-mode idea; drop the TUI coupling |
 | `internal/tui/` | `src/` (React) | Behavior only: what a tool card shows, when approval pauses |
-| `internal/models/` catalog | `crates/robi::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all. That catalog rule is the local "D9" in `providers-streaming.md`, not the sandbox D9 |
+| `internal/models/` catalog | `crates/robi::agent::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all. That catalog rule is the local "D9" in `providers-streaming.md`, not the sandbox D9 |
 | `docs/` (mdbook, 30 pages) | `docs/` | Adopt the taxonomy: **guides teach, concepts explain, reference states facts.** One job per page |
 | — | new | Streaming, cancellation API, checkpoints, LSP, index, tool-output compression |
 

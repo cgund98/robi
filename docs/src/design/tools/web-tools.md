@@ -28,8 +28,8 @@ quota. A fetch of a public page does not, and the user should not approve
 
 ## Decision
 
-Both tools live in `crates/robi/src/tools/`. HTTP and HTML reduction live in
-`crates/robi/src/web/`. `robi-core` stays free of network types. The tools
+Both tools live in `crates/robi/src/agent/tools/`. HTTP and HTML reduction live in
+`crates/robi/src/agent/web/`. `robi-core` stays free of network types. The tools
 are `Concurrent`. They register in Ask, Plan, and Agent. Snippets and page
 text are untrusted: the tool descriptions say so, and so does each mode
 prompt.

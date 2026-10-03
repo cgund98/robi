@@ -134,7 +134,7 @@ pub async fn list_skills(
     let home = crate::adapters::settings::home_dir()
         .ok()
         .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
-    let skills = crate::skills::scan(home.as_deref(), Some(&root))
+    let skills = crate::agent::skills::scan(home.as_deref(), Some(&root))
         .into_iter()
         .filter(|skill| skill.user_invocable)
         .map(|skill| {

@@ -27,7 +27,7 @@ use std::error::Error;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use robi::providers::{build_model, ApiKey, ModelId, ProviderSettings, ReasoningEffort};
+use robi::agent::providers::{build_model, ApiKey, ModelId, ProviderSettings, ReasoningEffort};
 use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
 use robi_core::error::{StoreError, ToolError, TurnOutcome};

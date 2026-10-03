@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use robi_core::ids::SessionId;
 
+use crate::agent::providers::catalog::ModelCatalog;
+use crate::agent::providers::config::{ModelId, ReasoningEffort};
 use crate::domain::{
     chat_session::{
         model::{
@@ -14,8 +16,6 @@ use crate::domain::{
     events::{EventBus, EventEnvelope},
     workspace::repo::WorkspaceRepository,
 };
-use crate::providers::catalog::ModelCatalog;
-use crate::providers::config::{ModelId, ReasoningEffort};
 
 /// A chat session title longer than this is rejected before it is written.
 pub const CHAT_SESSION_TITLE_MAX_CHARS: usize = 200;

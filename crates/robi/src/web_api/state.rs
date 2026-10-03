@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use crate::agent::index::IndexHub;
 use crate::domain::{
     chat_message::service::ChatMessageService, chat_session::service::ChatSessionService,
     events::EventBus, file_change::repo::FileChangeRepository, settings::SettingsService,
     workspace::service::WorkspaceService,
 };
-use crate::index::IndexHub;
 
 /// Services the handlers call. The pool and the agent factory stay in the
 /// composition root. A session actor builds its own agent from that factory.
@@ -19,7 +19,7 @@ pub struct AppState {
     pub file_changes: Arc<dyn FileChangeRepository>,
     pub index: Arc<IndexHub>,
     /// MCP client supervisor. Absent in tests that do not list servers.
-    pub mcp: Option<Arc<crate::mcp::McpHub>>,
+    pub mcp: Option<Arc<crate::agent::mcp::McpHub>>,
     /// Capped streams for the shell card.
-    pub originals: Arc<dyn crate::compress::OriginalStore>,
+    pub originals: Arc<dyn crate::agent::compress::OriginalStore>,
 }

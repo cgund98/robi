@@ -189,7 +189,7 @@ fn decode_query_component(input: &str) -> String {
 async fn open_index(
     state: &AppState,
     filter: &mut StreamFilter,
-) -> Option<crate::index::IndexLease> {
+) -> Option<crate::agent::index::IndexLease> {
     let session_id = filter.session_id.as_deref()?;
     let uuid = Uuid::parse_str(session_id).ok()?;
     let session = state
@@ -212,7 +212,7 @@ async fn open_index(
 fn event_stream(
     subscription: EventSubscription,
     filter: StreamFilter,
-    lease: Option<crate::index::IndexLease>,
+    lease: Option<crate::agent::index::IndexLease>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures_util::stream::unfold(
         (subscription, filter, lease),
@@ -395,13 +395,13 @@ mod tests {
             file_changes: Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             ),
-            index: Arc::new(crate::index::IndexHub::new(
+            index: Arc::new(crate::agent::index::IndexHub::new(
                 std::env::temp_dir(),
                 Arc::clone(&fanout),
                 Arc::new(robi_index::FakeEmbedder::new(4)),
             )),
             mcp: None,
-            originals: Arc::new(crate::compress::MemoryOriginals::default()),
+            originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
         }
     }
 

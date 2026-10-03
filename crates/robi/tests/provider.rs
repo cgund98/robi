@@ -17,7 +17,7 @@ use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
 use bytes::Bytes;
-use robi::providers::{build_model, ApiKey, ModelId, ProviderSettings, RetryPolicy};
+use robi::agent::providers::{build_model, ApiKey, ModelId, ProviderSettings, RetryPolicy};
 use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
 use robi_core::error::StoreError;
