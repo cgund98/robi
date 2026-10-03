@@ -8,8 +8,7 @@
   align-items: center;
   height: var(--titlebar-height);
   padding: 0 var(--space-5);
-  -webkit-app-region: drag;
-  app-region: drag;
+  user-select: none;
 }
 
 .title {

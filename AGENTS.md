@@ -3,11 +3,11 @@
 Robi is a desktop coding assistant: a Rust core that runs an agent loop against a
 local workspace, and a React front end that renders the conversation.
 
-Start with [docs/roadmap.md](docs/roadmap.md) for what ships and in what order.
+Start with [docs/src/roadmap.md](docs/src/roadmap.md) for what ships and in what order.
 The design for the current milestone is
-[docs/design/providers-streaming.md](docs/design/providers-streaming.md); the loop
+[docs/src/design/providers/providers-streaming.md](docs/src/design/providers/providers-streaming.md); the loop
 it drives — the transcript types, the four traits, and the turn state machine — is
-[docs/design/agent-loop.md](docs/design/agent-loop.md).
+[docs/src/design/core/agent-loop.md](docs/src/design/core/agent-loop.md).
 
 ## Layout
 
@@ -22,7 +22,7 @@ direction. Promote it to a real crate later only when there is a reason — see
 | `crates/robi` | crate | The implementations that do I/O. Depends on `robi-core` |
 | `src-tauri` | crate | The Tauri app: commands, IPC, wiring. Depends on `robi` |
 | `src` | — | React + TypeScript front end |
-| `docs` | — | The roadmap and the design docs |
+| `docs` | — | The mdBook: guides, concepts, reference, and the internal design docs |
 
 Arrows point at the dependency, and the direction never reverses:
 
@@ -47,14 +47,14 @@ Add the directory when its milestone starts, not before.
 | `review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
 | `lsp/` | M7 | Language server client |
 | `index/` | M7 | AST chunking, embeddings, vector search |
-| `skills/` | M8 | Skill scan, catalog, and `@id` loads. See [docs/design/skills.md](docs/design/skills.md) |
-| `mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/design/mcp.md](docs/design/mcp.md) |
+| `skills/` | M8 | Skill scan, catalog, and `@id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
+| `mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
 | `compress/` | M9 | Tool-output compression and the original store |
 
 Inside `crates/robi`, `web_api` and `adapters` depend on `domain`, and `domain`
 depends on neither. The `robi-api` binary is the composition root. Schema,
 routes, and the chat session lifecycle are in
-[docs/design/persistence.md](docs/design/persistence.md).
+[docs/src/design/persistence/persistence.md](docs/src/design/persistence/persistence.md).
 
 `crates/robi-index` and `crates/robi-lsp` are the likely first splits, because
 their dependencies — an embedding runtime, tree-sitter grammars, a JSON-RPC
@@ -87,7 +87,7 @@ The rules that follow:
 - **`robi-core` declares the traits; `crates/robi` implements them.** `Model`,
   `Tool`, `MessageStore`, and `EventSink` are declared in the loop and
   implemented outside it. The loop never names a provider or a concrete store.
-  Signatures are in [docs/design/agent-loop.md](docs/design/agent-loop.md).
+  Signatures are in [docs/src/design/core/agent-loop.md](docs/src/design/core/agent-loop.md).
 - **Run the dependency check in CI.** `cargo tree -p robi-core` is the audit.
 - **Use clippy for `std::fs` and `std::net`.** They ship with `std`, so no crate
   boundary excludes them. Disallow them with `disallowed-methods` and
@@ -120,7 +120,7 @@ The package manager is pnpm. The Vite dev server listens on port **1430**, stric
 so it does not share a port with other local Tauri apps.
 
 Visual language (dark tokens, shell layout, chat chrome):
-[docs/design/visual-style.md](docs/design/visual-style.md). Use those CSS
+[docs/src/design/shell/visual-style.md](docs/src/design/shell/visual-style.md). Use those CSS
 variables; do not invent one-off hex or import another product's theme.
 Menus and dialogs use Radix primitives, styled with those tokens.
 
@@ -139,15 +139,17 @@ Menus and dialogs use Radix primitives, styled with those tokens.
 against that same server. Chat-session HTTP goes through the Vite `/api` proxy
 to `robi-api`; run the API alongside the web UI. The shell opens one
 `EventSource` on `/api/v1/events/stream` through that proxy — see
-[docs/design/events-sse.md](docs/design/events-sse.md). Never hand-edit
+[docs/src/design/shell/events-sse.md](docs/src/design/shell/events-sse.md). Never hand-edit
 `src/api/schema.d.ts` — regenerate it after `make openapi-spec` when routes
 change.
 
 Workspace commands live in the root `Makefile`. `make api` runs the local API.
 `make dev-api` restarts it when the Rust crates change. `make lint` checks
-formatting and lints for Rust and the frontend. `make fix` writes formatting
-and lint fixes. `make test` runs `cargo test --workspace`. `make openapi-spec`
-writes `openapi/openapi.json`.
+formatting and lints for Rust and the frontend, and runs the doc link check.
+`make fix` writes formatting and lint fixes. `make test` runs
+`cargo test --workspace`. `make openapi-spec` writes `openapi/openapi.json`.
+`make docs` builds the mdBook at `docs/`; `make docs-serve` serves it locally
+with live reload.
 
 ## Working rules
 
@@ -158,8 +160,16 @@ writes `openapi/openapi.json`.
 - **Keep dependencies one-way.** `robi-core` never depends on `crates/robi`, and
   nothing depends on `src-tauri`.
 - **Documentation is part of the change.** A change to behavior, a default, a
-  limit, or an interface updates the matching page under `docs/` in the same
+  limit, or an interface updates the matching page under `docs/src/` in the same
   change. The table in the roadmap lists which page each feature needs.
+- **Every page is listed in `docs/src/SUMMARY.md`.** A page that is not in the
+  summary does not render in the book.
+- **A design doc names its category.** Design docs live under
+  `docs/src/design/<category>/`, one category per module in the layout table
+  (`core`, `providers`, `shell`, `persistence`, `tools`, `workspace`, `review`,
+  `intelligence`, `reach`, `compression`). The `design/` root receives no files.
+  Internal design pages and discovery notes are the `# Project internals` part of
+  the book; user-facing pages go under `guides/`, `concepts/`, or `reference/`.
 - **Write what the code does.** When a page and the code disagree, fix the page,
   or make the code match the intent and state which.
 - **Test the loop with fakes.** `cargo test -p robi-core` runs against a stub

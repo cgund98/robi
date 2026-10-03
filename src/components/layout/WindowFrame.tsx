@@ -12,7 +12,7 @@ export function WindowFrame() {
 
   return (
     <div className={styles.frame}>
-      <header className={`${styles.bar} ${tone}`} data-tauri-drag-region />
+      <header className={`${styles.bar} ${tone}`} data-tauri-drag-region="deep" />
       <div className={styles.body}>
         <Outlet />
       </div>

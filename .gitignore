@@ -33,4 +33,7 @@ robi.db-shm
 .gopi/plans
 .robi/plans
 
+# mdBook build output
+docs/book/
+
 scratch/

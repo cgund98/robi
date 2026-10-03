@@ -1,0 +1,53 @@
+<!-- Mermaid diagrams. mdBook has no built-in renderer, so load one here. -->
+<style>
+  .mermaid {
+    display: flex;
+    justify-content: center;
+    margin: 1.5em 0;
+    overflow-x: auto;
+  }
+  .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  (function () {
+    // Pick a Mermaid theme that matches the page background, so diagrams stay
+    // legible in both the light and the dark mdBook themes.
+    function preferredTheme() {
+      var parts = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g);
+      if (!parts || parts.length < 3) return "default";
+      var luminance =
+        (0.299 * +parts[0] + 0.587 * +parts[1] + 0.114 * +parts[2]) / 255;
+      return luminance < 0.5 ? "dark" : "default";
+    }
+
+    // mdBook renders a ```mermaid fence as a highlighted code block. Mermaid
+    // expects a <div class="mermaid">, so swap each one out first.
+    function convertBlocks() {
+      document
+        .querySelectorAll("pre > code.language-mermaid")
+        .forEach(function (code) {
+          var div = document.createElement("div");
+          div.className = "mermaid";
+          div.textContent = code.textContent;
+          code.parentElement.replaceWith(div);
+        });
+    }
+
+    window.addEventListener("DOMContentLoaded", function () {
+      if (typeof mermaid === "undefined") return;
+      convertBlocks();
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: preferredTheme(),
+      });
+      mermaid.run().catch(function (err) {
+        console.error("mermaid:", err);
+      });
+    });
+  })();
+</script>

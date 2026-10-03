@@ -10,8 +10,6 @@
   flex-shrink: 0;
   height: var(--titlebar-height);
   user-select: none;
-  -webkit-app-region: drag;
-  app-region: drag;
 }
 
 .barPlain {

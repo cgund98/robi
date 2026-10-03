@@ -1,0 +1,10 @@
+[book]
+title = "Robi"
+description = "A desktop coding assistant: a Rust core and a React front end."
+authors = ["Callum Gundlach"]
+src = "src"
+
+[output.html]
+site-url = "/robi/"
+git-repository-url = "https://github.com/cgund98/robi"
+edit-url-template = "https://github.com/cgund98/robi/edit/main/docs/src/{path}"

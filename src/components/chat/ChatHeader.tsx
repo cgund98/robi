@@ -6,7 +6,7 @@ type ChatHeaderProps = {
 
 export function ChatHeader({ sessionTitle }: ChatHeaderProps) {
   return (
-    <header className={styles.header}>
+    <header className={styles.header} data-tauri-drag-region="deep">
       <span className={styles.title}>{sessionTitle}</span>
     </header>
   )
