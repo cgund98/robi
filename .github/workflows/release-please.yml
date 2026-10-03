@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp src-tauri/target/release/bundle/dmg/*.dmg dist/
+          cp target/release/bundle/dmg/*.dmg dist/
           (cd dist && shasum -a 256 ./*.dmg > checksums.txt)
           cat dist/checksums.txt
 
