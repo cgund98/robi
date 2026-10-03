@@ -34,4 +34,9 @@ impl SettingsStore for MemorySettingsStore {
             .insert(key.to_owned(), Setting { value, secret });
         Ok(())
     }
+
+    async fn remove(&self, key: &str) -> Result<(), ServiceError> {
+        self.values.lock().await.remove(key);
+        Ok(())
+    }
 }

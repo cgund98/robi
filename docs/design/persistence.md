@@ -79,6 +79,8 @@ and no `user_id`.
 Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
 chat sessions, and chat messages. `0002_session_file_baselines.sql` creates the
 baseline table. `0003_session_model_config.sql` adds the session model override.
+`0004_session_mode.sql` adds `mode` and rewrites `model_config` into per-mode
+objects.
 The four path-rule columns default to `[]`.
 They store session additions. The built-in secret and `.git` patterns are
 applied in code and are not written on the row.
@@ -105,7 +107,8 @@ Index: `(created_at DESC, id DESC)`.
 | `path_allow_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that write through a deny |
 | `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
 | `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
-| `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `model` and `reasoning_effort`. An absent key inherits the setting, then the built-in default |
+| `mode` | `TEXT NOT NULL` | `ask`, `plan`, or `agent`. `agent` on create. Selects the tool registry and the prompt prefix |
+| `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `agent`, `ask`, and `plan` objects, each with optional `model` and `reasoning_effort`. An absent key inherits that mode's setting, then the fallback setting, then the built-in model |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
 | `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, or a model-config edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
@@ -157,27 +160,29 @@ Base path `/api/v1`. One error body, `{ "error": "..." }`.
 | `POST` | `/workspaces` | `201` when the root is new, `200` when that canonical directory is already stored | `400` if `root` is empty, missing, or not a directory |
 | `GET` | `/workspaces/{id}` | `200` workspace | `404` if missing, `400` if `id` is not a UUID |
 | `DELETE` | `/workspaces/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. Sessions and their messages go with it |
-| `GET` | `/models` | `200` catalog | The tool-capable models, each `{ "id", "display_name" }` |
-| `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID, `title` is longer than 200 characters, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high`. `404` if that workspace does not exist |
+| `GET` | `/models` | `200` catalog | The tool-capable models, each `{ "id", "display_name", "context_window" }` |
+| `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID, `title` is longer than 200 characters, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high`. `404` if that workspace does not exist |
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
-| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
+| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
 | `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID |
 
 `POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
 so a symlink and its target are one workspace. `name` is the last path
 component. `GET /workspaces` orders by `created_at DESC, id DESC`.
 
-`POST` body for a chat session is `{ "workspace_id", "title"?, "model_config"? }`. Omitted, null, and `""` are stored
+`POST` body for a chat session is `{ "workspace_id", "title"?, "mode"?, "model_config"? }`. Omitted, null, and `""` are stored
 as null. After a turn completes, the model writes a title when the column is
 still null. A title passed on create is kept, and the model does not replace
 it. That call is specified in [chat-runtime.md](chat-runtime.md).
-`model_config` is `{ "model"?, "reasoning_effort"? }`. Omitted stores `{}`.
+`mode` is `ask`, `plan`, or `agent`. Omitted stores `agent`.
+`model_config` is `{ "agent"?, "ask"?, "plan"? }`. Each mode object is
+`{ "model"?, "reasoning_effort"? }`. Omitted stores `{}`.
 `model` must be a catalog id. `reasoning_effort` is `low`, `medium`, or `high`.
-`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"?, "model_config"? }`.
+`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"?, "mode"?, "model_config"? }`.
 Each field is optional. An omitted field stays as stored. A present path list
-replaces that list. Inside `model_config`, an omitted key stays, a string sets
-that override, and `null` clears it. `updated_at` moves when any field is present.
+replaces that list. Inside one mode object, an omitted key stays, a string sets
+that override, and `null` clears it. An omitted mode object stays. `updated_at` moves when any field is present.
 `last_used_at` and `workspace_id` stay put. An empty body returns the session
 unchanged. A body Axum cannot deserialize is rejected by Axum (422), which is
 separate from a title or a pattern the service refuses. The lists and how
@@ -209,7 +214,9 @@ actor then resumes the paused turn. The actor, the factory, and the interrupt
 rules are in [chat-runtime.md](chat-runtime.md).
 
 `GET` of the list and `GET` of one message return each message's id, role,
-content, tool calls, and tool-call id. The list calls `MessageStore::messages`.
+content, tool calls, and tool-call id. When the provider reported tokens for
+that turn, the message also includes `usage`: `{ "input", "output", "cached" }`.
+`input` is that request's prompt size. The list calls `MessageStore::messages`.
 The single-message read calls `MessageStore::message`, which loads that row
 by id. Neither takes the actor lock. A message id that is absent from that
 session is `404`.
@@ -240,14 +247,17 @@ that is not in this list is `400`.
 |---|---|---|
 | `opencode_go_api_key` | yes | None. A chat turn is `400` until this is set |
 | `model` | no | `glm-5.3`, written on the first read when the key is absent |
-| `reasoning_effort` | no | None. Optional `low`, `medium`, or `high` |
+| `reasoning_effort` | no | None. Optional `low`, `medium`, or `high`. Fallback when a mode has no effort |
+| `model_ask`, `model_plan`, `model_agent` | no | None. Optional model id for that mode. Empty inherits `model` |
+| `reasoning_effort_ask`, `reasoning_effort_plan`, `reasoning_effort_agent` | no | None. Optional effort for that mode. Empty inherits `reasoning_effort` |
 | `base_url` | no | None. Optional provider base URL |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
 
 A read of an absent key that has a default calls the same write as `PUT`: the
 value is stored in memory and both files are rewritten, then the read returns
 that value. A read of an absent key with no default returns `value: null` and
-does not write a file. An empty value is rejected.
+does not write a file. An empty value is rejected. `DELETE` removes a
+non-secret key so the next read inherits. A secret key cannot be removed.
 
 `SettingsModelSource` reads these keys when a session actor starts and passes
 the result to `build_model`. A turn that is already running keeps its model.
@@ -258,6 +268,7 @@ first chat turn fails until `opencode_go_api_key` is set.
 |---|---|---|---|
 | `GET` | `/settings/{key}` | `200` setting | `400` if `key` is not in the whitelist |
 | `PUT` | `/settings/{key}` | `204` | `400` if `key` is not in the whitelist, `value` is empty, or the secret flag does not match the key. `500` if the files could not be written |
+| `DELETE` | `/settings/{key}` | `204` | `400` if `key` is not in the whitelist or the key is a secret. `500` if the files could not be written |
 
 `PUT` body is `{ "value", "secret" }`. `GET` of a stored secret returns
 `{ "key", "secret": true }` and omits `value`. `GET` of an unset key with no

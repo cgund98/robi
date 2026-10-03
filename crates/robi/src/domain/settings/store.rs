@@ -37,4 +37,7 @@ pub trait SettingsStore: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<Setting>, ServiceError>;
 
     async fn set(&self, key: &str, value: String, secret: bool) -> Result<(), ServiceError>;
+
+    /// Remove a stored key. An absent key is success.
+    async fn remove(&self, key: &str) -> Result<(), ServiceError>;
 }

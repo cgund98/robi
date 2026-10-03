@@ -33,6 +33,11 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
         verb: args?.unsandboxed === true ? 'Run unsandboxed' : 'Run',
         target: shellProgram(stringField(args, 'command'))
       }
+    case 'delegate':
+      return {
+        verb: 'Delegate',
+        target: stringField(args, 'description') || stringField(args, 'task')
+      }
     default:
       return { verb: call.name, target: path || pattern }
   }
@@ -350,6 +355,73 @@ function shellProgram(command: string): string {
   const token = command.trim().split(/\s+/)[0] ?? ''
   const name = token.split('/').pop() ?? ''
   return name || 'command'
+}
+
+export type SubagentStepView = {
+  name: string
+  target: string
+  status: 'running' | 'ok' | 'denied' | 'failed'
+}
+
+export type SubagentView = {
+  mode: 'explore' | 'general'
+  description: string
+  startedMs: number
+  steps: SubagentStepView[]
+  answer: string
+}
+
+/** The child run on a `delegate` call, when the snapshot has arrived. */
+export function subagentView(call: ChatToolCall): SubagentView | null {
+  if (call.name !== 'delegate' || !call.subagent) {
+    return null
+  }
+  const mode = call.subagent.mode === 'general' ? 'general' : 'explore'
+  const steps = call.subagent.steps.map((step) => ({
+    name: step.name,
+    target: step.target,
+    status: stepStatus(step.status)
+  }))
+  return {
+    mode,
+    description: call.subagent.description,
+    startedMs: call.subagent.started_ms,
+    steps,
+    answer: stringField(record(call.result), 'answer')
+  }
+}
+
+export function subagentCount(view: SubagentView): string {
+  const searches = view.steps.filter((step) => step.name === 'grep' || step.name === 'find').length
+  if (view.mode === 'explore' && searches > 0) {
+    return searches === 1 ? '1 search' : `${searches} searches`
+  }
+  if (view.steps.length === 0) {
+    return 'starting'
+  }
+  return view.steps.length === 1 ? '1 tool call' : `${view.steps.length} tool calls`
+}
+
+export function subagentStepSummary(step: SubagentStepView): ToolSummary {
+  if (step.name === 'shell') {
+    return { verb: 'Run', target: step.target }
+  }
+  const args =
+    step.name === 'grep' || step.name === 'find' ? { pattern: step.target } : { path: step.target }
+  return toolSummary({
+    id: '',
+    name: step.name,
+    args,
+    approval_status: 'pending',
+    execution_status: 'succeeded'
+  })
+}
+
+function stepStatus(status: string): SubagentStepView['status'] {
+  if (status === 'ok' || status === 'denied' || status === 'failed' || status === 'running') {
+    return status
+  }
+  return 'failed'
 }
 
 function stringField(value: Record<string, unknown> | null, key: string): string {

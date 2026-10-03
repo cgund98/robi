@@ -50,6 +50,9 @@ export function useAgentEventsSSE(): void {
       case 'robi.agent.v1.message_added':
       case 'robi.agent.v1.message_updated':
       case 'robi.agent.v1.tool_call_updated': {
+        if (envelope.type === 'robi.agent.v1.tool_call_updated') {
+          useChatStore.getState().bumpReview(sessionId)
+        }
         const messageId = data?.message_id
         if (!messageId) {
           return
@@ -75,6 +78,7 @@ export function useAgentEventsSSE(): void {
         return
       }
       case 'robi.agent.v1.turn_finished': {
+        useChatStore.getState().bumpReview(sessionId)
         const outcome = data?.outcome
         const failed = outcome?.kind === 'failed' ? (outcome.message ?? 'The turn failed') : null
         void useChatStore.getState().finishTurn(sessionId, failed)

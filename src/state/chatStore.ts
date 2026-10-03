@@ -9,6 +9,7 @@ import {
   listSessions,
   patchSession,
   updateSession,
+  type AgentMode,
   type ChatSession,
   type ModelConfigBody
 } from '../api/sessions'
@@ -25,6 +26,8 @@ type ChatState = {
   sessions: ChatSession[]
   activeSessionId: string | null
   draftSelected: boolean
+  /** Mode for a chat that has no row yet. */
+  draftMode: AgentMode
   /** Model override for a chat that has no row yet. Null inherits the setting. */
   draftModel: string | null
   /** Effort override for a chat that has no row yet. Null inherits the setting. */
@@ -38,6 +41,7 @@ type ChatState = {
   loadSessions: (options?: { draft?: boolean }) => Promise<void>
   selectSession: (id: string) => Promise<void>
   selectDraft: () => void
+  setModeChoice: (mode: AgentMode) => Promise<void>
   setModelChoice: (model: string | null) => Promise<void>
   setEffortChoice: (effort: string | null) => Promise<void>
   sendInstruction: (instruction: string) => Promise<boolean>
@@ -50,6 +54,9 @@ type ChatState = {
   finishTurn: (sessionId: string, failedMessage: string | null) => Promise<void>
   refreshSession: (sessionId: string) => Promise<void>
   hydrateFromStream: () => Promise<void>
+  /** Bumped when a tool call or turn finishes, so the review strip refetches. */
+  reviewTickBySession: Record<string, number>
+  bumpReview: (sessionId: string) => void
 }
 
 let hydrateEpoch = 0
@@ -92,15 +99,34 @@ function replaceSession(sessions: ChatSession[], session: ChatSession): ChatSess
   return sessions.map((item) => (item.id === session.id ? session : item))
 }
 
-function draftConfig(state: ChatState): ModelConfigBody | undefined {
-  const config: ModelConfigBody = {}
+function activeMode(state: ChatState): AgentMode {
+  if (state.draftSelected || state.activeSessionId === null) {
+    return state.draftMode
+  }
+  const session = state.sessions.find((item) => item.id === state.activeSessionId)
+  return sessionMode(session)
+}
+
+export function sessionMode(session: Pick<ChatSession, 'mode'> | null | undefined): AgentMode {
+  if (session?.mode === 'ask' || session?.mode === 'plan' || session?.mode === 'agent') {
+    return session.mode
+  }
+  return 'agent'
+}
+
+function draftConfig(state: ChatState): { mode: AgentMode; modelConfig?: ModelConfigBody } {
+  const mode = state.draftMode
+  const override: { model?: string; reasoning_effort?: string } = {}
   if (state.draftModel) {
-    config.model = state.draftModel
+    override.model = state.draftModel
   }
   if (state.draftEffort) {
-    config.reasoning_effort = state.draftEffort
+    override.reasoning_effort = state.draftEffort
   }
-  return config.model == null && config.reasoning_effort == null ? undefined : config
+  if (override.model == null && override.reasoning_effort == null) {
+    return { mode }
+  }
+  return { mode, modelConfig: { [mode]: override } }
 }
 
 async function setChoice(
@@ -109,14 +135,16 @@ async function setChoice(
   key: 'model' | 'reasoning_effort',
   value: string | null
 ): Promise<void> {
-  const { draftSelected, activeSessionId } = get()
+  const state = get()
+  const { draftSelected, activeSessionId } = state
   if (draftSelected || activeSessionId === null) {
     set(key === 'model' ? { draftModel: value } : { draftEffort: value })
     return
   }
+  const mode = activeMode(state)
   try {
     const updated = await patchSession(activeSessionId, {
-      model_config: { [key]: value }
+      model_config: { [mode]: { [key]: value } }
     })
     set((state) => ({
       sessions: replaceSession(state.sessions, updated),
@@ -184,6 +212,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   draftSelected: false,
+  draftMode: 'agent',
   draftModel: null,
   draftEffort: null,
   messagesBySession: {},
@@ -192,6 +221,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   loading: true,
   busy: false,
+  reviewTickBySession: {},
 
   loadSessions: async (options) => {
     const epoch = bumpHydrate()
@@ -288,9 +318,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       draftSelected: true,
       activeSessionId: null,
       error: null,
+      draftMode: 'agent',
       draftModel: null,
       draftEffort: null
     })
+  },
+
+  setModeChoice: async (mode) => {
+    const { draftSelected, activeSessionId } = get()
+    if (draftSelected || activeSessionId === null) {
+      set({ draftMode: mode })
+      return
+    }
+    try {
+      const updated = await patchSession(activeSessionId, { mode })
+      set((state) => ({
+        sessions: replaceSession(state.sessions, updated),
+        error: null
+      }))
+    } catch (err) {
+      set({ error: errorText(err, 'Failed to update the mode') })
+    }
   },
 
   setModelChoice: async (model) => {
@@ -329,6 +377,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           sessions: [created, ...state.sessions.filter((session) => session.id !== created.id)],
           activeSessionId: created.id,
           draftSelected: false,
+          draftMode: 'agent',
           draftModel: null,
           draftEffort: null
         }))
@@ -556,5 +605,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       set({ error: errorText(err, 'Failed to load chat sessions') })
     }
+  },
+
+  bumpReview: (sessionId) => {
+    set((state) => ({
+      reviewTickBySession: {
+        ...state.reviewTickBySession,
+        [sessionId]: (state.reviewTickBySession[sessionId] ?? 0) + 1
+      }
+    }))
   }
 }))

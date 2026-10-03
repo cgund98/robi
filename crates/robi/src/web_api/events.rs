@@ -352,6 +352,9 @@ mod tests {
             }),
             settings_service: Arc::new(SettingsService { store: settings }),
             event_fanout: fanout,
+            file_changes: Arc::new(
+                crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
+            ),
         }
     }
 

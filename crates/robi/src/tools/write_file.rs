@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use robi_core::error::ToolError;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 
 use super::change::{
     atomic_write, change_diff, diff_json, ensure_parent, lock_path, read_text, record_baseline,
@@ -61,8 +60,8 @@ impl Tool for WriteFile {
         write_approval(&self.ctx, args).await
     }
 
-    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
-        if cancel.is_cancelled() {
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         let args: WriteArgs = serde_json::from_value(args)
@@ -73,7 +72,7 @@ impl Tool for WriteFile {
         self.ctx.filter().await?;
         let resolved = self.ctx.resolve(&args.path)?;
         let _guard = lock_path(&resolved.absolute).await;
-        if cancel.is_cancelled() {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         if std::fs::metadata(&resolved.absolute)

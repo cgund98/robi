@@ -5,10 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use robi_core::error::ToolError;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_util::sync::CancellationToken;
 
 use super::context::{denied, display_path, ToolContext};
 
@@ -50,8 +49,8 @@ impl Tool for ListDir {
         ApprovalDecision::AllowImmediately
     }
 
-    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
-        if cancel.is_cancelled() {
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         let args: ListArgs = serde_json::from_value(args)

@@ -4,7 +4,10 @@ use robi_core::ids::SessionId;
 
 use crate::domain::{
     chat_session::{
-        model::{ChatSession, CreateChatSessionCommand, ModelConfig, UpdateChatSessionCommand},
+        model::{
+            ChatSession, CreateChatSessionCommand, ModeOverride, ModeOverrideUpdate, ModelConfig,
+            UpdateChatSessionCommand,
+        },
         repo::ChatSessionRepository,
     },
     error::ServiceError,
@@ -40,6 +43,7 @@ impl ChatSessionService {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: command.workspace_id,
                 title,
+                mode: command.mode,
                 model_config,
             })
             .await
@@ -70,12 +74,9 @@ impl ChatSessionService {
             .validate_patterns()
             .map_err(ServiceError::BadRequest)?;
         if let Some(update) = &mut command.model_config {
-            if let Some(model) = &update.model {
-                update.model = Some(normalize_model(model.clone())?);
-            }
-            if let Some(effort) = &update.reasoning_effort {
-                update.reasoning_effort = Some(normalize_effort(effort.clone())?);
-            }
+            normalize_override_update(update.agent.as_mut())?;
+            normalize_override_update(update.ask.as_mut())?;
+            normalize_override_update(update.plan.as_mut())?;
         }
         if command.is_empty() {
             return self.get_chat_session(command.id).await;
@@ -121,9 +122,30 @@ fn normalize_new_title(title: Option<String>) -> Result<Option<String>, ServiceE
 
 fn normalize_model_config(config: ModelConfig) -> Result<ModelConfig, ServiceError> {
     Ok(ModelConfig {
-        model: normalize_model(config.model)?,
-        reasoning_effort: normalize_effort(config.reasoning_effort)?,
+        agent: normalize_override(config.agent)?,
+        ask: normalize_override(config.ask)?,
+        plan: normalize_override(config.plan)?,
     })
+}
+
+fn normalize_override(override_for_mode: ModeOverride) -> Result<ModeOverride, ServiceError> {
+    Ok(ModeOverride {
+        model: normalize_model(override_for_mode.model)?,
+        reasoning_effort: normalize_effort(override_for_mode.reasoning_effort)?,
+    })
+}
+
+fn normalize_override_update(update: Option<&mut ModeOverrideUpdate>) -> Result<(), ServiceError> {
+    let Some(update) = update else {
+        return Ok(());
+    };
+    if let Some(model) = &update.model {
+        update.model = Some(normalize_model(model.clone())?);
+    }
+    if let Some(effort) = &update.reasoning_effort {
+        update.reasoning_effort = Some(normalize_effort(effort.clone())?);
+    }
+    Ok(())
 }
 
 fn normalize_model(model: Option<String>) -> Result<Option<String>, ServiceError> {
@@ -176,7 +198,8 @@ mod tests {
     use super::*;
     use crate::domain::{
         chat_session::model::{
-            apply_session_update, ModelConfigUpdate, PathRules, UpdateChatSessionCommand,
+            apply_session_update, AgentMode, ModeOverride, ModeOverrideUpdate, ModelConfigUpdate,
+            PathRules, UpdateChatSessionCommand,
         },
         workspace::repo::AnyWorkspace,
     };
@@ -209,6 +232,7 @@ mod tests {
                 workspace_id: command.workspace_id,
                 title: command.title,
                 path_rules: PathRules::default(),
+                mode: command.mode,
                 model_config: command.model_config,
                 created_at: now,
                 updated_at: now,
@@ -346,6 +370,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Notes".into()),
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -363,6 +388,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Notes".into()),
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -389,6 +415,7 @@ mod tests {
                 .create_chat_session(CreateChatSessionCommand {
                     workspace_id: WorkspaceId::new(),
                     title,
+                    mode: AgentMode::Agent,
                     model_config: ModelConfig::default(),
                 })
                 .await
@@ -405,6 +432,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: Some(title),
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -436,6 +464,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: keep,
                 title: Some("keep".into()),
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -444,6 +473,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: drop,
                 title: Some("drop".into()),
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -462,6 +492,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -499,6 +530,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -540,6 +572,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -556,6 +589,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -568,6 +602,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                mode: None,
                 model_config: None,
             })
             .await
@@ -590,9 +625,13 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig {
-                    model: Some("glm-5.2".into()),
-                    reasoning_effort: Some("low".into()),
+                    agent: ModeOverride {
+                        model: Some("glm-5.2".into()),
+                        reasoning_effort: Some("low".into()),
+                    },
+                    ..ModelConfig::default()
                 },
             })
             .await
@@ -606,16 +645,20 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                mode: None,
                 model_config: Some(ModelConfigUpdate {
-                    model: None,
-                    reasoning_effort: Some(Some("HIGH".into())),
+                    agent: Some(ModeOverrideUpdate {
+                        model: None,
+                        reasoning_effort: Some(Some("HIGH".into())),
+                    }),
+                    ..ModelConfigUpdate::default()
                 }),
             })
             .await
             .unwrap();
-        assert_eq!(updated.model_config.model.as_deref(), Some("glm-5.2"));
+        assert_eq!(updated.model_config.agent.model.as_deref(), Some("glm-5.2"));
         assert_eq!(
-            updated.model_config.reasoning_effort.as_deref(),
+            updated.model_config.agent.reasoning_effort.as_deref(),
             Some("high")
         );
 
@@ -627,9 +670,13 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                mode: None,
                 model_config: Some(ModelConfigUpdate {
-                    model: Some(None),
-                    reasoning_effort: None,
+                    agent: Some(ModeOverrideUpdate {
+                        model: Some(None),
+                        reasoning_effort: None,
+                    }),
+                    ..ModelConfigUpdate::default()
                 }),
             })
             .await
@@ -637,8 +684,11 @@ mod tests {
         assert_eq!(
             cleared.model_config,
             ModelConfig {
-                model: None,
-                reasoning_effort: Some("high".into()),
+                agent: ModeOverride {
+                    model: None,
+                    reasoning_effort: Some("high".into()),
+                },
+                ..ModelConfig::default()
             }
         );
     }
@@ -650,6 +700,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -662,9 +713,13 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                mode: None,
                 model_config: Some(ModelConfigUpdate {
-                    model: Some(Some("not-a-model".into())),
-                    reasoning_effort: None,
+                    ask: Some(ModeOverrideUpdate {
+                        model: Some(Some("not-a-model".into())),
+                        reasoning_effort: None,
+                    }),
+                    ..ModelConfigUpdate::default()
                 }),
             })
             .await
@@ -682,6 +737,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: WorkspaceId::new(),
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await

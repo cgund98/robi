@@ -79,7 +79,8 @@ Ns**, measured from the user message to the last message in that turn.
 A turn that is still running, or waiting on approval, does not show it.
 
 Tool rows from later iterations of the same turn sit in that same stack, with
-no extra gap between them. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
+no extra gap between quiet rows. A bordered card — an edit or a shell — has a
+little space under it, so two panels do not touch. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
 `Listed`), and the path or pattern. A finished `write_file`, `edit_file`, or
 `delete_file` is a bordered card: the path the tool was called with
 (`scratch/test.md`, `../gopi/test.md`, `/tmp/test.md`), the `+` / `−` counts beside
@@ -89,6 +90,16 @@ lines, then `N more lines` when the change is longer. A running call shows a spi
 A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
 the body: numbered file text, match lines, paths, or the error. The row stays
 closed until that click.
+
+A `delegate` call is its own card. The header is the description, an **Explore**
+or **General** label, the elapsed time while the call is running, and a count.
+Explore counts searches once the child has used `grep` or `find`, and tool calls
+until then. General counts tool calls. **Explore** uses `--accent`. The body is
+one row per child step, with the same verb and target as a parent tool row, and
+a spinner on a step that is still running. A denied or failed step uses
+`--danger`. When the call succeeds, the rows stay. The answer the parent model
+received is behind an **Answer** control and stays closed until that click.
+The rows update when `tool_call_updated` refetches the assistant message.
 
 A call that is still `pending` approval and `not_started`, while the session
 phase is idle, is the approval bar. It shows the same verb and target, then
@@ -106,8 +117,22 @@ execution is not a prompt.
 While the phase is not `idle`, the transcript shows a muted line, **Thinking**
 or **Responding**, then **for Ns** counted from that turn's user message, with
 dots that step `.`, `..`, `...` beside it. The count waits until one second
-has passed. The composer status ring spins in `--accent`. Idle keeps the quiet ring. Reduced
-motion shows `...` and does not step.
+has passed. Reduced motion shows `...` and does not step. That line is the
+busy signal.
+
+The ring at the end of the model row is the context meter. It is a button.
+The arc is the share of the model's context window the next request would
+use. The latest assistant `usage.input` is the prompt size through the
+request that reported it. Each report is cumulative, so the meter does not
+sum them. Characters of that message, every later message, the unstored
+echo, and the composer draft, divided by four, estimate what the provider
+has not counted yet. The track is `--ink-faint` and the arc is `--ink-muted`.
+An empty chat, or a turn that has not reported usage, leaves
+the arc empty. A model with no advertised window leaves it empty too.
+Clicking the ring opens a popover: used against the window and the percent,
+the last turn's input, output, and cached tokens, and the uncounted
+estimate when it is not zero. Cached is omitted when it is zero. The ring
+holds its fill while a turn runs.
 
 The textarea and send control are disabled for that whole stretch, and during
 session load and other in-flight session requests. Enter does not submit.
@@ -121,11 +146,15 @@ in the sidebar. That is the phase when it is not `idle`, or `has_pending_agent`
 when the list was loaded with the actor already running. Reduced motion
 keeps the ring still.
 
-Model and effort are quiet dropdowns in that cluster, and inside the welcome
-card. Each shows the value in effect: the session override when one is stored,
-otherwise the settings default. **Use default** clears that session key.
-A saved session writes the choice with `PATCH`. A draft keeps it in the client
-until the first send, which stores it on `POST /chat_sessions` before the
-instruction. The dropdowns stay usable while a turn is running. The actor
-already built keeps its model; the next one reads the new choice. The catalog
-comes from `GET /api/v1/models`. Settings still holds the default model and effort.
+Mode, model, and effort are quiet dropdowns in that cluster, and inside the
+welcome card. Mode is `ask`, `plan`, or `agent`. Model and effort show the
+value in effect for that mode: the session override when one is stored,
+otherwise that mode's setting, then the fallback setting. **Use default**
+clears that mode's session key. A saved session writes the choice with
+`PATCH`. A draft keeps it in the client until the first send, which stores
+it on `POST /chat_sessions` before the instruction. The dropdowns stay
+usable while a turn is running. The actor already built keeps its mode,
+model, and tools; the next one reads the new choice. The catalog comes from
+`GET /api/v1/models`, and each model includes `context_window`. Settings
+hold the fallback model and effort, and an optional model and effort per
+mode. The mode rules are in [agent-modes.md](agent-modes.md).

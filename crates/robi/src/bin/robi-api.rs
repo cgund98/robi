@@ -81,6 +81,8 @@ async fn main() {
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces: workspaces.clone(),
     });
+    let file_changes: Arc<dyn FileChangeRepository> =
+        Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
         events: Arc::new(FanOutEventSink::new(Arc::clone(&event_fanout))),
@@ -88,8 +90,7 @@ async fn main() {
         tools,
         config: LoopConfig::default(),
         sessions: Some(Arc::clone(&chat_session_service)),
-        file_changes: Some(Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)))
-            as Arc<dyn FileChangeRepository>),
+        file_changes: Some(Arc::clone(&file_changes)),
         fanout: Some(Arc::clone(&event_fanout)),
     }));
     let state = AppState {
@@ -104,6 +105,7 @@ async fn main() {
         }),
         settings_service: Arc::new(SettingsService { store: settings }),
         event_fanout,
+        file_changes,
     };
 
     let app = Router::new()

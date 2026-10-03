@@ -7,12 +7,17 @@
 
 mod builtin;
 mod files;
+mod mode;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use robi_core::prompt::{render, PromptBlock};
 use robi_core::tool::ToolRegistry;
+
+use crate::domain::chat_session::model::AgentMode;
+
+use mode::ModePrefix;
 
 pub use builtin::Builtin;
 pub use files::{InstructionFile, ProjectAgents, WorkingDirectory};
@@ -88,6 +93,7 @@ pub struct SessionPrompt<'a> {
     /// `~/.robi`. Global `system.md` and `AGENTS.md` are read from here.
     pub config_dir: Option<PathBuf>,
     pub workspace: Option<PathBuf>,
+    pub mode: AgentMode,
     pub max_bytes: usize,
 }
 
@@ -126,7 +132,7 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
         });
         assembler = assembler.source(WorkingDirectory { path: workspace });
     }
-    assembler.render()
+    assembler.source(ModePrefix { mode: input.mode }).render()
 }
 
 /// Names and descriptions, so a source can render without holding the registry lock.
@@ -145,9 +151,8 @@ mod tests {
 
     use async_trait::async_trait;
     use robi_core::error::ToolError;
-    use robi_core::tool::{ApprovalDecision, Tool, ToolRegistry};
+    use robi_core::tool::{ApprovalDecision, Tool, ToolRegistry, ToolRun};
     use serde_json::{json, Value};
-    use tokio_util::sync::CancellationToken;
 
     use super::*;
 
@@ -174,11 +179,7 @@ mod tests {
             ApprovalDecision::AllowImmediately
         }
 
-        async fn execute(
-            &self,
-            _args: Value,
-            _cancel: CancellationToken,
-        ) -> Result<Value, ToolError> {
+        async fn execute(&self, _args: Value, _run: ToolRun) -> Result<Value, ToolError> {
             Ok(json!({}))
         }
     }
@@ -220,6 +221,7 @@ mod tests {
             user_prompt: Some("from settings".into()),
             config_dir: Some(home.clone()),
             workspace: Some(repo.join("pkg")),
+            mode: AgentMode::Ask,
             max_bytes: DEFAULT_MAX_BYTES,
         });
 
@@ -229,12 +231,15 @@ mod tests {
         let root = prompt.find("root rules").unwrap();
         let package = prompt.find("package rules").unwrap();
         let cwd = prompt.find("<cwd>").unwrap();
+        let mode = prompt.find("<mode>").unwrap();
         assert!(prompt.find("- read_file: Read one file.").unwrap() < settings);
         assert!(settings < preamble);
         assert!(preamble < global);
         assert!(global < root);
         assert!(root < package);
         assert!(package < cwd);
+        assert!(cwd < mode);
+        assert!(prompt.contains("Ask mode"));
         assert!(prompt.contains("<user_agents>"));
         assert!(prompt.contains("<project_agents>"));
 
@@ -253,10 +258,67 @@ mod tests {
             user_prompt: None,
             config_dir: None,
             workspace: Some(repo.clone()),
+            mode: AgentMode::Agent,
             max_bytes: DEFAULT_MAX_BYTES,
         });
         assert!(prompt.contains("used"));
         assert!(!prompt.contains("ignored"));
         let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn the_mode_block_lists_only_the_tools_that_mode_registered() {
+        let ask = prompt_for(AgentMode::Ask, &[("read_file", "Read one file.")]);
+        assert!(ask.contains("<mode>"));
+        assert!(ask.contains("Ask mode"));
+        assert!(ask.contains("- read_file: Read one file."));
+        assert!(!ask.contains("- edit_file:"));
+        assert!(!ask.contains("- shell:"));
+        assert!(!ask.contains("mode explore"));
+
+        let plan = prompt_for(
+            AgentMode::Plan,
+            &[
+                ("read_file", "Read one file."),
+                ("shell", "Run a command."),
+                ("write_plan", "Save a plan."),
+            ],
+        );
+        assert!(plan.contains("Plan mode"));
+        assert!(plan.contains("- shell: Run a command."));
+        assert!(plan.contains("- write_plan: Save a plan."));
+        assert!(!plan.contains("- edit_file:"));
+
+        let agent = prompt_for(
+            AgentMode::Agent,
+            &[
+                ("delegate", "Hand a task to a subagent."),
+                ("edit_file", "Edit a file."),
+                ("write_plan", "Update a plan."),
+            ],
+        );
+        assert!(agent.contains("Agent mode"));
+        assert!(agent.contains("delegate with mode explore"));
+        assert!(agent.contains("call delegate with mode explore instead of reading"));
+        assert!(agent.contains("- edit_file: Edit a file."));
+        let mode = agent.find("<mode>").unwrap();
+        assert!(agent.find("- edit_file:").unwrap() < mode);
+    }
+
+    fn prompt_for(mode: AgentMode, tools: &[(&'static str, &'static str)]) -> String {
+        let registry = ToolRegistry::new();
+        for (name, description) in tools {
+            registry
+                .register(std::sync::Arc::new(NamedTool { name, description }))
+                .unwrap();
+        }
+        assemble_session(SessionPrompt {
+            tools: &registry,
+            user_prompt: None,
+            config_dir: None,
+            workspace: None,
+            mode,
+            max_bytes: DEFAULT_MAX_BYTES,
+        })
     }
 }

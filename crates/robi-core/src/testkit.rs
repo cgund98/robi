@@ -18,7 +18,7 @@ use crate::ids::{MessageId, SessionId, WorkspaceId};
 use crate::message::Message;
 use crate::model::{Delta, Model, ModelStream};
 use crate::store::MessageStore;
-use crate::tool::{ApprovalDecision, Concurrency, Tool};
+use crate::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 
 // ---------------------------------------------------------------------------
 // Timeline: a shared record of writes and emits, to check their order.
@@ -537,7 +537,7 @@ impl Tool for FunctionTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        cancel: CancellationToken,
+        run: ToolRun,
     ) -> Result<serde_json::Value, ToolError> {
         let exclusive = self.concurrency.is_exclusive();
         if let Some(probe) = &self.probe {
@@ -549,7 +549,7 @@ impl Tool for FunctionTool {
             // cancelled call resolvable.
             tokio::select! {
                 biased;
-                () = cancel.cancelled() => {
+                () = run.cancel.cancelled() => {
                     if let Some(probe) = &self.probe {
                         probe.leave(&self.name);
                     }

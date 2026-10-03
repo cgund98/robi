@@ -112,6 +112,19 @@ impl SettingsStore for TomlSettingsStore {
         }
         Ok(())
     }
+
+    async fn remove(&self, key: &str) -> Result<(), ServiceError> {
+        let mut values = self.values.lock().await;
+        let previous = values.remove(key);
+        if let Err(error) = sync_files(&self.dir, &values) {
+            if let Some(previous) = previous {
+                values.insert(key.to_owned(), previous);
+            }
+            tracing::error!(error = %error, "failed to sync settings");
+            return Err(ServiceError::Unknown);
+        }
+        Ok(())
+    }
 }
 
 fn ensure_private_dir(dir: &Path) -> Result<(), SettingsLoadError> {

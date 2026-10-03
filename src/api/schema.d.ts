@@ -68,6 +68,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat_sessions/{id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_session_review"];
+        put?: never;
+        post: operations["decide_session_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat_sessions/{id}/tool_calls/{call_id}": {
         parameters: {
             query?: never;
@@ -142,7 +158,7 @@ export interface paths {
         get: operations["get_setting"];
         put: operations["set_setting"];
         post?: never;
-        delete?: never;
+        delete: operations["delete_setting"];
         options?: never;
         head?: never;
         patch?: never;
@@ -188,6 +204,11 @@ export interface components {
             status: string;
         };
         CatalogModel: {
+            /**
+             * Format: int64
+             * @description The model's advertised context window, in tokens.
+             */
+            context_window: number;
             display_name: string;
             id: string;
         };
@@ -197,6 +218,7 @@ export interface components {
             role: string;
             tool_call_id?: string | null;
             tool_calls: components["schemas"]["ChatToolCall"][];
+            usage?: null | components["schemas"]["ChatUsage"];
         };
         ChatSession: {
             created_at: string;
@@ -204,6 +226,8 @@ export interface components {
             has_pending_agent: boolean;
             id: string;
             last_used_at: string;
+            /** @description `ask`, `plan`, or `agent`. */
+            mode: string;
             model_config: components["schemas"]["ModelConfigBody"];
             path_allow_read: string[];
             path_allow_write: string[];
@@ -217,6 +241,23 @@ export interface components {
             updated_at: string;
             workspace_id: string;
         };
+        /** @description The child run attached to a parent `delegate` call. */
+        ChatSubagent: {
+            description: string;
+            mode: string;
+            /**
+             * Format: int64
+             * @description Unix time in milliseconds when the child started.
+             */
+            started_ms: number;
+            steps: components["schemas"]["ChatSubagentStep"][];
+        };
+        /** @description One child tool call shown inside a delegate card. */
+        ChatSubagentStep: {
+            name: string;
+            status: string;
+            target: string;
+        };
         ChatToolCall: {
             approval_status: string;
             args: unknown;
@@ -225,8 +266,20 @@ export interface components {
             id: string;
             name: string;
             result?: unknown;
+            subagent?: null | components["schemas"]["ChatSubagent"];
+        };
+        /** @description Token counts for one model turn. `input` is the prompt size, not a session total. */
+        ChatUsage: {
+            /** Format: int64 */
+            cached: number;
+            /** Format: int64 */
+            input: number;
+            /** Format: int64 */
+            output: number;
         };
         CreateChatSession: {
+            /** @description `ask`, `plan`, or `agent`. Omitted starts in agent mode. */
+            mode?: string | null;
             model_config?: null | components["schemas"]["ModelConfigBody"];
             /**
              * @description Omitted, null, or empty leaves the chat session unnamed. The model writes a
@@ -241,27 +294,92 @@ export interface components {
             /** @description Absolute or relative directory. Stored as its canonical path. */
             root: string;
         };
+        DecideReview: {
+            /** @description `approve` keeps the change. `reject` puts the baseline lines back. */
+            decision: string;
+            /** @description One hunk. Omitted applies `decision` to the whole file. */
+            hunk_id?: string | null;
+            path: string;
+        };
         DecideToolCall: {
             /** @description `approve` runs the call. `reject` refuses it. */
             decision: string;
             /** @description Shown to the model when `decision` is `reject`. Omitted uses a default. */
             reason?: string | null;
         };
-        /** @description Stored session override. Absent keys inherit the settings default. */
-        ModelConfigBody: {
+        /** @description Model and effort for one mode. Absent keys inherit the setting. */
+        ModeOverrideBody: {
             model?: string | null;
             reasoning_effort?: string | null;
         };
         /**
-         * @description One key of a session model override.
+         * @description One mode's model and effort patch.
          *
          *     `None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.
          */
-        ModelConfigPatch: {
+        ModeOverridePatch: {
             /** @description Catalog model id. Null clears the session override. */
             model?: string | null;
             /** @description `low`, `medium`, or `high`. Null clears the session override. */
             reasoning_effort?: string | null;
+        };
+        /** @description Stored per-mode overrides. An absent mode inherits its setting. */
+        ModelConfigBody: {
+            agent?: components["schemas"]["ModeOverrideBody"];
+            ask?: components["schemas"]["ModeOverrideBody"];
+            plan?: components["schemas"]["ModeOverrideBody"];
+        };
+        /** @description Per-mode session overrides. An omitted mode stays as stored. */
+        ModelConfigPatch: {
+            agent?: null | components["schemas"]["ModeOverridePatch"];
+            ask?: null | components["schemas"]["ModeOverridePatch"];
+            plan?: null | components["schemas"]["ModeOverridePatch"];
+        };
+        ReviewFileBody: {
+            /** Format: int32 */
+            additions: number;
+            /** @description Body before this session's first change of the path. */
+            baseline: string;
+            /** @description Body on disk now. Empty when the file is gone. */
+            current: string;
+            /** Format: int32 */
+            deletions: number;
+            hunks: components["schemas"]["ReviewHunkBody"][];
+            lines: components["schemas"]["ReviewLineBody"][];
+            path: string;
+            status: components["schemas"]["ReviewStatus"];
+        };
+        ReviewHunkBody: {
+            id: string;
+            /** Format: int32 */
+            new_count: number;
+            /**
+             * Format: int32
+             * @description 0-based index of the first current line.
+             */
+            new_start: number;
+            /** Format: int32 */
+            old_count: number;
+            /**
+             * Format: int32
+             * @description 0-based index of the first baseline line.
+             */
+            old_start: number;
+        };
+        ReviewLineBody: {
+            kind: components["schemas"]["ReviewLineStatus"];
+            /** Format: int32 */
+            new_line?: number | null;
+            /** Format: int32 */
+            old_line?: number | null;
+            text: string;
+        };
+        /** @enum {string} */
+        ReviewLineStatus: "context" | "delete" | "insert" | "gap";
+        /** @enum {string} */
+        ReviewStatus: "added" | "deleted" | "modified";
+        SessionReview: {
+            files: components["schemas"]["ReviewFileBody"][];
         };
         SetSetting: {
             /**
@@ -281,6 +399,8 @@ export interface components {
             instruction: string;
         };
         UpdateChatSession: {
+            /** @description `ask`, `plan`, or `agent`. Omitted leaves the stored mode. */
+            mode?: string | null;
             model_config?: null | components["schemas"]["ModelConfigPatch"];
             /** @description Extra read-allow regexes, appended after the built-in list. The furthest match wins; at the same end byte, more literals win. */
             path_allow_read?: string[] | null;
@@ -514,6 +634,54 @@ export interface operations {
             };
         };
     };
+    get_session_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Files this session has changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionReview"];
+                };
+            };
+        };
+    };
+    decide_session_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideReview"];
+            };
+        };
+        responses: {
+            /** @description The file or hunk was approved or rejected */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     decide_tool_call: {
         parameters: {
             query?: never;
@@ -662,6 +830,27 @@ export interface operations {
         };
         responses: {
             /** @description Setting stored */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_setting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Setting key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Setting removed. The next read inherits. */
             204: {
                 headers: {
                     [name: string]: unknown;

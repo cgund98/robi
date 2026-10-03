@@ -13,6 +13,44 @@ pub const MODEL: &str = "model";
 /// `low`, `medium`, or `high`. Not a secret. Unset leaves the provider default.
 pub const REASONING_EFFORT: &str = "reasoning_effort";
 
+/// Optional model for ask mode. Empty inherits [`MODEL`].
+pub const MODEL_ASK: &str = "model_ask";
+
+/// Optional model for plan mode. Empty inherits [`MODEL`].
+pub const MODEL_PLAN: &str = "model_plan";
+
+/// Optional model for agent mode. Empty inherits [`MODEL`].
+pub const MODEL_AGENT: &str = "model_agent";
+
+/// Optional effort for ask mode. Empty inherits [`REASONING_EFFORT`].
+pub const REASONING_EFFORT_ASK: &str = "reasoning_effort_ask";
+
+/// Optional effort for plan mode. Empty inherits [`REASONING_EFFORT`].
+pub const REASONING_EFFORT_PLAN: &str = "reasoning_effort_plan";
+
+/// Optional effort for agent mode. Empty inherits [`REASONING_EFFORT`].
+pub const REASONING_EFFORT_AGENT: &str = "reasoning_effort_agent";
+
+/// Settings key for one mode's model override.
+pub fn model_key(mode: crate::domain::chat_session::model::AgentMode) -> &'static str {
+    use crate::domain::chat_session::model::AgentMode;
+    match mode {
+        AgentMode::Ask => MODEL_ASK,
+        AgentMode::Plan => MODEL_PLAN,
+        AgentMode::Agent => MODEL_AGENT,
+    }
+}
+
+/// Settings key for one mode's effort override.
+pub fn effort_key(mode: crate::domain::chat_session::model::AgentMode) -> &'static str {
+    use crate::domain::chat_session::model::AgentMode;
+    match mode {
+        AgentMode::Ask => REASONING_EFFORT_ASK,
+        AgentMode::Plan => REASONING_EFFORT_PLAN,
+        AgentMode::Agent => REASONING_EFFORT_AGENT,
+    }
+}
+
 /// Optional provider base URL. Not a secret. Unset leaves the provider default.
 pub const BASE_URL: &str = "base_url";
 
@@ -40,7 +78,15 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
             secret: false,
             default_value: Some(DEFAULT_MODEL),
         }),
-        REASONING_EFFORT | BASE_URL | SYSTEM_PROMPT => Some(KnownSetting {
+        REASONING_EFFORT
+        | BASE_URL
+        | SYSTEM_PROMPT
+        | MODEL_ASK
+        | MODEL_PLAN
+        | MODEL_AGENT
+        | REASONING_EFFORT_ASK
+        | REASONING_EFFORT_PLAN
+        | REASONING_EFFORT_AGENT => Some(KnownSetting {
             secret: false,
             default_value: None,
         }),

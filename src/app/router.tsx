@@ -9,7 +9,8 @@ import { WorkspacesPage } from '../pages/workspaces/WorkspacesPage'
 export const appRouter = createHashRouter([
   {
     path: '/',
-    element: <AppLayout />
+    element: <AppLayout />,
+    children: [{ index: true }, { path: 'sessions/:sessionId/review' }]
   },
   {
     path: '/workspaces',

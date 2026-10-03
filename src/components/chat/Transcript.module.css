@@ -1,8 +1,9 @@
 .transcript {
-  flex: 1;
+  height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-2) var(--space-5) var(--space-5);
+  padding: var(--space-2) var(--space-5)
+    calc(var(--dock-height, 8rem) + var(--composer-fade, 4.5rem) + var(--space-5));
 }
 
 .list {

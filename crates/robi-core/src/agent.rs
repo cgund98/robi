@@ -7,20 +7,22 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{oneshot, Semaphore};
+use async_trait::async_trait;
+use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::LoopConfig;
 use crate::error::{AgentError, ModelError, StoreError, ToolError, TurnOutcome};
 use crate::event::{Event, EventSink};
-use crate::ids::{SessionId, ToolCallId, WorkspaceId};
+use crate::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use crate::message::{
-    unresolved_turn, ApprovalStatus, ExecutionStatus, Message, ToolCall, Truncation, Truncator,
+    unresolved_turn, ApprovalStatus, ExecutionStatus, Message, SubagentSnapshot, ToolCall,
+    Truncation, Truncator,
 };
 use crate::model::{Delta, Model};
 use crate::segments::{segment_by, Segment};
 use crate::store::MessageStore;
-use crate::tool::{ApprovalDecision, Tool, ToolRegistry};
+use crate::tool::{ApprovalDecision, Tool, ToolRegistry, ToolReporter, ToolRun};
 
 /// What settling an unresolved turn found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,8 +85,48 @@ enum CallPlan {
 /// A call that will run, with its position in the turn.
 struct RunItem {
     position: usize,
+    call_id: ToolCallId,
     tool: Arc<dyn Tool>,
     args: serde_json::Value,
+}
+
+/// Writes a child snapshot onto one parent call and tells the UI.
+///
+/// The message mutex is held across the store write so two delegates in the
+/// same turn cannot replace each other's steps.
+struct CallReporter {
+    session: SessionId,
+    message_id: MessageId,
+    call_id: ToolCallId,
+    shared: Arc<Mutex<Message>>,
+    store: Arc<dyn MessageStore>,
+    events: Arc<dyn EventSink>,
+}
+
+#[async_trait]
+impl ToolReporter for CallReporter {
+    async fn subagent(&self, snapshot: SubagentSnapshot) {
+        let mut guard = self.shared.lock().await;
+        let Some(call) = guard.call_mut(self.call_id) else {
+            return;
+        };
+        if call.execution_status == ExecutionStatus::NotStarted {
+            call.execution_status = ExecutionStatus::Running;
+        }
+        call.subagent = Some(snapshot);
+        let message = guard.clone();
+        if self.store.update(self.session, message).await.is_err() {
+            return;
+        }
+        drop(guard);
+        self.events
+            .emit(Event::ToolCallUpdated {
+                session: self.session,
+                message: self.message_id,
+                call: self.call_id,
+            })
+            .await;
+    }
 }
 
 /// Drives turns over a transcript.
@@ -443,12 +485,17 @@ impl Agent {
             .filter_map(|(position, plan)| match plan {
                 CallPlan::Run { tool, args } => Some(RunItem {
                     position,
+                    call_id: assistant.tool_calls[position].id,
                     tool: tool.clone(),
                     args: args.clone(),
                 }),
                 _ => None,
             })
             .collect();
+
+        // Reporters and the final write share this copy, so a snapshot published
+        // mid-call is still there when the result is stored.
+        let shared = Arc::new(Mutex::new(assistant.clone()));
 
         let serial = self.config.serial_tools;
         let segments = segment_by(runnable, |item| {
@@ -463,13 +510,19 @@ impl Agent {
                 Segment::Batch(items) => {
                     // A batch is bounded by the in-flight limit.
                     let limit = self.config.max_concurrent_tools;
-                    for (position, result) in self.run_items(items, limit, cancel).await {
+                    for (position, result) in self
+                        .run_items(items, limit, cancel, session, assistant.id, &shared)
+                        .await
+                    {
                         outcomes[position] = Some(result);
                     }
                 }
                 Segment::Solo(item) => {
                     // A solo call runs alone: a limit of one is the barrier.
-                    for (position, result) in self.run_items(vec![item], 1, cancel).await {
+                    for (position, result) in self
+                        .run_items(vec![item], 1, cancel, session, assistant.id, &shared)
+                        .await
+                    {
                         outcomes[position] = Some(result);
                     }
                 }
@@ -477,7 +530,8 @@ impl Agent {
         }
 
         // Phase 3 — assemble. Model order, not completion order.
-        let mut updated = assistant.clone();
+        // Start from the shared copy so child snapshots survive this write.
+        let mut updated = shared.lock().await.clone();
         let mut processed: Vec<usize> = Vec::new();
 
         for (position, plan) in plans.iter().enumerate() {
@@ -565,6 +619,9 @@ impl Agent {
         items: Vec<RunItem>,
         limit: usize,
         cancel: &CancellationToken,
+        session: &SessionId,
+        message_id: MessageId,
+        shared: &Arc<Mutex<Message>>,
     ) -> Vec<(usize, Result<serde_json::Value, ToolError>)> {
         let semaphore = Arc::new(Semaphore::new(limit.max(1)));
         let mut handles = Vec::with_capacity(items.len());
@@ -577,13 +634,22 @@ impl Agent {
             let tool = item.tool;
             let args = item.args;
             let cancel = cancel.clone();
+            let report = Arc::new(CallReporter {
+                session: *session,
+                message_id,
+                call_id: item.call_id,
+                shared: Arc::clone(shared),
+                store: Arc::clone(&self.store),
+                events: Arc::clone(&self.events),
+            });
             let (tx, rx) = oneshot::channel();
 
             // Spawned rather than inlined: an unwinding tool task becomes a failed
             // call instead of taking the process with it.
             tokio::spawn(async move {
                 let _permit = permit;
-                let _ = tx.send(tool.execute(args, cancel).await);
+                let run = ToolRun { cancel, report };
+                let _ = tx.send(tool.execute(args, run).await);
             });
 
             handles.push((item.position, rx));

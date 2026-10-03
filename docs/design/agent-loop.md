@@ -238,8 +238,13 @@ pub trait Tool: Send + Sync {
     async fn execute(
         &self,
         args: serde_json::Value,
-        cancel: CancellationToken,
+        run: ToolRun,
     ) -> Result<serde_json::Value, ToolError>;
+}
+
+pub struct ToolRun {
+    pub cancel: CancellationToken,
+    pub report: Arc<dyn ToolReporter>,
 }
 
 pub enum Decision { AllowImmediately, NeedsApproval }
@@ -250,6 +255,11 @@ pub enum Concurrency { Concurrent, Exclusive }
 The signature of `requires_approval` is the load-bearing part: it takes only this
 call's arguments, returns without doing anything, and cannot fail. That is what
 lets the loop decide an entire turn before executing any of it.
+
+`ToolRun.report` is how a tool publishes UI state before it returns. The loop's
+reporter writes a `SubagentSnapshot` onto that call and emits `ToolCallUpdated`.
+The tool result the model reads stays `call.result`. Tools that do not delegate
+ignore the reporter. See [subagents.md](subagents.md).
 
 A tool cannot return `Decision::Deny`. A denial is a *policy* outcome (M3), and
 policy can only ever escalate `AllowImmediately` to `NeedsApproval`, never the
@@ -677,7 +687,7 @@ visible.
 ## Cancellation
 
 The loop owns a `tokio_util::sync::CancellationToken`, passed by reference into
-`Model::generate` and every `Tool::execute`. Three rules:
+`Model::generate` and as `ToolRun.cancel` on every `Tool::execute`. Three rules:
 
 - **Cancellation is a state, not an exception.** After a cancel, the transcript
   is either resumable or finished. Never a partial assistant message that the

@@ -1,22 +1,16 @@
 //! Shared read-modify-write for the edit tools.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::path::Path;
 
 use robi_core::error::ToolError;
 use robi_core::ids::SessionId;
 use robi_core::tool::ApprovalDecision;
 use serde_json::{json, Value};
-use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::domain::file_change::repo::FileChangeRepository;
-use crate::review::{diff, FileDiff, FileStatus};
+use crate::review::{diff, lock_path as lock_review_path, FileDiff, FileStatus};
 
 use super::context::ToolContext;
-
-static LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
-    LazyLock::new(|| StdMutex::new(HashMap::new()));
 
 /// `NeedsApproval` when the session write rules deny `path`.
 ///
@@ -39,15 +33,8 @@ pub async fn write_approval(ctx: &ToolContext, args: &Value) -> ApprovalDecision
     }
 }
 
-pub async fn lock_path(path: &Path) -> OwnedMutexGuard<()> {
-    let mutex = {
-        let mut locks = LOCKS.lock().unwrap_or_else(|err| err.into_inner());
-        locks
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    };
-    mutex.lock_owned().await
+pub async fn lock_path(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    lock_review_path(path).await
 }
 
 pub fn read_text(path: &Path) -> Result<Option<String>, ToolError> {

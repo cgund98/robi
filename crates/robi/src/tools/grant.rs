@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use robi_core::error::ToolError;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_util::sync::CancellationToken;
 
 use crate::domain::chat_session::model::UpdateChatSessionCommand;
 
@@ -53,8 +52,8 @@ impl Tool for Grant {
         ApprovalDecision::NeedsApproval
     }
 
-    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
-        if cancel.is_cancelled() {
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         let args: GrantArgs = serde_json::from_value(args)
@@ -89,6 +88,7 @@ impl Tool for Grant {
             allow_write: None,
             deny_read: None,
             deny_write: None,
+            mode: None,
             model_config: None,
         };
         match access {

@@ -680,24 +680,20 @@ prefix, and that is why switching is instant and stateless.
 
 ### F5.4 Subagents
 
-Port `explore` and `delegate` with their caps intact.
+One `delegate` tool, two child modes. See [subagents.md](design/subagents.md).
 
-- `explore` — read-only child (`read_file`, `find`, `grep`), returns one
-  summarized answer. Its value is **context isolation**: the parent gets the
-  answer, not the twenty file bodies.
-- `delegate` — child with a shell, returns a summary.
-- Caps are a feature, not a limitation, and belong in the UI: iterations (gopi
-  defaults 40 for explore, 50 for delegate), a wall-clock timeout, and a
-  per-session call budget. Show remaining budget.
-- **Fail closed.** A child tool call that would need approval returns
-  `access_denied`; the user is never prompted from inside a subagent. Children
-  inherit read grants and cannot widen them.
-- **Open decisions** — how subagent transcripts surface (collapsed card, expandable
-  log, or a real nested conversation view) and whether children can run in
-  parallel.
-
-**Design docs needed for** F5.1 and F5.4.
-See `docs/design/agent-modes.md` and `docs/design/subagents.md`.
+- `explore` — read-only child (`read_file`, `list_dir`, `find`, `grep`). Its
+  value is context isolation: the parent gets the answer, not the file bodies.
+- `general` — the explore tools plus a sandboxed shell. No edits, no `grant`,
+  no nested `delegate`.
+- Caps: 40 model turns and 6 calls per session for explore, 50 turns and 4
+  calls for general, two minutes either way. A spent budget returns
+  `explore_limit` or `delegate_limit`.
+- **Fail closed.** A child call that would need approval returns `access_denied`.
+  The user is never prompted from inside a child.
+- The child's tool calls render as rows on the parent card while it runs, and
+  stay there after refresh. Children in one turn may run in parallel. The child
+  transcript is in memory and is not a chat session.
 
 ---
 
@@ -726,8 +722,9 @@ See `docs/design/agent-modes.md` and `docs/design/subagents.md`.
 - A suggested change arrives as a diff against the review baseline and applies
   through the M4 edit path, so it gets a checkpoint like any other edit.
 
-**Design doc needed for** F6.
-See `docs/design/code-review.md`.
+The review screen is [code-review.md](design/code-review.md). It can approve
+or reject a file or one hunk. Inline comments and a review tool for the
+assistant stay later.
 
 ---
 
@@ -758,33 +755,16 @@ chunking that semantic search depends on.
 
 ### F7.2 Semantic search: AST → vectors
 
-The pipeline, in order:
+Settled in [semantic-search.md](design/semantic-search.md).
 
-1. **Chunk** — parse with tree-sitter
-   ([crates.io](https://crates.io/crates/tree-sitter)) and split on AST
-   boundaries (function, type, impl), not fixed line counts. Attach the
-   enclosing symbol path and the file's imports as context.
-2. **Embed** — **Open decision (D6):** local model (no per-query cost, no code
-   leaves the machine, needs bundling and a GPU/CPU story) vs. a hosted embedding
-   API (simpler, per-query cost, sends code off-device). For a local-first
-   desktop tool this is a product decision, not just an engineering one.
-3. **Store** — **Open decision (D7):** `sqlite-vec` (one file, queryable
-   alongside session data), LanceDB (embedded, columnar), or Qdrant (separate
-   service). See the [embedded vector DB comparison](https://www.llms.blog/posts/embedded-vector-databases-in-production-comparing-lancedb-sqlite-vec-duckdb-vss-and-chroma).
-4. **Retrieve** — hybrid, not pure vector: fuse vector hits with grep and LSP
-   symbol hits, then rerank. Pure vector search over code underperforms lexical
-   search on identifiers, which is most of what developers actually search for.
-5. **Feed** — a `semantic_search` tool returning ranked chunks with paths and
-   line ranges, sized to a token budget.
+Tree-sitter splits source on symbol boundaries. A local ONNX model embeds
+those chunks on device (D6). `sqlite-vec` and FTS5 share one file per
+workspace, separate from the session database (D7). Retrieval fuses the two
+lists. The model calls `semantic_search` and gets paths and line ranges.
+The index updates while that workspace has an open session, and the user
+can pause it.
 
-- Index lifecycle is the hard part, not the search: incremental updates on file
-  change, respecting ignore rules, and a visible, pausable indexing state.
-  A background index that silently eats a laptop's battery is a bug.
-- **Open decisions** — whether the index is per-workspace or global; whether
-  embeddings are recomputed on every save or debounced.
-
-**Design docs needed for** F7.1 and F7.2.
-See `docs/design/lsp.md` and `docs/design/semantic-search.md`.
+**Design doc needed for** F7.1. See `docs/design/lsp.md`.
 
 ---
 
@@ -933,10 +913,10 @@ resolve them.
 | D1 | UI event delivery | F2.1 | Settled: HTTP SSE on `robi-api`, CloudEvents envelope, in-process fan-out. See `docs/design/events-sse.md`. Emit-after-persist still orders events against the store. Command transport and process placement are D3 / `architecture.md` |
 | D2 | Delta serialization and IPC encoding | F1.2 | The variant list is fixed in M0; these are the wire details. Expensive to change once the UI depends on them |
 | D3 | In-process loop vs. sidecar | F2.1 | Gate on headless mode (M8) being a goal |
-| D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/design/persistence.md`. App home directory is still open. Usage history and the M7 index lean the same file; the index engine is D7 |
+| D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/design/persistence.md`. App home directory is still open. The M7 index is a separate file; see D7 |
 | D5 | Editing: search-and-replace vs. diff-based | F4.1 | Settled: exact search-and-replace. See below and `docs/design/editing-tools.md` |
-| D6 | Embeddings: local vs. hosted | F7.2 | Product decision about code leaving the machine |
-| D7 | Vector store | F7.2 | `sqlite-vec`, LanceDB, or Qdrant |
+| D6 | Embeddings: local vs. hosted | F7.2 | Settled: local ONNX, `nomic-embed-text-v1.5`. See below and `docs/design/semantic-search.md` |
+| D7 | Vector store | F7.2 | Settled: one `sqlite-vec` file per workspace, plus FTS5. See below and `docs/design/semantic-search.md` |
 | D8 | LSP client approach | F7.1 | Hand-rolled with `lsp-types` vs. an off-the-shelf client |
 | D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Settled: Seatbelt on macOS, bubblewrap on Linux, no Windows sandbox. A sandboxed call is refused when the mechanism is missing. `unsandboxed: true` runs only after approval. See below and `docs/design/shell-tool.md`. The catalog "D9" in `providers-streaming.md` is a different decision |
 | D10 | MCP in v1 or later | M8 | Affects the tool registry's dynamism from M0 |
@@ -964,6 +944,25 @@ when the file has drifted, and models emit malformed patches. Fuzzy matchers
 were rejected for the same reason. A write must not succeed when `old` is not
 the bytes in the file. `replace_all` is the explicit opt-in when every match
 should change.
+
+<a id="d6"></a>
+
+### D6: Embeddings stay on device
+
+Settled. Chunks and queries are embedded locally with
+`nomic-ai/nomic-embed-text-v1.5` on CPU through ONNX. Source is not sent to
+a hosted embedding API. Weights live under `~/.robi/models/`. A different
+model id rebuilds the index. The trait can grow a hosted embedder later;
+this choice is the default. See [semantic-search.md](design/semantic-search.md).
+
+<a id="d7"></a>
+
+### D7: One sqlite-vec file per workspace
+
+Settled. Vectors and an FTS5 index share
+`~/.robi/index/<workspace_id>/index.sqlite`. The session database is a
+different file. LanceDB and Qdrant are not used. The index is rebuildable
+from the tree. See [semantic-search.md](design/semantic-search.md).
 
 <a id="d9"></a>
 
@@ -1006,11 +1005,11 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | done |
 | `docs/design/checkpoints.md` | Edit journal, undo, relation to git | M4 | done |
 | `docs/design/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, output limits | M4 | done |
-| `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | needed |
-| `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | needed |
-| `docs/design/code-review.md` | Diff engine, review object, inline comments, apply path | M6 | later |
+| `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | done |
+| `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | done |
+| `docs/design/code-review.md` | Read-only session review: strip, file tree, unified diff | M6 | done |
 | `docs/design/lsp.md` | Client, server discovery, capability ladder, degradation | M7 | later |
-| `docs/design/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | later |
+| `docs/design/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | done |
 | `docs/design/tool-output-compression.md` | **D11, D12**, content routing, the retrieve tool, what the transcript stores, the size gate | M9 | later |
 
 Every design doc states: the problem, the decision, the rejected alternatives

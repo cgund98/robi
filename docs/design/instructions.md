@@ -11,7 +11,8 @@ lives in `robi-core::prompt`. The sources that fill those blocks live in
 |---|---|
 | How the request prepends the string | [providers-streaming.md](providers-streaming.md) |
 | Which tools exist | [read-tools.md](read-tools.md), [editing-tools.md](editing-tools.md) |
-| Skills, mode prefixes, and a trust decision before reading a project file | [roadmap](../roadmap.md) M5 and M8 |
+| Skills, and a trust decision before reading a project file | [roadmap](../roadmap.md) M8 |
+| Mode prefixes | [agent-modes.md](agent-modes.md) |
 
 ## Problem
 
@@ -30,7 +31,9 @@ default chain, built by `assemble_session` when a session actor starts, is:
    registered tool (`name` and `description`). The access section tells the
    model how allow and deny rules rank, to call `grant` when a tool refuses a
    path, and how `shell` stays inside the sandbox unless the user approves a
-   wider call. An empty registry says that no tools are registered.
+   wider call. When `delegate` is in the registry, the rules tell the model to
+   use `delegate` with mode `explore` for a search that spans more than a
+   couple of files. An empty registry says that no tools are registered.
 2. **User setting.** The `system_prompt` settings key, when it is non-empty,
    wrapped in `<user_prompt>`.
 3. **`~/.robi/system.md`.** The same tag, when the file exists.
@@ -40,6 +43,8 @@ default chain, built by `assemble_session` when a session actor starts, is:
    in that directory only. `fallback_files` on `ProjectAgents` adds extra names
    beside those two. The default chain passes an empty list.
 6. **Working directory.** The workspace root, in `<cwd>`.
+7. **Mode.** The active mode, in `<mode>`. This block is last. See
+   [agent-modes.md](agent-modes.md).
 
 A source is added with `PromptAssembler::source`. A new kind of instruction is
 another type that implements `PromptSource`. It does not edit the built-in text.
@@ -48,9 +53,10 @@ Each file block is capped at 32 KiB. Over that, the tail is kept and prefixed
 with `[earlier instructions truncated]`. The project chain is one block, so a
 short budget drops the root file before the closest one.
 
-`SettingsModelSource::model` receives the session tool registry and the
-workspace root, assembles this chain, and stores it on `ProviderSettings`. The
-provider prepends it as a system message. The transcript does not store it.
+`SettingsModelSource::model` receives the session tool registry, the
+workspace root, and the active mode, assembles this chain, and stores it on
+`ProviderSettings`. The provider prepends it as a system message. The
+transcript does not store it.
 
 Instruction text cannot add a tool or change a path rule. The built-in rules
 say so, and the tools do not read the prompt to decide.

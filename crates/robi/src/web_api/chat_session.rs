@@ -14,8 +14,8 @@ use uuid::Uuid;
 use crate::{
     domain::{
         chat_session::model::{
-            ChatSession as DomainChatSession, CreateChatSessionCommand, ModelConfig,
-            ModelConfigUpdate, UpdateChatSessionCommand,
+            AgentMode, ChatSession as DomainChatSession, CreateChatSessionCommand, ModeOverride,
+            ModeOverrideUpdate, ModelConfig, ModelConfigUpdate, UpdateChatSessionCommand,
         },
         error::ServiceError,
     },
@@ -56,6 +56,7 @@ pub async fn create_chat_session(
         .create_chat_session(CreateChatSessionCommand {
             workspace_id,
             title: payload.title,
+            mode: parse_mode(payload.mode.as_deref())?,
             model_config: payload
                 .model_config
                 .map(ModelConfig::from)
@@ -141,6 +142,10 @@ pub async fn update_chat_session(
             allow_write: payload.path_allow_write,
             deny_read: payload.path_deny_read,
             deny_write: payload.path_deny_write,
+            mode: match payload.mode {
+                Some(mode) => Some(parse_mode(Some(mode.as_str()))?),
+                None => None,
+            },
             model_config: payload.model_config.map(ModelConfigUpdate::from),
         })
         .await?;
@@ -186,6 +191,7 @@ fn to_response(session: DomainChatSession, running: &HashSet<SessionId>) -> Chat
         path_allow_write: session.path_rules.allow_write,
         path_deny_read: session.path_rules.deny_read,
         path_deny_write: session.path_rules.deny_write,
+        mode: session.mode.as_str().to_owned(),
         model_config: ModelConfigBody::from(session.model_config),
         created_at: rfc3339(session.created_at),
         updated_at: rfc3339(session.updated_at),
@@ -193,12 +199,16 @@ fn to_response(session: DomainChatSession, running: &HashSet<SessionId>) -> Chat
     }
 }
 
-fn parse_chat_session_id(value: &str) -> Result<SessionId, ServiceError> {
+pub(crate) fn parse_chat_session_id(value: &str) -> Result<SessionId, ServiceError> {
     parse_uuid(value, "id").map(SessionId::from_uuid)
 }
 
 fn parse_workspace_id(value: &str) -> Result<WorkspaceId, ServiceError> {
     parse_uuid(value, "workspace_id").map(WorkspaceId::from_uuid)
+}
+
+fn parse_mode(value: Option<&str>) -> Result<AgentMode, ServiceError> {
+    AgentMode::parse(value.unwrap_or("agent")).map_err(ServiceError::BadRequest)
 }
 
 fn parse_uuid(value: &str, name: &str) -> Result<Uuid, ServiceError> {
@@ -214,25 +224,64 @@ pub struct CreateChatSession {
     /// is rejected.
     #[serde(default)]
     pub title: Option<String>,
-    /// Session overrides. Omitted keys inherit the settings default.
+    /// `ask`, `plan`, or `agent`. Omitted starts in agent mode.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Per-mode session overrides. Omitted keys inherit that mode's setting.
     #[serde(default)]
     pub model_config: Option<ModelConfigBody>,
 }
 
-/// Stored session override. Absent keys inherit the settings default.
+/// Model and effort for one mode. Absent keys inherit the setting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ModelConfigBody {
+pub struct ModeOverrideBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
 }
 
+impl ModeOverrideBody {
+    fn is_empty(&self) -> bool {
+        self.model.is_none() && self.reasoning_effort.is_none()
+    }
+}
+
+impl From<ModeOverride> for ModeOverrideBody {
+    fn from(override_for_mode: ModeOverride) -> Self {
+        Self {
+            model: override_for_mode.model,
+            reasoning_effort: override_for_mode.reasoning_effort,
+        }
+    }
+}
+
+impl From<ModeOverrideBody> for ModeOverride {
+    fn from(body: ModeOverrideBody) -> Self {
+        Self {
+            model: body.model,
+            reasoning_effort: body.reasoning_effort,
+        }
+    }
+}
+
+/// Stored per-mode overrides. An absent mode inherits its setting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModelConfigBody {
+    #[serde(default, skip_serializing_if = "ModeOverrideBody::is_empty")]
+    pub agent: ModeOverrideBody,
+    #[serde(default, skip_serializing_if = "ModeOverrideBody::is_empty")]
+    pub ask: ModeOverrideBody,
+    #[serde(default, skip_serializing_if = "ModeOverrideBody::is_empty")]
+    pub plan: ModeOverrideBody,
+}
+
 impl From<ModelConfig> for ModelConfigBody {
     fn from(config: ModelConfig) -> Self {
         Self {
-            model: config.model,
-            reasoning_effort: config.reasoning_effort,
+            agent: config.agent.into(),
+            ask: config.ask.into(),
+            plan: config.plan.into(),
         }
     }
 }
@@ -240,8 +289,9 @@ impl From<ModelConfig> for ModelConfigBody {
 impl From<ModelConfigBody> for ModelConfig {
     fn from(body: ModelConfigBody) -> Self {
         Self {
-            model: body.model,
-            reasoning_effort: body.reasoning_effort,
+            agent: body.agent.into(),
+            ask: body.ask.into(),
+            plan: body.plan.into(),
         }
     }
 }
@@ -263,22 +313,45 @@ pub struct UpdateChatSession {
     /// Regexes matched against the workspace-relative path. A match denies a write.
     #[serde(default)]
     pub path_deny_write: Option<Vec<String>>,
-    /// Merge into the stored override. A null key clears that override. An omitted key stays.
+    /// `ask`, `plan`, or `agent`. Omitted leaves the stored mode.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Merge into the stored per-mode overrides. A null key clears that override. An omitted key stays.
     #[serde(default)]
     pub model_config: Option<ModelConfigPatch>,
 }
 
-/// One key of a session model override.
+/// One mode's model and effort patch.
 ///
 /// `None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ModelConfigPatch {
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+pub struct ModeOverridePatch {
     /// Catalog model id. Null clears the session override.
     #[serde(default, deserialize_with = "some_or_absent")]
     pub model: Option<Option<String>>,
     /// `low`, `medium`, or `high`. Null clears the session override.
     #[serde(default, deserialize_with = "some_or_absent")]
     pub reasoning_effort: Option<Option<String>>,
+}
+
+impl From<ModeOverridePatch> for ModeOverrideUpdate {
+    fn from(patch: ModeOverridePatch) -> Self {
+        Self {
+            model: patch.model,
+            reasoning_effort: patch.reasoning_effort,
+        }
+    }
+}
+
+/// Per-mode session overrides. An omitted mode stays as stored.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+pub struct ModelConfigPatch {
+    #[serde(default)]
+    pub agent: Option<ModeOverridePatch>,
+    #[serde(default)]
+    pub ask: Option<ModeOverridePatch>,
+    #[serde(default)]
+    pub plan: Option<ModeOverridePatch>,
 }
 
 /// `None` when the key is absent. `Some(None)` when the key is null.
@@ -293,8 +366,9 @@ where
 impl From<ModelConfigPatch> for ModelConfigUpdate {
     fn from(patch: ModelConfigPatch) -> Self {
         Self {
-            model: patch.model,
-            reasoning_effort: patch.reasoning_effort,
+            agent: patch.agent.map(ModeOverrideUpdate::from),
+            ask: patch.ask.map(ModeOverrideUpdate::from),
+            plan: patch.plan.map(ModeOverrideUpdate::from),
         }
     }
 }
@@ -316,6 +390,8 @@ pub struct ChatSession {
     pub path_allow_write: Vec<String>,
     pub path_deny_read: Vec<String>,
     pub path_deny_write: Vec<String>,
+    /// `ask`, `plan`, or `agent`.
+    pub mode: String,
     pub model_config: ModelConfigBody,
     pub created_at: String,
     pub updated_at: String,
@@ -335,12 +411,16 @@ mod tests {
     #[test]
     fn a_null_key_clears_and_an_omitted_key_stays() {
         let cleared: ModelConfigPatch =
-            serde_json::from_str(r#"{"reasoning_effort":null}"#).unwrap();
-        assert_eq!(cleared.model, None);
-        assert_eq!(cleared.reasoning_effort, Some(None));
+            serde_json::from_str(r#"{"ask":{"reasoning_effort":null}}"#).unwrap();
+        assert!(cleared.agent.is_none());
+        let ask = cleared.ask.unwrap();
+        assert_eq!(ask.model, None);
+        assert_eq!(ask.reasoning_effort, Some(None));
 
-        let set: ModelConfigPatch = serde_json::from_str(r#"{"model":"glm-5.2"}"#).unwrap();
-        assert_eq!(set.model, Some(Some("glm-5.2".into())));
-        assert_eq!(set.reasoning_effort, None);
+        let set: ModelConfigPatch =
+            serde_json::from_str(r#"{"plan":{"model":"glm-5.2"}}"#).unwrap();
+        let plan = set.plan.unwrap();
+        assert_eq!(plan.model, Some(Some("glm-5.2".into())));
+        assert_eq!(plan.reasoning_effort, None);
     }
 }

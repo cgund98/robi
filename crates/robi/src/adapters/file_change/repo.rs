@@ -137,6 +137,31 @@ impl FileChangeRepository for SqliteFileChangeRepository {
         .map_err(|err| log_unknown("delete_baseline: delete", err))?;
         Ok(())
     }
+
+    async fn replace_baseline(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        baseline: &str,
+    ) -> Result<(), ServiceError> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE session_file_baselines
+            SET baseline = ?3
+            WHERE chat_session_id = ?1 AND path = ?2
+            "#,
+        )
+        .bind(session_id.to_string())
+        .bind(path)
+        .bind(baseline)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|err| log_unknown("replace_baseline: update", err))?;
+        if updated.rows_affected() == 0 {
+            return Err(ServiceError::NotFound(path.to_owned()));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -151,7 +176,8 @@ mod tests {
     };
     use crate::domain::{
         chat_session::{
-            model::CreateChatSessionCommand, repo::ChatSessionRepository,
+            model::{AgentMode, CreateChatSessionCommand},
+            repo::ChatSessionRepository,
             service::ChatSessionService,
         },
         workspace::service::WorkspaceService,
@@ -181,6 +207,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id: workspace.id,
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
             })
             .await

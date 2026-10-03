@@ -11,7 +11,7 @@ use robi_core::model::Model;
 use robi_core::tool::ToolRegistry;
 
 use crate::domain::{
-    chat_session::model::ModelConfig,
+    chat_session::model::{AgentMode, ModeOverride},
     error::ServiceError,
     settings::{
         keys::{self, DEFAULT_MODEL},
@@ -31,8 +31,24 @@ pub trait ModelSource: Send + Sync {
         &self,
         tools: Arc<ToolRegistry>,
         workspace: Option<std::path::PathBuf>,
-        choice: ModelConfig,
+        mode: AgentMode,
+        choice: ModeOverride,
     ) -> Result<Arc<dyn Model>, ServiceError>;
+
+    /// Build a model that offers `tools` and uses `system_prompt` as written.
+    ///
+    /// The default ignores the prompt and calls [`ModelSource::model`]. A source
+    /// that bakes the session prompt into the model overrides this.
+    async fn model_with_prompt(
+        &self,
+        tools: Arc<ToolRegistry>,
+        mode: AgentMode,
+        choice: ModeOverride,
+        system_prompt: String,
+    ) -> Result<Arc<dyn Model>, ServiceError> {
+        let _ = system_prompt;
+        self.model(tools, None, mode, choice).await
+    }
 }
 
 /// Returns one model. Runtime tests use this so they do not need settings files.
@@ -52,7 +68,8 @@ impl ModelSource for FixedModelSource {
         &self,
         _tools: Arc<ToolRegistry>,
         _workspace: Option<std::path::PathBuf>,
-        _choice: ModelConfig,
+        _mode: AgentMode,
+        _choice: ModeOverride,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         Ok(Arc::clone(&self.model))
     }
@@ -70,7 +87,8 @@ impl SettingsModelSource {
 
     async fn provider_settings(
         &self,
-        choice: &ModelConfig,
+        mode: AgentMode,
+        choice: &ModeOverride,
     ) -> Result<ProviderSettings, ServiceError> {
         let api_key = match self.settings.get(keys::OPENCODE_GO_API_KEY).await? {
             Some(setting) if !setting.value.trim().is_empty() => setting.value,
@@ -82,9 +100,12 @@ impl SettingsModelSource {
         };
         let model = match choice.model.as_deref().filter(|model| !model.is_empty()) {
             Some(model) => model.to_owned(),
-            None => match self.settings.get(keys::MODEL).await? {
-                Some(setting) if !setting.value.is_empty() => setting.value,
-                _ => DEFAULT_MODEL.to_owned(),
+            None => match self.stored(keys::model_key(mode)).await? {
+                Some(model) => model,
+                None => match self.stored(keys::MODEL).await? {
+                    Some(model) => model,
+                    None => DEFAULT_MODEL.to_owned(),
+                },
             },
         };
         let mut settings =
@@ -100,12 +121,22 @@ impl SettingsModelSource {
             .filter(|effort| !effort.is_empty())
         {
             Some(effort) => Some(parse_effort(effort)?),
-            None => match self.settings.get(keys::REASONING_EFFORT).await? {
-                Some(effort) if !effort.value.is_empty() => Some(parse_effort(&effort.value)?),
-                _ => None,
+            None => match self.stored(keys::effort_key(mode)).await? {
+                Some(effort) => Some(parse_effort(&effort)?),
+                None => match self.stored(keys::REASONING_EFFORT).await? {
+                    Some(effort) => Some(parse_effort(&effort)?),
+                    None => None,
+                },
             },
         };
         Ok(settings)
+    }
+
+    async fn stored(&self, key: &str) -> Result<Option<String>, ServiceError> {
+        match self.settings.get(key).await? {
+            Some(setting) if !setting.value.is_empty() => Ok(Some(setting.value)),
+            _ => Ok(None),
+        }
     }
 }
 
@@ -115,9 +146,10 @@ impl ModelSource for SettingsModelSource {
         &self,
         tools: Arc<ToolRegistry>,
         workspace: Option<std::path::PathBuf>,
-        choice: ModelConfig,
+        mode: AgentMode,
+        choice: ModeOverride,
     ) -> Result<Arc<dyn Model>, ServiceError> {
-        let mut settings = self.provider_settings(&choice).await?;
+        let mut settings = self.provider_settings(mode, &choice).await?;
         let user_prompt = match self.settings.get(keys::SYSTEM_PROMPT).await? {
             Some(setting) if !setting.value.trim().is_empty() => Some(setting.value),
             _ => None,
@@ -127,8 +159,22 @@ impl ModelSource for SettingsModelSource {
             user_prompt,
             config_dir: crate::adapters::settings::home_dir().ok(),
             workspace,
+            mode,
             max_bytes: crate::prompt::DEFAULT_MAX_BYTES,
         });
+        build_model(settings, tools)
+            .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
+    }
+
+    async fn model_with_prompt(
+        &self,
+        tools: Arc<ToolRegistry>,
+        mode: AgentMode,
+        choice: ModeOverride,
+        system_prompt: String,
+    ) -> Result<Arc<dyn Model>, ServiceError> {
+        let mut settings = self.provider_settings(mode, &choice).await?;
+        settings.system_prompt = system_prompt;
         build_model(settings, tools)
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }
@@ -170,11 +216,16 @@ mod tests {
         let tools = Arc::new(ToolRegistry::new());
 
         let first = source
-            .model(Arc::clone(&tools), None, ModelConfig::default())
+            .model(
+                Arc::clone(&tools),
+                None,
+                AgentMode::Agent,
+                ModeOverride::default(),
+            )
             .await
             .unwrap();
         let first_settings = source
-            .provider_settings(&ModelConfig::default())
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
             .await
             .unwrap();
         assert_eq!(first_settings.api_key.expose(), "sk-one");
@@ -195,11 +246,11 @@ mod tests {
             .unwrap();
 
         let second = source
-            .model(tools, None, ModelConfig::default())
+            .model(tools, None, AgentMode::Agent, ModeOverride::default())
             .await
             .unwrap();
         let second_settings = source
-            .provider_settings(&ModelConfig::default())
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
             .await
             .unwrap();
         assert_eq!(second_settings.api_key.expose(), "sk-two");
@@ -215,7 +266,12 @@ mod tests {
     async fn a_missing_key_refuses_to_build() {
         let source = SettingsModelSource::new(Arc::new(MemorySettingsStore::new()));
         let error = match source
-            .model(Arc::new(ToolRegistry::new()), None, ModelConfig::default())
+            .model(
+                Arc::new(ToolRegistry::new()),
+                None,
+                AgentMode::Agent,
+                ModeOverride::default(),
+            )
             .await
         {
             Ok(_) => panic!("a missing key must not build a model"),
@@ -246,20 +302,26 @@ mod tests {
         let tools = Arc::new(ToolRegistry::new());
 
         let effort_only = source
-            .provider_settings(&ModelConfig {
-                model: None,
-                reasoning_effort: Some("high".into()),
-            })
+            .provider_settings(
+                AgentMode::Ask,
+                &ModeOverride {
+                    model: None,
+                    reasoning_effort: Some("high".into()),
+                },
+            )
             .await
             .unwrap();
         assert_eq!(effort_only.model.as_str(), "glm-5.3");
         assert_eq!(effort_only.reasoning_effort, Some(ReasoningEffort::High));
 
         let both = source
-            .provider_settings(&ModelConfig {
-                model: Some("glm-5.2".into()),
-                reasoning_effort: Some("medium".into()),
-            })
+            .provider_settings(
+                AgentMode::Agent,
+                &ModeOverride {
+                    model: Some("glm-5.2".into()),
+                    reasoning_effort: Some("medium".into()),
+                },
+            )
             .await
             .unwrap();
         assert_eq!(both.model.as_str(), "glm-5.2");
@@ -269,12 +331,66 @@ mod tests {
             .model(
                 tools,
                 None,
-                ModelConfig {
+                AgentMode::Agent,
+                ModeOverride {
                     model: Some("glm-5.2".into()),
                     reasoning_effort: None,
                 },
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_mode_setting_beats_the_fallback_and_a_session_override_beats_both() {
+        let store = Arc::new(MemorySettingsStore::new());
+        store
+            .set(OPENCODE_GO_API_KEY, "sk-one".into(), true)
+            .await
+            .unwrap();
+        store
+            .set(keys::MODEL, "glm-5.3".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::REASONING_EFFORT, "low".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::MODEL_PLAN, "glm-5.2".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::REASONING_EFFORT_PLAN, "medium".into(), false)
+            .await
+            .unwrap();
+        let source = SettingsModelSource::new(store);
+
+        let from_mode = source
+            .provider_settings(AgentMode::Plan, &ModeOverride::default())
+            .await
+            .unwrap();
+        assert_eq!(from_mode.model.as_str(), "glm-5.2");
+        assert_eq!(from_mode.reasoning_effort, Some(ReasoningEffort::Medium));
+
+        let from_ask = source
+            .provider_settings(AgentMode::Ask, &ModeOverride::default())
+            .await
+            .unwrap();
+        assert_eq!(from_ask.model.as_str(), "glm-5.3");
+        assert_eq!(from_ask.reasoning_effort, Some(ReasoningEffort::Low));
+
+        let overridden = source
+            .provider_settings(
+                AgentMode::Plan,
+                &ModeOverride {
+                    model: Some("glm-5.1".into()),
+                    reasoning_effort: Some("high".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(overridden.model.as_str(), "glm-5.1");
+        assert_eq!(overridden.reasoning_effort, Some(ReasoningEffort::High));
     }
 }

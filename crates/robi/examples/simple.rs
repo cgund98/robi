@@ -35,7 +35,7 @@ use robi_core::event::NopSink;
 use robi_core::ids::{MessageId, SessionId, WorkspaceId};
 use robi_core::message::{Message, Role};
 use robi_core::store::MessageStore;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRegistry};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRegistry, ToolRun};
 use tokio_util::sync::CancellationToken;
 
 /// The system prompt this entrypoint always sends.
@@ -330,7 +330,7 @@ impl Tool for TwoNumberTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _cancel: CancellationToken,
+        _run: ToolRun,
     ) -> Result<serde_json::Value, ToolError> {
         let (a, b) = self.operands(&args)?;
         let result = (self.op)(a, b);

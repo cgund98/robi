@@ -282,6 +282,69 @@
         }
       }
     },
+    "/api/v1/chat_sessions/{id}/review": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "operationId": "get_session_review",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Files this session has changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReview"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "operationId": "decide_session_review",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideReview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The file or hunk was approved or rejected"
+          }
+        }
+      }
+    },
     "/api/v1/chat_sessions/{id}/tool_calls/{call_id}": {
       "post": {
         "tags": [
@@ -479,6 +542,28 @@
             "description": "Setting stored"
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "delete_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Setting key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Setting removed. The next read inherits."
+          }
+        }
       }
     },
     "/api/v1/workspaces": {
@@ -613,9 +698,16 @@
         "type": "object",
         "required": [
           "id",
-          "display_name"
+          "display_name",
+          "context_window"
         ],
         "properties": {
+          "context_window": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model's advertised context window, in tokens.",
+            "minimum": 0
+          },
           "display_name": {
             "type": "string"
           },
@@ -653,6 +745,17 @@
             "items": {
               "$ref": "#/components/schemas/ChatToolCall"
             }
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ChatUsage",
+                "description": "Present when the provider reported tokens for this model turn."
+              }
+            ]
           }
         }
       },
@@ -665,6 +768,7 @@
           "path_allow_write",
           "path_deny_read",
           "path_deny_write",
+          "mode",
           "model_config",
           "created_at",
           "updated_at",
@@ -684,6 +788,10 @@
           },
           "last_used_at": {
             "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "description": "`ask`, `plan`, or `agent`."
           },
           "model_config": {
             "$ref": "#/components/schemas/ModelConfigBody"
@@ -727,6 +835,56 @@
           }
         }
       },
+      "ChatSubagent": {
+        "type": "object",
+        "description": "The child run attached to a parent `delegate` call.",
+        "required": [
+          "mode",
+          "description",
+          "started_ms",
+          "steps"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "started_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix time in milliseconds when the child started.",
+            "minimum": 0
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatSubagentStep"
+            }
+          }
+        }
+      },
+      "ChatSubagentStep": {
+        "type": "object",
+        "description": "One child tool call shown inside a delegate card.",
+        "required": [
+          "name",
+          "target",
+          "status"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        }
+      },
       "ChatToolCall": {
         "type": "object",
         "required": [
@@ -756,7 +914,44 @@
           "name": {
             "type": "string"
           },
-          "result": {}
+          "result": {},
+          "subagent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ChatSubagent",
+                "description": "Child tool calls for a `delegate` run. Absent on every other tool."
+              }
+            ]
+          }
+        }
+      },
+      "ChatUsage": {
+        "type": "object",
+        "description": "Token counts for one model turn. `input` is the prompt size, not a session total.",
+        "required": [
+          "input",
+          "output",
+          "cached"
+        ],
+        "properties": {
+          "cached": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "input": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
         }
       },
       "CreateChatSession": {
@@ -765,6 +960,13 @@
           "workspace_id"
         ],
         "properties": {
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ask`, `plan`, or `agent`. Omitted starts in agent mode."
+          },
           "model_config": {
             "oneOf": [
               {
@@ -772,7 +974,7 @@
               },
               {
                 "$ref": "#/components/schemas/ModelConfigBody",
-                "description": "Session overrides. Omitted keys inherit the settings default."
+                "description": "Per-mode session overrides. Omitted keys inherit that mode's setting."
               }
             ]
           },
@@ -800,6 +1002,29 @@
           }
         }
       },
+      "DecideReview": {
+        "type": "object",
+        "required": [
+          "path",
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "description": "`approve` keeps the change. `reject` puts the baseline lines back."
+          },
+          "hunk_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One hunk. Omitted applies `decision` to the whole file."
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
       "DecideToolCall": {
         "type": "object",
         "required": [
@@ -819,9 +1044,9 @@
           }
         }
       },
-      "ModelConfigBody": {
+      "ModeOverrideBody": {
         "type": "object",
-        "description": "Stored session override. Absent keys inherit the settings default.",
+        "description": "Model and effort for one mode. Absent keys inherit the setting.",
         "properties": {
           "model": {
             "type": [
@@ -837,9 +1062,9 @@
           }
         }
       },
-      "ModelConfigPatch": {
+      "ModeOverridePatch": {
         "type": "object",
-        "description": "One key of a session model override.\n\n`None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.",
+        "description": "One mode's model and effort patch.\n\n`None` means the key was omitted. `Some(None)` clears it. `Some(Some)` sets it.",
         "properties": {
           "model": {
             "type": [
@@ -854,6 +1079,207 @@
               "null"
             ],
             "description": "`low`, `medium`, or `high`. Null clears the session override."
+          }
+        }
+      },
+      "ModelConfigBody": {
+        "type": "object",
+        "description": "Stored per-mode overrides. An absent mode inherits its setting.",
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/ModeOverrideBody"
+          },
+          "ask": {
+            "$ref": "#/components/schemas/ModeOverrideBody"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/ModeOverrideBody"
+          }
+        }
+      },
+      "ModelConfigPatch": {
+        "type": "object",
+        "description": "Per-mode session overrides. An omitted mode stays as stored.",
+        "properties": {
+          "agent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModeOverridePatch"
+              }
+            ]
+          },
+          "ask": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModeOverridePatch"
+              }
+            ]
+          },
+          "plan": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModeOverridePatch"
+              }
+            ]
+          }
+        }
+      },
+      "ReviewFileBody": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "baseline",
+          "current",
+          "lines",
+          "hunks"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "baseline": {
+            "type": "string",
+            "description": "Body before this session's first change of the path."
+          },
+          "current": {
+            "type": "string",
+            "description": "Body on disk now. Empty when the file is gone."
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewHunkBody"
+            }
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewLineBody"
+            }
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReviewStatus"
+          }
+        }
+      },
+      "ReviewHunkBody": {
+        "type": "object",
+        "required": [
+          "id",
+          "old_start",
+          "old_count",
+          "new_start",
+          "new_count"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "new_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "new_start": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0-based index of the first current line.",
+            "minimum": 0
+          },
+          "old_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "old_start": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0-based index of the first baseline line.",
+            "minimum": 0
+          }
+        }
+      },
+      "ReviewLineBody": {
+        "type": "object",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ReviewLineStatus"
+          },
+          "new_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "old_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ReviewLineStatus": {
+        "type": "string",
+        "enum": [
+          "context",
+          "delete",
+          "insert",
+          "gap"
+        ]
+      },
+      "ReviewStatus": {
+        "type": "string",
+        "enum": [
+          "added",
+          "deleted",
+          "modified"
+        ]
+      },
+      "SessionReview": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewFileBody"
+            }
           }
         }
       },
@@ -909,6 +1335,13 @@
       "UpdateChatSession": {
         "type": "object",
         "properties": {
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ask`, `plan`, or `agent`. Omitted leaves the stored mode."
+          },
           "model_config": {
             "oneOf": [
               {
@@ -916,7 +1349,7 @@
               },
               {
                 "$ref": "#/components/schemas/ModelConfigPatch",
-                "description": "Merge into the stored override. A null key clears that override. An omitted key stays."
+                "description": "Merge into the stored per-mode overrides. A null key clears that override. An omitted key stays."
               }
             ]
           },

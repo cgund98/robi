@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
@@ -14,13 +15,16 @@ use crate::config::LoopConfig;
 use crate::error::{AgentError, ModelError, RegistryError, ToolError, TurnOutcome};
 use crate::event::Event;
 use crate::ids::{SessionId, ToolCallId, WorkspaceId};
-use crate::message::{unresolved_turn, ApprovalStatus, ExecutionStatus, Message, Role, ToolCall};
+use crate::message::{
+    unresolved_turn, ApprovalStatus, ExecutionStatus, Message, Role, SubagentMode,
+    SubagentSnapshot, SubagentStep, SubagentStepStatus, ToolCall,
+};
 use crate::model::Delta;
 use crate::testkit::{
     assistant_asking_for, huge_result, FunctionTool, InMemoryStore, Probe, RecordingSink, Script,
     StubModel, Timeline,
 };
-use crate::tool::{Concurrency, Tool, ToolRegistry};
+use crate::tool::{Concurrency, Tool, ToolRegistry, ToolRun};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -1073,6 +1077,112 @@ async fn a_turn_reports_its_start_and_finish() {
         h.sink.outcomes(),
         vec![TurnOutcome::Complete],
         "the outcome is reported once"
+    );
+}
+
+struct ReportingTool;
+
+#[async_trait]
+impl Tool for ReportingTool {
+    fn name(&self) -> &str {
+        "delegate"
+    }
+
+    fn description(&self) -> &str {
+        "reports a child step"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn requires_approval(&self, _args: &serde_json::Value) -> crate::tool::ApprovalDecision {
+        crate::tool::ApprovalDecision::AllowImmediately
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        run: ToolRun,
+    ) -> Result<serde_json::Value, ToolError> {
+        run.report
+            .subagent(SubagentSnapshot {
+                mode: SubagentMode::Explore,
+                description: "find resume".into(),
+                started_ms: 1,
+                steps: vec![SubagentStep {
+                    name: "grep".into(),
+                    target: "resume".into(),
+                    status: SubagentStepStatus::Running,
+                }],
+            })
+            .await;
+        run.report
+            .subagent(SubagentSnapshot {
+                mode: SubagentMode::Explore,
+                description: "find resume".into(),
+                started_ms: 1,
+                steps: vec![SubagentStep {
+                    name: "grep".into(),
+                    target: "resume".into(),
+                    status: SubagentStepStatus::Ok,
+                }],
+            })
+            .await;
+        Ok(serde_json::json!({
+            "mode": "explore",
+            "answer": "found it",
+            "tool_calls": 1,
+            "denied": []
+        }))
+    }
+}
+
+#[tokio::test]
+async fn a_reporter_records_child_steps_and_the_model_does_not_see_them() {
+    let h = harness(
+        StubModel::new(vec![
+            Script::Message(assistant_asking_for(vec![ToolCall::new(
+                "delegate",
+                serde_json::json!({}),
+            )
+            .approved()])),
+            Script::Message(Message::assistant("done")),
+        ]),
+        vec![Arc::new(ReportingTool)],
+        LoopConfig::default(),
+    );
+
+    let outcome = h.agent.user_input(h.session, "go", no_cancel()).await;
+    assert_eq!(outcome, TurnOutcome::Complete);
+
+    let assistant = h
+        .transcript()
+        .into_iter()
+        .find(|message| message.has_tool_calls())
+        .expect("the assistant asked for a tool");
+    let call = &assistant.tool_calls[0];
+    let snapshot = call.subagent.as_ref().expect("the child steps were stored");
+    assert_eq!(snapshot.steps.len(), 1);
+    assert_eq!(snapshot.steps[0].target, "resume");
+    assert_eq!(snapshot.steps[0].status, SubagentStepStatus::Ok);
+
+    let tool_message = h
+        .transcript()
+        .into_iter()
+        .find(|message| message.role == Role::Tool)
+        .expect("the model receives a tool result");
+    assert!(tool_message.content.contains("found it"));
+    assert!(
+        !tool_message.content.contains("resume"),
+        "the tool result is the summary, not the child steps: {}",
+        tool_message.content
+    );
+    assert!(
+        h.sink
+            .count_where(|event| matches!(event, Event::ToolCallUpdated { .. }))
+            >= 2,
+        "a step is published before the call finishes"
     );
 }
 

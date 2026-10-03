@@ -1,0 +1,220 @@
+.list {
+  min-width: 0;
+}
+
+.file {
+  border-bottom: 1px solid var(--rule);
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+
+.identity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-strong);
+}
+
+.actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.reject,
+.approve {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.reject {
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.approve {
+  background: var(--accent);
+  color: var(--bg-canvas);
+}
+
+.reject:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+
+.approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, white);
+}
+
+.reject:disabled,
+.approve:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.add,
+.del {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.add {
+  color: var(--diff-add);
+}
+
+.del {
+  color: var(--diff-del);
+}
+
+.note {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.viewport {
+  background: var(--code-bg);
+}
+
+.chunk {
+  --review-line: calc(12.5px * 1.5);
+  position: relative;
+  z-index: 0;
+}
+
+.hunk {
+  overflow-x: auto;
+  background: var(--code-bg);
+}
+
+.chunkActions {
+  position: absolute;
+  top: calc(var(--change-line, 0) * var(--review-line));
+  right: var(--space-2);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: var(--review-line);
+  pointer-events: none;
+}
+
+.chunkActions .actions {
+  padding: 1px 2px;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  opacity: 0;
+}
+
+.chunk:hover .chunkActions .actions,
+.chunkActions .actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sheet {
+  width: max-content;
+  min-width: 100%;
+}
+
+.line {
+  display: grid;
+  grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: var(--review-line);
+  color: var(--code-ink);
+}
+
+.line[data-kind='delete'] {
+  background: color-mix(in srgb, var(--diff-del) 22%, transparent);
+}
+
+.line[data-kind='insert'] {
+  background: color-mix(in srgb, var(--diff-add) 22%, transparent);
+}
+
+.num,
+.mark {
+  position: sticky;
+  z-index: 1;
+  background: var(--code-bg);
+  color: var(--ink-faint);
+  text-align: right;
+  user-select: none;
+  padding-right: var(--space-2);
+}
+
+.num:first-child {
+  left: 0;
+}
+
+.num:nth-child(2) {
+  left: 3.25rem;
+}
+
+.mark {
+  left: 6.5rem;
+  text-align: center;
+  padding-right: 0;
+}
+
+.line[data-kind='delete'] .num,
+.line[data-kind='delete'] .mark {
+  background: color-mix(in srgb, var(--diff-del) 22%, var(--code-bg));
+}
+
+.line[data-kind='insert'] .num,
+.line[data-kind='insert'] .mark {
+  background: color-mix(in srgb, var(--diff-add) 22%, var(--code-bg));
+}
+
+.line[data-kind='delete'] .mark {
+  color: var(--diff-del);
+}
+
+.line[data-kind='insert'] .mark {
+  color: var(--diff-add);
+}
+
+.code {
+  white-space: pre;
+  padding-right: var(--space-3);
+}
+
+.gap {
+  padding: 2px var(--space-3);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-canvas);
+}

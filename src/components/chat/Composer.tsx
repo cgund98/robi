@@ -1,9 +1,17 @@
 import { useState } from 'react'
 
 import type { CatalogModel } from '../../api/models'
-import type { AgentPhase } from '../../state/chatStore'
+import type { ChatMessage } from '../../api/messages'
+import type { AgentMode } from '../../api/sessions'
 import { ChoiceMenu } from './ChoiceMenu'
+import { ContextMeter } from './ContextMeter'
 import styles from './Composer.module.css'
+
+const MODES: { value: AgentMode; label: string }[] = [
+  { value: 'ask', label: 'Ask' },
+  { value: 'plan', label: 'Plan' },
+  { value: 'agent', label: 'Agent' }
+]
 
 const EFFORTS = [
   { value: 'low', label: 'Low' },
@@ -13,18 +21,22 @@ const EFFORTS = [
 
 type ComposerProps = {
   disabled: boolean
-  phase: AgentPhase
   onSubmit: (text: string) => Promise<boolean>
   /** Centered card on an empty chat. Dock keeps the field at the bottom of a thread. */
   placement?: 'dock' | 'welcome'
   models: CatalogModel[]
-  /** Session override. Null inherits the settings default. */
+  mode: AgentMode
+  /** Session override for the active mode. Null inherits that mode's setting. */
   modelId: string | null
   effort: string | null
   defaultModelId: string
   defaultEffort: string | null
+  onModeChange: (mode: AgentMode) => void
   onModelChange: (model: string | null) => void
   onEffortChange: (effort: string | null) => void
+  messages: ChatMessage[]
+  /** Instruction echoed in the transcript before the stored user row exists. */
+  pendingText?: string | null
 }
 
 function modelLabel(models: CatalogModel[], id: string | null, fallback: string): string {
@@ -38,31 +50,23 @@ function effortLabel(value: string | null): string {
   return EFFORTS.find((effort) => effort.value === value)?.label ?? 'Default'
 }
 
-function statusLabel(phase: AgentPhase): string {
-  if (phase === 'thinking') {
-    return 'Thinking'
-  }
-  if (phase === 'responding') {
-    return 'Responding'
-  }
-  return 'Idle'
-}
-
 export function Composer({
   disabled,
-  phase,
   onSubmit,
   placement = 'dock',
   models,
+  mode,
   modelId,
   effort,
   defaultModelId,
   defaultEffort,
+  onModeChange,
   onModelChange,
-  onEffortChange
+  onEffortChange,
+  messages,
+  pendingText = null
 }: ComposerProps) {
   const [draft, setDraft] = useState('')
-  const label = statusLabel(phase)
   const canSend = !disabled && draft.trim().length > 0
   const welcome = placement === 'welcome'
 
@@ -78,6 +82,7 @@ export function Composer({
 
   const resolvedModel = modelId ?? defaultModelId
   const resolvedEffort = effort ?? defaultEffort
+  const contextWindow = models.find((model) => model.id === resolvedModel)?.contextWindow ?? null
   const modelOptions = models.map((model) => ({ value: model.id, label: model.displayName }))
   if (resolvedModel && !modelOptions.some((option) => option.value === resolvedModel)) {
     modelOptions.unshift({ value: resolvedModel, label: resolvedModel })
@@ -85,6 +90,19 @@ export function Composer({
 
   const controls = (
     <div className={styles.cluster}>
+      <ChoiceMenu
+        label={MODES.find((item) => item.value === mode)?.label ?? 'Agent'}
+        ariaLabel="Mode"
+        value={mode}
+        options={MODES}
+        includeDefault={false}
+        onSelect={(value) => {
+          if (value === 'ask' || value === 'plan' || value === 'agent') {
+            onModeChange(value)
+          }
+        }}
+        triggerClassName={styles.control}
+      />
       <ChoiceMenu
         label={modelLabel(models, resolvedModel, 'Model')}
         ariaLabel="Model"
@@ -101,9 +119,11 @@ export function Composer({
         onSelect={onEffortChange}
         triggerClassName={styles.control}
       />
-      <span
-        className={`${styles.status} ${phase === 'idle' ? '' : styles.statusBusy}`}
-        title={label}
+      <ContextMeter
+        messages={messages}
+        draft={draft}
+        pendingText={pendingText ?? ''}
+        contextWindow={contextWindow}
       />
     </div>
   )

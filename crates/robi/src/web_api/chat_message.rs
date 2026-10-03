@@ -4,7 +4,10 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use robi_core::message::{ApprovalStatus, ExecutionStatus, Message, Role, ToolCall};
+use robi_core::message::{
+    ApprovalStatus, ExecutionStatus, Message, Role, SubagentMode, SubagentStepStatus, ToolCall,
+    Usage,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
@@ -194,6 +197,17 @@ pub struct ChatMessage {
     pub tool_calls: Vec<ChatToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Present when the provider reported tokens for this model turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ChatUsage>,
+}
+
+/// Token counts for one model turn. `input` is the prompt size, not a session total.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cached: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -207,6 +221,27 @@ pub struct ChatToolCall {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Child tool calls for a `delegate` run. Absent on every other tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<ChatSubagent>,
+}
+
+/// One child tool call shown inside a delegate card.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatSubagentStep {
+    pub name: String,
+    pub target: String,
+    pub status: String,
+}
+
+/// The child run attached to a parent `delegate` call.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatSubagent {
+    pub mode: String,
+    pub description: String,
+    /// Unix time in milliseconds when the child started.
+    pub started_ms: u64,
+    pub steps: Vec<ChatSubagentStep>,
 }
 
 impl From<Message> for ChatMessage {
@@ -221,6 +256,17 @@ impl From<Message> for ChatMessage {
                 .map(ChatToolCall::from)
                 .collect(),
             tool_call_id: message.tool_call_id.map(|id| id.to_string()),
+            usage: message.usage.map(ChatUsage::from),
+        }
+    }
+}
+
+impl From<Usage> for ChatUsage {
+    fn from(usage: Usage) -> Self {
+        Self {
+            input: usage.input,
+            output: usage.output,
+            cached: usage.cached,
         }
     }
 }
@@ -235,6 +281,30 @@ impl From<ToolCall> for ChatToolCall {
             execution_status: execution_name(call.execution_status).to_owned(),
             result: call.result,
             error: call.error,
+            subagent: call.subagent.map(|snapshot| ChatSubagent {
+                mode: match snapshot.mode {
+                    SubagentMode::Explore => "explore",
+                    SubagentMode::General => "general",
+                }
+                .to_owned(),
+                description: snapshot.description,
+                started_ms: snapshot.started_ms,
+                steps: snapshot
+                    .steps
+                    .into_iter()
+                    .map(|step| ChatSubagentStep {
+                        name: step.name,
+                        target: step.target,
+                        status: match step.status {
+                            SubagentStepStatus::Running => "running",
+                            SubagentStepStatus::Ok => "ok",
+                            SubagentStepStatus::Denied => "denied",
+                            SubagentStepStatus::Failed => "failed",
+                        }
+                        .to_owned(),
+                    })
+                    .collect(),
+            }),
         }
     }
 }
@@ -263,5 +333,30 @@ fn execution_name(status: ExecutionStatus) -> &'static str {
         ExecutionStatus::Failed => "failed",
         ExecutionStatus::Cancelled => "cancelled",
         ExecutionStatus::TimedOut => "timed_out",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robi_core::message::Usage;
+
+    #[test]
+    fn a_message_keeps_its_usage() {
+        let message = Message::assistant("done").with_usage(Usage {
+            input: 10,
+            output: 2,
+            cached: 4,
+        });
+        let value = serde_json::to_value(ChatMessage::from(message)).expect("json");
+        assert_eq!(value["usage"]["input"], 10);
+        assert_eq!(value["usage"]["output"], 2);
+        assert_eq!(value["usage"]["cached"], 4);
+    }
+
+    #[test]
+    fn a_message_without_usage_omits_the_field() {
+        let value = serde_json::to_value(ChatMessage::from(Message::user("hi"))).expect("json");
+        assert!(value.get("usage").is_none());
     }
 }

@@ -6,10 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use robi_core::error::ToolError;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_util::sync::CancellationToken;
 
 use crate::sandbox::{
     apply_allow_read, apply_deny, command_env, launch, push_classified, toolchain_reads, EnvInput,
@@ -108,8 +107,8 @@ impl Tool for Shell {
         ApprovalDecision::AllowImmediately
     }
 
-    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
-        if cancel.is_cancelled() {
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         let args = parse_args(&args).ok_or_else(|| {
@@ -189,7 +188,7 @@ impl Tool for Shell {
             lang: std::env::var("LANG").ok().as_deref(),
             user: std::env::var("USER").ok().as_deref(),
         });
-        let output = launch(&profile, command, cancel)
+        let output = launch(&profile, command, run.cancel)
             .await
             .map_err(ToolError::Failed)?;
         drop(temp_guard);
@@ -296,6 +295,7 @@ fn path_in_denial(line: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::tools::apply_tests::harness;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn a_plain_command_does_not_ask_and_an_unsandboxed_one_does() {
@@ -349,7 +349,10 @@ mod tests {
         let harness = harness().await;
         let tool = Shell::new(Arc::clone(&harness.ctx));
         let result = tool
-            .execute(json!({"command": "echo hi"}), CancellationToken::new())
+            .execute(
+                json!({"command": "echo hi"}),
+                ToolRun::new(CancellationToken::new()),
+            )
             .await
             .unwrap();
         assert_eq!(result["stdout"], "hi\n");
@@ -365,7 +368,7 @@ mod tests {
         let err = tool
             .execute(
                 json!({"command": "echo hi", "cwd": "/etc"}),
-                CancellationToken::new(),
+                ToolRun::new(CancellationToken::new()),
             )
             .await
             .unwrap_err();
@@ -380,7 +383,7 @@ mod tests {
         let result = tool
             .execute(
                 json!({"command": format!("ls {}", home.display())}),
-                CancellationToken::new(),
+                ToolRun::new(CancellationToken::new()),
             )
             .await
             .unwrap();

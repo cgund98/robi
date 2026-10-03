@@ -26,6 +26,7 @@ pub async fn list_models() -> Json<Vec<CatalogModel>> {
             .map(|info| CatalogModel {
                 id: info.id.as_str().to_owned(),
                 display_name: info.display_name.clone(),
+                context_window: info.context_window,
             })
             .collect(),
     )
@@ -35,4 +36,6 @@ pub async fn list_models() -> Json<Vec<CatalogModel>> {
 pub struct CatalogModel {
     pub id: String,
     pub display_name: String,
+    /// The model's advertised context window, in tokens.
+    pub context_window: u64,
 }

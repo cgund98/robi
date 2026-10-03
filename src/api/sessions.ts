@@ -43,21 +43,30 @@ export async function listSessions(workspaceId: string): Promise<ChatSession[]> 
   )
 }
 
-export type ModelConfigBody = {
+export type AgentMode = 'ask' | 'plan' | 'agent'
+
+export type ModeOverrideBody = {
   model?: string | null
   reasoning_effort?: string | null
+}
+
+export type ModelConfigBody = {
+  agent?: ModeOverrideBody
+  ask?: ModeOverrideBody
+  plan?: ModeOverrideBody
 }
 
 export async function createSession(
   workspaceId: string,
   title?: string | null,
-  modelConfig?: ModelConfigBody
+  options?: { mode?: AgentMode; modelConfig?: ModelConfigBody }
 ): Promise<ChatSession> {
   const result = await api.POST('/api/v1/chat_sessions', {
     body: {
       workspace_id: workspaceId,
       ...(title === undefined ? {} : { title }),
-      ...(modelConfig === undefined ? {} : { model_config: modelConfig })
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
+      ...(options?.modelConfig === undefined ? {} : { model_config: options.modelConfig })
     }
   })
   if (result.data) {
@@ -88,7 +97,7 @@ export async function updateSession(id: string, title: string): Promise<ChatSess
 
 export async function patchSession(
   id: string,
-  body: { title?: string; model_config?: ModelConfigBody }
+  body: { title?: string; mode?: AgentMode; model_config?: ModelConfigBody }
 ): Promise<ChatSession> {
   const result = await api.PATCH('/api/v1/chat_sessions/{id}', {
     params: { path: { id } },

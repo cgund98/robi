@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use robi_core::ids::SessionId;
-use robi_core::tool::{ApprovalDecision, Tool};
+use robi_core::tool::{ApprovalDecision, Tool, ToolRun};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -13,7 +13,10 @@ use crate::adapters::{
     sqlite, workspace::repo::SqliteWorkspaceRepository,
 };
 use crate::domain::{
-    chat_session::{model::CreateChatSessionCommand, service::ChatSessionService},
+    chat_session::{
+        model::{AgentMode, CreateChatSessionCommand},
+        service::ChatSessionService,
+    },
     workspace::service::WorkspaceService,
 };
 use crate::review::{hunks_for_session, reject, FileStatus};
@@ -47,6 +50,7 @@ pub(crate) async fn harness() -> Harness {
         .create_chat_session(CreateChatSessionCommand {
             workspace_id: opened.workspace.id,
             title: None,
+            mode: AgentMode::Agent,
             model_config: crate::domain::chat_session::model::ModelConfig::default(),
         })
         .await
@@ -71,8 +75,8 @@ impl Drop for Harness {
     }
 }
 
-fn cancel() -> CancellationToken {
-    CancellationToken::new()
+fn run() -> ToolRun {
+    ToolRun::new(CancellationToken::new())
 }
 
 #[tokio::test]
@@ -85,7 +89,7 @@ async fn edit_file_replaces_one_match_and_keeps_the_first_baseline() {
         edit.requires_approval(&args).await,
         ApprovalDecision::AllowImmediately
     );
-    let result = edit.execute(args, cancel()).await.unwrap();
+    let result = edit.execute(args, run()).await.unwrap();
     assert_eq!(result["status"], "modified");
     assert_eq!(
         std::fs::read_to_string(harness.root.join("a.txt")).unwrap(),
@@ -94,7 +98,7 @@ async fn edit_file_replaces_one_match_and_keeps_the_first_baseline() {
 
     edit.execute(
         json!({"path": "a.txt", "old": "three\n", "new": "four\n"}),
-        cancel(),
+        run(),
     )
     .await
     .unwrap();
@@ -129,7 +133,7 @@ async fn an_ambiguous_edit_does_not_write() {
     let error = edit
         .execute(
             json!({"path": "a.txt", "old": "same\n", "new": "other\n"}),
-            cancel(),
+            run(),
         )
         .await
         .unwrap_err();
@@ -150,7 +154,7 @@ async fn a_denied_path_asks_for_approval_and_then_writes() {
         edit.requires_approval(&args).await,
         ApprovalDecision::NeedsApproval
     );
-    edit.execute(args, cancel()).await.unwrap();
+    edit.execute(args, run()).await.unwrap();
     assert_eq!(
         std::fs::read_to_string(harness.root.join(".env")).unwrap(),
         "TOKEN=2\n"
@@ -172,7 +176,7 @@ async fn write_file_creates_a_file_and_delete_file_drops_that_baseline() {
     let created = write
         .execute(
             json!({"path": "nested/new.txt", "content": "hello\n"}),
-            cancel(),
+            run(),
         )
         .await
         .unwrap();
@@ -190,7 +194,7 @@ async fn write_file_creates_a_file_and_delete_file_drops_that_baseline() {
         ApprovalDecision::AllowImmediately
     );
     let removed = delete
-        .execute(json!({"path": "nested/new.txt"}), cancel())
+        .execute(json!({"path": "nested/new.txt"}), run())
         .await
         .unwrap();
     assert_eq!(removed["status"], "deleted");
@@ -210,7 +214,7 @@ async fn delete_file_of_an_existing_file_keeps_the_baseline() {
     std::fs::write(harness.root.join("gone.txt"), "keep\n").unwrap();
     let delete = DeleteFile::new(Arc::clone(&harness.ctx));
     delete
-        .execute(json!({"path": "gone.txt"}), cancel())
+        .execute(json!({"path": "gone.txt"}), run())
         .await
         .unwrap();
     let baseline = harness
@@ -238,7 +242,7 @@ async fn delete_file_refuses_a_directory() {
     std::fs::create_dir(harness.root.join("dir")).unwrap();
     let delete = DeleteFile::new(Arc::clone(&harness.ctx));
     let error = delete
-        .execute(json!({"path": "dir"}), cancel())
+        .execute(json!({"path": "dir"}), run())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("directory"), "{error}");

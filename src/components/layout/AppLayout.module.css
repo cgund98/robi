@@ -33,6 +33,50 @@
   max-width: var(--chat-column-width);
 }
 
+.chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.thread {
+  --composer-fade: 4.5rem;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.dock {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.dock::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  right: 12px;
+  bottom: 0;
+  height: calc(100% + var(--composer-fade, 4.5rem));
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--bg-canvas) calc(100% - var(--composer-height, 7rem) / 2)
+  );
+}
+
+.dock > * {
+  position: relative;
+  z-index: 1;
+}
+
 .banner {
   display: flex;
   align-items: center;

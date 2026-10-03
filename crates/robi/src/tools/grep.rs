@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::Regex;
 use robi_core::error::ToolError;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -68,8 +68,8 @@ impl Tool for Grep {
         ApprovalDecision::AllowImmediately
     }
 
-    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
-        if cancel.is_cancelled() {
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         let args: GrepArgs = serde_json::from_value(args)
@@ -101,17 +101,17 @@ impl Tool for Grep {
         };
         let globs = directory_exclusion_globs(&session.path_rules);
         if let Some(rg) = find_rg() {
-            match search_ripgrep(&rg, &self.ctx.root, &filter, &query, &globs, &cancel).await {
+            match search_ripgrep(&rg, &self.ctx.root, &filter, &query, &globs, &run.cancel).await {
                 Ok(output) => return Ok(payload(output)),
                 Err(RipgrepError::Launch(reason)) => {
-                    let mut output = search_builtin(&self.ctx.root, &filter, &query, &cancel)?;
+                    let mut output = search_builtin(&self.ctx.root, &filter, &query, &run.cancel)?;
                     output.fallback_reason = Some(reason);
                     return Ok(payload(output));
                 }
                 Err(RipgrepError::Tool(err)) => return Err(err),
             }
         }
-        search_builtin(&self.ctx.root, &filter, &query, &cancel).map(payload)
+        search_builtin(&self.ctx.root, &filter, &query, &run.cancel).map(payload)
     }
 }
 

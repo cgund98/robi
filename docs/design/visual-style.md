@@ -43,8 +43,8 @@ theme for M2.** Dark-only. No light mode until product schedules one.
 | Warm off-white body ink (not pure white) | Voice / mic control | Purple accent stacks |
 | Soft radii on bubbles, composer, sidebar pills | Pinned section as a first-class store | Floating badges over the transcript |
 | Session rail + main transcript + bottom composer | Breadcrumb as editable project switcher | Multi-column agent canvases (Devin-style) |
-| Muted activity lines between turns | Circular status ring as a meter | |
-| **File-edit summary widget** with per-file `+/-` and a **Review ↗** link-out | Inline expanded diffs inside the transcript (prefer the review window) | Embedding a full PR review pane in the chat column |
+| Muted activity lines between turns, and a context ring as a meter | | |
+| **Edited-file strip** above the composer, with a count and **Review** | Inline expanded diffs inside the transcript | Embedding a full PR review pane in the chat column |
 
 Rejected alternatives:
 
@@ -68,10 +68,10 @@ One composition. Two columns. No third panel in M2.
 │            │    assistant prose + inline code         │
 │            │    muted activity lines                  │
 │            │    (tool cards — see chat-ui)            │
-│            │    (file-edit summary → Review ↗)        │
 │            │                                          │
 │            ├──────────────────────────────────────────┤
-│  Settings  │  Composer + mode / model / effort row     │
+│  Settings  │  N files edited              Review      │
+│            │  Composer + mode / model / effort row     │
 └────────────┴──────────────────────────────────────────┘
 ```
 
@@ -83,9 +83,14 @@ One composition. Two columns. No third panel in M2.
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
 
 Sidebar width stays roughly **240–280px** at default window size. The transcript
-column takes the rest. After the first message, the composer is anchored to
-the bottom of the main column, not a floating overlay. Before that, it sits
-under the greeting in the center of the column.
+column takes the rest. After the first message, the composer stays at the
+bottom of the main column and the transcript scrolls underneath it. The
+scrollbar runs to the bottom of that column. A scrim over the bottom of the
+transcript fades into `--bg-canvas` and is solid halfway down the composer,
+so the rows behind the lower half are gone. Padding under the last row
+matches the composer, the edited-file strip, and the fade above them, plus
+`--space-5`, so the last row clears them when the list is scrolled to the end. Before the first
+message, the composer sits under the greeting in the center of the column.
 
 ## Color tokens
 
@@ -196,9 +201,10 @@ text. Not cards. Tool **results** that need inspection become tool cards
 
 - Tall rounded field on `--bg-surface`, placeholder `--ink-faint`.
 - Send control on the right inside the field (arrow / return affordance).
-- Below the field: right cluster (model, effort, run status). Controls are quiet
-  text + chevron, not colored pills — except the active run indicator, which may
-  use `--accent`. No mode toggle or attach control in the shell mock.
+- Below the field: right cluster (mode, model, effort, context meter). Controls are quiet
+  text + chevron, not colored pills. The meter is a 14px ring. The track is
+  `--ink-faint` and the filled share is `--ink-muted`. Clicking it opens a
+  popover. No attach control in the shell mock.
 - An empty chat lifts that same field into one bordered card under the greeting.
   The model row sits inside the card. The greeting is the workspaces title
   type, with no mark beside it.
@@ -234,43 +240,29 @@ below on a darker strip in mono. Opening a card selects it and returns to the
 chat. The chat shell sends you here when the list is empty. **Chat** returns
 when one is already selected.
 
-### File-edit summary widget
+### Edited-file strip
 
-A compact block that appears in the transcript after the agent has edited files.
-It is the **bridge from chat to review**: skim here, open the full review
-window from the link. Reference: Claude's "N files edited" strip.
+A single line fixed above the composer, in the same column width. It appears
+when this session has at least one path whose baseline differs from the file
+on disk. It does not scroll with the transcript, and it is absent on an empty
+chat.
 
 ```text
-  2 files edited   +123  -42                    Review ↗
-  ┌─────────────────────────────────────────────────────┐
-  │  slider.tsx              +83  -0   ●            ▾  │
-  ├─────────────────────────────────────────────────────┤
-  │  page.tsx                +40  -42               ▾  │
-  ├─────────────────────────────────────────────────────┤
-  │  background.tsx          +15  -0                ▾  │
-  └─────────────────────────────────────────────────────┘
+      ┌───────────────────────────────────────────┐
+      │  2 files edited                [ Review ] │
+  ╭───┴───────────────────────────────────────────┴───╮
+  │  Describe a task…                                 │
+  ╰───────────────────────────────────────────────────╯
 ```
 
 | Piece | Look |
 |---|---|
-| **Header left** | Muted summary (`N files edited`) + aggregate `+` / `-` in `--diff-add` / `--diff-del` |
-| **Header right** | `Review ↗` in `--ink-muted`; hover → `--ink`. Opens the review window (M6), not an in-chat diff pane |
-| **File rows** | `--bg-row`, `--radius-md`, filename in UI sans (or mono if paths get long), per-file `+/-`, chevron on the right |
-| **Unread / focus dot** | Optional `--accent` disc on a row that has not been opened in review yet |
-| **Density** | Tight vertical stack; rows are chips, not large cards |
+| **Bar** | `--bg-canvas` fill, the same ground as the transcript, with a `1px` `--rule` border. Top corners `--radius-lg`, square bottom. It is inset by `--radius-lg` on each side so its edges meet the composer where the composer’s top curve ends |
+| **Left** | `N file(s) edited` in `--ink` |
+| **Right** | `Review` on `--bg-surface-active`, `--ink-strong`, `--radius-sm`. Hover lightens the fill. Opens `#/sessions/:id/review` |
 
-**Milestone split**
-
-| When | What ships |
-|---|---|
-| **M4** (editing) | Widget appears after successful edits; rows list paths and line counts; chevron may expand a short preview or stay collapsed |
-| **M6** (code review) | `Review ↗` is live and opens the review session for this turn's edits |
-
-Until M6, show the header without a dead link — either omit `Review ↗` or render it disabled with no fake destination.
-
-Do **not** paste unified diffs into the transcript by default. The widget stays a
-summary; the review window owns hunks, side-by-side, and comments
-(`code-review.md`).
+Do not paste diffs into the transcript. The review screen owns the tree and
+the hunks ([code-review.md](code-review.md)).
 
 ## CSS architecture (when implementing)
 
@@ -288,7 +280,7 @@ summary; the review window owns hunks, side-by-side, and comments
 | V2 | Exact sidebar width and whether it is resizable | Start fixed (~260px); resize is polish |
 | V3 | Whether assistant ever gets a bubble | Default no; revisit only if contrast testing fails |
 | V4 | Brand mark in the sidebar | The workspace dropdown occupies the top of the sidebar |
-| V5 | File-row chevron: expand inline snippet vs. jump to that file in review | Prefer jump-to-review once M6 exists; until then a collapsed-only row is fine |
+| V5 | File-row chevron: expand inline snippet vs. jump to that file in review | The review screen is the destination. The chat strip does not list files |
 | V6 | Aggregate counts: lines changed vs. files touched | Reference uses line counts (`+123 -42`); keep that unless editing tools report only file-level stats |
 
 ## Failure modes
@@ -302,7 +294,8 @@ summary; the review window owns hunks, side-by-side, and comments
 
 ## Relationship to later docs
 
-`chat-ui.md` assumes these tokens and regions. The file-edit summary stays in
-the message list when editing lands. When `code-review.md` is
-written, it owns the destination of `Review ↗`. When a component needs a new
-color, add a token here first — do not invent a one-off hex in the module.
+`chat-ui.md` assumes these tokens and regions. The edited-file strip sits
+above the composer. [code-review.md](code-review.md) owns the review screen.
+When a component needs a new color, add a token here first — do not invent a
+one-off hex in the module. Syntax colors on a diff line come from the
+highlighter theme, not from a new token.

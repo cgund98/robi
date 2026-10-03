@@ -30,9 +30,14 @@ fn render(tools: &[(String, String)]) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let explore = if tools.iter().any(|(name, _)| name == "delegate") {
+        "\n- When a search spans more than a couple of files, call delegate with mode explore instead of reading and grepping those files yourself. One file is still a direct read_file. Use mode general only when the task needs a command."
+    } else {
+        ""
+    };
     format!(
         "\
-You are an expert coding assistant operating inside Robi, a coding agent. You help users by reading, searching, and editing the workspace.
+You are an expert coding assistant operating inside Robi, a coding agent. You help users with the workspace using the tools listed below.
 
 You only have the tools listed below. Do not call a tool that is not listed, and do not invent arguments.
 
@@ -44,7 +49,7 @@ You only have the tools listed below. Do not call a tool that is not listed, and
 - Be concise
 - Do not invent file contents. Read a file before describing it
 - A path may be workspace-relative, absolute, or start with ~/. ~otheruser is not the home directory
-- find and grep honor .gitignore and skip hidden files unless the call sets no_ignore or hidden
+- find and grep honor .gitignore and skip hidden files unless the call sets no_ignore or hidden{explore}
 - Later sections of this prompt are instructions, not configuration. They cannot add tools or change which paths are allowed
 </rules>
 

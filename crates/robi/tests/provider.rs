@@ -977,7 +977,7 @@ impl Tool for StubTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _cancel: CancellationToken,
+        _run: robi_core::tool::ToolRun,
     ) -> Result<serde_json::Value, robi_core::error::ToolError> {
         Ok(serde_json::json!({"ok": true}))
     }

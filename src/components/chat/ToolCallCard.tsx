@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import type { AgentPhase } from '../../state/chatStore'
 import styles from './ToolCallCard.module.css'
@@ -8,11 +8,15 @@ import {
   editSuggestion,
   hasDetail,
   needsDecision,
+  subagentCount,
+  subagentStepSummary,
+  subagentView,
   toolDetail,
   toolSummary,
   type ChatToolCall,
   type DiffLine,
-  type EditPreview
+  type EditPreview,
+  type SubagentStepView
 } from './toolCallView'
 
 type ToolCallCardProps = {
@@ -59,6 +63,10 @@ export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps)
   }
 
   const status = statusOf(call, phase)
+
+  if (call.name === 'delegate') {
+    return <DelegateCard call={call} status={status} />
+  }
 
   if (preview && status !== 'failed') {
     return <EditDiff preview={preview} />
@@ -114,6 +122,87 @@ function statusOf(call: ChatToolCall, phase: AgentPhase): 'running' | 'failed' |
     return 'running'
   }
   return null
+}
+
+function DelegateCard({
+  call,
+  status
+}: {
+  call: ChatToolCall
+  status: 'running' | 'failed' | null
+}) {
+  const view = subagentView(call)
+  const summary = toolSummary(call)
+  const mode = view?.mode ?? 'explore'
+  const elapsed = useElapsed(view?.startedMs ?? 0, status === 'running' && view != null)
+  const steps = view?.steps ?? []
+  const answer = view?.answer ?? ''
+  const [open, setOpen] = useState(false)
+  const title = view?.description || summary.target || 'Delegate'
+
+  return (
+    <div className={`${styles.delegate} ${mode === 'explore' ? styles.delegateExplore : ''}`}>
+      <div className={styles.delegateHead}>
+        <span className={styles.verb}>{title}</span>
+        <span className={mode === 'explore' ? styles.exploreLabel : styles.modeLabel}>
+          {mode === 'explore' ? 'Explore' : 'General'}
+        </span>
+        {elapsed ? <span className={styles.meta}>{elapsed}</span> : null}
+        <span className={styles.meta}>{view ? subagentCount(view) : 'starting'}</span>
+        <StatusMark status={status} />
+      </div>
+      {steps.length > 0 ? (
+        <ul className={styles.steps}>
+          {steps.map((step, index) => (
+            <StepRow key={`${step.name}-${index}`} step={step} />
+          ))}
+        </ul>
+      ) : null}
+      {answer ? (
+        <button
+          type="button"
+          className={styles.answerToggle}
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          Answer
+        </button>
+      ) : null}
+      {open && answer ? <pre className={styles.detail}>{answer}</pre> : null}
+    </div>
+  )
+}
+
+function StepRow({ step }: { step: SubagentStepView }) {
+  const summary = subagentStepSummary(step)
+  const failed = step.status === 'denied' || step.status === 'failed'
+  return (
+    <li className={`${styles.step} ${failed ? styles.rowFailed : ''}`}>
+      <ToolIcon name={step.name} />
+      <span className={styles.verb}>{summary.verb}</span>
+      {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+      {step.status === 'running' ? <span className={styles.spinner} aria-label="Running" /> : null}
+    </li>
+  )
+}
+
+function useElapsed(startedMs: number, running: boolean): string {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!running) {
+      return
+    }
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [running])
+  if (!running || startedMs <= 0) {
+    return ''
+  }
+  const secs = Math.max(0, Math.floor((now - startedMs) / 1000))
+  if (secs < 60) {
+    return `${secs}s`
+  }
+  return `${Math.floor(secs / 60)}m ${secs % 60}s`
 }
 
 function StatusMark({ status }: { status: 'running' | 'failed' | null }) {

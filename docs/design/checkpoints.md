@@ -36,7 +36,15 @@ lines. Line starts are 0-based. The id is the first 8 bytes of SHA-256 over
 the baseline start and both line lists, hex encoded. A missing file is
 status `deleted`: one hunk whose new lines are empty. `reject` puts that
 hunk's old lines back and fails when the current lines no longer match.
-Nothing in `web_api` calls these yet. Review will.
+`GET /api/v1/chat_sessions/{id}/review` calls `review_for_session`, which
+uses the same baseline read and drops a path whose additions and deletions
+are both zero. The response lines are a separate list: three lines of
+context around each change, and a gap where unchanged lines were skipped.
+`POST /api/v1/chat_sessions/{id}/review` calls it. `decision` is `approve`
+or `reject`. `hunk_id` limits that to one hunk; omitted, it covers the file.
+Approve folds the current lines into the baseline and leaves the file.
+Reject writes the baseline lines back. A created file that is fully rejected
+is removed, and its baseline row goes with it.
 
 `delete_file` keeps the original baseline, so a later restore writes that
 text rather than an intermediate edit. If this session created the file,

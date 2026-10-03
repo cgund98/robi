@@ -175,4 +175,54 @@ describe('ToolCallCard', () => {
     expect(card?.querySelector('[class*="target"]')?.textContent).toBe('make')
     expect(card?.textContent).toContain('make lint')
   })
+
+  it('lists explore steps while the child runs and keeps them after it finishes', () => {
+    const subagent = {
+      mode: 'explore',
+      description: 'Find resume',
+      started_ms: Date.now() - 12_000,
+      steps: [{ name: 'grep', target: 'resume', status: 'running' }]
+    }
+    const { rerender } = render(
+      <ToolCallCard
+        call={call({
+          name: 'delegate',
+          execution_status: 'running',
+          result: undefined,
+          args: { task: 'Where is resume?', mode: 'explore', description: 'Find resume' },
+          subagent
+        })}
+        phase="thinking"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('Find resume')).toBeTruthy()
+    expect(screen.getByText('Explore')).toBeTruthy()
+    expect(screen.getByText('Grepped')).toBeTruthy()
+    expect(screen.getByText('resume')).toBeTruthy()
+    expect(screen.getByText('1 search')).toBeTruthy()
+
+    rerender(
+      <ToolCallCard
+        call={call({
+          name: 'delegate',
+          execution_status: 'succeeded',
+          args: { task: 'Where is resume?', mode: 'explore', description: 'Find resume' },
+          result: { mode: 'explore', answer: 'note.txt:1', tool_calls: 1, denied: [] },
+          subagent: {
+            ...subagent,
+            steps: [{ name: 'grep', target: 'resume', status: 'ok' }]
+          }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('Grepped')).toBeTruthy()
+    expect(screen.queryByText('note.txt:1')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }))
+    expect(screen.getByText('note.txt:1')).toBeTruthy()
+  })
 })

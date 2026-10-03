@@ -73,4 +73,18 @@ impl FileChangeRepository for MemoryFileChangeRepository {
         rows.remove(&(session_id, path.to_owned()));
         Ok(())
     }
+
+    async fn replace_baseline(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        baseline: &str,
+    ) -> Result<(), ServiceError> {
+        let mut rows = self.rows.lock().expect("file baselines");
+        let Some(row) = rows.get_mut(&(session_id, path.to_owned())) else {
+            return Err(ServiceError::NotFound(path.to_owned()));
+        };
+        row.baseline = baseline.to_owned();
+        Ok(())
+    }
 }

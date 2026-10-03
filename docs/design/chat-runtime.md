@@ -47,9 +47,9 @@ The process stores an `AgentFactory`: the message store, the event sink, a
 `ModelSource`, the tool registry, and `LoopConfig`. Building the actor calls
 `Agent::new` from those pieces. The source is read when the actor starts, so
 the agent receives the model and effort that are current then. Each field
-resolves on its own: the session `model_config` key, then the settings value
-(`model`, `reasoning_effort`), then the built-in default (`glm-5.3`, and no
-effort). The agent is moved into
+resolves on its own: the active mode's session override, then that mode's
+setting, then the fallback setting (`model`, `reasoning_effort`), then the
+built-in default (`glm-5.3`, and no effort). The agent is moved into
 the actor task and dropped when the actor goes idle. The next instruction for
 that session builds another actor and another agent from the same factory. One
 agent serves every instruction that actor drains before it goes idle.
@@ -58,10 +58,10 @@ agent serves every instruction that actor drains before it goes idle.
 `SettingsModelSource` over the settings store, an empty `ToolRegistry`, and
 `LoopConfig::default()`. The empty registry is the fallback for a factory
 with no chat session service. When the service is present, the actor builds
-a session registry of the read tools and passes that same registry, plus the
-workspace root, to `ModelSource::model`. The provider is offered those tools,
-and the system prompt is assembled for them at the same time. See
-[instructions.md](instructions.md).
+a session registry for the stored mode and passes that same registry, the
+workspace root, and the mode to `ModelSource::model`. The provider is offered
+those tools, and the system prompt is assembled for them at the same time. See
+[instructions.md](instructions.md) and [agent-modes.md](agent-modes.md).
 The sink publishes each loop event on the in-process fan-out. The window
 follows that stream and still reads the transcript with GET. A tool name the
 model emits that is not in that registry fails as `NotFound` inside the loop;
@@ -234,18 +234,18 @@ rename return the same field from the same snapshot.
 | `store` | `Arc<dyn MessageStore>` shared by every actor |
 | `events` | `Arc<dyn EventSink>` |
 | `models` | `Arc<dyn ModelSource>`, read when an actor starts |
-| `tools` | `Arc<ToolRegistry>`. Used when `sessions` is absent. A session actor builds its own registry of read tools |
+| `tools` | `Arc<ToolRegistry>`. Used when `sessions` is absent. A session actor builds its own registry for the stored mode |
 | `config` | `LoopConfig`, copied into each agent |
 | `sessions` | `Option<Arc<ChatSessionService>>`. The title task reads and writes the row. Absent in tests that do not name sessions |
 | `fanout` | `Option<Arc<EventFanOut>>`. Publishes `session_updated` after a title is stored |
 
-`submit` builds the session tool registry and reads that session's
-`model_config`, then asks `models` for a model with that registry and that
+`submit` builds the session tool registry for the stored mode and reads that
+mode's override, then asks `models` for a model with that registry, mode, and
 choice, before it marks the session running. `build` receives both. A missing
 session, a missing key, an unknown model, or a bad effort returns the error
 and leaves the slot idle. An actor that is already running keeps its model
-and its tools; the instruction replaces the pending one. A choice changed
-while it runs applies to the next actor. Path rules are
+and its tools; the instruction replaces the pending one. A mode or choice
+changed while it runs applies to the next actor. Path rules are
 reloaded on each tool call, so a `PATCH` applies to the next call without
 starting a new actor.
 

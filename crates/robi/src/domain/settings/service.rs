@@ -75,6 +75,15 @@ impl SettingsService {
         }
         self.store.set(key, value, secret).await
     }
+
+    /// Drop a stored key so the next read inherits. A secret key is refused.
+    pub async fn remove(&self, key: &str) -> Result<(), ServiceError> {
+        let known = require_known(key)?;
+        if known.secret {
+            return Err(ServiceError::BadRequest(format!("{key} cannot be removed")));
+        }
+        self.store.remove(key).await
+    }
 }
 
 fn require_known(key: &str) -> Result<crate::domain::settings::keys::KnownSetting, ServiceError> {

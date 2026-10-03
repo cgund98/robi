@@ -12,6 +12,7 @@ pub mod chat_session;
 pub mod error;
 pub mod events;
 pub mod models;
+pub mod review;
 pub mod settings;
 pub mod state;
 pub mod workspace;
@@ -22,6 +23,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state.clone())
         .merge(workspace::router(state.clone()))
         .merge(chat_session::router(state.clone()))
+        .merge(review::router(state.clone()))
         .merge(chat_message::router(state.clone()))
         .merge(settings::router(state.clone()))
         .merge(models::router(state.clone()))
@@ -56,12 +58,15 @@ async fn health_check() -> &'static str {
         chat_session::get_chat_session,
         chat_session::update_chat_session,
         chat_session::delete_chat_session,
+        review::get_session_review,
+        review::decide_session_review,
         chat_message::submit_instruction,
         chat_message::list_chat_messages,
         chat_message::get_chat_message,
         chat_message::decide_tool_call,
         settings::get_setting,
         settings::set_setting,
+        settings::delete_setting,
         models::list_models,
         events::stream_events
     ),
@@ -72,12 +77,22 @@ async fn health_check() -> &'static str {
         chat_session::UpdateChatSession,
         chat_session::ChatSession,
         chat_session::ModelConfigBody,
+        chat_session::ModeOverrideBody,
         chat_session::ModelConfigPatch,
+        chat_session::ModeOverridePatch,
         chat_message::SubmitInstruction,
         chat_message::DecideToolCall,
         chat_message::AcceptedInstruction,
         chat_message::ChatMessage,
         chat_message::ChatToolCall,
+        chat_message::ChatUsage,
+        review::SessionReview,
+        review::ReviewFileBody,
+        review::ReviewStatus,
+        review::ReviewLineBody,
+        review::ReviewLineStatus,
+        review::ReviewHunkBody,
+        review::DecideReview,
         settings::SetSetting,
         settings::SettingResponse,
         models::CatalogModel

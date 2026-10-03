@@ -74,30 +74,163 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
         .map_err(|err| format!("invalid path pattern `{pattern}`: {err}"))
 }
 
-/// Per-session model and effort.
+/// Which tool set and prompt prefix a session uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentMode {
+    Ask,
+    Plan,
+    #[default]
+    Agent,
+}
+
+impl AgentMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Plan => "plan",
+            Self::Agent => "agent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "ask" => Ok(Self::Ask),
+            "plan" => Ok(Self::Plan),
+            "agent" => Ok(Self::Agent),
+            other => Err(format!("mode must be ask, plan, or agent: {other}")),
+        }
+    }
+}
+
+/// Model and effort for one mode.
 ///
-/// An absent key inherits the settings value, then the built-in default.
-/// `{}` means both keys inherit.
+/// An absent key inherits that mode's setting, then the fallback setting.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ModelConfig {
+pub struct ModeOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
 }
 
-/// Merge into a stored [`ModelConfig`].
+impl ModeOverride {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.reasoning_effort.is_none()
+    }
+}
+
+/// Per-mode model and effort overrides.
+///
+/// `{}` means every mode inherits. A stored object from before modes, with
+/// top-level `model` and `reasoning_effort`, loads as the agent override.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ModelConfig {
+    #[serde(default, skip_serializing_if = "ModeOverride::is_empty")]
+    pub agent: ModeOverride,
+    #[serde(default, skip_serializing_if = "ModeOverride::is_empty")]
+    pub ask: ModeOverride,
+    #[serde(default, skip_serializing_if = "ModeOverride::is_empty")]
+    pub plan: ModeOverride,
+}
+
+impl ModelConfig {
+    pub fn for_mode(&self, mode: AgentMode) -> &ModeOverride {
+        match mode {
+            AgentMode::Ask => &self.ask,
+            AgentMode::Plan => &self.plan,
+            AgentMode::Agent => &self.agent,
+        }
+    }
+
+    pub fn for_mode_mut(&mut self, mode: AgentMode) -> &mut ModeOverride {
+        match mode {
+            AgentMode::Ask => &mut self.ask,
+            AgentMode::Plan => &mut self.plan,
+            AgentMode::Agent => &mut self.agent,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ModelConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Wire {
+            #[serde(default)]
+            model: Option<String>,
+            #[serde(default)]
+            reasoning_effort: Option<String>,
+            #[serde(default)]
+            agent: ModeOverride,
+            #[serde(default)]
+            ask: ModeOverride,
+            #[serde(default)]
+            plan: ModeOverride,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let mut config = ModelConfig {
+            agent: wire.agent,
+            ask: wire.ask,
+            plan: wire.plan,
+        };
+        if config.agent.is_empty() && (wire.model.is_some() || wire.reasoning_effort.is_some()) {
+            config.agent = ModeOverride {
+                model: wire.model,
+                reasoning_effort: wire.reasoning_effort,
+            };
+        }
+        Ok(config)
+    }
+}
+
+/// Merge into one mode's override.
 ///
 /// `None` leaves that key. `Some(None)` clears it. `Some(Some)` sets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModelConfigUpdate {
+pub struct ModeOverrideUpdate {
     pub model: Option<Option<String>>,
     pub reasoning_effort: Option<Option<String>>,
 }
 
-impl ModelConfigUpdate {
+impl ModeOverrideUpdate {
     pub fn is_empty(&self) -> bool {
         self.model.is_none() && self.reasoning_effort.is_none()
+    }
+
+    pub fn apply(&self, target: &mut ModeOverride) {
+        if let Some(model) = &self.model {
+            target.model.clone_from(model);
+        }
+        if let Some(effort) = &self.reasoning_effort {
+            target.reasoning_effort.clone_from(effort);
+        }
+    }
+}
+
+/// Merge into a stored [`ModelConfig`]. An absent mode is left as stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelConfigUpdate {
+    pub agent: Option<ModeOverrideUpdate>,
+    pub ask: Option<ModeOverrideUpdate>,
+    pub plan: Option<ModeOverrideUpdate>,
+}
+
+impl ModelConfigUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.agent.as_ref().is_none_or(ModeOverrideUpdate::is_empty)
+            && self.ask.as_ref().is_none_or(ModeOverrideUpdate::is_empty)
+            && self.plan.as_ref().is_none_or(ModeOverrideUpdate::is_empty)
+    }
+
+    pub fn for_mode_mut(&mut self, mode: AgentMode) -> &mut Option<ModeOverrideUpdate> {
+        match mode {
+            AgentMode::Ask => &mut self.ask,
+            AgentMode::Plan => &mut self.plan,
+            AgentMode::Agent => &mut self.agent,
+        }
     }
 }
 
@@ -111,6 +244,7 @@ pub struct ChatSession {
     pub workspace_id: WorkspaceId,
     pub title: Option<String>,
     pub path_rules: PathRules,
+    pub mode: AgentMode,
     pub model_config: ModelConfig,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -125,6 +259,7 @@ pub struct ChatSession {
 pub struct CreateChatSessionCommand {
     pub workspace_id: WorkspaceId,
     pub title: Option<String>,
+    pub mode: AgentMode,
     pub model_config: ModelConfig,
 }
 
@@ -140,6 +275,7 @@ pub struct UpdateChatSessionCommand {
     pub allow_write: Option<Vec<String>>,
     pub deny_read: Option<Vec<String>>,
     pub deny_write: Option<Vec<String>>,
+    pub mode: Option<AgentMode>,
     pub model_config: Option<ModelConfigUpdate>,
 }
 
@@ -152,6 +288,7 @@ impl UpdateChatSessionCommand {
             allow_write: None,
             deny_read: None,
             deny_write: None,
+            mode: None,
             model_config: None,
         }
     }
@@ -162,6 +299,7 @@ impl UpdateChatSessionCommand {
             && self.allow_write.is_none()
             && self.deny_read.is_none()
             && self.deny_write.is_none()
+            && self.mode.is_none()
             && self
                 .model_config
                 .as_ref()
@@ -207,12 +345,18 @@ pub fn apply_session_update(session: &mut ChatSession, command: &UpdateChatSessi
     if let Some(patterns) = &command.deny_write {
         session.path_rules.deny_write.clone_from(patterns);
     }
+    if let Some(mode) = command.mode {
+        session.mode = mode;
+    }
     if let Some(update) = &command.model_config {
-        if let Some(model) = &update.model {
-            session.model_config.model.clone_from(model);
+        if let Some(agent) = &update.agent {
+            agent.apply(&mut session.model_config.agent);
         }
-        if let Some(effort) = &update.reasoning_effort {
-            session.model_config.reasoning_effort.clone_from(effort);
+        if let Some(ask) = &update.ask {
+            ask.apply(&mut session.model_config.ask);
+        }
+        if let Some(plan) = &update.plan {
+            plan.apply(&mut session.model_config.plan);
         }
     }
     true

@@ -12,6 +12,7 @@
 .column {
   width: 100%;
   max-width: var(--chat-column-width);
+  pointer-events: auto;
 }
 
 .field {
@@ -131,31 +132,73 @@
   background: var(--bg-surface-hover);
 }
 
-.status {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  border: 2px solid var(--accent-muted);
+.meter {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
   margin-left: var(--space-1);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
   flex-shrink: 0;
 }
 
-.statusBusy {
-  border-color: transparent;
-  border-top-color: var(--accent);
-  animation: statusSpin 0.8s linear infinite;
+.meter:hover {
+  background: var(--bg-surface-hover);
 }
 
-@keyframes statusSpin {
-  to {
-    transform: rotate(360deg);
-  }
+.meter:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .statusBusy {
-    animation: none;
-    border-color: var(--accent-muted);
-    border-top-color: var(--accent);
-  }
+.ring {
+  width: 14px;
+  height: 14px;
+}
+
+.track,
+.arc {
+  fill: none;
+  stroke-width: 2;
+}
+
+.track {
+  stroke: var(--ink-faint);
+}
+
+.arc {
+  stroke: var(--ink-muted);
+}
+
+.meterPanel {
+  z-index: 20;
+  width: 16rem;
+  padding: var(--space-3);
+  background: var(--bg-canvas);
+  border: 1px solid var(--ink-faint);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+.meterList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.meterList dt {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.meterList dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 13px;
 }

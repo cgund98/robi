@@ -12,7 +12,10 @@ use crate::web_api::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/api/v1/settings/{key}", get(get_setting).put(set_setting))
+        .route(
+            "/api/v1/settings/{key}",
+            get(get_setting).put(set_setting).delete(delete_setting),
+        )
         .with_state(state)
 }
 
@@ -52,6 +55,23 @@ pub async fn set_setting(
         .settings_service
         .set(&key, payload.value, payload.secret)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    delete,
+    path = "/api/v1/settings/{key}",
+    params(("key" = String, Path, description = "Setting key")),
+    responses(
+        (status = 204, description = "Setting removed. The next read inherits.")
+    )
+)]
+pub async fn delete_setting(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<StatusCode, ServiceError> {
+    state.settings_service.remove(&key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

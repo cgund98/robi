@@ -33,4 +33,12 @@ pub trait FileChangeRepository: Send + Sync {
 
     /// Remove one path. A missing row is success.
     async fn delete_baseline(&self, session_id: SessionId, path: &str) -> Result<(), ServiceError>;
+
+    /// Replace the stored body. A missing row is not found.
+    async fn replace_baseline(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        baseline: &str,
+    ) -> Result<(), ServiceError>;
 }

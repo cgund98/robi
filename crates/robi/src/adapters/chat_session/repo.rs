@@ -10,15 +10,15 @@ use uuid::Uuid;
 use crate::domain::{
     chat_session::{
         model::{
-            apply_session_update, ChatSession, CreateChatSessionCommand, ModelConfig, PathRules,
-            UpdateChatSessionCommand,
+            apply_session_update, AgentMode, ChatSession, CreateChatSessionCommand, ModelConfig,
+            PathRules, UpdateChatSessionCommand,
         },
         repo::ChatSessionRepository,
     },
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, model_config, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, mode, model_config, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
     error!(?err, %context, "sqlite chat session repository error");
@@ -49,6 +49,8 @@ fn chat_session_from_row(
         deny_read: decode_patterns(context, &row_text(context, &row, "path_deny_read")?)?,
         deny_write: decode_patterns(context, &row_text(context, &row, "path_deny_write")?)?,
     };
+    let mode = AgentMode::parse(&row_text(context, &row, "mode")?)
+        .map_err(|err| log_unknown(context, err))?;
     let model_config = decode_model_config(context, &row_text(context, &row, "model_config")?)?;
     let created_at: String = row
         .try_get("created_at")
@@ -65,6 +67,7 @@ fn chat_session_from_row(
         workspace_id: WorkspaceId::from_uuid(parse_uuid(context, &workspace_id)?),
         title,
         path_rules,
+        mode,
         model_config,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
@@ -136,10 +139,10 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             r#"
             INSERT INTO chat_sessions (
                 id, workspace_id, title, path_allow_read, path_allow_write,
-                path_deny_read, path_deny_write, model_config, created_at, updated_at,
+                path_deny_read, path_deny_write, mode, model_config, created_at, updated_at,
                 last_used_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             "#,
         )
         .bind(id.to_string())
@@ -149,6 +152,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&allow_write)
         .bind(&deny_read)
         .bind(&deny_write)
+        .bind(command.mode.as_str())
         .bind(&model_config)
         .bind(&timestamp)
         .bind(&timestamp)
@@ -167,6 +171,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             workspace_id: command.workspace_id,
             title: command.title,
             path_rules,
+            mode: command.mode,
             model_config: command.model_config,
             created_at: now,
             updated_at: now,
@@ -228,9 +233,10 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
                 path_allow_write = ?3,
                 path_deny_read = ?4,
                 path_deny_write = ?5,
-                model_config = ?6,
-                updated_at = ?7
-            WHERE id = ?8
+                mode = ?6,
+                model_config = ?7,
+                updated_at = ?8
+            WHERE id = ?9
             "#,
         )
         .bind(&session.title)
@@ -238,6 +244,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&allow_write)
         .bind(&deny_read)
         .bind(&deny_write)
+        .bind(session.mode.as_str())
         .bind(&model_config)
         .bind(session.updated_at.to_rfc3339())
         .bind(command.id.to_string())
@@ -361,9 +368,13 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Round trip".into()),
+                mode: AgentMode::Plan,
                 model_config: ModelConfig {
-                    model: Some("glm-5.2".into()),
-                    reasoning_effort: Some("high".into()),
+                    plan: crate::domain::chat_session::model::ModeOverride {
+                        model: Some("glm-5.2".into()),
+                        reasoning_effort: Some("high".into()),
+                    },
+                    ..ModelConfig::default()
                 },
             })
             .await
@@ -387,6 +398,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -474,6 +486,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: Some("Before".into()),
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -508,6 +521,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -562,6 +576,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -576,6 +591,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                mode: None,
                 model_config: None,
             })
             .await
@@ -602,6 +618,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await
@@ -638,6 +655,7 @@ mod tests {
             .create_chat_session(CreateChatSessionCommand {
                 workspace_id,
                 title: None,
+                mode: AgentMode::Agent,
                 model_config: ModelConfig::default(),
             })
             .await

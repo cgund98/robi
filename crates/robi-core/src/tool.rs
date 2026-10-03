@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{RegistryError, ToolError};
+use crate::message::SubagentSnapshot;
 
 /// Whether the loop may run a tool alongside another in the same turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -29,6 +30,42 @@ impl Concurrency {
 pub enum ApprovalDecision {
     AllowImmediately,
     NeedsApproval,
+}
+
+/// What the loop hands a tool for one call.
+pub struct ToolRun {
+    pub cancel: CancellationToken,
+    /// Writes the child snapshot onto this call while `execute` is still running.
+    pub report: Arc<dyn ToolReporter>,
+}
+
+impl ToolRun {
+    /// A run that records no child progress. Tests and tools that do not delegate
+    /// use this.
+    pub fn new(cancel: CancellationToken) -> Self {
+        Self {
+            cancel,
+            report: Arc::new(NopReporter),
+        }
+    }
+}
+
+/// Progress a tool can publish before it returns.
+///
+/// The loop's implementation writes the snapshot onto the parent call and emits
+/// `ToolCallUpdated`. A tool that is not a subagent ignores it.
+#[async_trait]
+pub trait ToolReporter: Send + Sync {
+    async fn subagent(&self, snapshot: SubagentSnapshot);
+}
+
+/// Drops every snapshot.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NopReporter;
+
+#[async_trait]
+impl ToolReporter for NopReporter {
+    async fn subagent(&self, _snapshot: SubagentSnapshot) {}
 }
 
 /// One capability the model can call.
@@ -67,7 +104,7 @@ pub trait Tool: Send + Sync {
     async fn execute(
         &self,
         args: serde_json::Value,
-        cancel: CancellationToken,
+        run: ToolRun,
     ) -> Result<serde_json::Value, ToolError>;
 }
 

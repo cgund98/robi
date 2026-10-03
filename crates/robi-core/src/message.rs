@@ -76,6 +76,48 @@ pub struct Usage {
     pub cached: u64,
 }
 
+/// Which child a `delegate` call is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentMode {
+    Explore,
+    General,
+}
+
+/// How far one child tool call has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStepStatus {
+    Running,
+    Ok,
+    Denied,
+    Failed,
+}
+
+/// One child tool call, as the parent card shows it.
+///
+/// `target` is the path, pattern, or command. The file body and the command
+/// output stay in the child transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentStep {
+    pub name: String,
+    pub target: String,
+    pub status: SubagentStepStatus,
+}
+
+/// The child run attached to a parent tool call.
+///
+/// This is what the UI renders. It is not the tool result the model reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentSnapshot {
+    pub mode: SubagentMode,
+    pub description: String,
+    /// Unix time in milliseconds when the child started.
+    pub started_ms: u64,
+    #[serde(default)]
+    pub steps: Vec<SubagentStep>,
+}
+
 /// One call the model asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -106,6 +148,10 @@ pub struct ToolCall {
     /// approval or lookup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_call_id: Option<String>,
+    /// Child tool calls while a `delegate` run is in progress, and after it
+    /// finishes. Absent on every other tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<SubagentSnapshot>,
 }
 
 impl ToolCall {
@@ -122,6 +168,7 @@ impl ToolCall {
             error: None,
             truncation: None,
             provider_call_id: None,
+            subagent: None,
         }
     }
 
@@ -310,6 +357,7 @@ mod tests {
 
         let message: Message = serde_json::from_value(old).expect("an older transcript loads");
         assert_eq!(message.tool_calls[0].provider_call_id, None);
+        assert_eq!(message.tool_calls[0].subagent, None);
         assert_eq!(message.tool_calls[0].name, "read_file");
     }
 

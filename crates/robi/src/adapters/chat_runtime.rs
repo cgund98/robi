@@ -25,7 +25,10 @@ use crate::{
     adapters::{model_source::ModelSource, session_title::title_completed_turn},
     domain::{
         chat_message::runtime::{ChatRuntime, SubmitOutcome},
-        chat_session::service::ChatSessionService,
+        chat_session::{
+            model::{AgentMode, ModeOverride},
+            service::ChatSessionService,
+        },
         error::ServiceError,
         events::EventFanOut,
         file_change::repo::FileChangeRepository,
@@ -73,7 +76,8 @@ impl AgentFactory {
         (
             Arc<ToolRegistry>,
             Option<std::path::PathBuf>,
-            crate::domain::chat_session::model::ModelConfig,
+            AgentMode,
+            ModeOverride,
         ),
         ServiceError,
     > {
@@ -81,11 +85,13 @@ impl AgentFactory {
             return Ok((
                 Arc::clone(&self.tools),
                 None,
-                crate::domain::chat_session::model::ModelConfig::default(),
+                AgentMode::Agent,
+                ModeOverride::default(),
             ));
         };
         let chat = sessions.get_chat_session(session).await?;
-        let choice = chat.model_config.clone();
+        let mode = chat.mode;
+        let choice = chat.model_config.for_mode(mode).clone();
         let workspace = sessions
             .workspaces
             .get_workspace(chat.workspace_id)
@@ -104,19 +110,16 @@ impl AgentFactory {
             sessions: Arc::clone(sessions),
             file_changes,
         });
-        crate::tools::register_read_tools(&registry, Arc::clone(&ctx)).map_err(|err| {
-            tracing::error!(%err, "failed to register read tools");
+        let models = Arc::new(crate::tools::SessionChildModels {
+            session_id: session,
+            sessions: Arc::clone(sessions),
+            models: Arc::clone(&self.models),
+        });
+        crate::tools::register_tools_for_mode(&registry, ctx, mode, models).map_err(|err| {
+            tracing::error!(%err, "failed to register tools");
             ServiceError::Unknown
         })?;
-        crate::tools::register_edit_tools(&registry, Arc::clone(&ctx)).map_err(|err| {
-            tracing::error!(%err, "failed to register edit tools");
-            ServiceError::Unknown
-        })?;
-        crate::tools::register_shell_tool(&registry, ctx).map_err(|err| {
-            tracing::error!(%err, "failed to register the shell tool");
-            ServiceError::Unknown
-        })?;
-        Ok((Arc::new(registry), Some(root), choice))
+        Ok((Arc::new(registry), Some(root), mode, choice))
     }
 }
 
@@ -238,11 +241,11 @@ impl ChatRuntime for SerializedChatRuntime {
 
         // Resolve before the slot is marked running, so a missing key does not
         // leave an actor that will never start.
-        let (tools, workspace, choice) = self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, choice)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await?;
         self.start_actor(session, instruction, model, tools).await
     }
@@ -256,11 +259,11 @@ impl ChatRuntime for SerializedChatRuntime {
         if self.actor_running(session).await {
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
-        let (tools, workspace, choice) = self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, choice)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await?;
         self.start_decision(session, call, reject, model, tools)
             .await
@@ -418,7 +421,7 @@ mod tests {
     use crate::adapters::model_source::{FixedModelSource, ModelSource};
     use crate::domain::chat_message::runtime::{ChatRuntime, SubmitOutcome};
     use crate::domain::chat_session::{
-        model::{ChatSession, CreateChatSessionCommand, ModelConfig},
+        model::{AgentMode, ChatSession, CreateChatSessionCommand, ModeOverride, ModelConfig},
         repo::ChatSessionRepository,
         service::ChatSessionService,
     };
@@ -729,7 +732,8 @@ mod tests {
             &self,
             _tools: Arc<ToolRegistry>,
             _workspace: Option<std::path::PathBuf>,
-            _choice: crate::domain::chat_session::model::ModelConfig,
+            _mode: AgentMode,
+            _choice: ModeOverride,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             Err(ServiceError::BadRequest(
                 "opencode_go_api_key is not set".into(),
@@ -800,7 +804,7 @@ mod tests {
     }
 
     struct ChoiceSource {
-        seen: Arc<Mutex<Option<ModelConfig>>>,
+        seen: Arc<Mutex<Option<(AgentMode, ModeOverride)>>>,
         model: Arc<dyn Model>,
     }
 
@@ -810,9 +814,10 @@ mod tests {
             &self,
             _tools: Arc<ToolRegistry>,
             _workspace: Option<std::path::PathBuf>,
-            choice: ModelConfig,
+            mode: AgentMode,
+            choice: ModeOverride,
         ) -> Result<Arc<dyn Model>, ServiceError> {
-            *self.seen.lock().expect("choice") = Some(choice);
+            *self.seen.lock().expect("choice") = Some((mode, choice));
             Ok(Arc::clone(&self.model))
         }
     }
@@ -822,8 +827,11 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let choice = ModelConfig {
-            model: Some("glm-5.2".into()),
-            reasoning_effort: Some("high".into()),
+            agent: ModeOverride {
+                model: Some("glm-5.2".into()),
+                reasoning_effort: Some("high".into()),
+            },
+            ..ModelConfig::default()
         };
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
@@ -851,7 +859,10 @@ mod tests {
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
-        assert_eq!(seen.lock().expect("choice").clone(), Some(choice));
+        assert_eq!(
+            seen.lock().expect("choice").clone(),
+            Some((AgentMode::Agent, choice.agent.clone()))
+        );
     }
 
     fn titled_runtime(
@@ -1065,6 +1076,7 @@ mod tests {
                 workspace_id: WorkspaceId::new(),
                 title,
                 path_rules: crate::domain::chat_session::model::PathRules::default(),
+                mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
                 created_at: now,
                 updated_at: now,

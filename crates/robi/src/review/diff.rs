@@ -25,6 +25,71 @@ pub enum FileStatus {
     Modified,
 }
 
+/// How one review line relates to the baseline and the file on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewLineKind {
+    Context,
+    Delete,
+    Insert,
+    /// Unchanged lines between two hunks were left out.
+    Gap,
+}
+
+/// One line of a review diff. Line numbers are 1-based. A gap has neither.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewLine {
+    pub kind: ReviewLineKind,
+    pub text: String,
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
+}
+
+/// Lines to show for a review, with three lines of context around each change.
+///
+/// A run of unchanged lines between hunks is one [`ReviewLineKind::Gap`].
+/// Identical files return an empty list.
+pub fn review_lines(baseline: &str, current: &str) -> Vec<ReviewLine> {
+    const CONTEXT: usize = 3;
+    let raw = changed_lines(baseline, current);
+    let changes: Vec<usize> = raw
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.kind != ReviewLineKind::Context)
+        .map(|(index, _)| index)
+        .collect();
+    if changes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for index in changes {
+        let start = index.saturating_sub(CONTEXT);
+        let end = (index + CONTEXT).min(raw.len() - 1);
+        if let Some(last) = ranges.last_mut() {
+            if start <= last.1.saturating_add(1) {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        ranges.push((start, end));
+    }
+
+    let mut lines = Vec::new();
+    for (offset, (start, end)) in ranges.into_iter().enumerate() {
+        if offset > 0 {
+            lines.push(ReviewLine {
+                kind: ReviewLineKind::Gap,
+                text: String::new(),
+                old_line: None,
+                new_line: None,
+            });
+        }
+        lines.extend(raw[start..=end].iter().cloned());
+    }
+    lines
+}
+
 /// One path's change. `patch` is a unified diff. `hunks` are the regions inside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileDiff {
@@ -100,28 +165,43 @@ pub fn diff(path: &str, baseline: &str, current: &str) -> FileDiff {
     }
 }
 
+/// Fold `hunk`'s current lines into the baseline.
+///
+/// Fails when the baseline lines are not at `old_start`.
+pub fn accept(baseline: &str, hunk: &Hunk) -> Result<String, String> {
+    splice(baseline, hunk.old_start, &hunk.old, &hunk.new)
+}
+
 /// Replace `hunk`'s current lines with its baseline lines.
 ///
 /// Fails when those current lines are not in `current` at `new_start`.
 pub fn reject(current: &str, hunk: &Hunk) -> Result<String, String> {
-    let lines = split_lines(current);
-    let end = hunk
-        .new_start
-        .checked_add(hunk.new.len())
+    splice(current, hunk.new_start, &hunk.new, &hunk.old)
+}
+
+fn splice(
+    text: &str,
+    start: usize,
+    expected: &[String],
+    replacement: &[String],
+) -> Result<String, String> {
+    let lines = split_lines(text);
+    let end = start
+        .checked_add(expected.len())
         .ok_or_else(|| "hunk no longer matches".to_owned())?;
     if end > lines.len() {
         return Err("hunk no longer matches".to_owned());
     }
-    for (offset, line) in hunk.new.iter().enumerate() {
-        if lines[hunk.new_start + offset] != *line {
+    for (offset, line) in expected.iter().enumerate() {
+        if lines[start + offset] != *line {
             return Err("hunk no longer matches".to_owned());
         }
     }
-    let mut next = Vec::with_capacity(lines.len() - hunk.new.len() + hunk.old.len());
-    next.extend_from_slice(&lines[..hunk.new_start]);
-    next.extend(hunk.old.iter().cloned());
+    let mut next = Vec::with_capacity(lines.len() - expected.len() + replacement.len());
+    next.extend_from_slice(&lines[..start]);
+    next.extend(replacement.iter().cloned());
     next.extend_from_slice(&lines[end..]);
-    Ok(join_lines(&next, current))
+    Ok(join_lines(&next, text))
 }
 
 struct OpenHunk {
@@ -195,6 +275,25 @@ fn strip_ending(line: &str) -> String {
     line.trim_end_matches(['\n', '\r']).to_owned()
 }
 
+fn changed_lines(baseline: &str, current: &str) -> Vec<ReviewLine> {
+    let text = TextDiff::from_lines(baseline, current);
+    text.iter_all_changes()
+        .map(|change| {
+            let kind = match change.tag() {
+                ChangeTag::Equal => ReviewLineKind::Context,
+                ChangeTag::Delete => ReviewLineKind::Delete,
+                ChangeTag::Insert => ReviewLineKind::Insert,
+            };
+            ReviewLine {
+                kind,
+                text: strip_ending(change.value()),
+                old_line: change.old_index().map(|index| (index + 1) as u32),
+                new_line: change.new_index().map(|index| (index + 1) as u32),
+            }
+        })
+        .collect()
+}
+
 fn join_lines(lines: &[String], prototype: &str) -> String {
     if lines.is_empty() {
         return String::new();
@@ -231,6 +330,13 @@ mod tests {
     }
 
     #[test]
+    fn accept_folds_the_current_lines_into_the_baseline() {
+        let diff = diff("src/a.rs", "one\ntwo\n", "one\nthree\n");
+        let accepted = accept("one\ntwo\n", &diff.hunks[0]).unwrap();
+        assert_eq!(accepted, "one\nthree\n");
+    }
+
+    #[test]
     fn reject_restores_the_baseline_lines() {
         let diff = diff("src/a.rs", "one\ntwo\n", "one\nthree\n");
         let restored = reject("one\nthree\n", &diff.hunks[0]).unwrap();
@@ -258,6 +364,33 @@ mod tests {
         assert_eq!(diff.status, FileStatus::Added);
         assert_eq!(diff.deletions, 0);
         assert!(diff.additions > 0);
+    }
+
+    #[test]
+    fn review_lines_keep_three_lines_of_context_and_a_gap() {
+        let baseline = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\n";
+        let current = "a\nb\nc\nD\ne\nf\ng\nh\ni\nj\nk\nL\nm\nn\no\n";
+        let lines = review_lines(baseline, current);
+        let texts: Vec<_> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "a", "b", "c", "d", "D", "e", "f", "g", "", "i", "j", "k", "l", "L", "m", "n", "o"
+            ]
+        );
+        assert_eq!(lines[3].kind, ReviewLineKind::Delete);
+        assert_eq!(lines[3].old_line, Some(4));
+        assert_eq!(lines[3].new_line, None);
+        assert_eq!(lines[4].kind, ReviewLineKind::Insert);
+        assert_eq!(lines[4].new_line, Some(4));
+        assert_eq!(lines[8].kind, ReviewLineKind::Gap);
+        assert_eq!(lines[12].kind, ReviewLineKind::Delete);
+        assert_eq!(lines[12].old_line, Some(12));
+    }
+
+    #[test]
+    fn review_lines_are_empty_when_nothing_changed() {
+        assert!(review_lines("same\n", "same\n").is_empty());
     }
 
     #[test]

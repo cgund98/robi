@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::domain::{
     chat_message::service::ChatMessageService, chat_session::service::ChatSessionService,
-    events::EventFanOut, settings::SettingsService, workspace::service::WorkspaceService,
+    events::EventFanOut, file_change::repo::FileChangeRepository, settings::SettingsService,
+    workspace::service::WorkspaceService,
 };
 
 /// Services the handlers call. The pool and the agent factory stay in the
@@ -14,4 +15,5 @@ pub struct AppState {
     pub chat_message_service: Arc<ChatMessageService>,
     pub settings_service: Arc<SettingsService>,
     pub event_fanout: Arc<EventFanOut>,
+    pub file_changes: Arc<dyn FileChangeRepository>,
 }

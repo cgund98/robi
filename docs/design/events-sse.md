@@ -23,6 +23,7 @@ describe them. Process placement of the loop (in-process vs. sidecar) stays
 | Message REST and the transcript snapshot | [persistence.md](persistence.md) (M2) |
 | Streaming caret, scroll-lock, tool-card layout | `docs/design/chat-ui.md` (M2) |
 | In-process loop vs. sidecar, command IPC | `docs/design/architecture.md` (M2) |
+| Index progress (`robi.index.v1.progress`) | [semantic-search.md](semantic-search.md) (M7). It is published on this same stream |
 
 ```mermaid
 flowchart LR

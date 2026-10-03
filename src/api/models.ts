@@ -4,6 +4,7 @@ import { ApiError, errorMessage, statusOf } from './sessions'
 export type CatalogModel = {
   id: string
   displayName: string
+  contextWindow: number
 }
 
 export async function listModels(): Promise<CatalogModel[]> {
@@ -11,7 +12,8 @@ export async function listModels(): Promise<CatalogModel[]> {
   if (result.data) {
     return result.data.map((model) => ({
       id: model.id,
-      displayName: model.display_name
+      displayName: model.display_name,
+      contextWindow: model.context_window
     }))
   }
   throw new ApiError(

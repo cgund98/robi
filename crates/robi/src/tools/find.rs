@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
 use robi_core::error::ToolError;
-use robi_core::tool::{ApprovalDecision, Concurrency, Tool};
+use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -60,8 +60,8 @@ impl Tool for Find {
         ApprovalDecision::AllowImmediately
     }
 
-    async fn execute(&self, args: Value, cancel: CancellationToken) -> Result<Value, ToolError> {
-        if cancel.is_cancelled() {
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
         let args: FindArgs = serde_json::from_value(args)
@@ -91,7 +91,7 @@ impl Tool for Find {
                 glob: matcher.as_ref(),
                 hidden: args.hidden,
                 no_ignore: args.no_ignore,
-                cancel: &cancel,
+                cancel: &run.cancel,
                 files: &mut files,
                 truncated: &mut truncated,
             },

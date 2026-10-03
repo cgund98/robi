@@ -112,7 +112,7 @@ mod tests {
     use crate::domain::{
         chat_message::runtime::{ChatRuntime, SubmitOutcome},
         chat_session::{
-            model::{ChatSession, CreateChatSessionCommand, UpdateChatSessionCommand},
+            model::{AgentMode, ChatSession, CreateChatSessionCommand, UpdateChatSessionCommand},
             repo::ChatSessionRepository,
             service::ChatSessionService,
         },
@@ -139,6 +139,7 @@ mod tests {
                     workspace_id: WorkspaceId::new(),
                     title: None,
                     path_rules: crate::domain::chat_session::model::PathRules::default(),
+                    mode: AgentMode::Agent,
                     model_config: crate::domain::chat_session::model::ModelConfig::default(),
                     created_at: now,
                     updated_at: now,
