@@ -1,0 +1,30 @@
+# Changelog
+
+## [0.1.1](https://github.com/cgund98/robi/compare/v0.1.0...v0.1.1) (2026-10-03)
+
+
+### Features
+
+* add semantic search ([a730793](https://github.com/cgund98/robi/commit/a730793cad721cb2dfacb99b578bb72a2be6b517))
+* bundle API with tauri app ([1701bb3](https://github.com/cgund98/robi/commit/1701bb3a9b83c9f240abe29e92983bcab5616fb1))
+* code review and subagents ([fb6c63b](https://github.com/cgund98/robi/commit/fb6c63be9cb9c94bac0c8f2f7ac1cfe5b1e683c2))
+* generate tauri boilerplate for frontend ([ea88570](https://github.com/cgund98/robi/commit/ea88570f8f6ec0ae9a9f7b5d6a5890392adfa218))
+* implement agent runtime and chat messages persistence ([06c3a52](https://github.com/cgund98/robi/commit/06c3a52158e87217498a21057f37d18729de0975))
+* implement core agent loop ([1bdb56f](https://github.com/cgund98/robi/commit/1bdb56f0e39ed66c0aa2506843848c12d2f6912e))
+* implement edit files tools ([85833b1](https://github.com/cgund98/robi/commit/85833b16bab8611963eacdc36242737762110b70))
+* implement shell command and mcp compaction ([1f63b97](https://github.com/cgund98/robi/commit/1f63b976c0f52f6ed53983c7a449e6b354549d40))
+* opencode-go as first model provider ([1019a4f](https://github.com/cgund98/robi/commit/1019a4f9aea98ee87dc602faf0051ef6e3f71d1c))
+* organize sessions into workspaces ([8fa24fc](https://github.com/cgund98/robi/commit/8fa24fce67fe4ec9ec1082e8d03bbf611f745184))
+* restructure documentation ([2086595](https://github.com/cgund98/robi/commit/2086595dd4e27cc57fd3d0c4f47091ba68f496ea))
+* support LSP tools ([c593660](https://github.com/cgund98/robi/commit/c59366038657a077c256d0e9c91bd97960515976))
+* support MCP ([10fc70b](https://github.com/cgund98/robi/commit/10fc70b9a2c38d8c94beb84a3fa5061c933bc311))
+* support read tools ([dd4c391](https://github.com/cgund98/robi/commit/dd4c391171b0b7a86ddba4adfa010afdc81a3ac3))
+* support read_code with tree parsing ([ffcfc9c](https://github.com/cgund98/robi/commit/ffcfc9c71367a889f929fb226c9a4b3463d66a16))
+
+
+### Bug Fixes
+
+* ensure fetch ordering for UI state updates ([fcc9925](https://github.com/cgund98/robi/commit/fcc9925031c54845e7e16771f7af1aa1c8535b7a))
+* implement sandboxed shell command ([2ca3fc9](https://github.com/cgund98/robi/commit/2ca3fc95aaae472e67a78f60191d66532a6e118e))
+* refactor robi crate into 4 modules ([afc1e79](https://github.com/cgund98/robi/commit/afc1e79bdc416f52c4de23abbdbc0ab635389fd0))
+* remove scratch ([4252564](https://github.com/cgund98/robi/commit/425256404c507542bf54bdadfe9e484fb2f3e804))
