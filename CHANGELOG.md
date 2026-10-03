@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/cgund98/robi/compare/v0.1.1...v0.1.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* publish ci uses correct dmg path ([a9c3a38](https://github.com/cgund98/robi/commit/a9c3a3878e9f41210d8b56ccd57735c25110cbc8))
+
 ## [0.1.1](https://github.com/cgund98/robi/compare/v0.1.0...v0.1.1) (2026-10-03)
 
 
