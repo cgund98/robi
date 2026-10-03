@@ -7,7 +7,7 @@ approvals, modes) stays Robi's.
 This page is the design doc for the **look**: tokens, shell layout, and the
 visual treatment of chat chrome. Interaction details — the draft session,
 activity line, and composer lock — live in [chat-ui.md](chat-ui.md). Streaming
-caret, scroll-lock, and tool-card expand defaults are still open there.
+caret and tool-card expand defaults are still open there.
 
 ## What this doc does not cover
 
@@ -87,9 +87,9 @@ column takes the rest. After the first message, the composer stays at the
 bottom of the main column and the transcript scrolls underneath it. The
 scrollbar runs to the bottom of that column. A scrim over the bottom of the
 transcript fades into `--bg-canvas` and is solid halfway down the composer,
-so the rows behind the lower half are gone. Padding under the last row
-matches the composer, the edited-file strip, and the fade above them, plus
-`--space-5`, so the last row clears them when the list is scrolled to the end. Before the first
+so the rows behind the lower half are gone. The fade reaches `1rem` above
+the dock. Padding under the last row is the dock height plus `--space-4`, so
+the last row sits just above the composer when the list is scrolled to the end. Before the first
 message, the composer sits under the greeting in the center of the column.
 
 ## Color tokens
@@ -118,6 +118,8 @@ Do not sprinkle raw hex in components.
 | `--rule` | `#2a2a28` | Hairline separators (use sparingly) |
 | `--danger` | `#e56767` | Destructive / failed tool |
 | `--success` | `#6fbf7a` | Completed tool / applied edit |
+| `--mode-ask` | `#6fbf7a` | Ask mode in the composer |
+| `--mode-plan` | `#e39a3c` | Plan mode, and the plan Build and View Plan buttons |
 | `--diff-add` | `#5db27b` | `+N` line counts in edit summaries |
 | `--diff-del` | `#c46b6b` | `-N` line counts in edit summaries |
 | `--bg-row` | `#303030` | File rows inside the edit-summary widget |
@@ -152,7 +154,7 @@ sans title as the workspaces page. The rest of the shell stays on the UI sans.
 | `--radius-sm` | `6px` | Inline code chips, small buttons |
 | `--radius-md` | `10px` | Session pills, toggles |
 | `--radius-lg` | `14px` | User bubble, composer |
-| `--radius-xl` | `16px` | Sidebar outer (if the shell floats the rail) |
+| `--radius-xl` | `16px` | Large floating surfaces. The sidebar does not use it |
 | `--space-1` … `--space-6` | 4 / 8 / 12 / 16 / 24 / 32 px | Padding scale |
 
 The reference uses **generous dark space**, not dense packing. Prefer padding
@@ -200,8 +202,8 @@ text. Not cards. Tool **results** that need inspection become tool cards
 ### Composer
 
 - Tall rounded field on `--bg-surface`, placeholder `--ink-faint`.
-- Send control on the right inside the field (arrow / return affordance).
-- Below the field: right cluster (mode, model, effort, context meter). Controls are quiet
+- Send control on the right inside the field (arrow / return affordance). While a turn is running, that control is a stop square in the same slot.
+- Below the field: mode on the left, and model, effort, and the context meter on the right. Controls are quiet
   text + chevron, not colored pills. The meter is a 14px ring. The track is
   `--ink-faint` and the filled share is `--ink-muted`. Clicking it opens a
   popover. No attach control in the shell mock.
@@ -212,8 +214,13 @@ text. Not cards. Tool **results** that need inspection become tool cards
 ### Settings
 
 A full-page shell, not a dialog. Left rail: back to the chat, then the section
-list. Right pane: a title and one bordered card of rows (label, hint, control).
-The first cut has **Model Providers** and **General**. Use the same tokens;
+list. Right pane: a title, then one or more sections. Each section is a muted
+heading and a bordered card of rows. **Model Providers** has **Model Defaults**
+(one row per Global, Agent, Ask, and Plan: mode name, model menu on the left,
+effort menu on the same row). An unset mode shows the Global model and effort
+in those menus, and its Default item clears the override. Global effort stays a
+segmented control. and a separate card per provider. OpenCode
+holds the API key and base URL. **General** is a single card. Use the same tokens;
 active nav is `--bg-surface-active`, the selected effort pill may use `--accent`.
 Text fields, including secrets, sit one step above the card (`--bg-surface-hover`)
 with a `--bg-surface-active` border. Focus moves that border to `--ink-faint`.
@@ -276,7 +283,7 @@ the hunks ([code-review.md](code-review.md)).
 
 | # | Decision | Notes |
 |---|---|---|
-| V1 | Sidebar flush to the window edge vs. inset floating rail | **Chosen: inset floating rail** with `--radius-xl` on a canvas gutter |
+| V1 | Sidebar flush to the window edge vs. inset floating rail | **Chosen: flush.** The rail meets the top, left, and bottom of the window. Square corners, no canvas gutter |
 | V2 | Exact sidebar width and whether it is resizable | Start fixed (~260px); resize is polish |
 | V3 | Whether assistant ever gets a bubble | Default no; revisit only if contrast testing fails |
 | V4 | Brand mark in the sidebar | The workspace dropdown occupies the top of the sidebar |

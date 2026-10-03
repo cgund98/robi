@@ -60,7 +60,12 @@ non-root directory fails `allows_read`, so a walk does not descend into
 
 The built-in deny patterns live in source and are always applied. Create
 stores `[]` for all four lists. A stored list is appended after that built-in
-list. Allow lists have no built-in patterns. Both deny lists start from:
+list. Allow lists have no stored built-in patterns. Compiling a filter for a
+session adds one read allow for `~/.robi/plans/<session_id>`, matched on the
+workspace-relative path, including a path that starts with `..`. That allow
+covers the directory and the markdown files in it. It does not cover another
+session's plans, the rest of `~/.robi`, or writes. `edit_file` still cannot
+change a plan. Both deny lists start from:
 
 - `^\.\.(/|$)` — a workspace-relative path that starts with `..`
 - `(^|/)\.git(/|$)`

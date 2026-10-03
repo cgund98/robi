@@ -38,4 +38,9 @@ pub trait ChatRuntime: Send + Sync {
         call: ToolCallId,
         reject: Option<String>,
     ) -> Result<(), ServiceError>;
+
+    /// Cancel the in-flight turn and drop any instruction that has not started.
+    ///
+    /// Returns after that session's actor has exited. An idle session is a no-op.
+    async fn stop(&self, session: SessionId) -> Result<(), ServiceError>;
 }

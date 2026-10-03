@@ -5,6 +5,7 @@ use crate::domain::{
     events::EventFanOut, file_change::repo::FileChangeRepository, settings::SettingsService,
     workspace::service::WorkspaceService,
 };
+use crate::index::IndexHub;
 
 /// Services the handlers call. The pool and the agent factory stay in the
 /// composition root. A session actor builds its own agent from that factory.
@@ -16,4 +17,5 @@ pub struct AppState {
     pub settings_service: Arc<SettingsService>,
     pub event_fanout: Arc<EventFanOut>,
     pub file_changes: Arc<dyn FileChangeRepository>,
+    pub index: Arc<IndexHub>,
 }

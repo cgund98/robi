@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { listModels, type CatalogModel } from '../../api/models'
 import { deleteSetting, getSetting, putSetting, SETTING_KEYS } from '../../api/settings'
@@ -8,7 +8,19 @@ import styles from './Settings.module.css'
 
 const EFFORTS = ['low', 'medium', 'high'] as const
 
+const EFFORT_OPTIONS = EFFORTS.map((value) => ({ value, label: value }))
+
+function effortLabel(value: string): string {
+  return EFFORTS.find((effort) => effort === value) ?? 'medium'
+}
+
 const MODES: { mode: AgentMode; label: string; modelKey: string; effortKey: string }[] = [
+  {
+    mode: 'agent',
+    label: 'Agent',
+    modelKey: SETTING_KEYS.modelAgent,
+    effortKey: SETTING_KEYS.reasoningEffortAgent
+  },
   {
     mode: 'ask',
     label: 'Ask',
@@ -20,12 +32,6 @@ const MODES: { mode: AgentMode; label: string; modelKey: string; effortKey: stri
     label: 'Plan',
     modelKey: SETTING_KEYS.modelPlan,
     effortKey: SETTING_KEYS.reasoningEffortPlan
-  },
-  {
-    mode: 'agent',
-    label: 'Agent',
-    modelKey: SETTING_KEYS.modelAgent,
-    effortKey: SETTING_KEYS.reasoningEffortAgent
   }
 ]
 
@@ -54,6 +60,8 @@ export function ModelProvidersSettings() {
   })
   const [apiKey, setApiKey] = useState('')
   const [keyConfigured, setKeyConfigured] = useState(false)
+  const [searchKey, setSearchKey] = useState('')
+  const [searchKeyConfigured, setSearchKeyConfigured] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -61,15 +69,23 @@ export function ModelProvidersSettings() {
     let cancelled = false
     void (async () => {
       try {
-        const [modelSetting, baseSetting, effortSetting, keySetting, catalog, ...modeSettings] =
-          await Promise.all([
-            getSetting(SETTING_KEYS.model),
-            getSetting(SETTING_KEYS.baseUrl),
-            getSetting(SETTING_KEYS.reasoningEffort),
-            getSetting(SETTING_KEYS.apiKey),
-            listModels(),
-            ...MODES.flatMap((item) => [getSetting(item.modelKey), getSetting(item.effortKey)])
-          ])
+        const [
+          modelSetting,
+          baseSetting,
+          effortSetting,
+          keySetting,
+          searchSetting,
+          catalog,
+          ...modeSettings
+        ] = await Promise.all([
+          getSetting(SETTING_KEYS.model),
+          getSetting(SETTING_KEYS.baseUrl),
+          getSetting(SETTING_KEYS.reasoningEffort),
+          getSetting(SETTING_KEYS.apiKey),
+          getSetting(SETTING_KEYS.braveSearchApiKey),
+          listModels(),
+          ...MODES.flatMap((item) => [getSetting(item.modelKey), getSetting(item.effortKey)])
+        ])
         if (cancelled) {
           return
         }
@@ -78,6 +94,7 @@ export function ModelProvidersSettings() {
         setBaseUrl(baseSetting.value ?? '')
         setEffort(effortSetting.value ?? '')
         setKeyConfigured(keySetting.configured)
+        setSearchKeyConfigured(searchSetting.configured)
         const nextModels = { ask: '', plan: '', agent: '' }
         const nextEfforts = { ask: '', plan: '', agent: '' }
         MODES.forEach((item, index) => {
@@ -107,9 +124,13 @@ export function ModelProvidersSettings() {
     try {
       await putSetting(key, trimmed, secret)
       setStatus('Saved')
-      if (secret) {
+      if (key === SETTING_KEYS.apiKey) {
         setApiKey('')
         setKeyConfigured(true)
+      }
+      if (key === SETTING_KEYS.braveSearchApiKey) {
+        setSearchKey('')
+        setSearchKeyConfigured(true)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save setting')
@@ -127,156 +148,169 @@ export function ModelProvidersSettings() {
     }
   }
 
+  const globalModelLabel =
+    models.find((item) => item.id === model)?.displayName ?? (model || 'glm-5.3')
+
   return (
     <>
       <h1 className={styles.title}>Model Providers</h1>
-      <div className={styles.card}>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>OpenCode API key</div>
-            <div className={styles.hint}>
-              {keyConfigured
-                ? 'A key is saved. Enter a new value to replace it.'
-                : 'Stored as a secret. The server never returns the value.'}
-            </div>
-          </div>
-          <input
-            className={`${styles.input} ${styles.control}`}
-            type="password"
-            autoComplete="off"
-            placeholder={keyConfigured ? '••••••••' : 'API key'}
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            onBlur={() => void save(SETTING_KEYS.apiKey, apiKey, true)}
-            aria-label="OpenCode API key"
-          />
-        </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Default Model</div>
-            <div className={styles.hint}>Used when a mode has no model of its own.</div>
-          </div>
-          <ChoiceMenu
-            label={models.find((item) => item.id === model)?.displayName ?? (model || 'glm-5.3')}
-            ariaLabel="Model"
-            value={model}
-            options={modelOptions(models, model)}
-            includeDefault={false}
-            align="end"
-            triggerClassName={`${styles.input} ${styles.select} ${styles.control}`}
-            onSelect={(value) => {
-              if (!value) {
-                return
-              }
-              setModel(value)
-              void save(SETTING_KEYS.model, value, false)
-            }}
-          />
-        </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Default Reasoning effort</div>
-            <div className={styles.hint}>Used when a mode has no effort of its own.</div>
-          </div>
-          <div
-            className={`${styles.segments} ${styles.control}`}
-            role="group"
-            aria-label="Reasoning effort"
-          >
-            {EFFORTS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`${styles.segment} ${effort === value ? styles.segmentActive : ''}`}
-                onClick={() => {
-                  setEffort(value)
-                  void save(SETTING_KEYS.reasoningEffort, value, false)
-                }}
-              >
-                {value}
-              </button>
-            ))}
-          </div>
-        </div>
-        {MODES.map((item) => (
-          <Fragment key={item.mode}>
-            <div className={styles.row}>
-              <div className={styles.copy}>
-                <div className={styles.label}>{item.label} model</div>
-                <div className={styles.hint}>Falls back to the default model when unset.</div>
-              </div>
-              <ChoiceMenu
-                label={
-                  models.find((entry) => entry.id === modeModels[item.mode])?.displayName ??
-                  (modeModels[item.mode] || 'Default')
+
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Model Defaults</h2>
+        <p className={styles.sectionHint}>Unset modes use the Global model and effort.</p>
+        <div className={styles.card}>
+          <div className={styles.defaultRow}>
+            <div className={styles.modeName}>Global</div>
+            <ChoiceMenu
+              label={globalModelLabel}
+              ariaLabel="Global model"
+              value={model}
+              options={modelOptions(models, model)}
+              includeDefault={false}
+              align="start"
+              triggerClassName={`${styles.input} ${styles.select} ${styles.modelControl}`}
+              onSelect={(value) => {
+                if (!value) {
+                  return
                 }
-                ariaLabel={`${item.label} model`}
-                value={modeModels[item.mode]}
-                options={modelOptions(models, modeModels[item.mode])}
-                align="end"
-                triggerClassName={`${styles.input} ${styles.select} ${styles.control}`}
-                onSelect={(value) => {
-                  setModeModels((current) => ({ ...current, [item.mode]: value ?? '' }))
-                  if (!value) {
-                    void clear(item.modelKey)
-                    return
-                  }
-                  void save(item.modelKey, value, false)
-                }}
-              />
-            </div>
-            <div className={styles.row}>
-              <div className={styles.copy}>
-                <div className={styles.label}>{item.label} effort</div>
-                <div className={styles.hint}>Falls back to the default effort when unset.</div>
-              </div>
-              <div
-                className={`${styles.segments} ${styles.control}`}
-                role="group"
-                aria-label={`${item.label} reasoning effort`}
-              >
+                setModel(value)
+                void save(SETTING_KEYS.model, value, false)
+              }}
+            />
+            <div className={styles.segments} role="group" aria-label="Global reasoning effort">
+              {EFFORTS.map((value) => (
                 <button
+                  key={value}
                   type="button"
-                  className={`${styles.segment} ${modeEfforts[item.mode] === '' ? styles.segmentActive : ''}`}
+                  className={`${styles.segment} ${effort === value ? styles.segmentActive : ''}`}
                   onClick={() => {
-                    setModeEfforts((current) => ({ ...current, [item.mode]: '' }))
-                    void clear(item.effortKey)
+                    setEffort(value)
+                    void save(SETTING_KEYS.reasoningEffort, value, false)
                   }}
                 >
-                  default
+                  {value}
                 </button>
-                {EFFORTS.map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={`${styles.segment} ${modeEfforts[item.mode] === value ? styles.segmentActive : ''}`}
-                    onClick={() => {
-                      setModeEfforts((current) => ({ ...current, [item.mode]: value }))
-                      void save(item.effortKey, value, false)
-                    }}
-                  >
-                    {value}
-                  </button>
-                ))}
+              ))}
+            </div>
+          </div>
+          {MODES.map((item) => {
+            const modeModelId = modeModels[item.mode]
+            const resolvedModelId = modeModelId || model
+            const resolvedModelLabel =
+              models.find((entry) => entry.id === resolvedModelId)?.displayName ??
+              (resolvedModelId || globalModelLabel)
+            const resolvedEffort = effortLabel(modeEfforts[item.mode] || effort)
+            return (
+              <div key={item.mode} className={styles.defaultRow}>
+                <div className={`${styles.modeName} ${styles[item.mode]}`}>{item.label}</div>
+                <ChoiceMenu
+                  label={resolvedModelLabel}
+                  ariaLabel={`${item.label} model`}
+                  value={modeModelId}
+                  options={modelOptions(models, resolvedModelId)}
+                  defaultLabel={`Default · ${globalModelLabel}`}
+                  align="start"
+                  side="bottom"
+                  triggerClassName={`${styles.input} ${styles.select} ${styles.modelControl}`}
+                  onSelect={(value) => {
+                    setModeModels((current) => ({ ...current, [item.mode]: value ?? '' }))
+                    if (!value) {
+                      void clear(item.modelKey)
+                      return
+                    }
+                    void save(item.modelKey, value, false)
+                  }}
+                />
+                <ChoiceMenu
+                  label={resolvedEffort}
+                  ariaLabel={`${item.label} reasoning effort`}
+                  value={modeEfforts[item.mode]}
+                  options={EFFORT_OPTIONS}
+                  defaultLabel={`Default · ${effortLabel(effort)}`}
+                  align="end"
+                  side="bottom"
+                  triggerClassName={`${styles.input} ${styles.select} ${styles.effortControl}`}
+                  onSelect={(value) => {
+                    setModeEfforts((current) => ({ ...current, [item.mode]: value ?? '' }))
+                    if (!value) {
+                      void clear(item.effortKey)
+                      return
+                    }
+                    void save(item.effortKey, value, false)
+                  }}
+                />
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>OpenCode</h2>
+        <div className={styles.card}>
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>API key</div>
+              <div className={styles.hint}>
+                {keyConfigured
+                  ? 'A key is saved. Enter a new value to replace it.'
+                  : 'Stored as a secret. The server never returns the value.'}
               </div>
             </div>
-          </Fragment>
-        ))}
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Base URL</div>
-            <div className={styles.hint}>Optional. Leave empty to use the provider default.</div>
+            <input
+              className={`${styles.input} ${styles.control}`}
+              type="password"
+              autoComplete="off"
+              placeholder={keyConfigured ? '••••••••' : 'API key'}
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              onBlur={() => void save(SETTING_KEYS.apiKey, apiKey, true)}
+              aria-label="OpenCode API key"
+            />
           </div>
-          <input
-            className={`${styles.input} ${styles.control}`}
-            value={baseUrl}
-            placeholder="https://"
-            onChange={(event) => setBaseUrl(event.target.value)}
-            onBlur={() => void save(SETTING_KEYS.baseUrl, baseUrl, false)}
-            aria-label="Base URL"
-          />
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Base URL</div>
+              <div className={styles.hint}>Optional. Leave empty to use the provider default.</div>
+            </div>
+            <input
+              className={`${styles.input} ${styles.control}`}
+              value={baseUrl}
+              placeholder="https://"
+              onChange={(event) => setBaseUrl(event.target.value)}
+              onBlur={() => void save(SETTING_KEYS.baseUrl, baseUrl, false)}
+              aria-label="Base URL"
+            />
+          </div>
         </div>
-      </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Web search</h2>
+        <div className={styles.card}>
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Brave API key</div>
+              <div className={styles.hint}>
+                {searchKeyConfigured
+                  ? 'A key is saved. Enter a new value to replace it. Each search waits for approval.'
+                  : 'Stored as a secret. web_search fails until this is set.'}
+              </div>
+            </div>
+            <input
+              className={`${styles.input} ${styles.control}`}
+              type="password"
+              autoComplete="off"
+              placeholder={searchKeyConfigured ? '••••••••' : 'Brave API key'}
+              value={searchKey}
+              onChange={(event) => setSearchKey(event.target.value)}
+              onBlur={() => void save(SETTING_KEYS.braveSearchApiKey, searchKey, true)}
+              aria-label="Brave API key"
+            />
+          </div>
+        </div>
+      </section>
+
       {error ? <p className={`${styles.status} ${styles.statusError}`}>{error}</p> : null}
       {status && !error ? <p className={styles.status}>{status}</p> : null}
     </>

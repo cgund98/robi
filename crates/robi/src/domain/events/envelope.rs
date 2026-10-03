@@ -22,6 +22,8 @@ pub const TOOL_CALL_UPDATED: &str = "robi.agent.v1.tool_call_updated";
 pub const AWAITING_APPROVAL: &str = "robi.agent.v1.awaiting_approval";
 pub const TURN_FINISHED: &str = "robi.agent.v1.turn_finished";
 pub const SESSION_UPDATED: &str = "robi.agent.v1.session_updated";
+pub const INDEX_PROGRESS: &str = "robi.index.v1.progress";
+pub const INDEX_SOURCE: &str = "robi/index";
 
 /// Every agent type the shell asks for. Order is the type map in the design.
 pub const AGENT_EVENT_TYPES: &[&str] = &[
@@ -129,6 +131,19 @@ impl EventEnvelope {
                 "session_id": session.to_string(),
                 "title": title,
             }),
+        }
+    }
+
+    /// Index build progress. `subject` is the workspace id.
+    pub fn index_progress(workspace_id: &str, data: Value) -> Self {
+        Self {
+            specversion: SPEC_VERSION.to_owned(),
+            id: Uuid::now_v7(),
+            source: INDEX_SOURCE.to_owned(),
+            event_type: INDEX_PROGRESS.to_owned(),
+            time: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            subject: workspace_id.to_owned(),
+            data,
         }
     }
 }

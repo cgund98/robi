@@ -2,6 +2,8 @@ import { Fragment, useEffect, useState } from 'react'
 
 import type { ReviewFile, ReviewLine } from '../../api/review'
 import { chunksFor, linesForView, reviewNote, type ReviewView } from './diffView'
+import { DiffRows } from './DiffRows'
+import { FileViewDialog } from './FileViewDialog'
 import { paintSides, type PaintedToken } from './highlight'
 import styles from './DiffList.module.css'
 
@@ -20,6 +22,8 @@ type DiffListProps = {
 
 export function DiffList({ files, view, pendingKey, register, onDecide }: DiffListProps) {
   const [paint, setPaint] = useState<Record<string, Sides>>({})
+  const [openPath, setOpenPath] = useState<string | null>(null)
+  const [hoverChunk, setHoverChunk] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -38,8 +42,16 @@ export function DiffList({ files, view, pendingKey, register, onDecide }: DiffLi
     }
   }, [files])
 
+  const openFile = files.find((file) => file.path === openPath) ?? null
+
   return (
     <div className={styles.list}>
+      <FileViewDialog
+        file={openFile}
+        baseline={paintedSide(openFile, openFile ? paint[openFile.path] : undefined, 'baseline')}
+        current={paintedSide(openFile, openFile ? paint[openFile.path] : undefined, 'current')}
+        onClose={() => setOpenPath(null)}
+      />
       {files.map((file) => {
         const visible = linesForView(file.lines, view)
         const note = reviewNote(file.status, view, visible)
@@ -53,7 +65,13 @@ export function DiffList({ files, view, pendingKey, register, onDecide }: DiffLi
           >
             <header className={styles.header}>
               <span className={styles.identity}>
-                <span className={styles.path}>{file.path}</span>
+                <button
+                  type="button"
+                  className={styles.path}
+                  onClick={() => setOpenPath(file.path)}
+                >
+                  {file.path}
+                </button>
                 <span className={styles.add}>+{file.additions}</span>
                 <span className={styles.del}>-{file.deletions}</span>
               </span>
@@ -67,38 +85,57 @@ export function DiffList({ files, view, pendingKey, register, onDecide }: DiffLi
             {note ? (
               <p className={styles.note}>{note}</p>
             ) : (
-              <div className={styles.viewport}>
-                {chunks.map((chunk, chunkIndex) => (
-                  <Fragment key={`${file.path}-${chunkIndex}`}>
-                    {chunkIndex > 0 ? <div className={styles.gap}>···</div> : null}
-                    <div className={styles.chunk}>
-                      {file.status !== 'added' && chunk.hunkIds.length > 0 ? (
+              <div className={styles.frame}>
+                <div className={styles.viewport}>
+                  <div className={styles.wide}>
+                    {chunks.map((chunk, chunkIndex) => (
+                      <Fragment key={`${file.path}-${chunkIndex}`}>
+                        {chunkIndex > 0 ? <div className={styles.gap}>···</div> : null}
                         <div
-                          className={styles.chunkActions}
-                          style={{ '--change-line': firstChangeLine(chunk.lines) }}
+                          className={styles.chunk}
+                          onMouseEnter={() => setHoverChunk(`${file.path}:${chunkIndex}`)}
+                          onMouseLeave={() =>
+                            setHoverChunk((current) =>
+                              current === `${file.path}:${chunkIndex}` ? null : current
+                            )
+                          }
                         >
-                          <DecisionButtons
-                            disabled={pendingKey !== null}
-                            busy={chunk.hunkIds.some((id) => pendingKey === `${file.path}:${id}`)}
-                            onReject={() => onDecide(file.path, 'reject', chunk.hunkIds)}
-                            onApprove={() => onDecide(file.path, 'approve', chunk.hunkIds)}
+                          <DiffRows
+                            lines={chunk.lines}
+                            tokensForLine={(line) => tokensFor(line, paint[file.path])}
                           />
                         </div>
-                      ) : null}
-                      <div className={styles.hunk}>
-                        <div className={styles.sheet}>
-                          {chunk.lines.map((line, index) => (
-                            <DiffLine
-                              key={`${file.path}-${chunkIndex}-${index}`}
-                              line={line}
-                              tokens={tokensFor(line, paint[file.path])}
-                            />
-                          ))}
-                        </div>
+                      </Fragment>
+                    ))}
+                  </div>
+                </div>
+                <div className={styles.overlays}>
+                  {chunks.map((chunk, chunkIndex) =>
+                    file.status !== 'added' && chunk.hunkIds.length > 0 ? (
+                      <div
+                        key={`${file.path}-${chunkIndex}`}
+                        className={styles.chunkActions}
+                        data-open={hoverChunk === `${file.path}:${chunkIndex}` ? 'true' : undefined}
+                        style={{
+                          top: `calc(${chunkStart(chunks, chunkIndex) + firstChangeLine(chunk.lines)} * var(--review-line))`
+                        }}
+                        onMouseEnter={() => setHoverChunk(`${file.path}:${chunkIndex}`)}
+                        onMouseLeave={() =>
+                          setHoverChunk((current) =>
+                            current === `${file.path}:${chunkIndex}` ? null : current
+                          )
+                        }
+                      >
+                        <DecisionButtons
+                          disabled={pendingKey !== null}
+                          busy={chunk.hunkIds.some((id) => pendingKey === `${file.path}:${id}`)}
+                          onReject={() => onDecide(file.path, 'reject', chunk.hunkIds)}
+                          onApprove={() => onDecide(file.path, 'approve', chunk.hunkIds)}
+                        />
                       </div>
-                    </div>
-                  </Fragment>
-                ))}
+                    ) : null
+                  )}
+                </div>
               </div>
             )}
           </section>
@@ -136,6 +173,37 @@ function firstChangeLine(lines: ReviewLine[]): number {
   return index < 0 ? 0 : index
 }
 
+function chunkStart(chunks: { lines: ReviewLine[] }[], index: number): number {
+  let count = 0
+  for (let i = 0; i < index; i++) {
+    count += chunks[i].lines.length + 1
+  }
+  return count
+}
+
+function paintedSide(
+  file: ReviewFile | null,
+  sides: Sides | undefined,
+  which: 'baseline' | 'current'
+): PaintedToken[][] {
+  if (!file) {
+    return []
+  }
+  const painted = which === 'baseline' ? sides?.baseline : sides?.current
+  return painted ?? plainLines(which === 'baseline' ? file.baseline : file.current)
+}
+
+function plainLines(text: string): PaintedToken[][] {
+  if (text === '') {
+    return []
+  }
+  const lines = text.split(/\r?\n/)
+  if (lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+  return lines.map((line) => [{ text: line }])
+}
+
 function tokensFor(line: ReviewLine, sides: Sides | undefined): PaintedToken[] {
   if (line.kind === 'gap' || !sides) {
     return [{ text: line.text }]
@@ -146,28 +214,4 @@ function tokensFor(line: ReviewLine, sides: Sides | undefined): PaintedToken[] {
     return [{ text: line.text }]
   }
   return source[number - 1] ?? [{ text: line.text }]
-}
-
-function DiffLine({ line, tokens }: { line: ReviewLine; tokens: PaintedToken[] }) {
-  if (line.kind === 'gap') {
-    return <div className={styles.gap}>···</div>
-  }
-  const mark = line.kind === 'delete' ? '−' : line.kind === 'insert' ? '+' : ' '
-  const empty = tokens.every((token) => token.text === '')
-  return (
-    <div className={styles.line} data-kind={line.kind}>
-      <span className={styles.num}>{line.old_line ?? ''}</span>
-      <span className={styles.num}>{line.new_line ?? ''}</span>
-      <span className={styles.mark}>{mark}</span>
-      <span className={styles.code}>
-        {empty
-          ? '\u00a0'
-          : tokens.map((token, index) => (
-              <span key={index} style={token.color ? { color: token.color } : undefined}>
-                {token.text}
-              </span>
-            ))}
-      </span>
-    </div>
-  )
 }

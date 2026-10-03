@@ -10,7 +10,6 @@ delivery stays in [events-sse.md](events-sse.md).
 | Topic | Where it belongs |
 |---|---|
 | Streaming caret and painting `message_delta` text | Later on this page. The assistant row is stored only when the model stream finishes, so this cut does not paint tokens |
-| Scroll-lock that yields when the user scrolls up | Later on this page. The list follows the latest row |
 | Syntax highlighting, copy, retry, edit-and-resend | Later on this page. Assistant text is Markdown; highlighting is not |
 | Grant and session-allow editing | `docs/design/permissions.md` (M3) |
 | Creating the session row | [persistence.md](persistence.md). The shell delays that call |
@@ -47,6 +46,12 @@ title is refused in the dialog and is not sent.
 Zustand holds the session list, the active id, messages keyed by session, and
 a per-session phase: `idle`, `thinking`, or `responding`.
 
+The list keeps the latest row in view while the reader is at the bottom.
+Scrolling up, including a trackpad or wheel gesture upward, releases that
+follow so a message update does not pull the view back down. Returning to
+the bottom resumes it. Switching chats starts at the bottom again. A repeated
+`message_delta` that does not change the phase does not render the list again.
+
 The transcript is HTTP, not the event stream.
 
 | Trigger | Request |
@@ -55,12 +60,16 @@ The transcript is HTTP, not the event stream.
 | `message_added`, `message_updated` | `GET /chat_sessions/{id}/messages/{message_id}`, then upsert that row |
 | `turn_finished` | The session and the message list again |
 | `session_updated` | That session again. The message list is left as it is |
+| Phase is `thinking` or `responding`, and no frame has arrived for 2 seconds | The session and the message list again |
 
 `message_delta` does not change message text. `kind: "reasoning"` sets
 **Thinking**. `kind: "text"` sets **Responding**. Other delta kinds are
 ignored. `turn_started` sets **Thinking**. `turn_finished` sets `idle`, then
 the session refetch restores **Thinking** when `has_pending_agent` is still
-true.
+true. That flag is still set while the actor emits `turn_finished`, so the
+shell reads the session once more and returns to `idle` when the actor has
+exited. The 2-second refetch is what paints a stored turn when the frame that
+would have loaded it was dropped. A frame resets that wait.
 
 Opening the stream refetches even on the first connect. A frame published
 before the socket existed is recovered from the store. Reconnect does not
@@ -71,16 +80,16 @@ replay deltas.
 An assistant message renders its text as Markdown, then one row per tool
 call. Headings, lists, tables, links, and fenced code are elements. Syntax
 highlighting is not applied. A `tool` message is not shown again; the result
-lives on the call. User text stays plain. The bottom of a turn is one row: **Worked for Ns** on the left, and a copy
-icon on the right when the turn has assistant text. Hovering it says **Copy markdown**.
+lives on the call. User text stays plain. The bottom of a finished turn is one row: **Worked for Ns** on the left, and a copy
+icon on the right when that turn has assistant text. Hovering it says **Copy markdown**.
 After a click the tooltip says **Copied**. The button copies that message's
 Markdown as stored. A finished turn ends with a muted line, **Worked for
 Ns**, measured from the user message to the last message in that turn.
 A turn that is still running, or waiting on approval, does not show it.
 
 Tool rows from later iterations of the same turn sit in that same stack, with
-no extra gap between quiet rows. A bordered card — an edit or a shell — has a
-little space under it, so two panels do not touch. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
+no extra gap between quiet rows. An edit card has a little space above and
+below it. A shell card has a little space under it, so two panels do not touch. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
 `Listed`), and the path or pattern. A finished `write_file`, `edit_file`, or
 `delete_file` is a bordered card: the path the tool was called with
 (`scratch/test.md`, `../gopi/test.md`, `/tmp/test.md`), the `+` / `−` counts beside
@@ -91,19 +100,56 @@ A failed call shows the verb and target in `--danger`. Clicking a row that has a
 the body: numbered file text, match lines, paths, or the error. The row stays
 closed until that click.
 
-A `delegate` call is its own card. The header is the description, an **Explore**
-or **General** label, the elapsed time while the call is running, and a count.
-Explore counts searches once the child has used `grep` or `find`, and tool calls
-until then. General counts tool calls. **Explore** uses `--accent`. The body is
-one row per child step, with the same verb and target as a parent tool row, and
-a spinner on a step that is still running. A denied or failed step uses
-`--danger`. When the call succeeds, the rows stay. The answer the parent model
-received is behind an **Answer** control and stays closed until that click.
-The rows update when `tool_call_updated` refetches the assistant message.
+A finished `write_plan` is a bordered card. The label is **Created Plan**, or
+**Updated Plan** when the result status is `updated`. The title is the first
+heading in that call's markdown, otherwise `plan_name`, otherwise the file
+name. Under it is the first paragraph of the markdown, clamped to three lines.
+**View Plan** and **Build** sit at the bottom right, both in `--mode-plan`. **View Plan** replaces
+the chat with a page that fills the main column. The header is **Back**, the
+plan name, and **Build**. **Back**, or choosing another session, returns to
+the chat. The body lists that call's todo steps, then the markdown, rendered
+the same way as assistant text. A step is pending, in progress, completed, or
+canceled. A step with no content is left off. Opening the page again shows
+the same markdown and the same steps. Either **Build** switches the session
+to agent mode and sends
+`Implement the plan at <path>. Read that file and make the changes it
+describes.`, where `<path>` is the file that call wrote. **Build** stays
+disabled while the composer is locked, and when the call has no path. A
+running plan write shows a spinner and no card. A failed one stays the error
+row.
+
+A finished `todos` call is not a tool row. Each task that call marked
+completed is a muted line in the transcript, in the order of the result list,
+with the task text. A task it marked canceled is the same line, struck
+through. A call that only moves a task to pending or in progress adds no
+line. Under the conversation, above the activity line, the latest checklist
+renders the tasks that are still pending or in progress once the session is
+in agent mode. Each open task is one line, and a longer task is clipped. Plan mode leaves that list off, and the steps stay on the plan
+page. The list comes from
+the last successful `todos` result, or from the last successful `write_plan`
+when no later `todos` call has succeeded. An in-progress task uses the accent
+mark. A failed `todos` call stays the error row, **Update tasks**. A running
+one shows the spinner on that same row.
+
+A `delegate` call is one collapsed row. Explore reads **Exploring**, then the
+counts it has so far: unique `read_file` paths as files, and `grep` or `find`
+calls as searches, as in **Exploring 9 files, 5 searches**. A count of zero is
+left off. The line uses `--ink-muted`. General reads **General**, and shows the
+running spinner while the call is running. Clicking the row opens the panel:
+the description and one row per child tool. General also shows a tool-call
+count. A spinner sits on a child step that is still running. A denied or failed step
+uses `--danger`. The answer the parent model received is behind an **Answer**
+control inside that panel and stays closed until that click. Closing the row
+hides the panel. The rows update when `tool_call_updated` refetches the
+assistant message.
 
 A call that is still `pending` approval and `not_started`, while the session
 phase is idle, is the approval bar. It shows the same verb and target, then
-**Reject** and **Approve**. A pending `edit_file` uses the same diff card as a
+**Reject** and **Approve**. A pending `web_search` keeps **Search** and **the
+web** on that line, and puts the full query under it so a long query wraps
+instead of clipping. A pending `web_fetch` keeps **Fetch** and the host on
+that line, and puts the full URL under it the same way. Each approval bar has `--space-2` under it, the same
+space as an edit or shell card, so parallel requests do not touch. A pending `edit_file` uses the same diff card as a
 finished edit, built from `old` and `new`: that same path, the counts, the
 first 4 lines, and the same 24-line cap. **Reject** and **Approve** sit on that
 card. Approve posts `approve`. It uses `--accent` with dark text. Reject posts
@@ -111,6 +157,13 @@ card. Approve posts `approve`. It uses `--accent` with dark text. Reject posts
 becomes **Thinking** until the resumed turn reports back. A call that ran
 without asking stays a result row: `pending` approval with `succeeded`
 execution is not a prompt.
+
+When the desktop window is not in front, that pause also posts one OS
+notification: **Robi needs approval**, and the verb and target of the first
+waiting call. A click focuses the window and selects the session. The bar is
+still where the call is approved or rejected. The next `turn_started` clears
+that notice so a later pause can post again. The browser shell does not post
+one.
 
 ## Activity and the composer
 
@@ -134,20 +187,26 @@ the last turn's input, output, and cached tokens, and the uncounted
 estimate when it is not zero. Cached is omitted when it is zero. The ring
 holds its fill while a turn runs.
 
-The textarea and send control are disabled for that whole stretch, and during
-session load and other in-flight session requests. Enter does not submit.
-There is no stop control. The client does not send a second instruction while
-the phase is not `idle`. Another session can still be running; the lock
-follows the session on screen. Selecting it again refetches, and
-`has_pending_agent` restores the phase when the actor is still running.
+The textarea is disabled for that whole stretch, and during session load and
+other in-flight session requests. Enter does not submit. The send control
+becomes **Stop**: a square in the same slot as the return mark. Stop posts
+`POST /chat_sessions/{id}/stop` and stays in that slot until the call
+returns, which is after the actor has exited. The field stays disabled until
+then. The client does not send a second instruction while the phase is not
+`idle`. Another session can still be running; the lock follows the session
+on screen. Selecting it again refetches, and `has_pending_agent` restores
+the phase when the actor is still running.
 
 A session whose agent is still running shows a grayscale spinner on its row
 in the sidebar. That is the phase when it is not `idle`, or `has_pending_agent`
 when the list was loaded with the actor already running. Reduced motion
 keeps the ring still.
 
-Mode, model, and effort are quiet dropdowns in that cluster, and inside the
-welcome card. Mode is `ask`, `plan`, or `agent`. Model and effort show the
+Mode, model, and effort are quiet dropdowns in that row, and inside the
+welcome card. Mode sits on the left. Model, effort, and the context meter sit
+on the right. Mode is `ask`, `plan`, or `agent`. The selected mode, and each
+row in its menu, uses that mode's color: ask is `--mode-ask`, plan is
+`--mode-plan`, and agent stays `--ink-muted`. Model and effort show the
 value in effect for that mode: the session override when one is stored,
 otherwise that mode's setting, then the fallback setting. **Use default**
 clears that mode's session key. A saved session writes the choice with

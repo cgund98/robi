@@ -13,7 +13,8 @@ export const AGENT_EVENT_TYPES = [
   'robi.agent.v1.tool_call_updated',
   'robi.agent.v1.awaiting_approval',
   'robi.agent.v1.turn_finished',
-  'robi.agent.v1.session_updated'
+  'robi.agent.v1.session_updated',
+  'robi.index.v1.progress'
 ] as const
 
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number]

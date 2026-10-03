@@ -141,6 +141,49 @@ describe('ToolCallCard', () => {
     expect(opened?.textContent).toContain('six')
   })
 
+  it('shows the full web search query on the approval bar', () => {
+    const query = 'current stable rust version and the 1.90 release notes'
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'web_search',
+          execution_status: 'not_started',
+          result: undefined,
+          args: { query }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('Search')).toBeTruthy()
+    expect(screen.getByText('the web')).toBeTruthy()
+    expect(document.querySelector('circle')).toBeTruthy()
+    expect(screen.getByText(query)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
+  })
+
+  it('shows the full URL on a web fetch approval', () => {
+    const url = 'https://doc.rust-lang.org/book/ch01-00-getting-started.html'
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'web_fetch',
+          execution_status: 'not_started',
+          result: undefined,
+          args: { url }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('Fetch')).toBeTruthy()
+    expect(screen.getByText('doc.rust-lang.org')).toBeTruthy()
+    expect(screen.getByText(url)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
+  })
+
   it('opens a shell approval on the full command', () => {
     const { rerender } = render(
       <ToolCallCard
@@ -197,11 +240,12 @@ describe('ToolCallCard', () => {
         onDecide={() => {}}
       />
     )
-    expect(screen.getByText('Find resume')).toBeTruthy()
-    expect(screen.getByText('Explore')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Exploring 1 search' })).toBeTruthy()
+    expect(screen.queryByLabelText('Running')).toBeNull()
+    expect(screen.queryByText('Grepped')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Exploring 1 search' }))
     expect(screen.getByText('Grepped')).toBeTruthy()
     expect(screen.getByText('resume')).toBeTruthy()
-    expect(screen.getByText('1 search')).toBeTruthy()
 
     rerender(
       <ToolCallCard
@@ -224,5 +268,80 @@ describe('ToolCallCard', () => {
     expect(screen.queryByText('note.txt:1')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Answer' }))
     expect(screen.getByText('note.txt:1')).toBeTruthy()
+  })
+
+  it('opens a saved plan again and builds from the card', () => {
+    const onBuild = vi.fn()
+    const onViewPlan = vi.fn()
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'write_plan',
+          args: {
+            plan_name: 'Ship modes',
+            body: '# Ship modes\n\nAdd ask, plan, and agent.\n',
+            todos: [{ id: 'modes', content: 'Add the mode registry', status: 'pending' }]
+          },
+          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
+        })}
+        phase="idle"
+        busy={false}
+        buildDisabled={false}
+        onBuild={onBuild}
+        onViewPlan={onViewPlan}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('Created Plan')).toBeTruthy()
+    expect(screen.getByText('Add ask, plan, and agent.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'View Plan' }))
+    expect(onViewPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Ship modes',
+        path: '.robi/plans/ship-modes.md',
+        todos: [{ id: 'modes', content: 'Add the mode registry', status: 'pending' }]
+      })
+    )
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Build' }))
+    expect(onBuild).toHaveBeenCalledWith('.robi/plans/ship-modes.md')
+  })
+
+  it('disables Build while the session is busy', () => {
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'write_plan',
+          args: { body: '# Ship modes\n\nAdd the modes.\n' },
+          result: { path: '.robi/plans/ship-modes.md' }
+        })}
+        phase="idle"
+        busy={false}
+        buildDisabled
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Build' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('keeps a failed plan write on the error row', () => {
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'write_plan',
+          execution_status: 'failed',
+          error: 'plan file does not exist',
+          args: { plan_name: 'Ship modes', body: '# Ship modes\n' },
+          result: undefined
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.queryByRole('button', { name: 'View Plan' })).toBeNull()
+    expect(screen.getByText('Plan')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Plan/ }))
+    expect(screen.getByText('plan file does not exist')).toBeTruthy()
   })
 })

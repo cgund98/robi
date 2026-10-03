@@ -13,10 +13,15 @@ mod grant;
 mod grep;
 mod list_dir;
 mod memory_store;
+pub(crate) mod plan_file;
 mod read_file;
 mod replace;
+mod semantic_search;
 mod shell;
 mod subagent;
+mod todos;
+mod web_fetch;
+mod web_search;
 mod write_file;
 mod write_plan;
 
@@ -29,6 +34,7 @@ use robi_core::error::RegistryError;
 use robi_core::tool::ToolRegistry;
 
 use crate::domain::chat_session::model::AgentMode;
+use crate::web::{HttpFetcher, SearchEngine};
 
 pub use context::ToolContext;
 pub use delegate::{ChildModels, Delegate, SessionChildModels, UnavailableChildModels};
@@ -42,6 +48,9 @@ pub fn register_read_tools(
     registry.register(Arc::new(list_dir::ListDir::new(Arc::clone(&ctx))))?;
     registry.register(Arc::new(find::Find::new(Arc::clone(&ctx))))?;
     registry.register(Arc::new(grep::Grep::new(Arc::clone(&ctx))))?;
+    registry.register(Arc::new(semantic_search::SemanticSearch::new(Arc::clone(
+        &ctx,
+    ))))?;
     registry.register(Arc::new(grant::Grant::new(ctx)))?;
     Ok(())
 }
@@ -79,14 +88,30 @@ pub fn register_plan_tool(
     Ok(())
 }
 
+/// Register `web_search` and `web_fetch`.
+pub fn register_web_tools(
+    registry: &ToolRegistry,
+    ctx: Arc<ToolContext>,
+    search: Arc<dyn SearchEngine>,
+) -> Result<(), RegistryError> {
+    registry.register(Arc::new(web_search::WebSearch::new(search)))?;
+    registry.register(Arc::new(web_fetch::WebFetch::new(
+        ctx,
+        Arc::new(HttpFetcher),
+    )))?;
+    Ok(())
+}
+
 /// Register the tools one mode is allowed to call.
 pub fn register_tools_for_mode(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
     mode: AgentMode,
     models: Arc<dyn ChildModels>,
+    search: Arc<dyn SearchEngine>,
 ) -> Result<(), RegistryError> {
     register_read_tools(registry, Arc::clone(&ctx))?;
+    register_web_tools(registry, Arc::clone(&ctx), search)?;
     match mode {
         AgentMode::Ask => {}
         AgentMode::Plan => {
@@ -97,6 +122,7 @@ pub fn register_tools_for_mode(
             register_edit_tools(registry, Arc::clone(&ctx))?;
             register_shell_tool(registry, Arc::clone(&ctx))?;
             register_plan_tool(registry, Arc::clone(&ctx), false)?;
+            registry.register(Arc::new(todos::Todos::new(Arc::clone(&ctx))))?;
             registry.register(Arc::new(Delegate::new(ctx, models)))?;
         }
     }
@@ -105,7 +131,19 @@ pub fn register_tools_for_mode(
 
 #[cfg(test)]
 mod registry_tests {
+    use async_trait::async_trait;
+
     use super::*;
+    use crate::web::{SearchError, SearchHit};
+
+    struct IdleSearch;
+
+    #[async_trait]
+    impl SearchEngine for IdleSearch {
+        async fn search(&self, _query: &str) -> Result<Vec<SearchHit>, SearchError> {
+            Err(SearchError("search is not configured".into()))
+        }
+    }
 
     #[tokio::test]
     async fn each_mode_registers_its_own_tools() {
@@ -113,7 +151,19 @@ mod registry_tests {
         let ask = names(AgentMode::Ask, &harness).await;
         let plan = names(AgentMode::Plan, &harness).await;
         let agent = names(AgentMode::Agent, &harness).await;
-        assert_eq!(ask, vec!["find", "grant", "grep", "list_dir", "read_file"]);
+        assert_eq!(
+            ask,
+            vec![
+                "find",
+                "grant",
+                "grep",
+                "list_dir",
+                "read_file",
+                "semantic_search",
+                "web_fetch",
+                "web_search"
+            ]
+        );
         assert_eq!(
             plan,
             vec![
@@ -122,7 +172,10 @@ mod registry_tests {
                 "grep",
                 "list_dir",
                 "read_file",
+                "semantic_search",
                 "shell",
+                "web_fetch",
+                "web_search",
                 "write_plan"
             ]
         );
@@ -137,7 +190,11 @@ mod registry_tests {
                 "grep",
                 "list_dir",
                 "read_file",
+                "semantic_search",
                 "shell",
+                "todos",
+                "web_fetch",
+                "web_search",
                 "write_file",
                 "write_plan"
             ]
@@ -151,6 +208,7 @@ mod registry_tests {
             std::sync::Arc::clone(&harness.ctx),
             mode,
             std::sync::Arc::new(UnavailableChildModels),
+            std::sync::Arc::new(IdleSearch),
         )
         .unwrap();
         registry

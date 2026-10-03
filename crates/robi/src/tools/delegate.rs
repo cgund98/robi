@@ -23,7 +23,7 @@ const GENERAL_CALLS: u32 = 4;
 const DESCRIPTION: &str = "\
 Hand a bounded task to a subagent so the file bodies and command output stay out of this conversation. \
 Use mode explore to locate an implementation, map a feature, or answer how something works across more than a couple of files. \
-Explore has read_file, list_dir, find, and grep. It has no shell and no edit tools. \
+Explore has read_file, list_dir, find, grep, and semantic_search. It has no shell and no edit tools. \
 Use mode general when the task needs a sandboxed command, such as running tests or inspecting a tool. \
 General has the explore tools plus shell. It cannot edit, grant access, or call delegate. \
 Skip delegate for a single file read and for any edit: do those yourself. \
@@ -360,10 +360,20 @@ mod tests {
         let harness = harness().await;
         let explore = child_tool_names(SubagentMode::Explore, Arc::clone(&harness.ctx));
         let general = child_tool_names(SubagentMode::General, Arc::clone(&harness.ctx));
-        assert_eq!(explore, vec!["find", "grep", "list_dir", "read_file"]);
+        assert_eq!(
+            explore,
+            vec!["find", "grep", "list_dir", "read_file", "semantic_search"]
+        );
         assert_eq!(
             general,
-            vec!["find", "grep", "list_dir", "read_file", "shell"]
+            vec![
+                "find",
+                "grep",
+                "list_dir",
+                "read_file",
+                "semantic_search",
+                "shell"
+            ]
         );
         for name in [
             "edit_file",
@@ -371,6 +381,8 @@ mod tests {
             "delete_file",
             "grant",
             "delegate",
+            "todos",
+            "write_plan",
         ] {
             assert!(!general.iter().any(|tool| tool == name), "{name}");
         }

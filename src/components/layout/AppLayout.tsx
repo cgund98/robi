@@ -4,6 +4,7 @@ import { useMatch, useNavigate } from 'react-router-dom'
 import { listModels, type CatalogModel } from '../../api/models'
 import { sessionDisplayTitle, type AgentMode, type ChatSession } from '../../api/sessions'
 import { getSetting, SETTING_KEYS } from '../../api/settings'
+import { useApprovalNoticeOpen } from '../../app/approvalNotice'
 import { useAgentEventsSSE } from '../../app/useAgentEventsSSE'
 import { sessionMode, useChatStore, type AgentPhase } from '../../state/chatStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
@@ -12,10 +13,26 @@ import { Composer } from '../chat/Composer'
 import { EditReviewStrip } from '../chat/EditReviewStrip'
 import { EmptyGreeting } from '../chat/EmptyGreeting'
 import { RenameSessionDialog } from '../chat/RenameSessionDialog'
+import { PlanPage } from '../chat/PlanPage'
+import { planBuildInstruction, type PlanView } from '../chat/toolCallView'
 import { Transcript } from '../chat/Transcript'
 import { ReviewScreen } from '../review/ReviewScreen'
 import { Sidebar } from './Sidebar'
 import styles from './AppLayout.module.css'
+
+async function buildPlan(path: string) {
+  const store = useChatStore.getState()
+  await store.setModeChoice('agent')
+  const next = useChatStore.getState()
+  const mode =
+    next.draftSelected || next.activeSessionId === null
+      ? next.draftMode
+      : sessionMode(next.sessions.find((session) => session.id === next.activeSessionId))
+  if (mode !== 'agent') {
+    return
+  }
+  await next.sendInstruction(planBuildInstruction(path))
+}
 
 function runningSessionIds(
   sessions: ChatSession[],
@@ -50,9 +67,13 @@ export function AppLayout() {
   const previousWorkspace = useRef<string | null | undefined>(undefined)
   const [renameId, setRenameId] = useState<string | null>(null)
   const [renameError, setRenameError] = useState<string | null>(null)
+  const [plan, setPlan] = useState<{ view: PlanView; sessionId: string | null } | null>(null)
   const navigate = useNavigate()
   const reviewMatch = useMatch('/sessions/:sessionId/review')
   const reviewSessionId = reviewMatch?.params.sessionId ?? null
+  if (plan && (draftSelected || reviewSessionId !== null || plan.sessionId !== activeSessionId)) {
+    setPlan(null)
+  }
   const selectSession = useChatStore((state) => state.selectSession)
   const selectDraft = useChatStore((state) => state.selectDraft)
   const draftMode = useChatStore((state) => state.draftMode)
@@ -62,12 +83,15 @@ export function AppLayout() {
   const setModelChoice = useChatStore((state) => state.setModelChoice)
   const setEffortChoice = useChatStore((state) => state.setEffortChoice)
   const sendInstruction = useChatStore((state) => state.sendInstruction)
+  const stopAgent = useChatStore((state) => state.stopAgent)
+  const stoppingSessionId = useChatStore((state) => state.stoppingSessionId)
   const { models, fallbackModelId, fallbackEffort, modeDefaults } = useModelDefaults()
   const decideCall = useChatStore((state) => state.decideCall)
   const renameSession = useChatStore((state) => state.renameSession)
   const removeSession = useChatStore((state) => state.removeSession)
 
   useAgentEventsSSE()
+  useApprovalNoticeOpen()
 
   useEffect(() => {
     void loadWorkspaces()
@@ -108,7 +132,10 @@ export function AppLayout() {
     activeSessionId && !draftSelected && pendingEcho?.sessionId === activeSessionId
       ? pendingEcho.text
       : null
-  const composerLocked = loading || busy || phase !== 'idle'
+  const agentRunning = phase !== 'idle'
+  const composerLocked = loading || busy || agentRunning
+  const stopping =
+    !draftSelected && activeSessionId !== null && stoppingSessionId === activeSessionId
   const fresh = messages.length === 0 && echo === null
   const threadRef = useRef<HTMLDivElement>(null)
   const dockRef = useRef<HTMLDivElement>(null)
@@ -130,7 +157,7 @@ export function AppLayout() {
     const observer = new ResizeObserver(apply)
     observer.observe(dock)
     return () => observer.disconnect()
-  }, [fresh, reviewSessionId, activeSessionId])
+  }, [fresh, reviewSessionId, activeSessionId, plan])
 
   const renameTarget = renameId
     ? (sessions.find((session) => session.id === renameId) ?? null)
@@ -176,12 +203,14 @@ export function AppLayout() {
         disabled={loading || busy}
         runningSessionIds={runningSessionIds(sessions, phaseBySession)}
         onSelectSession={(id) => {
+          setPlan(null)
           if (reviewSessionId) {
             navigate('/')
           }
           void selectSession(id)
         }}
         onNewSession={() => {
+          setPlan(null)
           if (reviewSessionId) {
             navigate('/')
           }
@@ -211,12 +240,26 @@ export function AppLayout() {
         ) : null}
         {reviewSessionId ? (
           <ReviewScreen key={reviewSessionId} sessionId={reviewSessionId} />
+        ) : plan ? (
+          <PlanPage
+            plan={plan.view}
+            buildDisabled={composerLocked || plan.view.path.length === 0}
+            onBack={() => setPlan(null)}
+            onBuild={() => {
+              const path = plan.view.path
+              setPlan(null)
+              void buildPlan(path)
+            }}
+          />
         ) : fresh ? (
           <div className={styles.welcome}>
             <EmptyGreeting />
             <Composer
               placement="welcome"
               disabled={composerLocked}
+              running={agentRunning}
+              stopping={stopping}
+              onStop={() => void stopAgent()}
               onSubmit={sendInstruction}
               models={models}
               mode={mode}
@@ -239,11 +282,19 @@ export function AppLayout() {
                 messages={messages}
                 echo={echo}
                 phase={phase}
+                mode={mode}
                 deciding={busy}
+                buildDisabled={composerLocked}
                 onDecide={(callId, decision) => {
                   if (activeSessionId) {
                     void decideCall(activeSessionId, callId, decision)
                   }
+                }}
+                onBuild={(path) => {
+                  void buildPlan(path)
+                }}
+                onViewPlan={(next) => {
+                  setPlan({ view: next, sessionId: activeSessionId })
                 }}
               />
               <div className={styles.dock} ref={dockRef}>
@@ -252,6 +303,9 @@ export function AppLayout() {
                 ) : null}
                 <Composer
                   disabled={composerLocked}
+                  running={agentRunning}
+                  stopping={stopping}
+                  onStop={() => void stopAgent()}
                   onSubmit={sendInstruction}
                   models={models}
                   mode={mode}

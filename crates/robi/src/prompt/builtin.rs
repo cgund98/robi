@@ -31,7 +31,7 @@ fn render(tools: &[(String, String)]) -> String {
             .join("\n")
     };
     let explore = if tools.iter().any(|(name, _)| name == "delegate") {
-        "\n- When a search spans more than a couple of files, call delegate with mode explore instead of reading and grepping those files yourself. One file is still a direct read_file. Use mode general only when the task needs a command."
+        "\n- When a search spans more than a couple of files, call delegate with mode explore instead of reading and grepping those files yourself. For a question about how something behaves, the explore task starts with semantic_search. One file is still a direct read_file. Use mode general only when the task needs a command."
     } else {
         ""
     };

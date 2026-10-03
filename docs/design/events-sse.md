@@ -23,7 +23,7 @@ describe them. Process placement of the loop (in-process vs. sidecar) stays
 | Message REST and the transcript snapshot | [persistence.md](persistence.md) (M2) |
 | Streaming caret, scroll-lock, tool-card layout | `docs/design/chat-ui.md` (M2) |
 | In-process loop vs. sidecar, command IPC | `docs/design/architecture.md` (M2) |
-| Index progress (`robi.index.v1.progress`) | [semantic-search.md](semantic-search.md) (M7). It is published on this same stream |
+| Index progress (`robi.index.v1.progress`) | [semantic-search.md](semantic-search.md) (M7). It is published on this same stream. A `session_id` filter also lets through index progress whose subject is that session's workspace |
 
 ```mermaid
 flowchart LR
@@ -212,10 +212,10 @@ not write message text from a frame. The behavior is specified in
 |---|---|
 | `robi.agent.v1.turn_started` | Phase `thinking` |
 | `robi.agent.v1.message_delta` | `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored |
-| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row |
-| `robi.agent.v1.turn_finished` | Phase `idle`, then refetch the session and the message list. A `failed` outcome shows its `message`. `has_pending_agent` restores `thinking` when the actor is still running |
+| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. `tool_call_updated` also refreshes the review strip |
+| `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
+| `robi.agent.v1.turn_finished` | Phase `idle`, then refetch the session and the message list. A `failed` outcome shows its `message`. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared |
 | `robi.agent.v1.session_updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
-| Tool and approval types | Ignored until tools exist |
 
 Do not open a second `EventSource` per feature.
 
@@ -226,8 +226,9 @@ does not connect.
 
 ## Failure modes
 
-- **Slow subscriber.** Oldest frames drop. The agent keeps running. The UI may
-  show a gap until hydrate.
+- **Slow subscriber.** Oldest frames drop. The agent keeps running. While the
+  phase is `thinking` or `responding` and no frame has arrived for 2 seconds,
+  the shell refetches the session and the message list. A frame resets that wait.
 - **Malformed `data`.** The client ignores that frame and stays connected.
 - **Filter mismatch.** A client that asks for `event_types` it does not handle
   still receives them; unknown `type` values are ignored.

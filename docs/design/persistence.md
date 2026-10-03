@@ -103,14 +103,16 @@ Index: `(created_at DESC, id DESC)`.
 | `id` | `TEXT PRIMARY KEY` | `SessionId`, UUIDv7, minted in the adapter |
 | `workspace_id` | `TEXT NOT NULL` | `WorkspaceId`. References `workspaces(id)` `ON DELETE CASCADE`. A chat session does not move workspaces |
 | `title` | `TEXT` | Null until set. At most 200 characters. The model writes it after the first turn when it is still null |
-| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny |
+| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny. The compiled filter also allows reading `~/.robi/plans/<session_id>`. That allow is not stored |
 | `path_allow_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that write through a deny |
 | `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
 | `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
+| `allow_hosts` | `TEXT NOT NULL` | JSON array of hostnames. `[]` on create. `web_fetch` appends a host after the user approves that call. See [web-tools.md](web-tools.md) |
 | `mode` | `TEXT NOT NULL` | `ask`, `plan`, or `agent`. `agent` on create. Selects the tool registry and the prompt prefix |
 | `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `agent`, `ask`, and `plan` objects, each with optional `model` and `reasoning_effort`. An absent key inherits that mode's setting, then the fallback setting, then the built-in model |
+| `plan_path` | `TEXT` | Null until `write_plan` or `todos` writes a plan. Stored as `~/.robi/plans/<session_id>/<file>.md`. A later write replaces it. `updated_at` and `last_used_at` do not move |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
-| `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, or a model-config edit |
+| `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, a host-allow edit, or a model-config edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
 
 Index: `(workspace_id, last_used_at DESC, id DESC)`.
@@ -164,7 +166,7 @@ Base path `/api/v1`. One error body, `{ "error": "..." }`.
 | `POST` | `/chat_sessions` | `201` chat session | `400` if `workspace_id` is not a UUID, `title` is longer than 200 characters, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high`. `404` if that workspace does not exist |
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
-| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
+| `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, a host is empty or includes a scheme, port, or user info, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
 | `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID |
 
 `POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
@@ -179,14 +181,17 @@ it. That call is specified in [chat-runtime.md](chat-runtime.md).
 `model_config` is `{ "agent"?, "ask"?, "plan"? }`. Each mode object is
 `{ "model"?, "reasoning_effort"? }`. Omitted stores `{}`.
 `model` must be a catalog id. `reasoning_effort` is `low`, `medium`, or `high`.
-`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"?, "mode"?, "model_config"? }`.
+`PATCH` body is `{ "title"?, "path_allow_read"?, "path_allow_write"?, "path_deny_read"?, "path_deny_write"?, "allow_hosts"?, "mode"?, "model_config"? }`.
 Each field is optional. An omitted field stays as stored. A present path list
-replaces that list. Inside one mode object, an omitted key stays, a string sets
-that override, and `null` clears it. An omitted mode object stays. `updated_at` moves when any field is present.
+replaces that list. A present `allow_hosts` replaces that list. Each entry is
+a hostname with no scheme, port, or user info. Inside one mode object, an
+omitted key stays, a string sets that override, and `null` clears it. An
+omitted mode object stays. `updated_at` moves when any field is present.
 `last_used_at` and `workspace_id` stay put. An empty body returns the session
 unchanged. A body Axum cannot deserialize is rejected by Axum (422), which is
-separate from a title or a pattern the service refuses. The lists and how
-tools match them are in [read-tools.md](read-tools.md).
+separate from a title, a pattern, or a host the service refuses. Path lists
+and how tools match them are in [read-tools.md](read-tools.md). Host matching
+is in [web-tools.md](web-tools.md).
 
 `GET /chat_sessions` orders by `last_used_at DESC, id DESC`. An optional
 `workspace_id` query parameter limits the list to one workspace. There is no
@@ -205,13 +210,17 @@ is read from the runtime's in-memory slots. It is not a column.
 | `GET` | `/chat_sessions/{id}/messages` | `200` transcript, in order | `404` if the chat session is missing, `400` if `id` is not a UUID |
 | `GET` | `/chat_sessions/{id}/messages/{message_id}` | `200` one message | `404` if the chat session or the message is missing, `400` if either id is not a UUID |
 | `POST` | `/chat_sessions/{id}/tool_calls/{call_id}` | `202` `{ "status": "accepted" }` | `400` if an id is not a UUID or `decision` is not `approve` or `reject`, `404` if the chat session is missing, `409` if the actor is running |
+| `POST` | `/chat_sessions/{id}/stop` | `202` `{ "status": "stopped" }` | `400` if `id` is not a UUID, `404` if the chat session is missing |
 
 `POST` of a message body is `{ "instruction" }`. The handler returns once the
 session actor has taken the instruction. `POST` of a tool call body is
 `{ "decision": "approve" | "reject", "reason"?: string }`. `approve` runs the
 call. `reject` refuses it; an empty reason becomes `rejected by the user`. The
-actor then resumes the paused turn. The actor, the factory, and the interrupt
-rules are in [chat-runtime.md](chat-runtime.md).
+actor then resumes the paused turn. `POST /chat_sessions/{id}/stop` cancels
+the in-flight turn, drops any instruction that has not started, and returns
+after that session's actor has exited. An idle session is the same `202`.
+The actor, the factory, and the interrupt rules are in
+[chat-runtime.md](chat-runtime.md).
 
 `GET` of the list and `GET` of one message return each message's id, role,
 content, tool calls, and tool-call id. When the provider reported tokens for
@@ -252,6 +261,7 @@ that is not in this list is `400`.
 | `reasoning_effort_ask`, `reasoning_effort_plan`, `reasoning_effort_agent` | no | None. Optional effort for that mode. Empty inherits `reasoning_effort` |
 | `base_url` | no | None. Optional provider base URL |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
+| `brave_search_api_key` | yes | None. `web_search` returns a tool error until this is set. See [web-tools.md](web-tools.md) |
 
 A read of an absent key that has a default calls the same write as `PUT`: the
 value is stored in memory and both files are rewritten, then the read returns

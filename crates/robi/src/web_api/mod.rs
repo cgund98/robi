@@ -9,6 +9,7 @@ use crate::web_api::state::AppState;
 
 pub mod chat_message;
 pub mod chat_session;
+pub mod code_index;
 pub mod error;
 pub mod events;
 pub mod models;
@@ -22,6 +23,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(health_check))
         .with_state(state.clone())
         .merge(workspace::router(state.clone()))
+        .merge(code_index::router(state.clone()))
         .merge(chat_session::router(state.clone()))
         .merge(review::router(state.clone()))
         .merge(chat_message::router(state.clone()))
@@ -53,6 +55,8 @@ async fn health_check() -> &'static str {
         workspace::list_workspaces,
         workspace::get_workspace,
         workspace::delete_workspace,
+        code_index::get_index,
+        code_index::put_index,
         chat_session::create_chat_session,
         chat_session::list_chat_sessions,
         chat_session::get_chat_session,
@@ -64,6 +68,7 @@ async fn health_check() -> &'static str {
         chat_message::list_chat_messages,
         chat_message::get_chat_message,
         chat_message::decide_tool_call,
+        chat_message::stop_agent,
         settings::get_setting,
         settings::set_setting,
         settings::delete_setting,
@@ -73,6 +78,8 @@ async fn health_check() -> &'static str {
     components(schemas(
         workspace::CreateWorkspace,
         workspace::Workspace,
+        code_index::IndexStatusBody,
+        code_index::IndexCommand,
         chat_session::CreateChatSession,
         chat_session::UpdateChatSession,
         chat_session::ChatSession,
@@ -83,6 +90,7 @@ async fn health_check() -> &'static str {
         chat_message::SubmitInstruction,
         chat_message::DecideToolCall,
         chat_message::AcceptedInstruction,
+        chat_message::StoppedAgent,
         chat_message::ChatMessage,
         chat_message::ChatToolCall,
         chat_message::ChatUsage,

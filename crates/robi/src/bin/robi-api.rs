@@ -72,8 +72,22 @@ async fn main() {
         }
     };
     let settings: Arc<dyn SettingsStore> = settings_store;
+    let settings_service = Arc::new(SettingsService {
+        store: Arc::clone(&settings),
+    });
+    let search = Arc::new(robi::web::BraveSearch::new(
+        Arc::clone(&settings_service),
+        reqwest::Client::new(),
+    ));
     let tools = Arc::new(ToolRegistry::new());
     let event_fanout = Arc::new(EventFanOut::new());
+    let index = Arc::new(robi::index::IndexHub::new(
+        settings_dir.clone(),
+        Arc::clone(&event_fanout),
+        Arc::new(robi_index::LocalEmbedder::new(robi_index::model_cache_dir(
+            &settings_dir,
+        ))),
+    ));
     let store: Arc<dyn robi_core::store::MessageStore> =
         Arc::new(SqliteMessageStore::new(Arc::clone(&pool)));
     let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
@@ -92,6 +106,8 @@ async fn main() {
         sessions: Some(Arc::clone(&chat_session_service)),
         file_changes: Some(Arc::clone(&file_changes)),
         fanout: Some(Arc::clone(&event_fanout)),
+        search,
+        index: Some(Arc::clone(&index)),
     }));
     let state = AppState {
         workspace_service: Arc::new(WorkspaceService {
@@ -103,9 +119,10 @@ async fn main() {
             runtime,
             store,
         }),
-        settings_service: Arc::new(SettingsService { store: settings }),
+        settings_service,
         event_fanout,
         file_changes,
+        index,
     };
 
     let app = Router::new()

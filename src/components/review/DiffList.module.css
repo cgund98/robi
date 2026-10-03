@@ -1,15 +1,19 @@
 .list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
   min-width: 0;
+  padding: var(--space-4);
 }
 
 .file {
-  border-bottom: 1px solid var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-surface);
 }
 
 .header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -29,11 +33,20 @@
 .path {
   min-width: 0;
   overflow: hidden;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--ink-strong);
+}
+
+.path:hover {
+  color: var(--ink-bright);
+  text-decoration: underline;
 }
 
 .actions {
@@ -100,26 +113,38 @@
   font-size: 13px;
 }
 
+.frame {
+  --review-line: 19px;
+  position: relative;
+}
+
 .viewport {
+  --review-line: 19px;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--code-bg);
 }
 
+.wide {
+  width: max-content;
+  min-width: 100%;
+}
+
 .chunk {
-  --review-line: calc(12.5px * 1.5);
   position: relative;
   z-index: 0;
 }
 
-.hunk {
-  overflow-x: auto;
-  background: var(--code-bg);
+.overlays {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .chunkActions {
   position: absolute;
-  top: calc(var(--change-line, 0) * var(--review-line));
   right: var(--space-2);
-  z-index: 1;
   display: flex;
   align-items: center;
   height: var(--review-line);
@@ -134,85 +159,86 @@
   opacity: 0;
 }
 
-.chunk:hover .chunkActions .actions,
-.chunkActions .actions:focus-within {
+.chunkActions[data-open] .actions,
+.chunkActions:focus-within .actions {
   opacity: 1;
   pointer-events: auto;
 }
 
 .sheet {
-  width: max-content;
-  min-width: 100%;
+  --review-line: 19px;
+  display: grid;
+  grid-template-columns: auto minmax(max-content, 1fr);
 }
 
-.line {
-  display: grid;
-  grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
-  width: 100%;
+.gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.gutterLine,
+.codeLine {
+  box-sizing: border-box;
+  height: var(--review-line);
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: var(--review-line);
   color: var(--code-ink);
 }
 
-.line[data-kind='delete'] {
-  background: color-mix(in srgb, var(--diff-del) 22%, transparent);
+.gutterLine {
+  display: grid;
+  grid-template-columns: 3.25rem 3.25rem 1.25rem;
+  align-items: center;
+  background: var(--code-bg);
 }
 
-.line[data-kind='insert'] {
-  background: color-mix(in srgb, var(--diff-add) 22%, transparent);
+.codeLine {
+  white-space: pre;
+  user-select: text;
+  -webkit-user-select: text;
+  padding-right: var(--space-3);
+}
+
+.gutterLine[data-kind='delete'],
+.codeLine[data-kind='delete'] {
+  background: color-mix(in srgb, var(--diff-del) 22%, var(--code-bg));
+}
+
+.gutterLine[data-kind='insert'],
+.codeLine[data-kind='insert'] {
+  background: color-mix(in srgb, var(--diff-add) 22%, var(--code-bg));
 }
 
 .num,
 .mark {
-  position: sticky;
-  z-index: 1;
-  background: var(--code-bg);
   color: var(--ink-faint);
   text-align: right;
-  user-select: none;
   padding-right: var(--space-2);
 }
 
-.num:first-child {
-  left: 0;
-}
-
-.num:nth-child(2) {
-  left: 3.25rem;
-}
-
 .mark {
-  left: 6.5rem;
   text-align: center;
   padding-right: 0;
 }
 
-.line[data-kind='delete'] .num,
-.line[data-kind='delete'] .mark {
-  background: color-mix(in srgb, var(--diff-del) 22%, var(--code-bg));
-}
-
-.line[data-kind='insert'] .num,
-.line[data-kind='insert'] .mark {
-  background: color-mix(in srgb, var(--diff-add) 22%, var(--code-bg));
-}
-
-.line[data-kind='delete'] .mark {
+.gutterLine[data-kind='delete'] .mark {
   color: var(--diff-del);
 }
 
-.line[data-kind='insert'] .mark {
+.gutterLine[data-kind='insert'] .mark {
   color: var(--diff-add);
 }
 
-.code {
-  white-space: pre;
-  padding-right: var(--space-3);
-}
-
 .gap {
-  padding: 2px var(--space-3);
+  display: flex;
+  align-items: center;
+  height: var(--review-line);
+  padding: 0 var(--space-3);
+  box-sizing: border-box;
   color: var(--ink-faint);
   font-family: var(--font-mono);
   font-size: 12px;

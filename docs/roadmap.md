@@ -669,14 +669,17 @@ prefix, and that is why switching is instant and stateless.
 ### F5.2 Plan artifacts
 
 - `write_plan` creates a plan file; `update_plan` overwrites an existing one.
-- Plans live in the workspace under a VCS-ignored directory, with todo
-  frontmatter, and render in the UI as a checklist the user can watch advance.
-- The plan is re-fed into the prompt on the build turn, so it survives compaction.
+- Plans live at `~/.robi/plans/<session_id>/`, with todo frontmatter, and
+  render in the UI as a checklist the user can watch advance.
+- The checklist is re-read into the next agent prompt. See F5.3.
 
 ### F5.3 Tasks / todos
 
-- A `tasks` tool for in-turn progress, separate from plan files. The distinction
-  matters: tasks are ephemeral narration, plans are reviewed artifacts.
+- Agent mode's `todos` tool patches the plan file's todo frontmatter. The
+  markdown body stays as written. There is no separate in-memory list.
+- The session stores the path of the plan last written. The next agent actor
+  reads that file into a `<todos>` block, so the open item is in front of the
+  model again. Ask, plan, and a delegate child do not get the tool.
 
 ### F5.4 Subagents
 
@@ -738,20 +741,20 @@ chunking that semantic search depends on.
 
 ### F7.1 LSP client
 
-- A client per language server, spawned per workspace, over stdio JSON-RPC.
-- Capability ladder, each level independently useful:
-  1. **Diagnostics** — errors and warnings for a file or the workspace. Feeds the
-     edit-verify loop; this alone justifies the milestone.
-  2. **Navigation** — definition, references, implementations, hover, workspace
-     symbols.
-  3. **Surgery** — rename symbol, code actions, formatting.
-- Expose navigation and diagnostics as **tools**, so the model uses the same
-  symbol graph the user sees rather than re-deriving it with grep.
-- **Open decisions** — (D8) `lsp-types` plus a hand-rolled JSON-RPC client vs. an
-  existing client crate; how to detect and launch servers per language; what
-  happens with no server installed (degrade to grep, never fail the turn).
-  Note `tower-lsp` is a *server* framework
-  ([crates.io](https://crates.io/crates/tower-lsp)), not a client.
+Settled in [lsp.md](design/lsp.md). **D8** is `async-lsp` with `lsp-types`.
+`tower-lsp` is a server framework and is not the client.
+
+- One stdio server per catalog row per workspace root, started on the first
+  tool call. The disk is the text the server sees. Robi does not keep buffers.
+- The first cut is five read-only tools: `diagnostics`, `definition`,
+  `references`, `hover`, and `workspace_symbol`. A missing binary returns
+  `available: false` and the model uses `grep` or `shell`. The turn does not
+  fail.
+- The catalog is Rust, TypeScript and JavaScript, Python, Go, and C and C++.
+  Adding a language is a row.
+- Rename, code action, and format stay a later cut. They apply through the
+  edit-tool write path so a change still gets a checkpoint. The server never
+  writes the disk itself.
 
 ### F7.2 Semantic search: AST → vectors
 
@@ -764,7 +767,7 @@ lists. The model calls `semantic_search` and gets paths and line ranges.
 The index updates while that workspace has an open session, and the user
 can pause it.
 
-**Design doc needed for** F7.1. See `docs/design/lsp.md`.
+**Design doc** — `docs/design/lsp.md`.
 
 ---
 
@@ -779,8 +782,10 @@ Lower priority. Sequence by user demand, not by this order.
 - **Project instructions** — the assembler and the `AGENTS.md` chain are in
   [instructions.md](docs/design/instructions.md). Skills and a trust decision
   before reading a project file stay later.
-- **Web tools** — `web_search` and `web_fetch`, both requiring approval and both
-  treating page content as untrusted input.
+- **Web tools** — `web_search` and `web_fetch`, settled in
+  [web-tools.md](design/web-tools.md). Every search waits, because each call
+  spends Brave quota. A fetch waits the first time a host is used in the
+  session, then remembers that host. Page text and snippets are untrusted.
 - **Headless / CI mode** — the agent loop without the UI. Another reason to keep
   core out of the Tauri crate (F0.1).
 - **Plugins / custom tools** — a registration API, as `gopi.WithTool` provides.
@@ -917,7 +922,7 @@ resolve them.
 | D5 | Editing: search-and-replace vs. diff-based | F4.1 | Settled: exact search-and-replace. See below and `docs/design/editing-tools.md` |
 | D6 | Embeddings: local vs. hosted | F7.2 | Settled: local ONNX, `nomic-embed-text-v1.5`. See below and `docs/design/semantic-search.md` |
 | D7 | Vector store | F7.2 | Settled: one `sqlite-vec` file per workspace, plus FTS5. See below and `docs/design/semantic-search.md` |
-| D8 | LSP client approach | F7.1 | Hand-rolled with `lsp-types` vs. an off-the-shelf client |
+| D8 | LSP client approach | F7.1 | Settled: `async-lsp` and `lsp-types`. A missing server degrades the tool. See below and `docs/design/lsp.md` |
 | D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Settled: Seatbelt on macOS, bubblewrap on Linux, no Windows sandbox. A sandboxed call is refused when the mechanism is missing. `unsandboxed: true` runs only after approval. See below and `docs/design/shell-tool.md`. The catalog "D9" in `providers-streaming.md` is a different decision |
 | D10 | MCP in v1 or later | M8 | Affects the tool registry's dynamism from M0 |
 | D11 | Learned text compression vs. structural compressors only | M9 | A local model is a heavy optional dependency. The first cut is deterministic compressors for JSON, logs, and search hits |
@@ -950,10 +955,9 @@ should change.
 ### D6: Embeddings stay on device
 
 Settled. Chunks and queries are embedded locally with
-`nomic-ai/nomic-embed-text-v1.5` on CPU through ONNX. Source is not sent to
-a hosted embedding API. Weights live under `~/.robi/models/`. A different
-model id rebuilds the index. The trait can grow a hosted embedder later;
-this choice is the default. See [semantic-search.md](design/semantic-search.md).
+`nomic-ai/nomic-embed-text-v1.5` on CPU through ONNX. Source stays on this
+machine. Weights live under `~/.robi/models/`. A different model id rebuilds
+the index. See [semantic-search.md](design/semantic-search.md).
 
 <a id="d7"></a>
 
@@ -963,6 +967,16 @@ Settled. Vectors and an FTS5 index share
 `~/.robi/index/<workspace_id>/index.sqlite`. The session database is a
 different file. LanceDB and Qdrant are not used. The index is rebuildable
 from the tree. See [semantic-search.md](design/semantic-search.md).
+
+<a id="d8"></a>
+
+### D8: LSP client
+
+Settled. The client is `async-lsp` with `lsp-types`, in `crates/robi`. A
+hand-rolled JSON-RPC client deadlocks when the server sends
+`workspace/configuration` during startup. `tower-lsp` builds a server, not a
+client. The catalog, the five read-only tools, and the rule that a missing
+binary does not fail the turn are in [lsp.md](design/lsp.md).
 
 <a id="d9"></a>
 
@@ -994,7 +1008,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/providers-streaming.md` | Delta protocol, SSE, provider quirks, retries/backoff, reasoning tokens | M1 | done |
 | `docs/design/architecture.md` | Crate layout, process model, command IPC | M2 | needed |
 | `docs/design/visual-style.md` | Dark theme tokens, shell layout, chat chrome look (Claude Code-view reference) | M2 | done |
-| `docs/design/chat-ui.md` | Draft session, HTTP transcript, activity line, composer lock. Caret, scroll-lock, and tool cards stay open | M2 | done |
+| `docs/design/chat-ui.md` | Draft session, HTTP transcript, activity line, composer lock, scroll-lock. Caret stays open | M2 | done |
 | `docs/design/persistence.md` | Store choice, schema, migrations, session lifecycle | M2 | done |
 | `docs/design/chat-runtime.md` | Per-session actor, agent factory, interrupt, approval refusal | M2 | done |
 | `docs/design/events-sse.md` | **D1**, CloudEvents envelope, fan-out, `GET /api/v1/events/stream`, shell EventSource | M2 | done |
@@ -1008,7 +1022,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | done |
 | `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | done |
 | `docs/design/code-review.md` | Read-only session review: strip, file tree, unified diff | M6 | done |
-| `docs/design/lsp.md` | Client, server discovery, capability ladder, degradation | M7 | later |
+| `docs/design/lsp.md` | **D8**, client, server discovery, capability ladder, degradation | M7 | done |
 | `docs/design/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | done |
 | `docs/design/tool-output-compression.md` | **D11, D12**, content routing, the retrieve tool, what the transcript stores, the size gate | M9 | later |
 

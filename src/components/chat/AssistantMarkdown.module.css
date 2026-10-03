@@ -32,6 +32,50 @@
   line-height: 1.3;
 }
 
+.document h1,
+.document h2,
+.document h3,
+.document h4,
+.document h5,
+.document h6 {
+  margin: var(--space-5) 0 var(--space-2);
+  line-height: 1.25;
+}
+
+.document > :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+
+.document h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.document h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+.document h3 {
+  margin-top: var(--space-4);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.document h4 {
+  margin-top: var(--space-4);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.document h5,
+.document h6 {
+  margin-top: var(--space-3);
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
 .markdown ul,
 .markdown ol {
   padding-left: 1.25rem;

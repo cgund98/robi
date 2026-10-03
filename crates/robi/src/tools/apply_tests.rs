@@ -61,6 +61,7 @@ pub(crate) async fn harness() -> Harness {
         root: canonical,
         sessions,
         file_changes: Arc::new(SqliteFileChangeRepository::new(pool)),
+        index: None,
     });
     Harness {
         ctx,

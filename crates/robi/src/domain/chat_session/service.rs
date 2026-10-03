@@ -73,6 +73,9 @@ impl ChatSessionService {
         command
             .validate_patterns()
             .map_err(ServiceError::BadRequest)?;
+        if let Some(hosts) = &mut command.allow_hosts {
+            *hosts = normalize_hosts(hosts)?;
+        }
         if let Some(update) = &mut command.model_config {
             normalize_override_update(update.agent.as_mut())?;
             normalize_override_update(update.ask.as_mut())?;
@@ -103,6 +106,17 @@ impl ChatSessionService {
         self.repository.set_title_if_unset(id, title).await
     }
 
+    /// Remember the plan the next agent prompt should re-read.
+    pub async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(ServiceError::BadRequest(
+                "plan_path must not be empty".into(),
+            ));
+        }
+        self.repository.set_plan_path(id, path.to_owned()).await
+    }
+
     pub async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
         self.repository.delete_chat_session(id).await
     }
@@ -110,6 +124,16 @@ impl ChatSessionService {
 
 /// `None` and `""` both mean "not named yet", so the model can title the chat session
 /// after the first turn.
+fn normalize_hosts(hosts: &[String]) -> Result<Vec<String>, ServiceError> {
+    hosts
+        .iter()
+        .map(|host| {
+            crate::domain::chat_session::model::normalize_host(host)
+                .map_err(ServiceError::BadRequest)
+        })
+        .collect()
+}
+
 fn normalize_new_title(title: Option<String>) -> Result<Option<String>, ServiceError> {
     match title {
         Some(title) if !title.is_empty() => {
@@ -232,8 +256,10 @@ mod tests {
                 workspace_id: command.workspace_id,
                 title: command.title,
                 path_rules: PathRules::default(),
+                allow_hosts: Vec::new(),
                 mode: command.mode,
                 model_config: command.model_config,
+                plan_path: None,
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,
@@ -300,6 +326,15 @@ mod tests {
             session.title = Some(title);
             session.updated_at = Utc::now();
             Ok(Some(session.clone()))
+        }
+
+        async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
+            let mut sessions = self.lock();
+            let session = sessions
+                .get_mut(&id)
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            session.plan_path = Some(path);
+            Ok(())
         }
 
         async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
@@ -602,6 +637,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                allow_hosts: None,
                 mode: None,
                 model_config: None,
             })
@@ -645,6 +681,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                allow_hosts: None,
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     agent: Some(ModeOverrideUpdate {
@@ -670,6 +707,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                allow_hosts: None,
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     agent: Some(ModeOverrideUpdate {
@@ -713,6 +751,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                allow_hosts: None,
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     ask: Some(ModeOverrideUpdate {

@@ -6,6 +6,9 @@ import {
   editSuggestion,
   hasDetail,
   needsDecision,
+  exploreSummary,
+  planBuildInstruction,
+  planView,
   toolDetail,
   toolSummary,
   type ChatToolCall
@@ -41,6 +44,16 @@ describe('toolSummary', () => {
       verb: 'Grant',
       target: '.env'
     })
+    expect(toolSummary(call({ name: 'web_search', args: { query: 'glm 5.3 context' } }))).toEqual({
+      verb: 'Search',
+      target: 'glm 5.3 context'
+    })
+    expect(
+      toolSummary(call({ name: 'web_fetch', args: { url: 'https://example.com/docs' } }))
+    ).toEqual({
+      verb: 'Fetch',
+      target: 'https://example.com/docs'
+    })
     expect(toolSummary(call({ name: 'edit_file', args: { path: 'src/main.rs' } }))).toEqual({
       verb: 'Edit',
       target: 'src/main.rs'
@@ -67,6 +80,125 @@ describe('toolSummary', () => {
       verb: 'Run',
       target: 'curl'
     })
+  })
+})
+
+describe('exploreSummary', () => {
+  it('counts unique files and searches', () => {
+    expect(
+      exploreSummary({
+        mode: 'explore',
+        description: 'Find resume',
+        startedMs: 0,
+        answer: '',
+        steps: [
+          { name: 'read_file', target: 'a.rs', status: 'ok' },
+          { name: 'read_file', target: 'a.rs', status: 'ok' },
+          { name: 'read_file', target: 'b.rs', status: 'ok' },
+          { name: 'grep', target: 'resume', status: 'ok' },
+          { name: 'find', target: '*.rs', status: 'ok' }
+        ]
+      })
+    ).toBe('Exploring 2 files, 2 searches')
+    expect(
+      exploreSummary({
+        mode: 'explore',
+        description: '',
+        startedMs: 0,
+        answer: '',
+        steps: []
+      })
+    ).toBe('Exploring')
+  })
+})
+
+describe('planView', () => {
+  it('uses the first heading, then the plan name, then the file name', () => {
+    expect(
+      planView(
+        call({
+          name: 'write_plan',
+          args: { plan_name: 'Ship modes', body: '# Ship modes\n\nAdd the modes.\n' },
+          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
+        })
+      )
+    ).toEqual({
+      title: 'Ship modes',
+      summary: 'Add the modes.',
+      body: '# Ship modes\n\nAdd the modes.\n',
+      path: '.robi/plans/ship-modes.md',
+      created: true,
+      todos: []
+    })
+    expect(
+      planView(
+        call({
+          name: 'write_plan',
+          args: { plan_name: 'Ship modes', body: 'No heading yet.\n' },
+          result: { path: '.robi/plans/ship-modes.md' }
+        })
+      )?.title
+    ).toBe('Ship modes')
+    expect(
+      planView(
+        call({
+          name: 'write_plan',
+          args: { body: 'No heading yet.\n' },
+          result: { path: '.robi/plans/ship-modes-abc.md' }
+        })
+      )?.title
+    ).toBe('ship-modes-abc')
+  })
+
+  it('stays closed until the write succeeds', () => {
+    expect(
+      planView(
+        call({
+          name: 'write_plan',
+          execution_status: 'running',
+          args: { plan_name: 'Ship modes', body: '# Ship modes\n' }
+        })
+      )
+    ).toBeNull()
+    expect(
+      planView(
+        call({
+          name: 'write_plan',
+          execution_status: 'failed',
+          error: 'plan file does not exist',
+          args: { body: '# Ship modes\n' }
+        })
+      )
+    ).toBeNull()
+  })
+
+  it('keeps the todo steps from the plan write', () => {
+    expect(
+      planView(
+        call({
+          name: 'write_plan',
+          args: {
+            body: '# Ship modes\n',
+            todos: [
+              { id: 'modes', content: 'Add the mode registry', status: 'pending' },
+              { id: 'wire', content: 'Register the tool', status: 'in_progress' },
+              { id: 'skip', content: '   ' },
+              { id: 'bad', content: 'Nope', status: 'done' }
+            ]
+          },
+          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
+        })
+      )?.todos
+    ).toEqual([
+      { id: 'modes', content: 'Add the mode registry', status: 'pending' },
+      { id: 'wire', content: 'Register the tool', status: 'in_progress' }
+    ])
+  })
+
+  it('names the file the build turn should read', () => {
+    expect(planBuildInstruction('.robi/plans/ship-modes.md')).toBe(
+      'Implement the plan at .robi/plans/ship-modes.md. Read that file and make the changes it describes.'
+    )
   })
 })
 

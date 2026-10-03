@@ -79,12 +79,73 @@
   color: var(--ink-strong);
 }
 
+.section + .section {
+  margin-top: var(--space-6);
+}
+
+.sectionTitle {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.sectionHint {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
 .card {
   max-width: 46rem;
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
   overflow: hidden;
+}
+
+.defaultRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--rule);
+}
+
+.defaultRow:first-child {
+  border-top: 0;
+}
+
+.modeName {
+  flex: 0 0 4.5rem;
+  color: var(--ink-strong);
+  font-size: 14px;
+}
+
+.ask {
+  color: var(--mode-ask);
+}
+
+.plan {
+  color: var(--mode-plan);
+}
+
+.agent {
+  color: var(--ink-muted);
+}
+
+.modelControl {
+  flex: 0 1 16rem;
+  width: 16rem;
+  min-width: 8rem;
+}
+
+.effortControl {
+  flex: 0 0 auto;
+  width: 9.5rem;
+  min-width: 7.5rem;
+  margin-left: auto;
 }
 
 .row {
@@ -145,6 +206,8 @@
 
 .segments {
   display: flex;
+  flex-shrink: 0;
+  margin-left: auto;
   gap: var(--space-1);
   padding: 3px;
   border-radius: 999px;

@@ -44,3 +44,13 @@
   color: var(--ink-strong);
   background: var(--bg-surface-active);
 }
+
+.item[data-tone='ask'],
+.item[data-tone='ask'][data-state='checked'] {
+  color: var(--mode-ask);
+}
+
+.item[data-tone='plan'],
+.item[data-tone='plan'][data-state='checked'] {
+  color: var(--mode-plan);
+}

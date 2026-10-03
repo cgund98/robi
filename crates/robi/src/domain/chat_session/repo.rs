@@ -43,5 +43,11 @@ pub trait ChatSessionRepository: Send + Sync {
         title: String,
     ) -> Result<Option<ChatSession>, ServiceError>;
 
+    /// Remember the plan the next agent prompt should re-read.
+    ///
+    /// `updated_at` and `last_used_at` stay put. A missing session is
+    /// [`ServiceError::NotFound`].
+    async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError>;
+
     async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError>;
 }

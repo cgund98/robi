@@ -57,6 +57,9 @@ pub const BASE_URL: &str = "base_url";
 /// Extra system-prompt text. Not a secret. Unset adds no user block.
 pub const SYSTEM_PROMPT: &str = "system_prompt";
 
+/// Brave Search subscription token. Always a secret. No default.
+pub const BRAVE_SEARCH_API_KEY: &str = "brave_search_api_key";
+
 /// Used when [`MODEL`] has not been stored yet.
 pub const DEFAULT_MODEL: &str = "glm-5.3";
 
@@ -70,7 +73,7 @@ pub struct KnownSetting {
 /// The whitelist entry for `key`, or `None` when the API must refuse it.
 pub fn known_setting(key: &str) -> Option<KnownSetting> {
     match key {
-        OPENCODE_GO_API_KEY => Some(KnownSetting {
+        OPENCODE_GO_API_KEY | BRAVE_SEARCH_API_KEY => Some(KnownSetting {
             secret: true,
             default_value: None,
         }),

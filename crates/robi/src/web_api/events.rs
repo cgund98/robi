@@ -52,9 +52,10 @@ pub async fn stream_events(
 ) -> Result<Response, ServiceError> {
     // Axum's `Query` extractor rejects a repeated key and a value that contains
     // `.`. Event types are dotted, and the shell repeats `event_types`.
-    let filter = StreamFilter::from_query(parse_query(raw.as_deref()))?;
+    let mut filter = StreamFilter::from_query(parse_query(raw.as_deref()))?;
+    let lease = open_index(&state, &mut filter).await;
     let subscription = state.event_fanout.subscribe();
-    let stream = event_stream(subscription, filter);
+    let stream = event_stream(subscription, filter, lease);
     let response = (
         [(
             HeaderName::from_static("x-accel-buffering"),
@@ -80,6 +81,8 @@ pub struct EventsStreamQuery {
 struct StreamFilter {
     event_types: Option<HashSet<String>>,
     session_id: Option<String>,
+    /// Workspace of `session_id`, so index progress for that workspace is delivered.
+    workspace_id: Option<String>,
 }
 
 impl StreamFilter {
@@ -100,12 +103,18 @@ impl StreamFilter {
         Ok(Self {
             event_types,
             session_id,
+            workspace_id: None,
         })
     }
 
     fn matches(&self, envelope: &EventEnvelope) -> bool {
         if let Some(session_id) = &self.session_id {
-            if envelope.subject != *session_id {
+            let same_session = envelope.subject == *session_id;
+            let same_workspace = self.workspace_id.as_ref().is_some_and(|workspace| {
+                envelope.event_type == crate::domain::events::INDEX_PROGRESS
+                    && envelope.subject == *workspace
+            });
+            if !same_session && !same_workspace {
                 return false;
             }
         }
@@ -176,20 +185,44 @@ fn decode_query_component(input: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+async fn open_index(
+    state: &AppState,
+    filter: &mut StreamFilter,
+) -> Option<crate::index::IndexLease> {
+    let session_id = filter.session_id.as_deref()?;
+    let uuid = Uuid::parse_str(session_id).ok()?;
+    let session = state
+        .chat_session_service
+        .get_chat_session(robi_core::ids::SessionId::from_uuid(uuid))
+        .await
+        .ok()?;
+    filter.workspace_id = Some(session.workspace_id.to_string());
+    let workspace = state
+        .workspace_service
+        .get_workspace(session.workspace_id)
+        .await
+        .ok()?;
+    Some(state.index.acquire(
+        session.workspace_id,
+        std::path::PathBuf::from(workspace.root),
+    ))
+}
+
 fn event_stream(
     subscription: EventSubscription,
     filter: StreamFilter,
+    lease: Option<crate::index::IndexLease>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures_util::stream::unfold(
-        (subscription, filter),
-        |(mut subscription, filter)| async move {
+        (subscription, filter, lease),
+        |(mut subscription, filter, lease)| async move {
             loop {
                 match subscription.recv().await {
                     Ok(envelope) => {
                         if !filter.matches(&envelope) {
                             continue;
                         }
-                        return Some((Ok(frame(&envelope)), (subscription, filter)));
+                        return Some((Ok(frame(&envelope)), (subscription, filter, lease)));
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => return None,
@@ -249,7 +282,7 @@ mod tests {
             &self,
             _id: SessionId,
         ) -> Result<Option<ChatSession>, ServiceError> {
-            unreachable!("events stream does not touch chat sessions")
+            Ok(None)
         }
 
         async fn list_chat_sessions(
@@ -271,6 +304,10 @@ mod tests {
             _id: SessionId,
             _title: String,
         ) -> Result<Option<ChatSession>, ServiceError> {
+            unreachable!("events stream does not touch chat sessions")
+        }
+
+        async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
             unreachable!("events stream does not touch chat sessions")
         }
 
@@ -300,6 +337,10 @@ mod tests {
             _reject: Option<String>,
         ) -> Result<(), ServiceError> {
             unreachable!("events stream does not settle tool calls")
+        }
+
+        async fn stop(&self, _session: SessionId) -> Result<(), ServiceError> {
+            unreachable!("events stream does not stop a turn")
         }
     }
 
@@ -351,10 +392,15 @@ mod tests {
                 store: Arc::new(Unused),
             }),
             settings_service: Arc::new(SettingsService { store: settings }),
-            event_fanout: fanout,
+            event_fanout: Arc::clone(&fanout),
             file_changes: Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             ),
+            index: Arc::new(crate::index::IndexHub::new(
+                std::env::temp_dir(),
+                Arc::clone(&fanout),
+                Arc::new(robi_index::FakeEmbedder::new(4)),
+            )),
         }
     }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import type { AgentPhase } from '../../state/chatStore'
 import styles from './ToolCallCard.module.css'
@@ -6,8 +6,10 @@ import {
   EDIT_VISIBLE_LINES,
   editPreview,
   editSuggestion,
+  exploreSummary,
   hasDetail,
   needsDecision,
+  planView,
   subagentCount,
   subagentStepSummary,
   subagentView,
@@ -16,6 +18,7 @@ import {
   type ChatToolCall,
   type DiffLine,
   type EditPreview,
+  type PlanView,
   type SubagentStepView
 } from './toolCallView'
 
@@ -23,10 +26,21 @@ type ToolCallCardProps = {
   call: ChatToolCall
   phase: AgentPhase
   busy: boolean
+  buildDisabled?: boolean
   onDecide: (decision: 'approve' | 'reject') => void
+  onBuild?: (path: string) => void
+  onViewPlan?: (plan: PlanView) => void
 }
 
-export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps) {
+export function ToolCallCard({
+  call,
+  phase,
+  busy,
+  buildDisabled = false,
+  onDecide,
+  onBuild,
+  onViewPlan
+}: ToolCallCardProps) {
   const summary = toolSummary(call)
   const decision = needsDecision(call, phase)
   const preview = editPreview(call)
@@ -51,6 +65,26 @@ export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps)
         />
       )
     }
+    if (call.name === 'web_search' || call.name === 'web_fetch') {
+      const headline = call.name === 'web_search' ? 'the web' : fetchHost(summary.target)
+      const detail =
+        summary.target && summary.target !== 'the web' && summary.target !== 'a page'
+          ? summary.target
+          : null
+      return (
+        <div className={styles.webApproval}>
+          <div className={styles.webApprovalBody}>
+            <p className={styles.approvalText}>
+              <ToolIcon name={call.name} />
+              <span className={styles.verb}>{summary.verb}</span>
+              <span className={styles.target}>{headline}</span>
+            </p>
+            {detail ? <p className={styles.webDetail}>{detail}</p> : null}
+          </div>
+          {actions}
+        </div>
+      )
+    }
     return (
       <div className={styles.approval}>
         <p className={styles.approvalText}>
@@ -66,6 +100,22 @@ export function ToolCallCard({ call, phase, busy, onDecide }: ToolCallCardProps)
 
   if (call.name === 'delegate') {
     return <DelegateCard call={call} status={status} />
+  }
+
+  const saved = planView(call)
+  if (saved) {
+    return (
+      <PlanCard
+        plan={saved}
+        buildDisabled={buildDisabled || saved.path.length === 0}
+        onBuild={() => {
+          if (saved.path && onBuild) {
+            onBuild(saved.path)
+          }
+        }}
+        onView={() => onViewPlan?.(saved)}
+      />
+    )
   }
 
   if (preview && status !== 'failed') {
@@ -124,6 +174,39 @@ function statusOf(call: ChatToolCall, phase: AgentPhase): 'running' | 'failed' |
   return null
 }
 
+function PlanCard({
+  plan,
+  buildDisabled,
+  onBuild,
+  onView
+}: {
+  plan: PlanView
+  buildDisabled: boolean
+  onBuild: () => void
+  onView: () => void
+}) {
+  return (
+    <div className={styles.planCard}>
+      <p className={styles.planStatus}>{plan.created ? 'Created Plan' : 'Updated Plan'}</p>
+      <p className={styles.planTitle}>{plan.title}</p>
+      {plan.summary ? <p className={styles.planSummary}>{plan.summary}</p> : null}
+      <div className={styles.planActions}>
+        <button type="button" className={styles.viewPlan} onClick={onView}>
+          View Plan
+        </button>
+        <button
+          type="button"
+          className={styles.planBuild}
+          disabled={buildDisabled}
+          onClick={onBuild}
+        >
+          Build
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function DelegateCard({
   call,
   status
@@ -134,41 +217,54 @@ function DelegateCard({
   const view = subagentView(call)
   const summary = toolSummary(call)
   const mode = view?.mode ?? 'explore'
-  const elapsed = useElapsed(view?.startedMs ?? 0, status === 'running' && view != null)
+  const label = mode === 'explore' ? 'Explore' : 'General'
   const steps = view?.steps ?? []
   const answer = view?.answer ?? ''
   const [open, setOpen] = useState(false)
-  const title = view?.description || summary.target || 'Delegate'
+  const [answerOpen, setAnswerOpen] = useState(false)
+  const title = view?.description || summary.target
 
   return (
-    <div className={`${styles.delegate} ${mode === 'explore' ? styles.delegateExplore : ''}`}>
-      <div className={styles.delegateHead}>
-        <span className={styles.verb}>{title}</span>
-        <span className={mode === 'explore' ? styles.exploreLabel : styles.modeLabel}>
-          {mode === 'explore' ? 'Explore' : 'General'}
-        </span>
-        {elapsed ? <span className={styles.meta}>{elapsed}</span> : null}
-        <span className={styles.meta}>{view ? subagentCount(view) : 'starting'}</span>
-        <StatusMark status={status} />
-      </div>
-      {steps.length > 0 ? (
-        <ul className={styles.steps}>
-          {steps.map((step, index) => (
-            <StepRow key={`${step.name}-${index}`} step={step} />
-          ))}
-        </ul>
+    <div className={styles.call}>
+      <button
+        type="button"
+        className={`${styles.row} ${status === 'failed' ? styles.rowFailed : ''}`}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {mode === 'explore' ? (
+          <span className={styles.exploreSummary}>{view ? exploreSummary(view) : 'Exploring'}</span>
+        ) : (
+          <>
+            <span className={styles.verb}>{label}</span>
+            <StatusMark status={status} />
+          </>
+        )}
+      </button>
+      {open ? (
+        <div className={styles.delegate}>
+          {title ? <p className={styles.delegateTitle}>{title}</p> : null}
+          {view && mode !== 'explore' ? <p className={styles.meta}>{subagentCount(view)}</p> : null}
+          {steps.length > 0 ? (
+            <ul className={styles.steps}>
+              {steps.map((step, index) => (
+                <StepRow key={`${step.name}-${index}`} step={step} />
+              ))}
+            </ul>
+          ) : null}
+          {answer ? (
+            <button
+              type="button"
+              className={styles.answerToggle}
+              aria-expanded={answerOpen}
+              onClick={() => setAnswerOpen((current) => !current)}
+            >
+              Answer
+            </button>
+          ) : null}
+          {answerOpen && answer ? <pre className={styles.detail}>{answer}</pre> : null}
+        </div>
       ) : null}
-      {answer ? (
-        <button
-          type="button"
-          className={styles.answerToggle}
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-        >
-          Answer
-        </button>
-      ) : null}
-      {open && answer ? <pre className={styles.detail}>{answer}</pre> : null}
     </div>
   )
 }
@@ -186,30 +282,19 @@ function StepRow({ step }: { step: SubagentStepView }) {
   )
 }
 
-function useElapsed(startedMs: number, running: boolean): string {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!running) {
-      return
-    }
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [running])
-  if (!running || startedMs <= 0) {
-    return ''
-  }
-  const secs = Math.max(0, Math.floor((now - startedMs) / 1000))
-  if (secs < 60) {
-    return `${secs}s`
-  }
-  return `${Math.floor(secs / 60)}m ${secs % 60}s`
-}
-
 function StatusMark({ status }: { status: 'running' | 'failed' | null }) {
   if (status === 'running') {
     return <span className={styles.spinner} aria-label="Running" />
   }
   return null
+}
+
+function fetchHost(url: string): string {
+  try {
+    return new URL(url).host || 'a page'
+  } catch {
+    return 'a page'
+  }
 }
 
 function ToolIcon({ name }: { name: string }) {
@@ -234,7 +319,7 @@ function ToolIcon({ name }: { name: string }) {
       </svg>
     )
   }
-  if (name === 'grep' || name === 'find') {
+  if (name === 'grep' || name === 'find' || name === 'web_search') {
     return (
       <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
         <circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" strokeWidth="1.4" />

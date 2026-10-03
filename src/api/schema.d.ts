@@ -84,6 +84,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat_sessions/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stop_agent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat_sessions/{id}/tool_calls/{call_id}": {
         parameters: {
             query?: never;
@@ -196,6 +212,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_index"];
+        put: operations["put_index"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -221,6 +253,8 @@ export interface components {
             usage?: null | components["schemas"]["ChatUsage"];
         };
         ChatSession: {
+            /** @description Hosts this session may fetch without another approval card. */
+            allow_hosts: string[];
             created_at: string;
             /** @description True while this session's actor is running. Read from memory, not the database. */
             has_pending_agent: boolean;
@@ -306,6 +340,18 @@ export interface components {
             decision: string;
             /** @description Shown to the model when `decision` is `reject`. Omitted uses a default. */
             reason?: string | null;
+        };
+        IndexCommand: {
+            /** @description `paused` or `running`. */
+            state: string;
+        };
+        IndexStatusBody: {
+            error?: string | null;
+            /** Format: int64 */
+            files_done: number;
+            /** Format: int64 */
+            files_total: number;
+            state: string;
         };
         /** @description Model and effort for one mode. Absent keys inherit the setting. */
         ModeOverrideBody: {
@@ -395,10 +441,15 @@ export interface components {
             /** @description `null` when the key is unset and has no default. Omitted when the stored value is a secret. */
             value?: string | null;
         };
+        StoppedAgent: {
+            status: string;
+        };
         SubmitInstruction: {
             instruction: string;
         };
         UpdateChatSession: {
+            /** @description Hostnames `web_fetch` may call without another approval. A present list replaces the stored list. */
+            allow_hosts?: string[] | null;
             /** @description `ask`, `plan`, or `agent`. Omitted leaves the stored mode. */
             mode?: string | null;
             model_config?: null | components["schemas"]["ModelConfigPatch"];
@@ -682,6 +733,36 @@ export interface operations {
             };
         };
     };
+    stop_agent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The actor has exited */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoppedAgent"];
+                };
+            };
+            /** @description Chat session is missing */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     decide_tool_call: {
         parameters: {
             query?: never;
@@ -949,6 +1030,63 @@ export interface operations {
         responses: {
             /** @description Workspace deleted */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_index: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Index status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexStatusBody"];
+                };
+            };
+        };
+    };
+    put_index: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IndexCommand"];
+            };
+        };
+        responses: {
+            /** @description Index status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexStatusBody"];
+                };
+            };
+            /** @description state is not paused or running */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

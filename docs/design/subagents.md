@@ -1,8 +1,9 @@
 # Subagents
 
 `delegate` hands one bounded task to a child agent and returns only that child's
-answer. The parent transcript stays small. The card under the call shows the
-child's tool calls as they happen.
+answer. The parent transcript stays small. The card under the call stays
+collapsed to **Explore** or **General**, with the running spinner while the
+child works. Opening it shows the child's tool calls.
 
 This page is the design for **F5.4** in the [roadmap](../roadmap.md). The loop
 that runs the child is [agent-loop.md](agent-loop.md). The card is
@@ -16,6 +17,7 @@ that runs the child is [agent-loop.md](agent-loop.md). The card is
 | Ask, plan, and agent mode selection | [agent-modes.md](agent-modes.md) |
 | The sandbox a general child's shell uses | [shell-tool.md](shell-tool.md) |
 | A separate explore model | Later. The child uses the session's current model |
+| Language-server tools on the child | [lsp.md](lsp.md). Both child modes gain the read-only set when it exists |
 
 ## Problem
 
@@ -29,14 +31,15 @@ One tool, `delegate`, with two modes.
 
 | | `explore` | `general` |
 |---|---|---|
-| Tools | `read_file`, `list_dir`, `find`, `grep` | those, plus `shell` |
+| Tools | `read_file`, `list_dir`, `find`, `grep`, `semantic_search` | those, plus `shell` |
 | Model turns | 40 | 50 |
 | Wall clock | 2 minutes | 2 minutes |
 | Calls per session | 6 | 4 |
 
 `explore` has no shell. Command output is `general`'s job, which is what makes
-explore safe to call for a search. Neither mode can edit, call `grant`, or call
-`delegate`. A child cannot start another child.
+explore safe to call for a search. Neither mode can edit, call `grant`, call
+`delegate`, or call `web_search` or `web_fetch`. A child cannot start another
+child.
 
 The agent-mode prompt, and the built-in rules when `delegate` is registered,
 tell the parent to use `explore` for a search that spans more than a couple of

@@ -100,6 +100,12 @@
   cursor: default;
 }
 
+.stopIcon {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -111,7 +117,13 @@
 .cluster {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
   gap: var(--space-1);
+}
+
+.mode {
+  margin-right: auto;
 }
 
 .control {
@@ -130,6 +142,16 @@
 .control:hover {
   color: var(--ink);
   background: var(--bg-surface-hover);
+}
+
+.modeAsk,
+.modeAsk:hover {
+  color: var(--mode-ask);
+}
+
+.modePlan,
+.modePlan:hover {
+  color: var(--mode-plan);
 }
 
 .meter {

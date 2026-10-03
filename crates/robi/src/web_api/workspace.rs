@@ -101,6 +101,7 @@ pub async fn delete_workspace(
 ) -> Result<StatusCode, ServiceError> {
     let id = parse_workspace_id(&id)?;
     state.workspace_service.delete_workspace(id).await?;
+    state.index.remove_files(id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -113,7 +114,7 @@ fn to_response(workspace: DomainWorkspace) -> Workspace {
     }
 }
 
-fn parse_workspace_id(value: &str) -> Result<WorkspaceId, ServiceError> {
+pub(crate) fn parse_workspace_id(value: &str) -> Result<WorkspaceId, ServiceError> {
     Uuid::parse_str(value)
         .map(WorkspaceId::from_uuid)
         .map_err(|_| ServiceError::BadRequest("id must be a UUID".to_string()))

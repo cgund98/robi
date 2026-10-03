@@ -1,4 +1,4 @@
-//! Create or update a markdown plan under `.robi/plans`.
+//! Create or update a markdown plan under `~/.robi/plans/<session_id>`.
 
 use std::sync::Arc;
 
@@ -9,12 +9,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::change::{atomic_write, ensure_parent, lock_path, read_text, record_baseline};
-use super::context::{display_path, ToolContext};
-
-const PLAN_DIR: &str = ".robi/plans";
-const IGNORE_LINE: &str = ".robi/plans";
-const MAX_TODOS: usize = 20;
+use super::change::{atomic_write, ensure_parent, lock_path, read_text};
+use super::context::ToolContext;
+use super::plan_file::{format_plan, is_session_plan_file, normalize_todos, plan_argument, Todo};
+use crate::workspace::user_home;
 
 pub struct WritePlan {
     ctx: Arc<ToolContext>,
@@ -26,14 +24,6 @@ impl WritePlan {
     pub fn new(ctx: Arc<ToolContext>, create: bool) -> Self {
         Self { ctx, create }
     }
-}
-
-#[derive(Deserialize)]
-struct Todo {
-    id: String,
-    content: String,
-    #[serde(default)]
-    status: String,
 }
 
 #[derive(Deserialize)]
@@ -55,9 +45,9 @@ impl Tool for WritePlan {
 
     fn description(&self) -> &str {
         if self.create {
-            "Create or update a markdown plan under .robi/plans. Pass path to overwrite an existing plan. Omit path to create .robi/plans/<plan_name>-<uuid>.md. Pass todos for the implementation steps. Each todo has an id, content, and status of pending, in_progress, completed, or canceled. The body is the markdown plan and does not include the todo list. Saving a plan adds .robi/plans to the workspace .gitignore when that file already exists."
+            "Create or update a markdown plan for this session under ~/.robi/plans/<session_id>. Pass path to overwrite an existing plan. Omit path to create ~/.robi/plans/<session_id>/<plan_name>-<uuid>.md. Pass todos for the implementation steps. Each todo has an id, content of at most 500 characters, and status of pending, in_progress, completed, or canceled. The body is the markdown plan and does not include the todo list."
         } else {
-            "Update an existing markdown plan under .robi/plans. Pass path to that file, the full body, and the todos. This does not create a new plan."
+            "Update an existing markdown plan for this session under ~/.robi/plans/<session_id>. Pass path to that file, the full body, and the todos. An omitted list removes the frontmatter. Change a status with todos instead. This does not create a new plan."
         }
     }
 
@@ -75,7 +65,7 @@ impl Tool for WritePlan {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Existing markdown plan under .robi/plans to overwrite."
+                    "description": "Existing markdown plan for this session. A path under ~/.robi/plans/<session_id>."
                 },
                 "todos": {
                     "type": "array",
@@ -84,7 +74,7 @@ impl Tool for WritePlan {
                         "type": "object",
                         "properties": {
                             "id": {"type": "string", "description": "Short stable id."},
-                            "content": {"type": "string", "description": "What the step is."},
+                            "content": {"type": "string", "description": "What the step is. At most 500 characters."},
                             "status": {
                                 "type": "string",
                                 "description": "pending, in_progress, completed, or canceled. Defaults to pending."
@@ -118,19 +108,13 @@ impl Tool for WritePlan {
             return Err(ToolError::InvalidArgs("body is required".into()));
         }
         let todos = normalize_todos(&args.todos)?;
-        let destination = self.destination(&args)?;
-        let resolved = self.ctx.resolve(&destination.relative)?;
-        if !plan_file(&resolved.relative) {
+        let home = user_home().map_err(|err| ToolError::Failed(err.to_string()))?;
+        let destination = self.destination(&args, &home)?;
+        let resolved = self.ctx.resolve(&destination.argument)?;
+        if !is_session_plan_file(&resolved.absolute, &home, self.ctx.session_id) {
             return Err(ToolError::Failed(
-                "path must be a markdown file under .robi/plans".into(),
+                "path must be a markdown file under ~/.robi/plans for this session".into(),
             ));
-        }
-        let filter = self.ctx.filter().await?;
-        if !filter.allows_write(&resolved.relative) {
-            return Err(ToolError::Failed(format!(
-                "path is not allowed: {}",
-                display_path(&resolved)
-            )));
         }
         let _guard = lock_path(&resolved.absolute).await;
         if run.cancel.is_cancelled() {
@@ -150,47 +134,48 @@ impl Tool for WritePlan {
             return Err(ToolError::Failed("plan file already exists".into()));
         }
         let existed = existing.is_some();
-        let before = existing.unwrap_or_default();
-        let relative = display_path(&resolved);
         let text = format_plan(&todos, &args.body);
-        record_baseline(
-            self.ctx.file_changes.as_ref(),
+        let stored = plan_argument(
             self.ctx.session_id,
-            &relative,
-            &before,
-            !existed,
-        )
-        .await?;
+            resolved
+                .absolute
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| ToolError::Failed("plan file name is missing".into()))?,
+        );
         ensure_parent(&resolved.absolute)?;
         atomic_write(&resolved.absolute, &text)?;
-        let gitignore_updated = append_plan_ignore(&self.ctx.root)?;
+        self.ctx.remember_plan(&stored).await?;
         Ok(json!({
-            "path": relative,
+            "path": stored,
             "status": if existed { "updated" } else { "created" },
-            "gitignore_updated": gitignore_updated,
         }))
     }
 }
 
 struct Destination {
-    relative: String,
+    argument: String,
     created: bool,
 }
 
 impl WritePlan {
-    fn destination(&self, args: &WritePlanArgs) -> Result<Destination, ToolError> {
+    fn destination(
+        &self,
+        args: &WritePlanArgs,
+        home: &std::path::Path,
+    ) -> Result<Destination, ToolError> {
         let path = args.path.trim();
         if !path.is_empty() {
             if !self.create {
                 return Ok(Destination {
-                    relative: path.to_owned(),
+                    argument: path.to_owned(),
                     created: false,
                 });
             }
             let resolved = self.ctx.resolve(path)?;
-            if !plan_file(&resolved.relative) {
+            if !is_session_plan_file(&resolved.absolute, home, self.ctx.session_id) {
                 return Err(ToolError::Failed(
-                    "path must be a markdown file under .robi/plans".into(),
+                    "path must be a markdown file under ~/.robi/plans for this session".into(),
                 ));
             }
             let exists = std::fs::metadata(&resolved.absolute)
@@ -200,7 +185,7 @@ impl WritePlan {
                 return Err(ToolError::Failed("plan file does not exist".into()));
             }
             return Ok(Destination {
-                relative: resolved.relative,
+                argument: path.to_owned(),
                 created: false,
             });
         }
@@ -210,21 +195,10 @@ impl WritePlan {
         let slug = plan_slug(&args.plan_name)?;
         let name = format!("{slug}-{}.md", Uuid::now_v7().simple());
         Ok(Destination {
-            relative: format!("{PLAN_DIR}/{name}"),
+            argument: plan_argument(self.ctx.session_id, &name),
             created: true,
         })
     }
-}
-
-fn plan_file(relative: &str) -> bool {
-    let Some(rest) = relative.strip_prefix(".robi/plans/") else {
-        return false;
-    };
-    !rest.is_empty()
-        && !rest.contains('/')
-        && !rest.contains('\\')
-        && rest.ends_with(".md")
-        && rest != ".md"
 }
 
 fn plan_slug(name: &str) -> Result<String, ToolError> {
@@ -246,119 +220,6 @@ fn plan_slug(name: &str) -> Result<String, ToolError> {
     Ok(slug.to_owned())
 }
 
-fn normalize_todos(todos: &[Todo]) -> Result<Vec<Todo>, ToolError> {
-    if todos.len() > MAX_TODOS {
-        return Err(ToolError::InvalidArgs(format!(
-            "task list is limited to {MAX_TODOS} items"
-        )));
-    }
-    let mut seen = Vec::new();
-    let mut in_progress = 0;
-    let mut out = Vec::with_capacity(todos.len());
-    for todo in todos {
-        let id = todo.id.trim();
-        let content = todo.content.trim();
-        let mut status = todo.status.trim().to_owned();
-        if id.is_empty() || id.chars().any(char::is_whitespace) || id.chars().count() > 64 {
-            return Err(ToolError::InvalidArgs(
-                "task id must be a short slug".into(),
-            ));
-        }
-        if content.is_empty() || content.chars().count() > 200 {
-            return Err(ToolError::InvalidArgs("task content is required".into()));
-        }
-        if status.is_empty() {
-            status = "pending".to_owned();
-        }
-        if !matches!(
-            status.as_str(),
-            "pending" | "in_progress" | "completed" | "canceled"
-        ) {
-            return Err(ToolError::InvalidArgs(
-                "task status must be pending, in_progress, completed, or canceled".into(),
-            ));
-        }
-        if seen.iter().any(|seen_id: &String| seen_id == id) {
-            return Err(ToolError::InvalidArgs(format!("duplicate task {id}")));
-        }
-        if status == "in_progress" {
-            in_progress += 1;
-        }
-        seen.push(id.to_owned());
-        out.push(Todo {
-            id: id.to_owned(),
-            content: content.to_owned(),
-            status,
-        });
-    }
-    if in_progress > 1 {
-        return Err(ToolError::InvalidArgs(
-            "only one task can be in progress".into(),
-        ));
-    }
-    Ok(out)
-}
-
-fn format_plan(todos: &[Todo], body: &str) -> String {
-    if todos.is_empty() {
-        return body.to_owned();
-    }
-    let mut text = String::from("---\ntodos:\n");
-    for todo in todos {
-        text.push_str("  - id: ");
-        text.push_str(&yaml_quote(&todo.id));
-        text.push_str("\n    content: ");
-        text.push_str(&yaml_quote(&todo.content));
-        text.push_str("\n    status: ");
-        text.push_str(&yaml_quote(&todo.status));
-        text.push('\n');
-    }
-    text.push_str("---\n");
-    text.push_str(body);
-    text
-}
-
-fn yaml_quote(value: &str) -> String {
-    let mut quoted = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '\\' | '"' => {
-                quoted.push('\\');
-                quoted.push(ch);
-            }
-            '\n' => quoted.push_str("\\n"),
-            '\r' => quoted.push_str("\\r"),
-            '\t' => quoted.push_str("\\t"),
-            _ => quoted.push(ch),
-        }
-    }
-    quoted.push('"');
-    quoted
-}
-
-fn append_plan_ignore(root: &std::path::Path) -> Result<bool, ToolError> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
-    let path = root.join(".gitignore");
-    let body = match std::fs::read_to_string(&path) {
-        Ok(body) => body,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(ToolError::Failed(format!("read .gitignore: {err}"))),
-    };
-    if body.lines().any(|line| line.trim() == IGNORE_LINE) {
-        return Ok(false);
-    }
-    let mut next = body;
-    if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
-    }
-    next.push_str(IGNORE_LINE);
-    next.push('\n');
-    std::fs::write(&path, next)
-        .map_err(|err| ToolError::Failed(format!("update .gitignore: {err}")))?;
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -372,9 +233,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_plan_creates_under_robi_plans_and_refuses_a_path_outside() {
+    async fn write_plan_creates_under_the_session_plan_dir_and_refuses_a_path_outside() {
         let harness = harness().await;
-        std::fs::write(harness.ctx.root.join(".gitignore"), "target\n").unwrap();
+        let _cleanup = remove_session_plans(harness.session_id);
         let tool = WritePlan::new(Arc::clone(&harness.ctx), true);
         let created = tool
             .execute(
@@ -388,15 +249,23 @@ mod tests {
             .await
             .unwrap();
         let path = created["path"].as_str().unwrap();
-        assert!(path.starts_with(".robi/plans/"));
+        assert!(path.starts_with(&format!("~/.robi/plans/{}/", harness.session_id)));
         assert!(path.ends_with(".md"));
         assert_eq!(created["status"], "created");
-        assert_eq!(created["gitignore_updated"], true);
-        let file = std::fs::read_to_string(harness.ctx.root.join(path)).unwrap();
+        let file = std::fs::read_to_string(expand_home(path)).unwrap();
         assert!(file.contains("id: \"modes\""));
         assert!(file.contains("Add ask, plan, and agent."));
-        let ignore = std::fs::read_to_string(harness.ctx.root.join(".gitignore")).unwrap();
-        assert!(ignore.contains(".robi/plans\n"));
+        let session = harness
+            .ctx
+            .sessions
+            .get_chat_session(harness.session_id)
+            .await
+            .unwrap();
+        assert_eq!(session.plan_path.as_deref(), Some(path));
+        let resolved = harness.ctx.resolve(path).unwrap();
+        let filter = harness.ctx.filter().await.unwrap();
+        assert!(filter.allows_read(&resolved.relative));
+        assert!(!filter.allows_write(&resolved.relative));
 
         let outside = tool
             .execute(json!({"path": "src/main.rs", "body": "nope\n"}), run())
@@ -417,11 +286,75 @@ mod tests {
 
         let missing = tool
             .execute(
-                json!({"path": ".robi/plans/missing.md", "body": "A plan.\n"}),
+                json!({
+                    "path": format!("~/.robi/plans/{}/missing.md", harness.session_id),
+                    "body": "A plan.\n"
+                }),
                 run(),
             )
             .await
             .unwrap_err();
         assert!(missing.to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_task_is_named_and_a_long_task_names_the_limit() {
+        let harness = harness().await;
+        let _cleanup = remove_session_plans(harness.session_id);
+        let tool = WritePlan::new(Arc::clone(&harness.ctx), true);
+        let empty = tool
+            .execute(
+                json!({
+                    "plan_name": "Docs",
+                    "body": "Rewrite the docs.\n",
+                    "todos": [
+                        {"id": "outline", "content": "List the pages"},
+                        {"id": "rewrite", "content": "  "}
+                    ]
+                }),
+                run(),
+            )
+            .await
+            .unwrap_err();
+        assert!(empty
+            .to_string()
+            .contains("task rewrite content is required"));
+
+        let long = tool
+            .execute(
+                json!({
+                    "plan_name": "Docs",
+                    "body": "Rewrite the docs.\n",
+                    "todos": [{"id": "rewrite", "content": "x".repeat(501)}]
+                }),
+                run(),
+            )
+            .await
+            .unwrap_err();
+        let message = long.to_string();
+        assert!(message.contains("task rewrite content is limited to 500 characters"));
+        assert!(!message.contains("task content is required"));
+    }
+
+    fn expand_home(path: &str) -> std::path::PathBuf {
+        crate::workspace::user_home()
+            .unwrap()
+            .join(path.strip_prefix("~/").unwrap())
+    }
+
+    fn remove_session_plans(session_id: robi_core::ids::SessionId) -> RemoveSessionPlans {
+        let dir = crate::workspace::user_home()
+            .unwrap()
+            .join(".robi/plans")
+            .join(session_id.to_string());
+        RemoveSessionPlans(dir)
+    }
+
+    struct RemoveSessionPlans(std::path::PathBuf);
+
+    impl Drop for RemoveSessionPlans {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }

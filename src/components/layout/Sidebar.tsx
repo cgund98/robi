@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
 import styles from './Sidebar.module.css'
+import { IndexStatusLine } from './IndexStatusLine'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 type SidebarProps = {
@@ -134,6 +135,7 @@ export function Sidebar({
       </div>
 
       <div className={styles.footer}>
+        <IndexStatusLine />
         <button
           type="button"
           className={styles.navLink}

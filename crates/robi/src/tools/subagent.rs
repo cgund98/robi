@@ -108,6 +108,9 @@ pub(crate) fn register_child_tools(
     registry.register(read(Arc::new(ListDir::new(Arc::clone(&ctx)))))?;
     registry.register(read(Arc::new(Find::new(Arc::clone(&ctx)))))?;
     registry.register(read(Arc::new(Grep::new(Arc::clone(&ctx)))))?;
+    registry.register(read(Arc::new(super::semantic_search::SemanticSearch::new(
+        Arc::clone(&ctx),
+    ))))?;
     if mode == SubagentMode::General {
         registry.register(read(Arc::new(Shell::new(ctx))))?;
     }
@@ -288,6 +291,7 @@ pub(crate) fn step_target(name: &str, args: &Value) -> String {
                 pattern
             }
         }
+        "semantic_search" => field("query"),
         "find" => {
             if !pattern.is_empty() {
                 pattern
@@ -356,19 +360,26 @@ You are a file search specialist. You explore an unfamiliar codebase and report
 what you found. You do not change anything.
 
 <tools>
+- semantic_search: search by meaning. Your first call for a question about how
+  something behaves. indexing and downloading mean the corpus is incomplete, so
+  use grep for that question.
+- grep: search file contents. The pattern is a literal substring unless you set
+  regex. Use it when you already have an identifier or an exact string, then
+  narrow with path.
 - find: list files whose paths match a substring. Use it for path patterns and to
   learn a directory's shape.
-- grep: search file contents. The pattern is a literal substring unless you set
-  regex. Start broad, then narrow with path.
 - list_dir: list one directory.
 - read_file: read a file when you know the path, or a line window with offset and
   limit. Continue from next_offset when truncated is true.
 </tools>
 
 <rules>
-- Honor the thoroughness the caller names. \"quick\" is a handful of searches;
-  \"medium\" is the obvious paths and naming conventions; \"very thorough\" follows
-  every naming convention, plural, and abbreviation you can think of.
+- A question about behavior starts with semantic_search, before grep or find.
+  Read the hits it returns. Grep only after you have an identifier, or when
+  semantic_search reports indexing or downloading.
+- Honor the thoroughness the caller names. \"quick\" is that search and the
+  files it points at; \"medium\" follows the hits into the callers; \"very
+  thorough\" also checks the other names and abbreviations.
 - Report evidence, not impressions. Give workspace-relative paths with line
   numbers and the exact identifier, function, or string you found.
 - If a search comes back empty, say so and say what you tried. A negative result
@@ -408,7 +419,8 @@ You are an investigator. You read, search, and run sandboxed commands, then
 report what you found. You do not change files.
 
 <tools>
-- find, grep, list_dir, and read_file inspect the workspace.
+- semantic_search, find, grep, list_dir, and read_file inspect the workspace.
+  A question about behavior starts with semantic_search.
 - shell runs a sandboxed command. It can read and write the workspace, and it
   cannot read the home directory, secret files, or the network. A call that
   would need approval fails with access_denied. Do not set unsandboxed,

@@ -18,7 +18,7 @@ use crate::domain::{
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, mode, model_config, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mode, model_config, plan_path, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
     error!(?err, %context, "sqlite chat session repository error");
@@ -49,9 +49,13 @@ fn chat_session_from_row(
         deny_read: decode_patterns(context, &row_text(context, &row, "path_deny_read")?)?,
         deny_write: decode_patterns(context, &row_text(context, &row, "path_deny_write")?)?,
     };
+    let allow_hosts = decode_patterns(context, &row_text(context, &row, "allow_hosts")?)?;
     let mode = AgentMode::parse(&row_text(context, &row, "mode")?)
         .map_err(|err| log_unknown(context, err))?;
     let model_config = decode_model_config(context, &row_text(context, &row, "model_config")?)?;
+    let plan_path: Option<String> = row
+        .try_get("plan_path")
+        .map_err(|err| log_unknown(context, err))?;
     let created_at: String = row
         .try_get("created_at")
         .map_err(|err| log_unknown(context, err))?;
@@ -67,8 +71,10 @@ fn chat_session_from_row(
         workspace_id: WorkspaceId::from_uuid(parse_uuid(context, &workspace_id)?),
         title,
         path_rules,
+        allow_hosts,
         mode,
         model_config,
+        plan_path,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
         last_used_at: parse_timestamp(context, &last_used_at)?,
@@ -133,16 +139,17 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let allow_write = encode_patterns(&path_rules.allow_write)?;
         let deny_read = encode_patterns(&path_rules.deny_read)?;
         let deny_write = encode_patterns(&path_rules.deny_write)?;
+        let allow_hosts = encode_patterns(&[])?;
         let model_config = encode_model_config(&command.model_config)?;
 
         sqlx::query(
             r#"
             INSERT INTO chat_sessions (
                 id, workspace_id, title, path_allow_read, path_allow_write,
-                path_deny_read, path_deny_write, mode, model_config, created_at, updated_at,
-                last_used_at
+                path_deny_read, path_deny_write, allow_hosts, mode, model_config, created_at,
+                updated_at, last_used_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
         )
         .bind(id.to_string())
@@ -152,6 +159,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&allow_write)
         .bind(&deny_read)
         .bind(&deny_write)
+        .bind(&allow_hosts)
         .bind(command.mode.as_str())
         .bind(&model_config)
         .bind(&timestamp)
@@ -171,8 +179,10 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             workspace_id: command.workspace_id,
             title: command.title,
             path_rules,
+            allow_hosts: Vec::new(),
             mode: command.mode,
             model_config: command.model_config,
+            plan_path: None,
             created_at: now,
             updated_at: now,
             last_used_at: now,
@@ -224,6 +234,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let allow_write = encode_patterns(&session.path_rules.allow_write)?;
         let deny_read = encode_patterns(&session.path_rules.deny_read)?;
         let deny_write = encode_patterns(&session.path_rules.deny_write)?;
+        let allow_hosts = encode_patterns(&session.allow_hosts)?;
         let model_config = encode_model_config(&session.model_config)?;
         sqlx::query(
             r#"
@@ -233,10 +244,11 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
                 path_allow_write = ?3,
                 path_deny_read = ?4,
                 path_deny_write = ?5,
-                mode = ?6,
-                model_config = ?7,
-                updated_at = ?8
-            WHERE id = ?9
+                allow_hosts = ?6,
+                mode = ?7,
+                model_config = ?8,
+                updated_at = ?9
+            WHERE id = ?10
             "#,
         )
         .bind(&session.title)
@@ -244,6 +256,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .bind(&allow_write)
         .bind(&deny_read)
         .bind(&deny_write)
+        .bind(&allow_hosts)
         .bind(session.mode.as_str())
         .bind(&model_config)
         .bind(session.updated_at.to_rfc3339())
@@ -300,6 +313,25 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             return Err(ServiceError::NotFound(id.to_string()));
         }
 
+        Ok(())
+    }
+
+    async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE chat_sessions
+            SET plan_path = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind(&path)
+        .bind(id.to_string())
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|err| log_unknown("set_plan_path: update", err))?;
+        if result.rows_affected() == 0 {
+            return Err(ServiceError::NotFound(id.to_string()));
+        }
         Ok(())
     }
 }
@@ -382,6 +414,15 @@ mod tests {
 
         let loaded = repo.get_chat_session(created.id).await.unwrap().unwrap();
         assert_eq!(loaded, created);
+        assert_eq!(loaded.plan_path, None);
+        let updated_at = loaded.updated_at;
+        repo.set_plan_path(created.id, ".robi/plans/ship.md".into())
+            .await
+            .unwrap();
+        let pointed = repo.get_chat_session(created.id).await.unwrap().unwrap();
+        assert_eq!(pointed.plan_path.as_deref(), Some(".robi/plans/ship.md"));
+        assert_eq!(pointed.updated_at, updated_at);
+        assert_eq!(pointed.last_used_at, loaded.last_used_at);
         assert!(repo
             .get_chat_session(SessionId::new())
             .await
@@ -591,6 +632,7 @@ mod tests {
                 allow_write: None,
                 deny_read: None,
                 deny_write: None,
+                allow_hosts: None,
                 mode: None,
                 model_config: None,
             })

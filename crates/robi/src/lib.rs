@@ -11,10 +11,12 @@
 
 pub mod adapters;
 pub mod domain;
+pub mod index;
 pub mod prompt;
 pub mod providers;
 pub mod review;
 pub mod sandbox;
 pub mod tools;
+pub mod web;
 pub mod web_api;
 pub mod workspace;

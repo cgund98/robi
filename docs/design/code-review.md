@@ -48,7 +48,14 @@ come first, then files. Each group is alphabetical, without regard to case.
 A click scrolls the right pane to that file.
 
 The file header shows the path, then `+N` and `-N`. **Reject** and **Approve**
-sit on the right. **Approve** keeps the file as it is and folds that text
+sit on the right. A click on the path opens that file in a dialog. The dialog has
+**Diff**, **Current**, and **Previous**, and it opens on **Diff**. **Diff**
+is the whole file, with deletions and insertions in place. Unchanged
+lines stay in the list. **Current** is the whole current text.
+**Previous** is the whole baseline. A markdown file also has **Preview**,
+which renders the current text. Headings step down by level. A deleted
+markdown file renders the baseline. An added file on **Previous**, or a
+deleted file on **Current**, shows `File added` or `File deleted`. **Approve** keeps the file as it is and folds that text
 into the baseline, so the path leaves the review. **Reject** writes the
 baseline back. A file this session created, fully rejected, is removed.
 
@@ -58,12 +65,14 @@ created: that file only has the buttons on its header. **Approve** folds that hu
 current lines into the baseline. **Reject** puts that hunk's baseline lines
 back on disk. A hunk that no longer matches the file is `409`.
 
-The right pane lists every file in that tree order. The default is the
+The right pane lists every file in that tree order. Each file is its own
+panel, with space between panels. The default is the
 unified diff: context, deletions, and insertions. **Current** hides
 deletions. **Previous** hides insertions. An added file on Previous, or a
 deleted file on Current, shows one line — `File added` or `File deleted` —
-instead of an empty block. A long line scrolls with its file. The line
-numbers stay put.
+instead of an empty block. A long line scrolls with the whole file, in
+one horizontal scroll. The line numbers stay put. Copying lines leaves
+the numbers and the `+` / `−` marks out.
 
 Known extensions (`ts`, `tsx`, `js`, `jsx`, `rs`, `py`, `go`, `json`, `css`,
 `md`, `html`, `toml`, `yaml`, `yml`, `sql`) are highlighted with the

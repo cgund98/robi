@@ -182,6 +182,26 @@ The idle path avoids the third case by reading the transcript before it
 spawns. The running path cannot: the decision to accept was made while a turn
 was still in flight.
 
+### Stop
+
+`stop` cancels the in-flight turn and drops any instruction that has not
+started. It does not queue a replacement.
+
+1. If the slot is missing or `running` is false, return. The session is
+   already idle.
+2. Cancel the stored token when there is one, and clear `pending`.
+3. Wait until that actor has cleared `running`. The wait is for the
+   generation that was running when `stop` was called. A later actor does
+   not hold this call.
+
+The HTTP handler returns after that wait. `POST /chat_sessions/{id}/stop`
+is `202` `{ "status": "stopped" }`. A missing session is `404`. Stopping an
+idle session is the same `202`.
+
+A user message already appended stays. A partial assistant message is not
+appended. An instruction still in `pending` is discarded and is never
+appended. The composer stays locked until this call returns.
+
 ### Session title
 
 When `user_input` returns `Complete` and the chat session's `title` is still
@@ -212,6 +232,8 @@ free to take the next instruction; the title task does not hold the slot.
 ```text
 submit(session, instruction) -> Result<SubmitOutcome, ServiceError>
 running_session_ids() -> Vec<SessionId>
+decide(session, call, reject) -> Result<(), ServiceError>
+stop(session) -> Result<(), ServiceError>
 ```
 
 `SubmitOutcome` is `Accepted` or `AwaitingApproval`.
@@ -220,7 +242,7 @@ slots stay in the map and are left out. Nothing about this list is written
 to the database.
 
 `ChatMessageService` checks the instruction and the chat session, then calls
-`submit`, `MessageStore::messages`, or `MessageStore::message`.
+`submit`, `stop`, `MessageStore::messages`, or `MessageStore::message`.
 `list_messages` and `get_message` do not call the runtime. `get_message`
 loads that id through `MessageStore::message`.
 Chat session responses copy `running_session_ids` into `has_pending_agent` on
@@ -287,6 +309,9 @@ to the factory.
 - A submit while a turn is in flight returns `202`, cancels that turn, and
   leaves the replacement in `pending`. The user message already appended
   stays.
+- A stop while a turn is in flight cancels that turn, drops `pending`, and
+  returns after the actor exits. The user message already appended stays.
+  Stopping an idle session returns `202` and changes nothing.
 - `decide` while the actor is running returns `409`. While idle, it approves
   or rejects that call and resumes the turn.
 - A submit while idle and awaiting approval returns `409`. The transcript is
@@ -313,6 +338,9 @@ to the factory.
   overlapping submits run one `user_input` at a time, the first turn observes
   cancel, and the second transcript contains both the original user message
   and the newer instruction.
+- `stop` on that same blocked model returns only after the actor is idle.
+  The transcript keeps the user message and has no assistant message. A
+  second `stop` on the idle session returns immediately.
 - A transcript with a pending tool call returns `AwaitingApproval` and the
   message list is unchanged.
 - `ChatMessageService` with a fake `ChatRuntime`: a blank instruction is

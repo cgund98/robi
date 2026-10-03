@@ -43,7 +43,12 @@ default chain, built by `assemble_session` when a session actor starts, is:
    in that directory only. `fallback_files` on `ProjectAgents` adds extra names
    beside those two. The default chain passes an empty list.
 6. **Working directory.** The workspace root, in `<cwd>`.
-7. **Mode.** The active mode, in `<mode>`. This block is last. See
+7. **Mode.** The active mode, in `<mode>`. See
+   [agent-modes.md](agent-modes.md).
+8. **Plan checklist.** When the session is in agent mode and `plan_path`
+   names a plan that has todos, a `<todos path="…">` block lists each id,
+   status, and content. The path is `~/.robi/plans/<session_id>/<file>.md`.
+   A missing file, an empty list, or any other mode skips the block. See
    [agent-modes.md](agent-modes.md).
 
 A source is added with `PromptAssembler::source`. A new kind of instruction is
@@ -54,9 +59,9 @@ with `[earlier instructions truncated]`. The project chain is one block, so a
 short budget drops the root file before the closest one.
 
 `SettingsModelSource::model` receives the session tool registry, the
-workspace root, and the active mode, assembles this chain, and stores it on
-`ProviderSettings`. The provider prepends it as a system message. The
-transcript does not store it.
+workspace root, the active mode, and the session's `plan_path`. It assembles
+this chain and stores it on `ProviderSettings`. The provider prepends it as a
+system message. The transcript does not store it.
 
 Instruction text cannot add a tool or change a path rule. The built-in rules
 say so, and the tools do not read the prompt to decide.
@@ -75,6 +80,9 @@ say so, and the tools do not read the prompt to decide.
 - A missing file is skipped.
 - A file that cannot be read is skipped, and a warning is logged. The turn
   still starts.
-- No workspace root skips the project chain and the working-directory block.
-  Tests that build a model without a session take that path.
+- No workspace root skips the project chain, the working-directory block,
+  and the plan checklist. Tests that build a model without a session take
+  that path.
+- A plan file that cannot be read, or whose frontmatter does not parse, skips
+  the checklist. A warning is logged. The turn still starts.
 - No home directory skips `~/.robi/system.md` and `~/.robi/AGENTS.md`.

@@ -281,6 +281,10 @@ mod tests {
         ) -> Result<(), ServiceError> {
             Ok(())
         }
+
+        async fn stop(&self, _session: SessionId) -> Result<(), ServiceError> {
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -370,6 +374,11 @@ mod tests {
             }),
             event_fanout: Arc::new(EventFanOut::new()),
             file_changes,
+            index: Arc::new(crate::index::IndexHub::new(
+                std::env::temp_dir(),
+                Arc::new(EventFanOut::new()),
+                Arc::new(robi_index::FakeEmbedder::new(4)),
+            )),
         };
 
         let body = get_session_review(State(state), Path(session.id.to_string()))

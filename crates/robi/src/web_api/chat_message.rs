@@ -32,6 +32,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chat_sessions/{id}/tool_calls/{call_id}",
             axum::routing::post(decide_tool_call),
         )
+        .route(
+            "/api/v1/chat_sessions/{id}/stop",
+            axum::routing::post(stop_agent),
+        )
         .with_state(state)
 }
 
@@ -152,6 +156,30 @@ pub async fn decide_tool_call(
     ))
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    post,
+    path = "/api/v1/chat_sessions/{id}/stop",
+    params(("id" = String, Path, description = "Chat session id")),
+    responses(
+        (status = 202, description = "The actor has exited", body = StoppedAgent),
+        (status = 404, description = "Chat session is missing")
+    )
+)]
+pub async fn stop_agent(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<StoppedAgent>), ServiceError> {
+    let session = parse_session_id(&id)?;
+    state.chat_message_service.stop(session).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(StoppedAgent {
+            status: "stopped".into(),
+        }),
+    ))
+}
+
 fn parse_session_id(value: &str) -> Result<robi_core::ids::SessionId, ServiceError> {
     let id =
         Uuid::parse_str(value).map_err(|_| ServiceError::BadRequest("id must be a UUID".into()))?;
@@ -186,6 +214,11 @@ pub struct DecideToolCall {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AcceptedInstruction {
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StoppedAgent {
     pub status: String,
 }
 

@@ -1,6 +1,7 @@
 //! Compiled allow and deny regexes for one session.
 
 use regex::Regex;
+use robi_core::ids::SessionId;
 
 use crate::domain::chat_session::model::PathRules;
 
@@ -21,6 +22,13 @@ pub struct PathFilter {
 }
 
 impl PathFilter {
+    /// Compiled rules plus the read allow for this session's plan directory.
+    pub fn for_session(rules: &PathRules, session_id: SessionId) -> Result<Self, String> {
+        let mut rules = rules.clone();
+        rules.allow_read.push(session_plan_read_allow(session_id));
+        Self::compile(&rules)
+    }
+
     pub fn compile(rules: &PathRules) -> Result<Self, String> {
         let rules = rules.with_system_defaults();
         Ok(Self {
@@ -48,6 +56,28 @@ impl PathFilter {
     pub fn skip_dir(&self, relative_path: &str) -> bool {
         !relative_path.is_empty() && !self.allows_read(relative_path)
     }
+}
+
+/// Read allow for `~/.robi/plans/<session_id>`, matched on the workspace-relative path.
+///
+/// The directory may sit after `..` and other path components when the
+/// workspace is not under the home directory.
+fn session_plan_read_allow(session_id: SessionId) -> String {
+    format!(
+        r"(^|/)\.robi/plans/{}(/|$)",
+        regex_literal(&session_id.to_string())
+    )
+}
+
+fn regex_literal(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if "\\.+*?()[]{}|^$".contains(ch) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn compile_all(patterns: &[String]) -> Result<Vec<Rule>, String> {
@@ -213,6 +243,25 @@ mod tests {
         assert!(filter.skip_dir(".git"));
         assert!(filter.skip_dir("../gopi"));
         assert!(!filter.skip_dir("src"));
+    }
+
+    #[test]
+    fn a_session_may_read_its_own_plans_and_not_another_sessions() {
+        let session = SessionId::new();
+        let other = SessionId::new();
+        let filter = PathFilter::for_session(&PathRules::default(), session).unwrap();
+        let own = format!("../../../.robi/plans/{session}/ship.md");
+        let inside = format!(".robi/plans/{session}/ship.md");
+        let elsewhere = format!("../../Users/ada/.robi/plans/{session}/ship.md");
+        let foreign = format!("../../../.robi/plans/{other}/ship.md");
+        assert!(filter.allows_read(&own));
+        assert!(filter.allows_read(&inside));
+        assert!(filter.allows_read(&elsewhere));
+        assert!(filter.allows_read(&format!("../../../.robi/plans/{session}")));
+        assert!(!filter.allows_write(&own));
+        assert!(!filter.allows_read(&foreign));
+        assert!(!filter.allows_read("../../../.robi/secrets.toml"));
+        assert!(!filter.allows_read(&format!("../../../.robi/plans/{session}-extra/ship.md")));
     }
 
     #[test]

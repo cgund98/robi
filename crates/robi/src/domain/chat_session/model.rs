@@ -68,6 +68,30 @@ fn append_patterns(mut base: Vec<String>, extra: &[String]) -> Vec<String> {
     base
 }
 
+/// A hostname for `allow_hosts`. No scheme, port, user info, or path.
+///
+/// A trailing dot is stripped. The stored form is lowercase.
+pub fn normalize_host(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.contains("://") || raw.contains('@') || raw.contains('/') {
+        return Err(format!("host must be a hostname: {raw}"));
+    }
+    let url = url::Url::parse(&format!("https://{raw}"))
+        .map_err(|_| format!("host must be a hostname: {raw}"))?;
+    if url.port().is_some() || url.path() != "/" || url.query().is_some() {
+        return Err(format!("host must be a hostname: {raw}"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("host must be a hostname: {raw}"))?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return Err(format!("host must be a hostname: {raw}"));
+    }
+    Ok(host)
+}
+
 pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     regex::Regex::new(pattern)
         .map(|_| ())
@@ -244,8 +268,17 @@ pub struct ChatSession {
     pub workspace_id: WorkspaceId,
     pub title: Option<String>,
     pub path_rules: PathRules,
+    /// Hosts `web_fetch` may call without another approval card.
+    ///
+    /// Exact match after lowercasing and stripping a trailing dot.
+    pub allow_hosts: Vec<String>,
     pub mode: AgentMode,
     pub model_config: ModelConfig,
+    /// Workspace-relative plan last written by `write_plan` or `todos`.
+    ///
+    /// Null until one of those tools runs. A later write replaces it.
+    /// `updated_at` and `last_used_at` do not move.
+    pub plan_path: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
@@ -275,6 +308,7 @@ pub struct UpdateChatSessionCommand {
     pub allow_write: Option<Vec<String>>,
     pub deny_read: Option<Vec<String>>,
     pub deny_write: Option<Vec<String>>,
+    pub allow_hosts: Option<Vec<String>>,
     pub mode: Option<AgentMode>,
     pub model_config: Option<ModelConfigUpdate>,
 }
@@ -288,6 +322,7 @@ impl UpdateChatSessionCommand {
             allow_write: None,
             deny_read: None,
             deny_write: None,
+            allow_hosts: None,
             mode: None,
             model_config: None,
         }
@@ -299,6 +334,7 @@ impl UpdateChatSessionCommand {
             && self.allow_write.is_none()
             && self.deny_read.is_none()
             && self.deny_write.is_none()
+            && self.allow_hosts.is_none()
             && self.mode.is_none()
             && self
                 .model_config
@@ -344,6 +380,9 @@ pub fn apply_session_update(session: &mut ChatSession, command: &UpdateChatSessi
     }
     if let Some(patterns) = &command.deny_write {
         session.path_rules.deny_write.clone_from(patterns);
+    }
+    if let Some(hosts) = &command.allow_hosts {
+        session.allow_hosts.clone_from(hosts);
     }
     if let Some(mode) = command.mode {
         session.mode = mode;

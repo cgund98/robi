@@ -345,6 +345,40 @@
         }
       }
     },
+    "/api/v1/chat_sessions/{id}/stop": {
+      "post": {
+        "tags": [
+          "chat_message"
+        ],
+        "operationId": "stop_agent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The actor has exited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoppedAgent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Chat session is missing"
+          }
+        }
+      }
+    },
     "/api/v1/chat_sessions/{id}/tool_calls/{call_id}": {
       "post": {
         "tags": [
@@ -679,6 +713,79 @@
           }
         }
       }
+    },
+    "/api/v1/workspaces/{id}/index": {
+      "get": {
+        "tags": [
+          "code_index"
+        ],
+        "operationId": "get_index",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Index status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexStatusBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "code_index"
+        ],
+        "operationId": "put_index",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Index status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexStatusBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "state is not paused or running"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -768,6 +875,7 @@
           "path_allow_write",
           "path_deny_read",
           "path_deny_write",
+          "allow_hosts",
           "mode",
           "model_config",
           "created_at",
@@ -776,6 +884,13 @@
           "has_pending_agent"
         ],
         "properties": {
+          "allow_hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts this session may fetch without another approval card."
+          },
           "created_at": {
             "type": "string"
           },
@@ -1041,6 +1156,47 @@
               "null"
             ],
             "description": "Shown to the model when `decision` is `reject`. Omitted uses a default."
+          }
+        }
+      },
+      "IndexCommand": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "`paused` or `running`."
+          }
+        }
+      },
+      "IndexStatusBody": {
+        "type": "object",
+        "required": [
+          "state",
+          "files_done",
+          "files_total"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files_done": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string"
           }
         }
       },
@@ -1321,6 +1477,17 @@
           }
         }
       },
+      "StoppedAgent": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "SubmitInstruction": {
         "type": "object",
         "required": [
@@ -1335,6 +1502,16 @@
       "UpdateChatSession": {
         "type": "object",
         "properties": {
+          "allow_hosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Hostnames `web_fetch` may call without another approval. A present list replaces the stored list."
+          },
           "mode": {
             "type": [
               "string",

@@ -142,6 +142,7 @@ pub async fn update_chat_session(
             allow_write: payload.path_allow_write,
             deny_read: payload.path_deny_read,
             deny_write: payload.path_deny_write,
+            allow_hosts: payload.allow_hosts,
             mode: match payload.mode {
                 Some(mode) => Some(parse_mode(Some(mode.as_str()))?),
                 None => None,
@@ -191,6 +192,7 @@ fn to_response(session: DomainChatSession, running: &HashSet<SessionId>) -> Chat
         path_allow_write: session.path_rules.allow_write,
         path_deny_read: session.path_rules.deny_read,
         path_deny_write: session.path_rules.deny_write,
+        allow_hosts: session.allow_hosts,
         mode: session.mode.as_str().to_owned(),
         model_config: ModelConfigBody::from(session.model_config),
         created_at: rfc3339(session.created_at),
@@ -313,6 +315,9 @@ pub struct UpdateChatSession {
     /// Regexes matched against the workspace-relative path. A match denies a write.
     #[serde(default)]
     pub path_deny_write: Option<Vec<String>>,
+    /// Hostnames `web_fetch` may call without another approval. A present list replaces the stored list.
+    #[serde(default)]
+    pub allow_hosts: Option<Vec<String>>,
     /// `ask`, `plan`, or `agent`. Omitted leaves the stored mode.
     #[serde(default)]
     pub mode: Option<String>,
@@ -390,6 +395,8 @@ pub struct ChatSession {
     pub path_allow_write: Vec<String>,
     pub path_deny_read: Vec<String>,
     pub path_deny_write: Vec<String>,
+    /// Hosts this session may fetch without another approval card.
+    pub allow_hosts: Vec<String>,
     /// `ask`, `plan`, or `agent`.
     pub mode: String,
     pub model_config: ModelConfigBody,

@@ -16,6 +16,7 @@ use robi_core::prompt::{render, PromptBlock};
 use robi_core::tool::ToolRegistry;
 
 use crate::domain::chat_session::model::AgentMode;
+use crate::tools::plan_file::todos_prompt;
 
 use mode::ModePrefix;
 
@@ -94,6 +95,8 @@ pub struct SessionPrompt<'a> {
     pub config_dir: Option<PathBuf>,
     pub workspace: Option<PathBuf>,
     pub mode: AgentMode,
+    /// Workspace-relative plan whose checklist is re-read for an agent turn.
+    pub plan_path: Option<String>,
     pub max_bytes: usize,
 }
 
@@ -132,7 +135,29 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
         });
         assembler = assembler.source(WorkingDirectory { path: workspace });
     }
-    assembler.source(ModePrefix { mode: input.mode }).render()
+    assembler = assembler.source(ModePrefix { mode: input.mode });
+    if input.mode == AgentMode::Agent {
+        if let Some(path) = input.plan_path.as_deref() {
+            if let Some(body) = todos_prompt(path) {
+                assembler = assembler.source(PlanChecklist { body });
+            }
+        }
+    }
+    assembler.render()
+}
+
+/// The open checklist, already wrapped, so the path can sit on the tag.
+struct PlanChecklist {
+    body: String,
+}
+
+impl PromptSource for PlanChecklist {
+    fn load(&self) -> Option<PromptBlock> {
+        Some(PromptBlock {
+            tag: None,
+            body: self.body.clone(),
+        })
+    }
 }
 
 /// Names and descriptions, so a source can render without holding the registry lock.
@@ -222,6 +247,7 @@ mod tests {
             config_dir: Some(home.clone()),
             workspace: Some(repo.join("pkg")),
             mode: AgentMode::Ask,
+            plan_path: None,
             max_bytes: DEFAULT_MAX_BYTES,
         });
 
@@ -259,6 +285,7 @@ mod tests {
             config_dir: None,
             workspace: Some(repo.clone()),
             mode: AgentMode::Agent,
+            plan_path: None,
             max_bytes: DEFAULT_MAX_BYTES,
         });
         assert!(prompt.contains("used"));
@@ -303,6 +330,49 @@ mod tests {
         assert!(agent.contains("- edit_file: Edit a file."));
         let mode = agent.find("<mode>").unwrap();
         assert!(agent.find("- edit_file:").unwrap() < mode);
+        assert!(agent.contains("Call todos with that path"));
+    }
+
+    #[test]
+    fn an_agent_prompt_includes_the_plan_checklist() {
+        let repo = temp_dir("plan");
+        let path = repo.join("ship.md");
+        fs::write(
+            &path,
+            "---\ntodos:\n  - id: \"modes\"\n    content: \"Add the mode registry\"\n    status: \"pending\"\n  - id: \"wire\"\n    content: \"Register the tool\"\n    status: \"in_progress\"\n---\n# Ship\n",
+        )
+        .unwrap();
+        let plan_path = path.to_string_lossy().into_owned();
+
+        let prompt = assemble_session(SessionPrompt {
+            tools: &ToolRegistry::new(),
+            user_prompt: None,
+            config_dir: None,
+            workspace: Some(repo.clone()),
+            mode: AgentMode::Agent,
+            plan_path: Some(plan_path.clone()),
+            max_bytes: DEFAULT_MAX_BYTES,
+        });
+        let mode = prompt.find("<mode>").unwrap();
+        let todos = prompt
+            .find(&format!("<todos path=\"{plan_path}\">"))
+            .unwrap();
+        assert!(mode < todos);
+        assert!(prompt.contains("- modes (pending) Add the mode registry"));
+        assert!(prompt.contains("- wire (in_progress) Register the tool"));
+        assert!(!prompt.contains("todos:"));
+
+        let ask = assemble_session(SessionPrompt {
+            tools: &ToolRegistry::new(),
+            user_prompt: None,
+            config_dir: None,
+            workspace: Some(repo.clone()),
+            mode: AgentMode::Ask,
+            plan_path: Some(plan_path),
+            max_bytes: DEFAULT_MAX_BYTES,
+        });
+        assert!(!ask.contains("<todos"));
+        let _ = fs::remove_dir_all(repo);
     }
 
     fn prompt_for(mode: AgentMode, tools: &[(&'static str, &'static str)]) -> String {
@@ -318,6 +388,7 @@ mod tests {
             config_dir: None,
             workspace: None,
             mode,
+            plan_path: None,
             max_bytes: DEFAULT_MAX_BYTES,
         })
     }

@@ -71,6 +71,102 @@ function hunkTouches(hunk: ReviewHunk, lines: ReviewLine[]): boolean {
   })
 }
 
+/**
+ * The review column keeps three lines of context and a gap for the rest.
+ * The file viewer wants every line, with the same inserts and deletions.
+ */
+export function expandReviewLines(
+  lines: ReviewLine[],
+  baseline: string,
+  current: string
+): ReviewLine[] {
+  const before = splitFile(baseline)
+  const after = splitFile(current)
+  const shown = lines.filter((line) => line.kind !== 'gap')
+  const out: ReviewLine[] = []
+  let oldNext = 1
+  let newNext = 1
+
+  for (const line of shown) {
+    if (line.kind === 'delete' && line.old_line != null) {
+      const skip = line.old_line - oldNext
+      ;({ oldNext, newNext } = fillEqual(
+        out,
+        before,
+        after,
+        oldNext,
+        newNext,
+        line.old_line,
+        newNext + skip
+      ))
+    } else if (line.kind === 'insert' && line.new_line != null) {
+      const skip = line.new_line - newNext
+      ;({ oldNext, newNext } = fillEqual(
+        out,
+        before,
+        after,
+        oldNext,
+        newNext,
+        oldNext + skip,
+        line.new_line
+      ))
+    } else if (line.kind === 'context' && line.old_line != null && line.new_line != null) {
+      ;({ oldNext, newNext } = fillEqual(
+        out,
+        before,
+        after,
+        oldNext,
+        newNext,
+        line.old_line,
+        line.new_line
+      ))
+    }
+    out.push(line)
+    if (line.old_line != null) {
+      oldNext = line.old_line + 1
+    }
+    if (line.new_line != null) {
+      newNext = line.new_line + 1
+    }
+  }
+
+  fillEqual(out, before, after, oldNext, newNext, before.length + 1, after.length + 1)
+  return out
+}
+
+function fillEqual(
+  out: ReviewLine[],
+  baseline: string[],
+  current: string[],
+  oldNext: number,
+  newNext: number,
+  oldStop: number,
+  newStop: number
+): { oldNext: number; newNext: number } {
+  while (oldNext < oldStop && newNext < newStop) {
+    out.push({
+      kind: 'context',
+      text: current[newNext - 1] ?? baseline[oldNext - 1] ?? '',
+      old_line: oldNext,
+      new_line: newNext
+    })
+    oldNext += 1
+    newNext += 1
+  }
+  return { oldNext, newNext }
+}
+
+function splitFile(text: string): string[] {
+  if (text === '') {
+    return []
+  }
+  const lines = text.split(/\r?\n/)
+  if (lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+  return lines
+}
+
 /** A one-line note when hiding a side leaves an added or deleted file empty. */
 export function reviewNote(
   status: 'added' | 'deleted' | 'modified',

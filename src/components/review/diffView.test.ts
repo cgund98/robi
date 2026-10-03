@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ReviewHunk, ReviewLine } from '../../api/review'
-import { chunksFor, linesForView, reviewNote } from './diffView'
+import { chunksFor, expandReviewLines, linesForView, reviewNote } from './diffView'
 
 function line(kind: ReviewLine['kind'], text: string): ReviewLine {
   return { kind, text, old_line: null, new_line: null }
@@ -26,6 +26,54 @@ describe('linesForView', () => {
     const deleted = linesForView([line('delete', 'fn')], 'current')
     expect(reviewNote('deleted', 'current', deleted)).toBe('File deleted')
     expect(reviewNote('modified', 'current', linesForView(sample, 'current'))).toBeNull()
+  })
+})
+
+describe('expandReviewLines', () => {
+  it('puts the omitted lines back, including the ends of the file', () => {
+    const baseline = 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\n'
+    const current = 'a\nb\nc\nD\ne\nf\ng\nh\ni\nj\nk\nL\nm\nn\no\n'
+    const truncated: ReviewLine[] = [
+      { kind: 'context', text: 'c', old_line: 3, new_line: 3 },
+      { kind: 'delete', text: 'd', old_line: 4, new_line: null },
+      { kind: 'insert', text: 'D', old_line: null, new_line: 4 },
+      { kind: 'context', text: 'e', old_line: 5, new_line: 5 },
+      { kind: 'context', text: 'f', old_line: 6, new_line: 6 },
+      { kind: 'context', text: 'g', old_line: 7, new_line: 7 },
+      { kind: 'gap', text: '', old_line: null, new_line: null },
+      { kind: 'context', text: 'i', old_line: 9, new_line: 9 },
+      { kind: 'context', text: 'j', old_line: 10, new_line: 10 },
+      { kind: 'context', text: 'k', old_line: 11, new_line: 11 },
+      { kind: 'delete', text: 'l', old_line: 12, new_line: null },
+      { kind: 'insert', text: 'L', old_line: null, new_line: 12 },
+      { kind: 'context', text: 'm', old_line: 13, new_line: 13 }
+    ]
+    const full = expandReviewLines(truncated, baseline, current)
+    expect(full.map((line) => line.kind)).not.toContain('gap')
+    expect(full.map((line) => line.text)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'D',
+      'e',
+      'f',
+      'g',
+      'h',
+      'i',
+      'j',
+      'k',
+      'l',
+      'L',
+      'm',
+      'n',
+      'o'
+    ])
+    expect(full.find((line) => line.text === 'h')).toMatchObject({
+      kind: 'context',
+      old_line: 8,
+      new_line: 8
+    })
   })
 })
 

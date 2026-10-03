@@ -18,7 +18,7 @@ use robi_core::message::{unresolved_turn, Message};
 use robi_core::model::Model;
 use robi_core::store::MessageStore;
 use robi_core::tool::ToolRegistry;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -49,9 +49,13 @@ pub struct AgentFactory {
     pub sessions: Option<Arc<ChatSessionService>>,
     /// Baselines for files this session changes. Required when `sessions` is set.
     pub file_changes: Option<Arc<dyn FileChangeRepository>>,
+    /// Brave, or a fake in tests. `web_search` calls this.
+    pub search: Arc<dyn crate::web::SearchEngine>,
     /// Publishes `session_updated` after a title is stored. Absent when there is
     /// no fan-out.
     pub fanout: Option<Arc<EventFanOut>>,
+    /// Workspace semantic index. Absent in tests that do not search.
+    pub index: Option<Arc<crate::index::IndexHub>>,
 }
 
 impl AgentFactory {
@@ -78,6 +82,7 @@ impl AgentFactory {
             Option<std::path::PathBuf>,
             AgentMode,
             ModeOverride,
+            Option<String>,
         ),
         ServiceError,
     > {
@@ -87,6 +92,7 @@ impl AgentFactory {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
+                None,
             ));
         };
         let chat = sessions.get_chat_session(session).await?;
@@ -109,17 +115,25 @@ impl AgentFactory {
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
+            index: self.index.clone(),
         });
         let models = Arc::new(crate::tools::SessionChildModels {
             session_id: session,
             sessions: Arc::clone(sessions),
             models: Arc::clone(&self.models),
         });
-        crate::tools::register_tools_for_mode(&registry, ctx, mode, models).map_err(|err| {
+        crate::tools::register_tools_for_mode(
+            &registry,
+            ctx,
+            mode,
+            models,
+            Arc::clone(&self.search),
+        )
+        .map_err(|err| {
             tracing::error!(%err, "failed to register tools");
             ServiceError::Unknown
         })?;
-        Ok((Arc::new(registry), Some(root), mode, choice))
+        Ok((Arc::new(registry), Some(root), mode, choice, chat.plan_path))
     }
 }
 
@@ -136,19 +150,30 @@ struct Slot {
     cancel: Option<CancellationToken>,
     pending: Option<Work>,
     running: bool,
+    /// Bumped each time an actor is started, so stop waits for that actor only.
+    generation: u64,
+}
+
+struct Slots {
+    map: Mutex<HashMap<SessionId, Slot>>,
+    /// Signaled when an actor clears `running`.
+    idle: Notify,
 }
 
 /// Serializes `user_input` for each chat session.
 pub struct SerializedChatRuntime {
     factory: AgentFactory,
-    slots: Arc<Mutex<HashMap<SessionId, Slot>>>,
+    slots: Arc<Slots>,
 }
 
 impl SerializedChatRuntime {
     pub fn new(factory: AgentFactory) -> Self {
         Self {
             factory,
-            slots: Arc::new(Mutex::new(HashMap::new())),
+            slots: Arc::new(Slots {
+                map: Mutex::new(HashMap::new()),
+                idle: Notify::new(),
+            }),
         }
     }
 
@@ -170,13 +195,14 @@ impl SerializedChatRuntime {
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
     ) -> Result<SubmitOutcome, ServiceError> {
-        let mut slots = self.slots.lock().await;
+        let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
             replace_pending(slot, instruction);
             return Ok(SubmitOutcome::Accepted);
         }
         slot.running = true;
+        slot.generation += 1;
         slot.pending = Some(Work::Instruction(instruction));
         drop(slots);
         self.spawn_actor(session, model, tools);
@@ -191,12 +217,13 @@ impl SerializedChatRuntime {
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
     ) -> Result<(), ServiceError> {
-        let mut slots = self.slots.lock().await;
+        let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
         slot.running = true;
+        slot.generation += 1;
         slot.pending = Some(Work::Decision { call, reject });
         drop(slots);
         self.spawn_actor(session, model, tools);
@@ -205,6 +232,7 @@ impl SerializedChatRuntime {
 
     async fn actor_running(&self, session: SessionId) -> bool {
         self.slots
+            .map
             .lock()
             .await
             .get(&session)
@@ -231,7 +259,7 @@ impl ChatRuntime for SerializedChatRuntime {
         }
 
         if self.actor_running(session).await {
-            let mut slots = self.slots.lock().await;
+            let mut slots = self.slots.map.lock().await;
             let slot = slots.entry(session).or_default();
             if slot.running {
                 replace_pending(slot, instruction);
@@ -241,11 +269,12 @@ impl ChatRuntime for SerializedChatRuntime {
 
         // Resolve before the slot is marked running, so a missing key does not
         // leave an actor that will never start.
-        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice, plan_path) =
+            self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice)
+            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
             .await?;
         self.start_actor(session, instruction, model, tools).await
     }
@@ -259,18 +288,19 @@ impl ChatRuntime for SerializedChatRuntime {
         if self.actor_running(session).await {
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
-        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice, plan_path) =
+            self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice)
+            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
             .await?;
         self.start_decision(session, call, reject, model, tools)
             .await
     }
 
     async fn running_session_ids(&self) -> Vec<SessionId> {
-        let slots = self.slots.lock().await;
+        let slots = self.slots.map.lock().await;
         let mut ids: Vec<SessionId> = slots
             .iter()
             .filter(|(_, slot)| slot.running)
@@ -279,14 +309,43 @@ impl ChatRuntime for SerializedChatRuntime {
         ids.sort();
         ids
     }
+
+    async fn stop(&self, session: SessionId) -> Result<(), ServiceError> {
+        let generation = {
+            let mut slots = self.slots.map.lock().await;
+            let Some(slot) = slots.get_mut(&session) else {
+                return Ok(());
+            };
+            if !slot.running {
+                return Ok(());
+            }
+            if let Some(cancel) = &slot.cancel {
+                cancel.cancel();
+            }
+            slot.pending = None;
+            slot.generation
+        };
+
+        loop {
+            let notified = self.slots.idle.notified();
+            tokio::pin!(notified);
+            let still_this_actor = self
+                .slots
+                .map
+                .lock()
+                .await
+                .get(&session)
+                .is_some_and(|slot| slot.running && slot.generation == generation);
+            if !still_this_actor {
+                return Ok(());
+            }
+            notified.await;
+        }
+    }
 }
 
-async fn interrupt_if_running(
-    slots: &Mutex<HashMap<SessionId, Slot>>,
-    session: SessionId,
-    instruction: &str,
-) -> bool {
-    let mut slots = slots.lock().await;
+async fn interrupt_if_running(slots: &Slots, session: SessionId, instruction: &str) -> bool {
+    let mut slots = slots.map.lock().await;
     let Some(slot) = slots.get_mut(&session) else {
         return false;
     };
@@ -350,18 +409,22 @@ async fn run_actor(
     store: Arc<dyn MessageStore>,
     sessions: Option<Arc<ChatSessionService>>,
     fanout: Option<Arc<EventFanOut>>,
-    slots: Arc<Mutex<HashMap<SessionId, Slot>>>,
+    slots: Arc<Slots>,
     session: SessionId,
 ) {
     loop {
         let (work, cancel) = {
-            let mut guard = slots.lock().await;
+            let mut guard = slots.map.lock().await;
             let Some(slot) = guard.get_mut(&session) else {
+                drop(guard);
+                slots.idle.notify_waiters();
                 return;
             };
             let Some(work) = slot.pending.take() else {
                 slot.running = false;
                 slot.cancel = None;
+                drop(guard);
+                slots.idle.notify_waiters();
                 return;
             };
             let cancel = CancellationToken::new();
@@ -564,6 +627,8 @@ mod tests {
             sessions: None,
             file_changes: None,
             fanout: None,
+            search: idle_search(),
+            index: None,
         })
     }
 
@@ -627,6 +692,50 @@ mod tests {
         })
         .await
         .expect("second turn finishes");
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_the_in_flight_turn_and_waits_until_the_actor_exits() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let transcripts = Arc::new(Mutex::new(Vec::new()));
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let runtime = runtime(
+            store.clone(),
+            Arc::new(GateModel {
+                started: started_tx,
+                release: Arc::new(Notify::new()),
+                transcripts,
+                calls: AtomicUsize::new(0),
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+
+        runtime.submit(session, "first".into()).await.unwrap();
+        let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("model call")
+            .expect("started channel");
+        assert_eq!(started, 1);
+
+        tokio::time::timeout(Duration::from_secs(5), runtime.stop(session))
+            .await
+            .expect("stop returns")
+            .unwrap();
+        assert!(runtime.running_session_ids().await.is_empty());
+
+        let messages = store.messages(session).await.unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first"]
+        );
+
+        runtime.stop(session).await.unwrap();
+        assert!(runtime.running_session_ids().await.is_empty());
     }
 
     #[tokio::test]
@@ -734,6 +843,7 @@ mod tests {
             _workspace: Option<std::path::PathBuf>,
             _mode: AgentMode,
             _choice: ModeOverride,
+            _plan_path: Option<String>,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             Err(ServiceError::BadRequest(
                 "opencode_go_api_key is not set".into(),
@@ -754,6 +864,8 @@ mod tests {
             sessions: None,
             file_changes: None,
             fanout: None,
+            search: idle_search(),
+            index: None,
         });
 
         let error = runtime.submit(session, "hello".into()).await.unwrap_err();
@@ -816,6 +928,7 @@ mod tests {
             _workspace: Option<std::path::PathBuf>,
             mode: AgentMode,
             choice: ModeOverride,
+            _plan_path: Option<String>,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             *self.seen.lock().expect("choice") = Some((mode, choice));
             Ok(Arc::clone(&self.model))
@@ -856,6 +969,8 @@ mod tests {
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             )),
             fanout: None,
+            search: idle_search(),
+            index: None,
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -882,7 +997,25 @@ mod tests {
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             )),
             fanout: Some(fanout),
+            search: idle_search(),
+            index: None,
         })
+    }
+
+    fn idle_search() -> Arc<dyn crate::web::SearchEngine> {
+        Arc::new(IdleSearch)
+    }
+
+    struct IdleSearch;
+
+    #[async_trait]
+    impl crate::web::SearchEngine for IdleSearch {
+        async fn search(
+            &self,
+            _query: &str,
+        ) -> Result<Vec<crate::web::SearchHit>, crate::web::SearchError> {
+            Err(crate::web::SearchError("search is not configured".into()))
+        }
     }
 
     #[tokio::test]
@@ -1076,8 +1209,10 @@ mod tests {
                 workspace_id: WorkspaceId::new(),
                 title,
                 path_rules: crate::domain::chat_session::model::PathRules::default(),
+                allow_hosts: Vec::new(),
                 mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
+                plan_path: None,
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,
@@ -1118,6 +1253,15 @@ mod tests {
             command: crate::domain::chat_session::model::UpdateChatSessionCommand,
         ) -> Result<ChatSession, ServiceError> {
             Err(ServiceError::NotFound(command.id.to_string()))
+        }
+
+        async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
+            let mut sessions = self.sessions.lock().expect("sessions");
+            let session = sessions
+                .get_mut(&id)
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            session.plan_path = Some(path);
+            Ok(())
         }
 
         async fn set_title_if_unset(

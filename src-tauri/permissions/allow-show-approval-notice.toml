@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-show-approval-notice"
+description = "Post the approval notification and focus the window when it is clicked."
+commands.allow = ["show_approval_notice"]

@@ -7,11 +7,17 @@ import { ChoiceMenu } from './ChoiceMenu'
 import { ContextMeter } from './ContextMeter'
 import styles from './Composer.module.css'
 
-const MODES: { value: AgentMode; label: string }[] = [
-  { value: 'ask', label: 'Ask' },
-  { value: 'plan', label: 'Plan' },
-  { value: 'agent', label: 'Agent' }
+const MODES: { value: AgentMode; label: string; tone: AgentMode }[] = [
+  { value: 'ask', label: 'Ask', tone: 'ask' },
+  { value: 'plan', label: 'Plan', tone: 'plan' },
+  { value: 'agent', label: 'Agent', tone: 'agent' }
 ]
+
+const MODE_CLASS: Record<AgentMode, string | undefined> = {
+  ask: styles.modeAsk,
+  plan: styles.modePlan,
+  agent: undefined
+}
 
 const EFFORTS = [
   { value: 'low', label: 'Low' },
@@ -21,6 +27,11 @@ const EFFORTS = [
 
 type ComposerProps = {
   disabled: boolean
+  /** The session actor is running. Send becomes stop and the field stays locked. */
+  running?: boolean
+  /** Stop has been requested and the actor has not exited yet. */
+  stopping?: boolean
+  onStop?: () => void
   onSubmit: (text: string) => Promise<boolean>
   /** Centered card on an empty chat. Dock keeps the field at the bottom of a thread. */
   placement?: 'dock' | 'welcome'
@@ -52,6 +63,9 @@ function effortLabel(value: string | null): string {
 
 export function Composer({
   disabled,
+  running = false,
+  stopping = false,
+  onStop,
   onSubmit,
   placement = 'dock',
   models,
@@ -96,12 +110,13 @@ export function Composer({
         value={mode}
         options={MODES}
         includeDefault={false}
+        align="start"
         onSelect={(value) => {
           if (value === 'ask' || value === 'plan' || value === 'agent') {
             onModeChange(value)
           }
         }}
-        triggerClassName={styles.control}
+        triggerClassName={`${styles.control} ${styles.mode} ${MODE_CLASS[mode] ?? ''}`}
       />
       <ChoiceMenu
         label={modelLabel(models, resolvedModel, 'Model')}
@@ -150,31 +165,69 @@ export function Composer({
           {welcome ? (
             <div className={styles.cardBar}>
               {controls}
-              <button
-                type="button"
-                className={styles.send}
-                disabled={!canSend}
-                aria-label="Send"
-                onClick={() => void submit()}
-              >
-                ⏎
-              </button>
+              <SendOrStop
+                canSend={canSend}
+                running={running}
+                stopping={stopping}
+                onSend={() => void submit()}
+                onStop={onStop}
+              />
             </div>
           ) : (
-            <button
-              type="button"
-              className={styles.send}
-              disabled={!canSend}
-              aria-label="Send"
-              onClick={() => void submit()}
-            >
-              ⏎
-            </button>
+            <SendOrStop
+              canSend={canSend}
+              running={running}
+              stopping={stopping}
+              onSend={() => void submit()}
+              onStop={onStop}
+            />
           )}
         </div>
 
         {welcome ? null : <div className={styles.toolbar}>{controls}</div>}
       </div>
     </div>
+  )
+}
+
+function SendOrStop({
+  canSend,
+  running,
+  stopping,
+  onSend,
+  onStop
+}: {
+  canSend: boolean
+  running: boolean
+  stopping: boolean
+  onSend: () => void
+  onStop?: () => void
+}) {
+  if (running) {
+    return (
+      <button
+        type="button"
+        className={styles.send}
+        disabled={stopping}
+        aria-label="Stop"
+        onClick={onStop}
+      >
+        <svg className={styles.stopIcon} viewBox="0 0 16 16" aria-hidden>
+          <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor" />
+        </svg>
+      </button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      className={styles.send}
+      disabled={!canSend}
+      aria-label="Send"
+      onClick={onSend}
+    >
+      ⏎
+    </button>
   )
 }

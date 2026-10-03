@@ -11,7 +11,7 @@ not required for the first index.
 | Topic | Where it belongs |
 |---|---|
 | Grep, find, and the path filter | [read-tools.md](read-tools.md) |
-| LSP navigation, diagnostics, and rename | `docs/design/lsp.md` (M7) |
+| LSP navigation, diagnostics, and rename | [lsp.md](lsp.md) (M7) |
 | How a tool result is compressed | `docs/design/tool-output-compression.md` (M9) |
 | Agent event types on the SSE stream | [events-sse.md](events-sse.md). This page adds one index event on that same stream |
 
@@ -56,7 +56,9 @@ repair. Chat sessions never live in this file.
 ### D6: Embeddings stay on device
 
 The first embedder is local. The model is `nomic-ai/nomic-embed-text-v1.5`,
-768 dimensions, run on CPU through ONNX (`fastembed`). Document text is
+768 dimensions, run on CPU through ONNX (`fastembed`). The session uses two
+intra-op threads, and its thread pools do not spin while idle, so an embed
+stays on at most two cores. Query embeds use that same session. Document text is
 prefixed with `search_document: `. Query text is prefixed with
 `search_query: `. Those prefixes are part of the model, and the stored
 vectors are meaningless without them.
@@ -70,9 +72,9 @@ file and builds a new one. Chat does not wait on the download. Until the
 weights are present, `semantic_search` returns no hits and
 `state: "downloading"`.
 
-`Embedder` is the seam. A hosted implementation can be added later behind
-the same trait. It is not the default, and this page does not add a
-setting for one.
+`Embedder` exists so tests can return fixed vectors. Production has one
+implementation, and it runs on this machine. There is no hosted embedder
+and no setting that sends source out.
 
 ### D7: One sqlite-vec file per workspace
 
@@ -255,6 +257,28 @@ The shell ignores the frame when `subject` is not the active workspace.
 This page is the contract for that type. [events-sse.md](events-sse.md)
 keeps the agent types.
 
+The line sits at the bottom of the sidebar, above Settings, for the
+active workspace only. A `--rule` hairline separates it from Settings.
+It uses `--ink-muted` at the sidebar item size.
+It is not a badge on the transcript, and it is not a turn activity
+line. `ready` draws nothing.
+
+| `state` | Line | Control |
+|---|---|---|
+| `downloading` | Downloading index | Pause |
+| `indexing` | Indexing `files_done`/`files_total` | Pause |
+| `paused` | Index paused | Resume |
+| `failed` | Index failed | Resume |
+
+`indexing` keeps the counts at `0/0` until the walk has seen a file.
+`failed` puts `error` on the line's title. Pause and Resume call the
+`PUT`. The task finishes the current file, or the model load, before
+`state` changes. Until then the control reads Pausing or Resuming, the
+button is disabled, and the 12px ring stays up. That ring is the same
+grayscale spinner as a running session, and it also sits at the start of
+the `downloading` and `indexing` lines. Reduced motion leaves the ring
+still.
+
 There is no battery API in this version. The index runs only while a
 session for that workspace is open, and the user can pause it.
 
@@ -333,7 +357,9 @@ the path filter on each call.
 The description tells the model to use this tool for a question about
 behavior, and to use `grep` when it already has the identifier or the
 exact string. It also says that `indexing` and `downloading` mean the
-corpus is incomplete.
+corpus is incomplete. The explore child's prompt says the same thing as
+its first search, before `grep` or `find`. The parent, when it delegates
+that kind of question, tells the child to start there.
 
 ## Interfaces
 
@@ -389,10 +415,14 @@ builds the tool with a fake `Embedder` that returns fixed vectors.
 
 ## Rejected alternatives
 
-- **Hosted embeddings as the default.** Every index and every query
-  would send source off the machine, and a workspace scan would need an
-  API key. D6 keeps the model local. The trait leaves room for a hosted
-  embedder later.
+- **CoreML, or the Apple GPU and Neural Engine.** `nomic-embed-text-v1.5`
+  has an unbounded sequence length. CoreML accepts the session, then
+  faults inside the runtime (`E5RT` unbounded-dimension errors) and can
+  fill the disk with compiled graphs. The process segfaults. CPU is the
+  execution provider.
+- **Hosted embeddings.** Every index and every query would send source
+  off the machine, and a workspace scan would need an API key. Embeddings
+  stay on device.
 - **Qdrant, or any separate vector server.** Robi is one process on
   loopback. A second daemon is an install and a failure mode the index
   does not need.

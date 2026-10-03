@@ -62,6 +62,12 @@ impl ChatMessageService {
         self.runtime.decide(session, call, reject).await
     }
 
+    /// Cancel the running turn. Returns after the actor has exited.
+    pub async fn stop(&self, session: SessionId) -> Result<(), ServiceError> {
+        self.sessions.get_chat_session(session).await?;
+        self.runtime.stop(session).await
+    }
+
     pub async fn list_messages(&self, session: SessionId) -> Result<Vec<Message>, ServiceError> {
         self.sessions.get_chat_session(session).await?;
         self.store.messages(session).await.map_err(map_store)
@@ -139,8 +145,10 @@ mod tests {
                     workspace_id: WorkspaceId::new(),
                     title: None,
                     path_rules: crate::domain::chat_session::model::PathRules::default(),
+                    allow_hosts: Vec::new(),
                     mode: AgentMode::Agent,
                     model_config: crate::domain::chat_session::model::ModelConfig::default(),
+                    plan_path: None,
                     created_at: now,
                     updated_at: now,
                     last_used_at: now,
@@ -192,6 +200,10 @@ mod tests {
             Err(ServiceError::Unknown)
         }
 
+        async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+
         async fn delete_chat_session(&self, _id: SessionId) -> Result<(), ServiceError> {
             Err(ServiceError::Unknown)
         }
@@ -200,6 +212,7 @@ mod tests {
     struct FakeRuntime {
         seen: Mutex<Vec<(SessionId, String)>>,
         running: Mutex<Vec<SessionId>>,
+        stopped: Mutex<Vec<SessionId>>,
     }
 
     impl FakeRuntime {
@@ -207,6 +220,7 @@ mod tests {
             Self {
                 seen: Mutex::new(Vec::new()),
                 running: Mutex::new(Vec::new()),
+                stopped: Mutex::new(Vec::new()),
             }
         }
     }
@@ -235,6 +249,11 @@ mod tests {
             _call: ToolCallId,
             _reject: Option<String>,
         ) -> Result<(), ServiceError> {
+            Ok(())
+        }
+
+        async fn stop(&self, session: SessionId) -> Result<(), ServiceError> {
+            self.stopped.lock().expect("fake runtime").push(session);
             Ok(())
         }
     }
@@ -348,6 +367,11 @@ mod tests {
             ServiceError::NotFound(session.to_string())
         );
         assert!(runtime.seen.lock().expect("fake runtime").is_empty());
+        assert_eq!(
+            service.stop(session).await.unwrap_err(),
+            ServiceError::NotFound(session.to_string())
+        );
+        assert!(runtime.stopped.lock().expect("fake runtime").is_empty());
     }
 
     #[tokio::test]

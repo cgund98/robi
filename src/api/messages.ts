@@ -48,6 +48,19 @@ export async function decideToolCall(
   )
 }
 
+export async function stopSession(sessionId: string): Promise<void> {
+  const result = await api.POST('/api/v1/chat_sessions/{id}/stop', {
+    params: { path: { id: sessionId } }
+  })
+  if (result.response.ok) {
+    return
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to stop')
+  )
+}
+
 export async function submitInstruction(sessionId: string, instruction: string): Promise<void> {
   const result = await api.POST('/api/v1/chat_sessions/{id}/messages', {
     params: { path: { id: sessionId } },

@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 
-import { decideToolCall, listMessages, submitInstruction, type ChatMessage } from '../api/messages'
+import {
+  decideToolCall,
+  listMessages,
+  stopSession,
+  submitInstruction,
+  type ChatMessage
+} from '../api/messages'
 import {
   ApiError,
   createSession,
@@ -38,6 +44,8 @@ type ChatState = {
   error: string | null
   loading: boolean
   busy: boolean
+  /** Session whose stop request is in flight. Input stays locked until it returns. */
+  stoppingSessionId: string | null
   loadSessions: (options?: { draft?: boolean }) => Promise<void>
   selectSession: (id: string) => Promise<void>
   selectDraft: () => void
@@ -45,6 +53,7 @@ type ChatState = {
   setModelChoice: (model: string | null) => Promise<void>
   setEffortChoice: (effort: string | null) => Promise<void>
   sendInstruction: (instruction: string) => Promise<boolean>
+  stopAgent: () => Promise<void>
   decideCall: (sessionId: string, callId: string, decision: 'approve' | 'reject') => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
   removeSession: (id: string) => Promise<void>
@@ -52,6 +61,8 @@ type ChatState = {
   setPhase: (sessionId: string, phase: AgentPhase) => void
   noteDelta: (sessionId: string, kind: string) => void
   finishTurn: (sessionId: string, failedMessage: string | null) => Promise<void>
+  /** Reload the transcript while a turn looks busy, so a missed frame cannot hide it. */
+  catchUpTranscript: (sessionId: string) => Promise<void>
   refreshSession: (sessionId: string) => Promise<void>
   hydrateFromStream: () => Promise<void>
   /** Bumped when a tool call or turn finishes, so the review strip refetches. */
@@ -60,6 +71,7 @@ type ChatState = {
 }
 
 let hydrateEpoch = 0
+let stopTick = 0
 const listTokenBySession = new Map<string, number>()
 
 function bumpHydrate(): number {
@@ -221,6 +233,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   loading: true,
   busy: false,
+  stoppingSessionId: null,
   reviewTickBySession: {},
 
   loadSessions: async (options) => {
@@ -363,6 +376,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     }
 
+    stopTick += 1
     set({ busy: true, error: null })
     try {
       if (creating) {
@@ -413,6 +427,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set({ busy: false, error: errorText(err, 'Failed to send message') })
       return false
+    }
+  },
+
+  stopAgent: async () => {
+    const { draftSelected, activeSessionId, stoppingSessionId } = get()
+    if (draftSelected || activeSessionId === null || stoppingSessionId === activeSessionId) {
+      return
+    }
+    const phase = get().phaseBySession[activeSessionId] ?? 'idle'
+    if (phase === 'idle') {
+      return
+    }
+    const sessionId = activeSessionId
+    set({ stoppingSessionId: sessionId, error: null })
+    try {
+      await stopSession(sessionId)
+      stopTick += 1
+      const tick = stopTick
+      const epoch = hydrateEpoch
+      set((state) => ({
+        stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
+        phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
+      }))
+      const transcript = await readTranscript(sessionId, epoch)
+      if (tick !== stopTick || epoch !== hydrateEpoch) {
+        return
+      }
+      if (transcript) {
+        applyTranscript(sessionId, transcript.messages, transcript.session)
+      }
+      set((state) => ({
+        pendingEcho: state.pendingEcho?.sessionId === sessionId ? null : state.pendingEcho
+      }))
+    } catch (err) {
+      set((state) => ({
+        stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
+        error: errorText(err, 'Failed to stop')
+      }))
     }
   },
 
@@ -507,9 +559,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setPhase: (sessionId, phase) => {
-    set((state) => ({
-      phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
-    }))
+    set((state) => {
+      if (state.phaseBySession[sessionId] === phase) {
+        return state
+      }
+      return {
+        phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
+      }
+    })
   },
 
   noteDelta: (sessionId, kind) => {
@@ -517,31 +574,90 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     const phase: AgentPhase = kind === 'text' ? 'responding' : 'thinking'
-    set((state) => ({
-      phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
-    }))
+    set((state) => {
+      if (state.phaseBySession[sessionId] === phase) {
+        return state
+      }
+      return {
+        phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
+      }
+    })
   },
 
   finishTurn: async (sessionId, failedMessage) => {
+    const tick = stopTick
     const epoch = hydrateEpoch
-    set((state) => ({
-      phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' },
-      error: failedMessage ?? state.error
-    }))
+    const stopping = get().stoppingSessionId === sessionId
+    if (!stopping) {
+      set((state) => ({
+        phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' },
+        error: failedMessage ?? state.error
+      }))
+    } else if (failedMessage) {
+      set({ error: failedMessage })
+    }
     try {
       const transcript = await readTranscript(sessionId, epoch)
-      if (!transcript) {
+      if (tick !== stopTick || epoch !== hydrateEpoch || !transcript) {
         return
       }
       applyTranscript(sessionId, transcript.messages, transcript.session)
       if (failedMessage) {
         set({ error: failedMessage })
       }
+      // turn_finished is emitted before the actor clears `running`, so this
+      // refetch can still see has_pending_agent and put the phase back on
+      // Thinking after the turn is stored. Read the session once more.
+      if (
+        transcript.session.has_pending_agent &&
+        get().stoppingSessionId !== sessionId &&
+        get().phaseBySession[sessionId] !== 'idle'
+      ) {
+        const again = await getSession(sessionId)
+        if (tick !== stopTick || epoch !== hydrateEpoch || get().stoppingSessionId === sessionId) {
+          return
+        }
+        if (!again.has_pending_agent) {
+          set((state) => ({
+            sessions: replaceSession(state.sessions, again),
+            phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
+          }))
+        }
+      }
     } catch (err) {
       if (epoch !== hydrateEpoch) {
         return
       }
       set({ error: errorText(err, 'Failed to load chat session') })
+    }
+  },
+
+  catchUpTranscript: async (sessionId) => {
+    const epoch = hydrateEpoch
+    const phase = get().phaseBySession[sessionId]
+    if (phase !== 'thinking' && phase !== 'responding') {
+      return
+    }
+    if (get().stoppingSessionId === sessionId) {
+      return
+    }
+    try {
+      const transcript = await readTranscript(sessionId, epoch)
+      if (!transcript || epoch !== hydrateEpoch || get().stoppingSessionId === sessionId) {
+        return
+      }
+      const current = get().phaseBySession[sessionId]
+      if (current !== 'thinking' && current !== 'responding') {
+        return
+      }
+      applyTranscript(sessionId, transcript.messages, transcript.session)
+    } catch (err) {
+      if (epoch !== hydrateEpoch) {
+        return
+      }
+      if (err instanceof ApiError && err.status === 404) {
+        return
+      }
     }
   },
 
