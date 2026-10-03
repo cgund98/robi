@@ -10,6 +10,7 @@ New here? Start with the [Quickstart](guides/quickstart.md).
 Task-focused pages. Each one gets you to a result.
 
 - [Quickstart](guides/quickstart.md) — run the app, the local API, and your first message.
+- [Releases](guides/releases.md) — how a push to `main` opens the version bump.
 
 ## Concepts
 

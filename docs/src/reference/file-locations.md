@@ -16,10 +16,13 @@ variable says otherwise. The directory is created mode `0700` on first use.
 
 ## The session database
 
-The session store is SQLite. It lives at the path named by `ROBI_DATABASE_URL`,
-which defaults to `sqlite://robi.db?mode=rwc` — a `robi.db` file relative to the
-working directory you started `robi-api` in, not under `~/.robi`. WAL mode adds
-the `robi.db-wal` and `robi.db-shm` sidecar files, both gitignored.
+The session store is SQLite. `robi-api` uses the path named by
+`ROBI_DATABASE_URL`, which defaults to `sqlite://robi.db?mode=rwc` — a `robi.db`
+file relative to the working directory you started `robi-api` in, not under
+`~/.robi`. The desktop app, when that variable is unset, stores `robi.db` in
+the app data directory (`~/Library/Application Support/app.robi.desktop` on
+macOS). WAL mode adds the `robi.db-wal` and `robi.db-shm` sidecar files, both
+gitignored.
 
 Point it at a fixed location if you want the database independent of the shell's
 working directory:

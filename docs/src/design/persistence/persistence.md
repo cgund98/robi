@@ -38,13 +38,17 @@ database driver.
 
 ```mermaid
 graph LR
+  tauri[src-tauri]
   bin[robi-api]
+  boot[bootstrap]
   web[web_api]
   domain[domain]
   adapters[adapters]
   core[robi-core]
-  bin --> web
-  bin --> adapters
+  tauri --> boot
+  bin --> boot
+  boot --> web
+  boot --> adapters
   web --> domain
   adapters --> domain
   domain --> core
@@ -63,9 +67,10 @@ graph LR
 - **`web_api/`** holds Axum routes, DTOs, and OpenAPI. `AppState` carries the
   workspace service, the chat session service, the chat message service, and
   the settings service. Handlers do not see the pool or an `Agent`.
-- **`robi-api`** (`crates/robi/src/bin/robi-api.rs`) is the composition root.
-  It builds the factory the runtime uses and stores that factory on the
-  runtime. `export-openapi` prints the spec. `src-tauri` is not wired to either.
+- **`bootstrap`** (`crates/robi/src/bootstrap.rs`) is the composition root.
+  It builds the factory the runtime uses, stores that factory on the runtime,
+  and returns the router. `robi-api` and the Tauri process both call it.
+  `export-openapi` prints the spec.
 
 `ChatSessionRepository` is the metadata port. `SqliteMessageStore` is
 `MessageStore` on the same pool. The trait keeps the two synchronous methods
@@ -293,12 +298,13 @@ default returns `{ "key", "secret", "value": null }`.
 
 ### Configuration
 
-Read in the `robi-api` binary only.
+Read by `robi-api` and, for bind and the database URL, by the Tauri process.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ROBI_DATABASE_URL` | `sqlite://robi.db?mode=rwc` | sqlx SQLite URL |
-| `ROBI_BIND` | `127.0.0.1:1431` | Listen address. Must be loopback. `1431` stays off the Vite port `1430` |
+| `ROBI_DATABASE_URL` | `sqlite://robi.db?mode=rwc` for `robi-api`. The desktop app uses `robi.db` in the app data directory when this is unset | sqlx SQLite URL |
+| `ROBI_BIND` | `127.0.0.1:1431`, then the next free port through `1450` | Listen address. Must be loopback when set. `1430` stays with Vite. An explicit value is not scanned |
+| `ROBI_EXTERNAL_API` | unset | `1` during `pnpm tauri dev` skips the in-process server. The webview uses the Vite proxy. A packaged build ignores it |
 
 Provider credentials and model choices are [settings](#settings), not
 environment variables. `examples/simple.rs` still reads `OPENCODE_GO_API_KEY`,
@@ -326,8 +332,11 @@ from `openapi/openapi.json`.
 
 Web-only Vite (`pnpm dev` on `1430`) proxies `/api` to `127.0.0.1:1431`, so
 `VITE_API_BASE_URL` stays empty in that mode. Run `robi-api` beside the UI.
-There is no CORS layer on the API yet; packaged Tauri will need a different
-path.
+`pnpm tauri dev` starts the API in-process and the webview asks the shell for
+the bound origin before the first request. `ROBI_EXTERNAL_API=1` leaves that
+origin empty, so the same Vite proxy is used. The router allows CORS from the
+Vite origin and from `http://tauri.localhost`, `https://tauri.localhost`, and
+`tauri://localhost`.
 
 The shell shows one workspace at a time. The active id is
 `localStorage` key `robi.activeWorkspaceId`. `/workspaces` is the list: search,

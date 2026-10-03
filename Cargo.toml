@@ -40,6 +40,7 @@ axum = "0.8.4"
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
 toml = "0.8.23"
+tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 utoipa = { version = "5.4.0", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
@@ -47,6 +48,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 # Language server client (M7). `robi` is the only crate that speaks LSP.
 async-lsp = { version = "0.2.4", default-features = false, features = ["omni-trait", "tokio", "tracing"] }
 tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.6", features = ["cors"] }
 
 # Semantic index (M7). Heavy on purpose, and only `robi-index` depends on them.
 tree-sitter = "0.25"

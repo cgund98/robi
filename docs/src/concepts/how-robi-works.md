@@ -26,9 +26,10 @@ Dependencies point one way and never reverse.
 - **`src-tauri`** — the Tauri application: commands, IPC, wiring.
 - **`src`** — the React + TypeScript front end.
 
-Chat HTTP goes through the Vite `/api` proxy to `robi-api`, which is the
-composition root. The shell holds one Server-Sent Events connection for updates;
-see [HTTP API](../reference/http-api.md).
+The desktop app and `robi-api` share one composition root, `bootstrap`. The
+window serves the API in-process and the webview calls the bound loopback port.
+`pnpm dev` still proxies `/api` to a separate `robi-api`. The shell holds one
+Server-Sent Events connection for updates; see [HTTP API](../reference/http-api.md).
 
 ## The turn
 

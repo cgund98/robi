@@ -11,6 +11,7 @@ delivery stays in [events-sse.md](events-sse.md).
 |---|---|
 | Streaming caret and painting `message_delta` text | Later on this page. The assistant row is stored only when the model stream finishes, so this cut does not paint tokens |
 | Syntax highlighting, copy, retry, edit-and-resend | Later on this page. Assistant text is Markdown; highlighting is not |
+| Mermaid diagrams | Later. A fenced `mermaid` block in assistant text, on a plan page, and in the markdown file preview stays source |
 | Grant and session-allow editing | `docs/src/design/workspace/permissions.md` (M3) |
 | Creating the session row | [persistence.md](../persistence/persistence.md). The shell delays that call |
 | `@id` skill mentions and the **Using** row | [skills.md](../reach/skills.md) |

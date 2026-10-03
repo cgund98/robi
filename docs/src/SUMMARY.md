@@ -5,6 +5,7 @@
 # Guides
 
 - [Quickstart](guides/quickstart.md)
+- [Releases](guides/releases.md)
 
 # Concepts
 

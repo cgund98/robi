@@ -48,6 +48,7 @@ network. It is done when its tests pass. See
 | M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search |
 | M8 | Reach | Integrations and headless use | MCP client, skills, web tools |
 | M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
+| M10 | Docs mode | Read and write project documentation | A docs mode, a filtered file tree, and an editor shared by the user and the agent |
 
 The line between "usable" and "differentiated" falls after M5. M1–M3 produce a
 chat app that reads code. M4 makes it an agent. M5 is where Robi stops being a
@@ -65,11 +66,13 @@ graph LR
   M6 --> M7
   M7 --> M8[M8 Reach]
   M4 --> M9[M9 Output compression]
+  M5 --> M10[M10 Docs mode]
 ```
 
 M6 and M7 both need M4 but not each other. M8 needs M5. M9 needs M4: it
-compresses tool results, and the shell is where those results get large. Only
-the M0→M5 spine is strictly serial. M9 does not gate M5–M8.
+compresses tool results, and the shell is where those results get large. M10
+needs M5, and through it the M4 edit path. Only the M0→M5 spine is strictly
+serial. M9 and M10 do not gate M5–M8.
 
 ## What remains
 
@@ -82,25 +85,22 @@ section that owns it.
 | Milestone | Piece | State |
 |---|---|---|
 | M1 | Anthropic's own wire format | Open. The client speaks OpenAI-compatible endpoints. |
-| M1 | A recorded live turn against a real vendor key | Open. Tests use a scripted loopback server. |
-| M2 | Process placement (D3): in-process loop vs sidecar | Open. `docs/src/design/core/architecture.md` is still needed. |
+| M2 | Process placement (D3): in-process loop vs sidecar | Desktop hosts the API in-process. `robi-api` remains for headless and `pnpm dev`. |
 | M2 | Tool-card expand default, and whether it persists per session | Open in `docs/src/design/shell/visual-style.md`. |
-| M2 | Explicit workspace trust, in the style of gopi's `trust.json` | Open product choice. |
+| M2 | Mermaid in rendered markdown | Open. A fenced `mermaid` block in assistant text, a plan page, or a markdown file preview stays source. |
 | M3 | Auto-compaction and a manual trigger (F3.4) | Not built. `docs/src/design/workspace/context-management.md` is still needed. |
 | M3 | Permission and grant design page | Behavior exists in code. `docs/src/design/workspace/permissions.md` is still needed. |
-| M3 | Price display, and an OS keychain for secrets | Deferred. Secrets stay in `~/.robi/secrets.toml`. |
+| M3 | Price display | Deferred. Secrets stay in `~/.robi/secrets.toml`. |
 | M6 | Inline comments, and sending one to the assistant | Later, in `docs/src/design/review/code-review.md`. |
 | M6 | A tool the assistant uses to read review state | Later. |
 | M6 | Git status, a commit range, or a branch as a review source | Later. The screen is the session baseline. |
-| M6 | Side-by-side diff | Later. The screen is one unified column. |
 | M6 | Applying a suggestion through the edit path (F6.3) | Not built. |
-| M7 | LSP rename, code action, and format | Later cut. They go through the edit tools so a change still gets a checkpoint. |
 | M8 | MCP sampling, elicitation, OAuth, resources, and prompts | Waiting, per `docs/src/design/reach/mcp.md`. |
 | M8 | A trust decision before reading a project `AGENTS.md` | Later. |
-| M8 | Headless use | Blocked on D3. |
 | M9 | Built-in JSON and search-hit compression | Not built. `docs/src/design/compression/tool-output-compression.md` is later. D12 is settled for shell output. |
 | M9 | Learned line model for shell output (phase 4) | Not in the first cut. Feature-gated and last (D11). |
 | M9 | Context meter showing tokens saved | Required by the M9 exit criteria. The meter shows usage. |
+| M10 | Docs mode, filtered file tree, and a shared editor | Not built. `docs/src/design/shell/docs-mode.md` is still needed. |
 
 ---
 
@@ -507,16 +507,16 @@ made. The fix and its tests are in `robi-core`; see
 - Commands in, events out: the UI posts a message or settles an approval over
   HTTP, and subscribes to `GET /api/v1/events/stream` for updates. The stream
   is specified in [events-sse.md](design/shell/events-sse.md).
-- **Open decisions** — (D3) in-process loop vs. a sidecar binary — a
-  sidecar keeps the core usable headless (M8) and survives a UI crash, while
-  in-process is less plumbing. Event *delivery* is HTTP SSE (D1, settled in
-  `docs/src/design/shell/events-sse.md`). Process placement is still open.
+- The desktop app runs the API in-process (D3). `robi-api` stays the headless
+  and `pnpm dev` process, so a UI crash is not the only way to run the loop.
+  Event *delivery* is HTTP SSE (D1, settled in
+  `docs/src/design/shell/events-sse.md`).
 
 ### F2.2 Chat UI
 
 - Message list, composer, streaming render with a caret, and scroll-lock that
   yields when the user scrolls up.
-- Markdown and syntax highlighting in code blocks.
+- Markdown and syntax highlighting in code blocks. A fenced `mermaid` block renders as a diagram in assistant text, on a plan page, and in the markdown file preview. Until that ships, the fence stays source.
 - Copy a message, copy a code block, retry the last turn, edit-and-resend.
 - Tool-call cards exist in the layout from day one — collapsed and empty until
   M3, and they are where approval prompts will live. Retrofitting cards into a
@@ -936,6 +936,44 @@ tools, search hits, and the other pass-through shapes are still
 
 ---
 
+## M10 — Docs mode
+
+**Goal** — read and write project documentation in one place. The window is a
+filtered file tree and an editor. The user and the agent change the same files.
+
+It needs M5. A mode is a tool set and a prompt prefix, and the edit tools
+already exist from M4. It does not need review, the index, MCP, or compression.
+
+### F10.1 The mode
+
+- A `docs` mode beside ask, plan, and agent. It uses the same switch: the next
+  actor reads the stored mode and gets that registry and prefix.
+- The tool set is the read tools and the edit tools. The prefix keeps the turn
+  on documentation: the pages, their structure, and the words in them.
+
+### F10.2 Project navigation
+
+- A file tree of the workspace, filtered to documentation. Markdown and the
+  docs directories are in. Source files, build output, and ignored paths are
+  out.
+- Choosing a file opens it. The filter is the default. The user can widen it
+  when a page names a file outside that set.
+
+### F10.3 Editing
+
+- The open file is an editor. The user types in it. A save goes through the M4
+  write path, so a manual edit gets a checkpoint like an agent edit.
+- The agent edits the open file, or another doc, with the existing edit tools.
+  The editor shows that change. There is one copy of the file.
+
+**Exit criteria for M10** — open the docs tree, open a page, change a sentence
+by hand, ask the agent to revise another page, and find both changes in the
+tree after a restart.
+
+**Design doc needed** — `docs/src/design/shell/docs-mode.md`.
+
+---
+
 ## Cross-cutting concerns
 
 These are not milestones. They apply to every one, and the first two apply from M0.
@@ -960,9 +998,9 @@ resolve them.
 
 | # | Decision | Blocks | Notes |
 |---|---|---|---|
-| D1 | UI event delivery | F2.1 | Settled: HTTP SSE on `robi-api`, CloudEvents envelope, in-process fan-out. See `docs/src/design/shell/events-sse.md`. Emit-after-persist still orders events against the store. Command transport and process placement are D3 / `architecture.md` |
+| D1 | UI event delivery | F2.1 | Settled: HTTP SSE on the local API, CloudEvents envelope, in-process fan-out. See `docs/src/design/shell/events-sse.md`. Emit-after-persist still orders events against the store. The desktop process hosts that API (D3) |
 | D2 | Delta serialization and IPC encoding | F1.2 | The variant list is fixed in M0; these are the wire details. Expensive to change once the UI depends on them |
-| D3 | In-process loop vs. sidecar | F2.1 | Gate on headless mode (M8) being a goal |
+| D3 | In-process loop vs. sidecar | F2.1 | Settled for the desktop app: the API runs in the Tauri process. `robi-api` remains for headless mode and `pnpm dev`. `ROBI_EXTERNAL_API=1` points `pnpm tauri dev` at that separate process |
 | D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/src/design/persistence/persistence.md`. App home directory is still open. The M7 index is a separate file; see D7 |
 | D5 | Editing: search-and-replace vs. diff-based | F4.1 | Settled: exact search-and-replace. See below and `docs/src/design/tools/editing-tools.md` |
 | D6 | Embeddings: local vs. hosted | F7.2 | Settled: local ONNX, `nomic-embed-text-v1.5`. See below and `docs/src/design/intelligence/semantic-search.md` |

@@ -80,8 +80,9 @@ pnpm tauri dev
 ```
 
 Run `make test` for the Rust workspace test suite and `make lint` to check
-formatting, lints, and the documentation links. The crate layout and the
-conventions are in [`AGENTS.md`](AGENTS.md).
+formatting, lints, and the documentation links. Merging a release pull request
+tags the app and attaches an unsigned Apple Silicon disk image to the GitHub
+release. The crate layout and the conventions are in [`AGENTS.md`](AGENTS.md).
 
 ## License
 

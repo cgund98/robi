@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-api-base-url"
+description = "Read the origin of the in-process API."
+commands.allow = ["api_base_url"]

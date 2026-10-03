@@ -1,0 +1,81 @@
+# Requires Settings → Actions → General → "Allow GitHub Actions to create and
+# approve pull requests". Without that, release-please cannot open release PRs.
+#
+# The desktop build runs in this same workflow, gated on the release output. A
+# separate workflow on `release: published` would not fire: events created with
+# the repository GITHUB_TOKEN do not start new workflow runs. Chaining
+# in-workflow avoids needing a PAT or GitHub App token for release-please.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Release Please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90"
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the Apple Silicon app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: pnpm tauri build --bundles dmg
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp src-tauri/target/release/bundle/dmg/*.dmg dist/
+          (cd dist && shasum -a 256 ./*.dmg > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber

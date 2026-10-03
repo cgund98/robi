@@ -99,8 +99,10 @@ Response headers:
 An idle stream sends an SSE comment every 15 seconds so a proxy does not treat
 it as finished. `EventSource` ignores comments.
 
-Vite already proxies `/api` to `127.0.0.1:1431`. The browser uses a same-origin
-URL: `/api/v1/events/stream?...`.
+Vite proxies `/api` to `127.0.0.1:1431` for `pnpm dev` and for
+`ROBI_EXTERNAL_API=1`. Those modes use a same-origin URL:
+`/api/v1/events/stream?...`. The desktop app asks the shell for the bound origin
+and opens the stream on that host.
 
 OpenAPI may describe the path and query parameters. The body is an SSE stream,
 not a JSON schema the client generator can call. The contract of record is this

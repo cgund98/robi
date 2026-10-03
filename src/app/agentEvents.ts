@@ -1,3 +1,5 @@
+import { apiBaseUrl } from '../api/client'
+
 /**
  * Agent event names and the stream URL.
  *
@@ -34,7 +36,7 @@ export type EventEnvelope = {
 
 export function buildAgentEventsStreamUrl(
   sessionId: string,
-  baseUrl: string = import.meta.env.VITE_API_BASE_URL ?? ''
+  baseUrl: string = apiBaseUrl()
 ): string {
   const params = new URLSearchParams()
   params.set('session_id', sessionId)

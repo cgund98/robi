@@ -1,7 +1,8 @@
 # Quickstart
 
 Get Robi running and send your first message. Robi is a desktop app: a Tauri
-window over a local API, `robi-api`. For development the two run separately.
+window that starts the local API in the same process. `robi-api` is still the
+process you run for a browser-only UI, and for headless use.
 
 ## Prerequisites
 
@@ -10,28 +11,33 @@ window over a local API, `robi-api`. For development the two run separately.
 - A provider credential. Robi speaks the OpenAI-compatible chat-completions wire
   format; the default endpoint is OpenCode Go, so set `opencode_go_api_key`.
 
-## 1. Start the local API
+## 1. Open the app
 
-The API owns the database, the providers, and the agent runtime.
-
-```sh
-make api
-```
-
-This runs `cargo run -p robi --bin robi-api` and listens on `127.0.0.1:1431`.
-It creates the session database on first run.
-
-## 2. Open the app
-
-Run the desktop window and the web UI, against the API from step 1:
+The desktop window starts the API itself. The database is created on first run
+under the app data directory.
 
 ```sh
 pnpm tauri dev
 ```
 
-The Vite dev server listens on port **1430** and proxies `/api` to the API on
-`1431`. `pnpm dev` alone serves the web UI in a browser without the Tauri shell;
-run the API alongside it either way.
+The Vite dev server listens on port **1430**. The API binds `127.0.0.1:1431`,
+or the next free port when that one is taken. The window reads the bound origin
+before it talks to the API.
+
+To keep using `make dev-api` (so the API restarts without rebuilding the window),
+skip the in-process server:
+
+```sh
+pnpm tauri:external-api
+```
+
+That sets `ROBI_EXTERNAL_API=1`. The webview then uses the Vite `/api` proxy to
+`127.0.0.1:1431`, and you run `make dev-api` beside it. A packaged build ignores
+the flag.
+
+`pnpm dev` alone serves the web UI in a browser. It does not start the API, so
+run `make api` alongside it. That listens on `127.0.0.1:1431`, and Vite proxies
+`/api` there.
 
 ## 3. Add a credential
 

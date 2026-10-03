@@ -43,7 +43,8 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `agent/providers/` | M1 | Model clients, streaming, retries |
 | `domain/` | M2 | Chat session models, repository traits, and services. No I/O |
 | `adapters/` | M2 | SQLite behind those traits, and the settings files. A keychain can replace the secret backend later |
-| `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI. The `robi-api` binary wires them |
+| `bootstrap/` | M2 | Shared app state, bind, and router for `robi-api` and the Tauri process |
+| `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI |
 | `agent/tools/` | M3 | Built-in tools |
 | `agent/workspace/` | M3 | Root resolution, path confinement, policy |
 | `agent/review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
@@ -54,7 +55,7 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `agent/compress/` | M9 | Tool-output compression and the original store |
 
 Inside `crates/robi`, `web_api` and `adapters` depend on `domain`, and `domain`
-depends on neither. The `robi-api` binary is the composition root. Schema,
+depends on neither. `bootstrap` is the composition root both processes call. Schema,
 routes, and the chat session lifecycle are in
 [docs/src/design/persistence/persistence.md](docs/src/design/persistence/persistence.md).
 

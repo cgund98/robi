@@ -111,7 +111,7 @@ export function WorkspacesPage() {
 
       {!loaded ? (
         <p className={styles.status}>Loading…</p>
-      ) : empty && !error ? (
+      ) : empty ? (
         <div className={styles.empty}>
           <FolderMark />
           <h2 className={styles.emptyTitle}>Looking to start a workspace?</h2>

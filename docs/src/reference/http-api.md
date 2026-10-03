@@ -1,10 +1,20 @@
 # HTTP API
 
-`robi-api` is a local Axum server. It is the composition root: it wires the
-SQLite adapters, the provider clients, and the agent runtime behind an HTTP
-surface the desktop shell and the web shell both use. It binds to
-`127.0.0.1:1431` by default (override with `ROBI_BIND`; the address must be
-loopback).
+The local API is an Axum server. `bootstrap` wires the SQLite adapters, the
+provider clients, and the agent runtime. The desktop app serves that router in
+the Tauri process. `robi-api` serves the same router for a browser UI and for
+headless use.
+
+The desktop app binds `127.0.0.1:1431`, then the next ports through `1450` when
+`1431` is taken, and tells the webview the bound origin. `robi-api` does the
+same unless `ROBI_BIND` is set, in which case that loopback address is used
+exactly and startup fails if it is taken. The browser UI reaches the API through
+the Vite proxy on `1431`, so leave `1431` free when you use `pnpm dev` or
+`ROBI_EXTERNAL_API=1`.
+
+Responses include CORS for `http://localhost:1430`, `http://127.0.0.1:1430`,
+`http://tauri.localhost`, `https://tauri.localhost`, and `tauri://localhost`
+(the macOS and Linux packaged window). Other origins are refused.
 
 All routes live under `/api/v1`. The request and response bodies are described by
 the OpenAPI document at `openapi/openapi.json`, which is served alongside a
