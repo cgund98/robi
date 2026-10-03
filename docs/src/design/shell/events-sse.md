@@ -231,6 +231,7 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 | `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
 | `robi.app.v1.error` | Show `message` on the shell error line |
+| `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. The stream publishes once when it opens, then again as the index changes |
 
 Do not open a second `EventSource` per feature.
 

@@ -52,8 +52,17 @@ pub async fn stream_events(
     // Axum's `Query` extractor rejects a repeated key and a value that contains
     // `.`. Event types are dotted, and the shell repeats `event_types`.
     let mut filter = StreamFilter::from_query(parse_query(raw.as_deref()))?;
-    let lease = open_index(&state, &mut filter).await;
+    // Subscribe before the index starts so its first progress frame is not lost,
+    // then publish the current status for a client that connected mid-scan.
     let subscription = state.event_bus.subscribe();
+    let lease = open_index(&state, &mut filter).await;
+    if let Some(workspace_id) = filter.workspace_id.as_deref() {
+        if let Ok(id) = Uuid::parse_str(workspace_id) {
+            state
+                .index
+                .publish_status(robi_core::ids::WorkspaceId::from_uuid(id));
+        }
+    }
     let stream = event_stream(subscription, filter, lease);
     let response = (
         [(

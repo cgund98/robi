@@ -11,7 +11,6 @@ type IndexStore = {
   workspaceId: string | null
   status: IndexStatus | null
   pending: IndexPending | null
-  apply: (workspaceId: string, status: IndexStatus) => void
   refresh: (workspaceId: string) => Promise<void>
   setPaused: (paused: boolean) => Promise<void>
 }
@@ -20,16 +19,6 @@ export const useIndexStore = create<IndexStore>((set, get) => ({
   workspaceId: null,
   status: null,
   pending: null,
-  apply: (workspaceId, status) => {
-    if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-      return
-    }
-    set((state) => ({
-      workspaceId,
-      status,
-      pending: clearPending(state.pending, status.state)
-    }))
-  },
   refresh: async (workspaceId) => {
     if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
       return

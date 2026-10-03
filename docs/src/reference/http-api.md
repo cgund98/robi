@@ -121,7 +121,7 @@ and `data` is the payload. A keep-alive comment is sent every 15 seconds.
 | `robi.session.v1.updated` | A session's metadata changed. |
 | `robi.session.v1.deleted` | A session was deleted. |
 | `robi.app.v1.error` | A process-level error. |
-| `robi.index.v1.progress` | Semantic index progress for a workspace. |
+| `robi.index.v1.progress` | Semantic index progress for a workspace. The shell refetches `GET /workspaces/{id}/index`. The stream publishes once when it opens, then again as the index changes. |
 
 A `session_id` filter still delivers session lifecycle events and `app.error`,
 plus index progress for that session's workspace. A turn outcome in `data` is one

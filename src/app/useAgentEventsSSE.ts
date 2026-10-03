@@ -5,7 +5,6 @@ import { ApiError } from '../api/sessions'
 import { useReconnectingEventSource } from '../infra/useReconnectingEventSource'
 import { useChatStore } from '../state/chatStore'
 import { useIndexStore } from '../state/indexStore'
-import { useWorkspaceStore } from '../state/workspaceStore'
 import { postApprovalNotice, releaseApprovalPause } from './approvalNotice'
 import { AGENT_EVENT_TYPES, buildAgentEventsStreamUrl, parseEventEnvelope } from './agentEvents'
 import { fetchStillCurrent, startFetch } from './latestFetch'
@@ -18,34 +17,6 @@ type DeltaData = {
   message?: string
   delta?: { kind?: string }
   outcome?: { kind?: string; message?: string }
-}
-
-function indexStatus(data: unknown): {
-  state: 'downloading' | 'indexing' | 'ready' | 'paused' | 'failed'
-  files_done: number
-  files_total: number
-  error: string | null
-} | null {
-  if (!data || typeof data !== 'object') {
-    return null
-  }
-  const record = data as Record<string, unknown>
-  const state = record.state
-  if (
-    state !== 'downloading' &&
-    state !== 'indexing' &&
-    state !== 'ready' &&
-    state !== 'paused' &&
-    state !== 'failed'
-  ) {
-    return null
-  }
-  return {
-    state,
-    files_done: typeof record.files_done === 'number' ? record.files_done : 0,
-    files_total: typeof record.files_total === 'number' ? record.files_total : 0,
-    error: typeof record.error === 'string' ? record.error : null
-  }
 }
 
 function eventData(data: unknown): DeltaData | null {
@@ -77,9 +48,8 @@ export function useAgentEventsSSE(): void {
       return
     }
     if (envelope.type === 'robi.index.v1.progress') {
-      const status = indexStatus(envelope.data)
-      if (status) {
-        useIndexStore.getState().apply(envelope.subject, status)
+      if (envelope.subject) {
+        void useIndexStore.getState().refresh(envelope.subject)
       }
       return
     }
@@ -170,10 +140,6 @@ export function useAgentEventsSSE(): void {
 
   const onOpen = useCallback(() => {
     void useChatStore.getState().hydrateFromStream()
-    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId
-    if (workspaceId) {
-      void useIndexStore.getState().refresh(workspaceId)
-    }
   }, [])
 
   useReconnectingEventSource({

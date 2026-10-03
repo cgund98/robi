@@ -83,6 +83,18 @@ impl IndexHub {
         }
     }
 
+    /// Publish the current status so a subscriber that just connected sees it.
+    pub fn publish_status(&self, id: WorkspaceId) {
+        if let Some(index) = self.index(id) {
+            index.report();
+            return;
+        }
+        let status = self.status(id);
+        let data = serde_json::to_value(&status).unwrap_or_else(|_| serde_json::json!({}));
+        self.bus
+            .publish(EventEnvelope::index_progress(&id.to_string(), data));
+    }
+
     pub fn status(&self, id: WorkspaceId) -> IndexStatus {
         if let Some(index) = self.index(id) {
             return index.status();

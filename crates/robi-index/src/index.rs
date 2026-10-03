@@ -105,6 +105,13 @@ impl Index {
         self.shared.status.read().expect("index status").clone()
     }
 
+    /// Publish the current status. The read lock is held across the callback so
+    /// a newer `set_status` cannot publish ahead of this snapshot.
+    pub fn report(&self) {
+        let status = self.shared.status.read().expect("index status");
+        (self.shared.on_status)(status.clone());
+    }
+
     pub fn pause(&self) {
         self.shared.pause.store(true, Ordering::SeqCst);
         if let Ok(connection) = store::open_connection(&self.shared.db_path) {

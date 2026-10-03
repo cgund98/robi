@@ -252,9 +252,10 @@ again. One unreadable file is skipped and counted, and does not fail
 the scan.
 
 The shell shows this status for the active session's workspace and
-offers pause and resume. It reads the GET on connect, because the
-stream does not replay. While the workspace is open it listens for
-`robi.index.v1.progress` on the existing `EventSource`.
+offers pause and resume. Opening the event stream publishes the current
+status, and the index task publishes again whenever that status changes.
+Each `robi.index.v1.progress` frame on the existing `EventSource` makes
+the shell `GET` this route. The frame is not written into the line.
 
 | Field | Value |
 |---|---|
