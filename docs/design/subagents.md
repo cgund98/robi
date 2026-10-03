@@ -32,7 +32,7 @@ One tool, `delegate`, with two modes.
 
 | | `explore` | `general` |
 |---|---|---|
-| Tools | `read_file`, `list_dir`, `find`, `grep`, `semantic_search`, and, when `lsp` is `on`, the read-only language-server tools | those, plus `shell` |
+| Tools | `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, and, when `lsp` is `on`, the read-only language-server tools | those, plus `shell` |
 | Model turns | 40 | 50 |
 | Wall clock | 2 minutes | 2 minutes |
 | Calls per session | 6 | 4 |

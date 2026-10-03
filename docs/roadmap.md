@@ -1051,7 +1051,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/mcp.md` | **D10**, host, config and trust, registry names, approval | M8 | done |
 | `docs/design/tool-output-compression.md` | **D11, D12** for JSON and search hits, content routing beyond shell | M9 | later |
 | `docs/design/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
-| `docs/design/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit | read tools | done |
+| `docs/design/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit. Four slices: Rust with focus, then TypeScript, then Python and Go, then the depth and `compress` knobs | read tools | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives
 with reasons, the interfaces, and the failure modes. A doc that only describes

@@ -12,6 +12,7 @@ use super::change::{
     atomic_write, change_diff, diff_json, lock_path, read_text, record_baseline, write_approval,
 };
 use super::context::{display_path, ToolContext};
+use super::marker::reject_marker;
 use super::replace::apply_edit;
 
 pub struct EditFile {
@@ -74,6 +75,8 @@ impl Tool for EditFile {
         if args.path.is_empty() {
             return Err(ToolError::InvalidArgs("path is required".into()));
         }
+        reject_marker(&args.old)?;
+        reject_marker(&args.new)?;
         self.ctx.filter().await?;
         let resolved = self.ctx.resolve(&args.path)?;
         let _guard = lock_path(&resolved.absolute).await;

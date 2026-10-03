@@ -7,12 +7,14 @@ mod embed;
 mod error;
 mod fuse;
 mod index;
+mod outline;
 mod store;
 
 pub use chunk::{chunk_source, language_for_path, Chunk, ChunkKind, Language};
 pub use embed::{Embedder, FakeEmbedder, MODEL_ID};
 pub use error::IndexError;
 pub use index::{Index, IndexState, IndexStatus};
+pub use outline::{outline, Outline, OutlineError};
 pub use store::ChunkHit;
 
 #[cfg(feature = "local-embed")]

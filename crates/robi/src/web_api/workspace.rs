@@ -26,10 +26,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/workspaces/{id}/skills", get(list_skills))
         .route("/api/v1/workspaces/{id}/mcp", get(list_mcp_servers))
-        .route(
-            "/api/v1/workspaces/{id}/mcp/config",
-            get(get_mcp_config),
-        )
+        .route("/api/v1/workspaces/{id}/mcp/config", get(get_mcp_config))
         .with_state(state)
 }
 

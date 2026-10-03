@@ -13,8 +13,10 @@ mod grant;
 mod grep;
 mod list_dir;
 mod lsp;
+mod marker;
 mod memory_store;
 pub(crate) mod plan_file;
+mod read_code;
 mod read_file;
 mod replace;
 mod semantic_search;
@@ -51,6 +53,10 @@ pub fn register_read_tools(
     register(
         registry,
         Arc::new(read_file::ReadFile::new(Arc::clone(&ctx))),
+    )?;
+    register(
+        registry,
+        Arc::new(read_code::ReadCode::new(Arc::clone(&ctx))),
     )?;
     register(registry, Arc::new(list_dir::ListDir::new(Arc::clone(&ctx))))?;
     register(registry, Arc::new(find::Find::new(Arc::clone(&ctx))))?;
@@ -232,9 +238,11 @@ mod registry_tests {
                 "grep",
                 "hover",
                 "list_dir",
+                "read_code",
                 "read_file",
                 "references",
                 "semantic_search",
+                "skill",
                 "web_fetch",
                 "web_search",
                 "workspace_symbol"
@@ -250,10 +258,12 @@ mod registry_tests {
                 "grep",
                 "hover",
                 "list_dir",
+                "read_code",
                 "read_file",
                 "references",
                 "semantic_search",
                 "shell",
+                "skill",
                 "web_fetch",
                 "web_search",
                 "workspace_symbol",
@@ -273,10 +283,12 @@ mod registry_tests {
                 "grep",
                 "hover",
                 "list_dir",
+                "read_code",
                 "read_file",
                 "references",
                 "semantic_search",
                 "shell",
+                "skill",
                 "todos",
                 "web_fetch",
                 "web_search",

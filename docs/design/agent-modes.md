@@ -33,7 +33,7 @@ started with. The next actor reads the stored mode.
 
 | Tool | Ask | Plan | Agent |
 |---|---|---|---|
-| `read_file`, `list_dir`, `find`, `grep`, `semantic_search`, `grant` | yes | yes | yes |
+| `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, `grant` | yes | yes | yes |
 | `diagnostics`, `definition`, `references`, `hover`, `workspace_symbol` | when `lsp` is `on` | when `lsp` is `on` | when `lsp` is `on` |
 | `skill` | yes | yes | yes |
 | `web_search`, `web_fetch` | yes | yes | yes |

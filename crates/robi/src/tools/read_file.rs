@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::context::{denied, display_path, ToolContext};
 
-const MAX_READ_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_READ_BYTES: usize = 32 * 1024;
 
 pub struct ReadFile {
     ctx: Arc<ToolContext>,
@@ -85,7 +85,7 @@ struct ReadArgs {
     limit: Option<u32>,
 }
 
-fn read_resolved(
+pub(crate) fn read_resolved(
     absolute: &Path,
     display: &str,
     offset: u32,
@@ -119,15 +119,15 @@ fn read_resolved(
     Ok(payload)
 }
 
-struct ReadWindow {
-    content: String,
-    start_line: u32,
-    end_line: u32,
-    total_lines: u32,
-    next_offset: Option<u32>,
+pub(crate) struct ReadWindow {
+    pub(crate) content: String,
+    pub(crate) start_line: u32,
+    pub(crate) end_line: u32,
+    pub(crate) total_lines: u32,
+    pub(crate) next_offset: Option<u32>,
 }
 
-fn read_window(text: &str, offset: u32, limit: Option<u32>) -> ReadWindow {
+pub(crate) fn read_window(text: &str, offset: u32, limit: Option<u32>) -> ReadWindow {
     let lines = split_keep(text);
     let total_lines = lines.len() as u32;
     let start = offset.max(1).saturating_sub(1) as usize;

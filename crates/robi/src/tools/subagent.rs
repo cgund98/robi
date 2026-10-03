@@ -134,6 +134,9 @@ pub(crate) fn register_child_tools(
 ) -> Result<(), robi_core::error::RegistryError> {
     let read = |tool: Arc<dyn Tool>| wrap(tool, Arc::clone(&state), Arc::clone(&report));
     registry.register(read(Arc::new(ReadFile::new(Arc::clone(&ctx)))))?;
+    registry.register(read(Arc::new(super::read_code::ReadCode::new(Arc::clone(
+        &ctx,
+    )))))?;
     registry.register(read(Arc::new(ListDir::new(Arc::clone(&ctx)))))?;
     registry.register(read(Arc::new(Find::new(Arc::clone(&ctx)))))?;
     registry.register(read(Arc::new(Grep::new(Arc::clone(&ctx)))))?;
@@ -330,7 +333,7 @@ pub(crate) fn step_target(name: &str, args: &Value) -> String {
     let pattern = field("pattern");
     let command = field("command");
     let raw = match name {
-        "read_file" => path,
+        "read_file" | "read_code" => path,
         "list_dir" => {
             if path.is_empty() {
                 ".".to_owned()
@@ -448,6 +451,8 @@ what you found. You do not change anything.
 - list_dir: list one directory.
 - read_file: read a file when you know the path, or a line window with offset and
   limit. Continue from next_offset when truncated is true.
+- read_code: outline a source file. Pass focus_symbols for the body you need.
+  A <<<ROBI_OMITTED line is not source. Use read_file when you need exact bytes.
 {language_server}\
 </tools>
 
@@ -505,7 +510,7 @@ You are an investigator. You read, search, and run sandboxed commands, then
 report what you found. You do not change files.
 
 <tools>
-- semantic_search, find, grep, list_dir, and read_file inspect the workspace.
+- semantic_search, find, grep, list_dir, read_file, and read_code inspect the workspace.
   A question about behavior starts with semantic_search.
 {language_server}\
 - shell runs a sandboxed command. It can read and write the workspace, and it

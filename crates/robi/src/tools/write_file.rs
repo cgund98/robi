@@ -13,6 +13,7 @@ use super::change::{
     write_approval,
 };
 use super::context::{display_path, ToolContext};
+use super::marker::reject_marker;
 
 pub struct WriteFile {
     ctx: Arc<ToolContext>,
@@ -69,6 +70,7 @@ impl Tool for WriteFile {
         if args.path.is_empty() {
             return Err(ToolError::InvalidArgs("path is required".into()));
         }
+        reject_marker(&args.content)?;
         self.ctx.filter().await?;
         let resolved = self.ctx.resolve(&args.path)?;
         let _guard = lock_path(&resolved.absolute).await;

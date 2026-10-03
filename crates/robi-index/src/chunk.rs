@@ -34,7 +34,7 @@ impl Language {
         }
     }
 
-    fn separator(self) -> &'static str {
+    pub(crate) fn separator(self) -> &'static str {
         match self {
             Self::Rust | Self::Go => "::",
             _ => ".",
@@ -76,7 +76,7 @@ impl Language {
         }
     }
 
-    fn import_kinds(self) -> &'static [&'static str] {
+    pub(crate) fn import_kinds(self) -> &'static [&'static str] {
         match self {
             Self::Rust => &["use_declaration"],
             Self::TypeScript | Self::Tsx | Self::JavaScript => &["import_statement"],
@@ -153,7 +153,7 @@ pub fn chunk_source(
     Ok(chunks)
 }
 
-fn grammar(language: Language) -> tree_sitter::Language {
+pub(crate) fn grammar(language: Language) -> tree_sitter::Language {
     match language {
         Language::Rust => tree_sitter_rust::LANGUAGE.into(),
         Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
@@ -362,7 +362,7 @@ fn imports_of(language: Language, root: Node<'_>, source: &str) -> String {
     cap_bytes(&text, IMPORT_BYTES)
 }
 
-fn symbol_of(language: Language, node: Node<'_>, source: &str) -> String {
+pub(crate) fn symbol_of(language: Language, node: Node<'_>, source: &str) -> String {
     let mut names = Vec::new();
     let mut current = Some(node);
     while let Some(item) = current {

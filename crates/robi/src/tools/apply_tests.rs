@@ -7,7 +7,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::context::ToolContext;
-use super::{delete_file::DeleteFile, edit_file::EditFile, write_file::WriteFile};
+use super::{
+    delete_file::DeleteFile, edit_file::EditFile, read_code::ReadCode, write_file::WriteFile,
+};
 use crate::adapters::{
     chat_session::repo::SqliteChatSessionRepository, file_change::repo::SqliteFileChangeRepository,
     sqlite, workspace::repo::SqliteWorkspaceRepository,
@@ -250,4 +252,51 @@ async fn delete_file_refuses_a_directory() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("directory"), "{error}");
+}
+
+#[tokio::test]
+async fn edit_and_write_refuse_an_omitted_marker() {
+    let harness = harness().await;
+    std::fs::write(harness.root.join("pay.rs"), "fn keep() {}\n").unwrap();
+    let marker = "<<<ROBI_OMITTED symbol=\"keep\" lines=1-1 sha256=\"abcdabcdabcdabcd\">>>";
+    let edit = EditFile::new(Arc::clone(&harness.ctx));
+    let error = edit
+        .execute(
+            json!({"path": "pay.rs", "old": marker, "new": "fn keep() { let x = 1; }\n"}),
+            run(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("omitted-body marker"), "{error}");
+    assert!(error.to_string().contains("symbol: keep"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(harness.root.join("pay.rs")).unwrap(),
+        "fn keep() {}\n"
+    );
+    let write = WriteFile::new(Arc::clone(&harness.ctx));
+    let error = write
+        .execute(json!({"path": "pay.rs", "content": marker}), run())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("omitted-body marker"), "{error}");
+}
+
+#[tokio::test]
+async fn read_code_outlines_a_rust_file() {
+    let harness = harness().await;
+    std::fs::write(
+        harness.root.join("pay.rs"),
+        "fn one() {\n    let value = 1;\n}\nfn two() {\n    let value = 2;\n}\n",
+    )
+    .unwrap();
+    let tool = ReadCode::new(Arc::clone(&harness.ctx));
+    let result = tool
+        .execute(json!({"path": "pay.rs", "focus_symbols": ["one"]}), run())
+        .await
+        .unwrap();
+    assert_eq!(result["view"], "outline");
+    let content = result["content"].as_str().unwrap();
+    assert!(content.contains("let value = 1;"), "{content}");
+    assert!(content.contains("<<<ROBI_OMITTED"), "{content}");
+    assert!(!content.contains("let value = 2;"), "{content}");
 }

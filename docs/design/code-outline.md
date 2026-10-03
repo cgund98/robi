@@ -65,6 +65,138 @@ The bytes of `process_card`, including its braces and indentation, are a
 slice of the file. The marker is synthesized. `edit_file` may quote the
 `process_card` lines. It may not quote the marker.
 
+## Build order
+
+The rest of this page is the end state. None of it is implemented. There is
+no `outline.rs` and no `read_code`. `edit_file` does not look for
+`<<<ROBI_`. `symbol_of` and `grammar` are private in
+`crates/robi-index/src/chunk.rs`. That crate already links Rust, TypeScript,
+TSX, JavaScript, Python, and Go. Markdown is chunked and is not outlined.
+
+Four slices. Each one ships a tool the model can call. A later slice adds a
+grammar or a parameter. It does not change the marker or the write check.
+
+`focus_symbols` is in the first slice. An outline that never opens a body
+still sends the model to `read_file` before every edit, and a turn that calls
+both is larger than the one it replaced. The saving shows up first in
+`explore`: the child reads several files, and the caller only receives the
+summary, so a body the child did not focus is lines it did not pay for.
+
+A hash store is not a slice. The file is the value. Re-reading it recomputes
+the marker. The `redb` and `sled` table that would cache omitted bodies is
+rejected under [Hashes](#hashes).
+
+| Order | Slice | What lands | What it saves |
+|---|---|---|---|
+| 1 | Rust, with focus | `read_code` on `.rs`, exact and unique-suffix focus, the marker, the write refusal | Function bodies in a Rust file the model is not editing |
+| 2 | TypeScript family | TS, TSX, and JS queries, arrow functions, interface bodies, parameter-list focus | The same cut on the frontend |
+| 3 | Python and Go | Those grammars, reusing slice 2's matcher | The other languages the index already parses |
+| 4 | Knobs | `depth`, `expand_imports`, struct and enum folding, `compress: false` | A file whose signatures alone exceed 32 KB, and an exact window from this tool |
+
+### Slice 1 — Rust, with focus
+
+One pure function, `outline`, in `crates/robi-index/src/outline.rs`. It takes
+the source `&str`, `Language::Rust`, and the focus list. It returns the
+rendered string, the omitted spans, and the match report. It does not read
+the filesystem. `symbol_of` becomes `pub(crate)` and the outline calls it, so
+a `semantic_search` hit is the same string.
+
+The Rust query binds `function_item` and its `body` field only. At the fixed
+depth of 1, an impl, trait, or module stays open and each function body
+folds, unless that function is focused or contains a focused function.
+Struct and enum field lists stay in full until slice 4. Selection and
+rendering are the algorithms under [Which bodies stay](#which-bodies-stay)
+and the renderer that follows it.
+
+Focus matching is stages 1 and 3 under
+[Matching a focus string](#matching-a-focus-string). Two `new` methods are
+`Foo::new` and `Bar::new` after `symbol_of`, so stage 1 separates them.
+Stage 2, the parameter list, waits until slice 2, where TypeScript overloads
+share a symbol. A miss is `missing`. Two hits unfold nothing and are
+`ambiguous`. The cap is eight names.
+
+The size gate is steps 4 and 5 under [Size gate](#size-gate). There is no
+depth to step down. A focused body that does not fit in 32 KB becomes a
+marker with `truncated: true`, not a cut function. An unfocused outline that
+does not fit is cut on the last complete marker under the cap.
+
+`read_code` lives in `crates/robi/src/tools/read_code.rs`. The schema is
+`path` and optional `focus_symbols`. `compress`, `depth`, `expand_imports`,
+`offset`, and `limit` are `invalid arguments` until the slice that
+implements them. The description tells the model to pass `focus_symbols` for
+the function it is about to edit, and to quote `edit_file` only from
+`read_file` or from a focused body. It does not mention knobs that are not
+in the schema.
+
+Path checks, the 1 MiB ceiling, and the binary check match `read_file`. A
+parse error is `file did not parse; use read_file`. Any other extension is
+`no grammar for this file; use read_file`. The source-window fallback for a
+missing grammar is slice 4. The result carries `view`, `path`, `language`,
+`file_sha256`, `content`, `total_lines`, `bytes`, `truncated`,
+`depth_applied` (always 1), `focused`, `omitted`, `missing`, and
+`ambiguous`.
+
+`edit_file` and `write_file` reject `old`, `new`, or `content` that contains
+`<<<ROBI_` before the file is read. The error is the one under
+[Markers must not reach the file](#markers-must-not-reach-the-file). This
+check ships in the same change as the tool. A marker the model can see and
+a write that will store it is the failure this page exists to prevent.
+
+Registration is `register_read_tools`, so ask, plan, and agent all see it,
+and `register_child_tools`, so explore and general do too. The same change
+updates the tool table in [agent-modes.md](agent-modes.md), the "single
+known file" line in that page and in `prompt/mode.rs` and `prompt/builtin.rs`,
+and the explore tool list in `tools/subagent.rs` and
+[subagents.md](subagents.md). A large source file is `read_code`. `read_file`
+is how a quote is taken, including a line window at a marker's start line.
+
+Tests are strings, not fixtures. One Rust impl with two methods: the focused
+body is a source slice, the sibling is one marker, and the marker's hash is
+the first 8 bytes of SHA-256 of that body. A second test passes `<<<ROBI_`
+to `edit_file` and `write_file` and asserts the file is unchanged.
+
+### Slice 2 — TypeScript, TSX, JavaScript
+
+The renderer does not change. The queries are the TypeScript and JavaScript
+blocks under [Folding](#folding), including an arrow function whose name is
+an identifier. A class stays open so a method can be focused. An interface
+body folds: at depth 1 it is a field list, and that list is often the large
+part of a `.d.ts` file. JavaScript uses the TypeScript query without
+`interface_declaration`.
+
+Stage 2 of focus matching lands here. Two methods named `process_card` on
+the same class share a symbol. The `ambiguous` entry shows
+`PaymentService.process_card(<parameters>)` and the line range. The model
+sends that parameter form or calls `read_file` on one range. Nothing is
+unfolded until the string is unique.
+
+### Slice 3 — Python and Go
+
+Python folds `function_definition` bodies and leaves `class_definition`
+open, the same container rule as a Rust impl. Go folds
+`function_declaration` and `method_declaration`. A Go method with no body
+does not match the `body:` pattern and stays as the line it already is.
+`symbol_of` already walks the receiver, so `ChatSessionService::Append` is
+the focus string without a new namer.
+
+### Slice 4 — Knobs
+
+This is the schema in [Tool](#tool), which slice 1 deliberately did not
+expose.
+
+- `depth` 0 and 2, and the size gate's step-down from 2 to 1 to 0.
+- `expand_imports` for a leading import run longer than 15 lines.
+- Struct, enum, and trait field lists, which slice 1 left open.
+- `compress: false` calls the same window helper as `read_file` and returns
+  `view: "source"`. An extension with no grammar takes that path and sets
+  `reason: "no grammar"`, replacing slice 1's error.
+- `offset` and `limit` are legal only when `compress` is false. `focus_symbols`
+  with `compress: false` stays `invalid arguments`.
+
+The description grows to the text under
+[What the model is told](#what-the-model-is-told) in this same slice. Until
+then the model is not told about a flag it cannot send.
+
 ## Pipeline
 
 `read_code` runs in `crates/robi/src/tools/read_code.rs`. The fold is a pure
