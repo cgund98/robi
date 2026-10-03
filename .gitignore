@@ -32,3 +32,5 @@ robi.db-shm
 #.idea/
 .gopi/plans
 .robi/plans
+
+scratch/
