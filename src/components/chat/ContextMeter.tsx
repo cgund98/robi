@@ -13,12 +13,7 @@ type ContextMeterProps = {
   contextWindow: number | null
 }
 
-export function ContextMeter({
-  messages,
-  draft,
-  pendingText,
-  contextWindow
-}: ContextMeterProps) {
+export function ContextMeter({ messages, draft, pendingText, contextWindow }: ContextMeterProps) {
   const estimate = estimateContext(messages, draft, contextWindow, pendingText)
   const percent = estimate.percent
   const fill = percent == null ? 0 : percent / 100

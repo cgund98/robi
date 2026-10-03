@@ -110,6 +110,7 @@ impl SettingsStore for TomlSettingsStore {
             tracing::error!(error = %error, "failed to sync settings");
             return Err(ServiceError::Unknown);
         }
+        tracing::info!(%key, "saved a setting");
         Ok(())
     }
 
@@ -123,6 +124,7 @@ impl SettingsStore for TomlSettingsStore {
             tracing::error!(error = %error, "failed to sync settings");
             return Err(ServiceError::Unknown);
         }
+        tracing::info!(%key, "removed a setting");
         Ok(())
     }
 }

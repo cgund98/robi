@@ -14,6 +14,7 @@ stay in [persistence.md](persistence.md).
 | OS sandbox for a shell tool | `docs/design/shell-tool.md` (M4) |
 | Compaction when a read fills the window | `docs/design/context-management.md` (M3) |
 | How the actor is built | [chat-runtime.md](chat-runtime.md) |
+| An outline that folds function bodies | [code-outline.md](code-outline.md). `read_file` stays an exact window |
 
 ## Problem
 

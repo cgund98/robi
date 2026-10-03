@@ -28,6 +28,11 @@ function call(overrides: Partial<ChatToolCall> = {}): ChatToolCall {
 describe('toolSummary', () => {
   it('names read, grep, find, and list', () => {
     expect(toolSummary(call())).toEqual({ verb: 'Read', target: 'src/main.rs' })
+    expect(
+      toolSummary(call({ args: { path: 'chat_runtime.rs', offset: 240, limit: 60 } }))
+    ).toEqual({ verb: 'Read', target: 'chat_runtime.rs', range: 'L240-299' })
+    expect(toolSummary(call({ args: { path: 'a.rs', limit: 20 } })).range).toBe('L1-20')
+    expect(toolSummary(call({ args: { path: 'a.rs', offset: 8 } })).range).toBe('L8')
     expect(toolSummary(call({ name: 'grep', args: { pattern: 'fn main' } }))).toEqual({
       verb: 'Grepped',
       target: 'fn main'

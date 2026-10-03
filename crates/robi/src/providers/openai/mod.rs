@@ -206,6 +206,11 @@ impl OpenAiCompatibleModel {
 
         let status = response.status();
         if status.is_success() {
+            tracing::info!(
+                model = %self.settings.model,
+                status = status.as_u16(),
+                "provider accepted the request"
+            );
             return Ok(response);
         }
 
@@ -255,6 +260,7 @@ async fn pump(
                     let error = ProviderError::Transport(format!(
                         "no chunk arrived within {chunk_timeout:?}"
                     ));
+                    tracing::warn!(?chunk_timeout, "provider stream stalled");
                     let _ = tx.send(Delta::Failed(error.into_model_error())).await;
                     return;
                 }
@@ -267,6 +273,7 @@ async fn pump(
                     let outcome = match assembler.on_eof() {
                         Ok(deltas) => send_all(&tx, deltas).await,
                         Err(error) => {
+                            tracing::warn!(%error, "provider stream failed");
                             tx.send(Delta::Failed(error.into_model_error())).await.is_ok()
                         }
                     };
@@ -274,6 +281,7 @@ async fn pump(
                     return;
                 }
                 Ok(Some(Err(error))) => {
+                    tracing::warn!(%error, "provider stream failed");
                     let error = ProviderError::Transport(error.to_string());
                     let _ = tx.send(Delta::Failed(error.into_model_error())).await;
                     return;
@@ -307,10 +315,12 @@ async fn absorb(
                     return true;
                 }
                 if finished {
+                    tracing::info!("provider stream finished");
                     return true;
                 }
             }
             Err(error) => {
+                tracing::warn!(%error, "provider stream failed");
                 let _ = tx.send(Delta::Failed(error.into_model_error())).await;
                 return true;
             }

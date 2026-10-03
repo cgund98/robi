@@ -23,7 +23,7 @@ pub fn show_approval_notice(
         // The bundle can only be set once. A later pause keeps the first one.
         let _ = mac_notification_sys::set_application(bundle);
         std::thread::spawn(move || show_macos(app, body, session_id));
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]

@@ -63,6 +63,12 @@ pub async fn create_chat_session(
                 .unwrap_or_default(),
         })
         .await?;
+    tracing::info!(
+        session = %session.id,
+        workspace = %session.workspace_id,
+        mode = session.mode.as_str(),
+        "chat session created"
+    );
     let running = running_sessions(&state).await;
 
     Ok((StatusCode::CREATED, Json(to_response(session, &running))))

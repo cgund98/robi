@@ -61,12 +61,15 @@ pub async fn submit_instruction(
         .submit_instruction(session, &payload.instruction)
         .await?
     {
-        SubmitOutcome::Accepted => Ok((
-            StatusCode::ACCEPTED,
-            Json(AcceptedInstruction {
-                status: "accepted".into(),
-            }),
-        )),
+        SubmitOutcome::Accepted => {
+            tracing::info!(%session, "instruction accepted");
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(AcceptedInstruction {
+                    status: "accepted".into(),
+                }),
+            ))
+        }
         SubmitOutcome::AwaitingApproval => Err(ServiceError::Conflict(
             "chat session is awaiting approval".into(),
         )),

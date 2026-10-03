@@ -12,7 +12,8 @@ export const SETTING_KEYS = {
   modelAgent: 'model_agent',
   reasoningEffortAsk: 'reasoning_effort_ask',
   reasoningEffortPlan: 'reasoning_effort_plan',
-  reasoningEffortAgent: 'reasoning_effort_agent'
+  reasoningEffortAgent: 'reasoning_effort_agent',
+  lsp: 'lsp'
 } as const
 
 export type SettingView = {

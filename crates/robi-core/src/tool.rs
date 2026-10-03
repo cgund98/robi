@@ -154,6 +154,20 @@ impl ToolRegistry {
         self.len() == 0
     }
 
+    /// Whether this unfinished call is waiting on a person.
+    ///
+    /// `Pending` is the status a call is born with, including one the tool would
+    /// run immediately. The turn pauses only when this returns true.
+    pub async fn awaits_user_decision(&self, call: &crate::message::ToolCall) -> bool {
+        if !call.is_pending_approval() || !call.needs_execution() || call.args_error.is_some() {
+            return false;
+        }
+        let Some(tool) = self.get(&call.name) else {
+            return false;
+        };
+        tool.requires_approval(&call.args).await == ApprovalDecision::NeedsApproval
+    }
+
     /// Every tool's declared concurrency, for the registry snapshot test.
     ///
     /// The test asserts this map exactly, so adding a tool fails until its author

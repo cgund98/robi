@@ -22,7 +22,7 @@ use crate::message::{
 use crate::model::{Delta, Model};
 use crate::segments::{segment_by, Segment};
 use crate::store::MessageStore;
-use crate::tool::{ApprovalDecision, Tool, ToolRegistry, ToolReporter, ToolRun};
+use crate::tool::{Tool, ToolRegistry, ToolReporter, ToolRun};
 
 /// What settling an unresolved turn found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,11 +175,10 @@ impl Agent {
 
     /// The calls waiting on a decision, in transcript order.
     ///
-    /// A call that has already run is not waiting on anything. The loop sets
-    /// `ApprovalStatus::Approved` only when a user approves, so a call that needed
-    /// no approval keeps `Pending` for its whole life; filtering on approval alone
-    /// would report every no-approval call that ever ran and invite a decision on
-    /// work that is already done.
+    /// A call that has already run is not waiting on anything. A call the tool
+    /// would run immediately is stored as `Approved` once the loop has decided,
+    /// so it is not offered while a sibling call is paused. Filtering on approval
+    /// alone would still report a call the user approved that has not run yet.
     pub async fn pending_tool_calls(
         &self,
         session: SessionId,
@@ -337,20 +336,10 @@ impl Agent {
         };
         let assistant = messages[index].clone();
 
-        let waiting: Vec<ToolCallId> = assistant.pending_approval_calls().map(|c| c.id).collect();
-        if !waiting.is_empty() {
-            for call in waiting {
-                self.emit(Event::AwaitingApproval {
-                    session: *session,
-                    call,
-                })
-                .await;
-            }
-            return Ok(Settle::Paused);
-        }
-
-        // Every decision is in. Run the calls that never ran, which is a replayed
-        // call after an interrupted process as well as a freshly approved one.
+        // Ask each tool again. A call is stored `Pending` the moment the model
+        // asks for it, including one that needs no decision, so the status alone
+        // cannot pause the turn. A restart between the model turn and the tool
+        // round is this path.
         match self.process_tool_calls(session, &assistant, cancel).await {
             Ok(Phase::Done) => Ok(Settle::Executed),
             Ok(Phase::Paused) => Ok(Settle::Paused),
@@ -422,10 +411,12 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<Phase, TurnError> {
         // Phase 1 — decide. Sequential and side-effect free, over the whole turn.
+        let mut assistant = assistant.clone();
         let mut plans = Vec::with_capacity(assistant.tool_calls.len());
-        let mut needs_pause = false;
+        let mut waiting = Vec::new();
+        let mut cleared = Vec::new();
 
-        for call in &assistant.tool_calls {
+        for call in &mut assistant.tool_calls {
             // Already resolved. Checked first, so a second settle over the same
             // message is a no-op rather than a re-run.
             if call.execution_status.is_terminal() {
@@ -453,10 +444,14 @@ impl Agent {
                 continue;
             };
 
-            if call.is_pending_approval()
-                && tool.requires_approval(&call.args).await == ApprovalDecision::NeedsApproval
-            {
-                needs_pause = true;
+            if self.tools.awaits_user_decision(call).await {
+                waiting.push(call.id);
+            } else if call.is_pending_approval() {
+                // Recorded so a sibling that does need a decision does not leave
+                // this call looking like one. It still does not run until the
+                // whole turn is decided.
+                call.approval_status = ApprovalStatus::Approved;
+                cleared.push(call.id);
             }
 
             plans.push(CallPlan::Run {
@@ -465,13 +460,30 @@ impl Agent {
             });
         }
 
-        if needs_pause {
-            // Nothing in this turn has run. Report every call still waiting, so
-            // the UI renders the whole set rather than one card at a time.
-            for call in assistant.pending_approval_calls() {
+        if !waiting.is_empty() {
+            // Nothing in this turn has run. The calls that need a person stay
+            // pending. The others are already marked approved on `assistant`.
+            if !cleared.is_empty() {
+                let message_id = assistant.id;
+                self.store.update(*session, assistant.clone()).await?;
+                self.emit(Event::MessageUpdated {
+                    session: *session,
+                    message: message_id,
+                })
+                .await;
+                for call in cleared {
+                    self.emit(Event::ToolCallUpdated {
+                        session: *session,
+                        message: message_id,
+                        call,
+                    })
+                    .await;
+                }
+            }
+            for call in waiting {
                 self.emit(Event::AwaitingApproval {
                     session: *session,
-                    call: call.id,
+                    call,
                 })
                 .await;
             }

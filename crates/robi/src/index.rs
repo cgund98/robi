@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use robi_core::ids::WorkspaceId;
@@ -40,17 +41,27 @@ impl IndexHub {
         } else {
             let fanout = Arc::clone(&self.fanout);
             let workspace = id.to_string();
+            let reported_ready = Arc::new(AtomicU8::new(0));
             let index = Index::start(
                 id,
-                root,
+                root.clone(),
                 index_db_path(&self.home, &workspace),
                 Arc::clone(&self.embedder),
                 Arc::new(move |status| {
+                    let ready = u8::from(status.state == IndexState::Ready);
+                    if reported_ready.swap(ready, Ordering::Relaxed) != ready && ready == 1 {
+                        tracing::info!(
+                            workspace,
+                            files = status.files_done,
+                            "workspace index ready"
+                        );
+                    }
                     let data =
                         serde_json::to_value(&status).unwrap_or_else(|_| serde_json::json!({}));
                     fanout.publish(EventEnvelope::index_progress(&workspace, data));
                 }),
             );
+            tracing::info!(%id, root = %root.display(), "workspace index started");
             slots.insert(id, Slot { index, users: 1 });
         }
         IndexLease {

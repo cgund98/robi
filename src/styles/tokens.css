@@ -45,6 +45,8 @@
   --space-6: 32px;
 
   --sidebar-width: 260px;
+  --settings-rail: 240px;
+  --titlebar-height: 40px;
   --chat-column-width: 48rem;
   --font-ui: ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

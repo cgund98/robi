@@ -36,8 +36,9 @@ export function approvalNoticeBody(call: ChatToolCall | undefined): string {
   if (!call) {
     return 'A tool is waiting'
   }
-  const { verb, target } = toolSummary(call)
-  return target ? `${verb} ${target}` : verb
+  const { verb, target, range } = toolSummary(call)
+  const label = [target, range].filter(Boolean).join(' ')
+  return label ? `${verb} ${label}` : verb
 }
 
 export function releaseApprovalPause(sessionId: string): void {

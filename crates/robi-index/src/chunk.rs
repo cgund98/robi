@@ -195,12 +195,12 @@ fn chunks_for_node(
             imports,
             &symbol,
             ChunkKind::Symbol,
-            &text,
+            text,
             line_at(source, node.start_byte()),
             end_line_at(source, node.start_byte(), node.end_byte()),
         )];
     }
-    let signature = first_line(&text);
+    let signature = first_line(text);
     let mut children = Vec::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -212,7 +212,7 @@ fn chunks_for_node(
             imports,
             &symbol,
             signature,
-            &text,
+            text,
             node.start_byte(),
             source,
         );
@@ -220,7 +220,7 @@ fn chunks_for_node(
     let mut chunks = Vec::new();
     for child in children {
         let child_text = node_text(child, source);
-        let piece = with_signature(signature, &child_text);
+        let piece = with_signature(signature, child_text);
         if piece.len() <= MAX_CHUNK_BYTES {
             chunks.push(make_chunk(
                 path,

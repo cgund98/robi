@@ -441,9 +441,14 @@ Four properties in that code are worth defending:
   recurs. Counting tool calls would make a legitimate five-tool turn count
   against the cap five times.
 - **State is derived, never cached.** `settle_unresolved` re-reads the transcript
-  and decides whether anything is pending. A restart mid-pause therefore loses
-  nothing, at the cost of one transcript scan per iteration. That trade is
-  deliberate: a turn is tens of messages, and the scan is not the slow part.
+  and asks `requires_approval` again. A call is stored `pending` as soon as the
+  model asks for it, including one the tool would run immediately, so the status
+  alone does not pause the turn. The turn pauses only when a call is still
+  pending and its tool returns needs-approval. A restart between the model turn
+  and the tool round therefore runs the calls that need no decision, and a
+  restart mid-pause still waits on the ones that do. While a sibling pauses the
+  turn, a call that needs no decision is stored `approved` and does not run
+  until the decision is in, so the UI does not offer it.
 - **`model_turn` appends before the loop branches.** The assistant message is
   persisted while its tool calls are still `pending`, so a crash between the model
   turn and the tool round leaves a resumable transcript rather than a lost one.
@@ -556,6 +561,10 @@ async fn process_tool_calls(&self, session, assistant: &Message) -> Result<Phase
   structured result the model can read and correct. The fan-out deliberately does
   not derive a cancel-on-first-error context, because a failing tool would then
   discard sibling work the model asked for and the user already paid for.
+- **A tool call is logged without its arguments.** Start and a normal finish
+  are info. Cancellation is info. A panic is error. Any other tool error is
+  warn. The fan-out logs a stored message, a message update, a tool-call
+  update, and waiting for approval at info. Token deltas are not logged.
 
 ### Concurrency
 

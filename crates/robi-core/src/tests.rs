@@ -20,6 +20,7 @@ use crate::message::{
     SubagentSnapshot, SubagentStep, SubagentStepStatus, ToolCall,
 };
 use crate::model::Delta;
+use crate::store::MessageStore;
 use crate::testkit::{
     assistant_asking_for, huge_result, FunctionTool, InMemoryStore, Probe, RecordingSink, Script,
     StubModel, Timeline,
@@ -513,10 +514,8 @@ async fn a_call_needing_approval_pauses_the_turn() {
 
 #[tokio::test]
 async fn a_call_that_needed_no_approval_is_not_reported_as_pending() {
-    // An auto-approved call keeps `ApprovalStatus::Pending`, because the loop
-    // records a decision only when a user makes one. It must still not be offered
-    // for approval once it has run, or a caller would be asked to decide about
-    // work that is already done.
+    // A call that needed no approval is stored as approved once the loop has
+    // decided, and it has run. It must not be offered for a decision.
     let probe = Probe::new();
     let tools = vec![FunctionTool::new("read").probed(probe.clone()).arc()];
     let model = asking_then(&["read"], "done");
@@ -687,6 +686,113 @@ async fn user_input_while_paused_does_not_append() {
         .transcript()
         .iter()
         .any(|message| message.content == "are you there?"));
+}
+
+#[tokio::test]
+async fn an_interrupted_call_that_needs_no_approval_runs_on_settle() {
+    let probe = Probe::new();
+    let tools = vec![FunctionTool::new("diagnostics").probed(probe.clone()).arc()];
+    let model = StubModel::saying("done");
+    let h = harness(model, tools, LoopConfig::default());
+    h.store
+        .append(
+            h.session,
+            Message::assistant_with_tool_calls("check", vec![call("diagnostics")]),
+        )
+        .await
+        .unwrap();
+
+    let outcome = h.agent.resume(h.session, no_cancel()).await;
+
+    assert_eq!(outcome, TurnOutcome::Complete);
+    assert!(probe.ran("diagnostics"));
+    assert!(
+        !h.sink
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::AwaitingApproval { .. })),
+        "a call the tool would run immediately is not a decision"
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_call_that_needs_approval_still_pauses() {
+    let probe = Probe::new();
+    let tools = vec![FunctionTool::new("write")
+        .needs_approval()
+        .probed(probe.clone())
+        .arc()];
+    let model = StubModel::saying("done");
+    let h = harness(model, tools, LoopConfig::default());
+    h.store
+        .append(
+            h.session,
+            Message::assistant_with_tool_calls("edit", vec![call("write")]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        h.agent.resume(h.session, no_cancel()).await,
+        TurnOutcome::Paused
+    );
+    assert!(!probe.ran("write"));
+    assert_eq!(
+        h.agent.pending_tool_calls(h.session).await.unwrap().len(),
+        1
+    );
+    let before = h.transcript().len();
+    assert_eq!(
+        h.agent
+            .user_input(h.session, "are you there?", no_cancel())
+            .await,
+        TurnOutcome::Paused
+    );
+    assert_eq!(h.transcript().len(), before);
+}
+
+#[tokio::test]
+async fn a_sibling_that_needs_no_approval_is_not_offered_while_the_turn_is_paused() {
+    let probe = Probe::new();
+    let tools = vec![
+        FunctionTool::new("diagnostics").probed(probe.clone()).arc(),
+        FunctionTool::new("write")
+            .needs_approval()
+            .probed(probe.clone())
+            .arc(),
+    ];
+    let model = StubModel::saying("done");
+    let h = harness(model, tools, LoopConfig::default());
+    let seeded =
+        Message::assistant_with_tool_calls("check", vec![call("diagnostics"), call("write")]);
+    let write_id = seeded.tool_calls[1].id;
+    h.store.append(h.session, seeded).await.unwrap();
+
+    assert_eq!(
+        h.agent.resume(h.session, no_cancel()).await,
+        TurnOutcome::Paused
+    );
+    assert!(
+        !probe.ran("diagnostics"),
+        "nothing runs while a call is undecided"
+    );
+    assert!(!probe.ran("write"));
+
+    let calls = h.calls();
+    assert_eq!(calls[0].approval_status, ApprovalStatus::Approved);
+    assert_eq!(calls[0].execution_status, ExecutionStatus::NotStarted);
+    assert_eq!(calls[1].approval_status, ApprovalStatus::Pending);
+
+    let offered: Vec<_> = h
+        .sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::AwaitingApproval { call, .. } => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(offered, vec![write_id]);
 }
 
 #[tokio::test]

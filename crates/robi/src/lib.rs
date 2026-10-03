@@ -12,6 +12,7 @@
 pub mod adapters;
 pub mod domain;
 pub mod index;
+pub mod lsp;
 pub mod prompt;
 pub mod providers;
 pub mod review;

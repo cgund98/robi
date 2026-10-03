@@ -9,7 +9,7 @@
 .nav {
   display: flex;
   flex-direction: column;
-  width: 240px;
+  width: var(--settings-rail);
   flex-shrink: 0;
   padding: var(--space-3);
   background: var(--bg-sidebar);
@@ -236,4 +236,44 @@
 
 .statusError {
   color: var(--danger);
+}
+
+.switch {
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 999px;
+  padding: 2px;
+  background: var(--bg-canvas);
+  cursor: pointer;
+}
+
+.switch[aria-checked='true'] {
+  background: var(--accent);
+}
+
+.switch:focus-visible {
+  outline: 1px solid var(--ink-faint);
+  outline-offset: 2px;
+}
+
+.knob {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--ink-strong);
+  transition: transform 120ms linear;
+}
+
+.switch[aria-checked='true'] .knob {
+  transform: translateX(16px);
+  background: var(--bg-canvas);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .knob {
+    transition: none;
+  }
 }

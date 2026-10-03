@@ -14,6 +14,7 @@ record is [checkpoints.md](checkpoints.md). Path rules are in
 | The shell sandbox | `docs/design/shell-tool.md` (M4) |
 | Diagnostics after a write | `docs/design/lsp.md` (M7) |
 | A saved allow for the rest of the session | `grant`, in [read-tools.md](read-tools.md) |
+| Refusing an outline marker in `old`, `new`, or `content` | [code-outline.md](code-outline.md) |
 
 ## Problem
 

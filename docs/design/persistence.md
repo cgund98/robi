@@ -17,6 +17,7 @@ in the [roadmap](../roadmap.md). Read it before writing code in
 | API keys and other settings | This page, under [Settings](#settings). They do not go in this database. A later `SettingsStore` can keep secrets in the OS keychain |
 | Where the app's home directory lives | Settings use `~/.robi`. The database file stays on `ROBI_DATABASE_URL` |
 | Auto-title after a completed turn | [chat-runtime.md](chat-runtime.md). This page fixes that the title starts unset, and that a later write does not replace one already stored |
+| The `tool_originals` rows a compressed shell result points at | [shell-output.md](shell-output.md). Deleting the session deletes them |
 
 ## Problem
 
@@ -233,7 +234,9 @@ session is `404`.
 `ServiceError` is `BadRequest`, `NotFound`, `Conflict`, or `Unknown`. The web
 layer maps those to 400, 404, 409, and 500. A SQL failure or a failed settings
 sync is logged and returned as `Unknown` with a fixed message, so the client
-never sees driver text.
+never sees driver text. Opening a workspace and creating a chat session are
+logged at info with their ids. A successful settings write is logged at info
+with the key and without the value.
 
 ### Settings
 
@@ -261,6 +264,7 @@ that is not in this list is `400`.
 | `reasoning_effort_ask`, `reasoning_effort_plan`, `reasoning_effort_agent` | no | None. Optional effort for that mode. Empty inherits `reasoning_effort` |
 | `base_url` | no | None. Optional provider base URL |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
+| `lsp` | no | `on`, written on the first read when the key is absent. `off` leaves the language-server tools unregistered. See [lsp.md](lsp.md) |
 | `brave_search_api_key` | yes | None. `web_search` returns a tool error until this is set. See [web-tools.md](web-tools.md) |
 
 A read of an absent key that has a default calls the same write as `PUT`: the
@@ -298,7 +302,9 @@ environment variables. `examples/simple.rs` still reads `OPENCODE_GO_API_KEY`,
 `ROBI_MODEL`, `ROBI_BASE_URL`, and `ROBI_EFFORT` for that one program.
 
 `make api` runs the server. `make dev-api` restarts it when `crates/robi` or
-`crates/robi-core` change, and needs `cargo-watch`. Swagger UI is at `/docs`.
+`crates/robi-core` change, and needs `cargo-watch`. A Rust diagnostics call
+still triggers that restart; see [lsp.md](lsp.md#failure-modes). Swagger UI is
+at `/docs`.
 `make openapi-spec` writes `openapi/openapi.json`. `cargo run -p robi --bin
 export-openapi` prints the same document.
 

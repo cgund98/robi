@@ -70,12 +70,19 @@ The model cannot pass an argv. v1 ships these rows:
 |---|---|---|---|
 | `rust-analyzer` | `rust` | `.rs` | `rust-analyzer` |
 | `typescript-language-server` | `typescript`, `javascript` | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server --stdio` |
+| `ruff` | `python` | `.py` `.pyi` | `ruff server` |
 | `pyright` | `python` | `.py` `.pyi` | `pyright-langserver --stdio` |
 | `gopls` | `go` | `.go` | `gopls` |
 | `clangd` | `c`, `cpp` | `.c` `.h` `.cc` `.cpp` `.cxx` `.hh` `.hpp` | `clangd` |
 
 One process serves every language id in its row. TypeScript and
-JavaScript share a process. C and C++ share a process.
+JavaScript share a process. C and C++ share a process. Two rows may
+share an extension. The client starts the first row in the table
+whose binary is on `PATH`. Python prefers `ruff server`. It starts
+`pyright-langserver` when `ruff` is absent. Ruff publishes lint
+diagnostics. It does not answer definition, references, or workspace
+symbols, so those tools return `available: false` while Ruff is the
+process for that workspace.
 
 Discovery looks up the argv's first token on `PATH`. There is no
 download, no version-manager probe, and no read of another editor's
@@ -83,10 +90,37 @@ config. A missing binary is `available: false` with `reason: "no_server"`.
 An extension with no row is `reason: "unsupported"`. Both are a
 successful tool result. The turn continues.
 
+### Host binaries
+
+The `robi-api` process looks up each binary on the `PATH` it inherited
+when it started. A directory added to the shell afterward is invisible
+until the API is restarted. `node_modules/.bin` is not searched, so a
+package installed as a project dependency is not found unless that
+directory is already on the API's `PATH`.
+
+| Binary | Install |
+|---|---|
+| `rust-analyzer` | `rustup component add rust-analyzer` |
+| `typescript-language-server` | `npm install -g typescript-language-server` |
+| `ruff` | The `ruff` package for the host. Preferred for Python when it is on `PATH` |
+| `pyright-langserver` | `npm install -g pyright`. Used for Python when `ruff` is absent |
+| `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| `clangd` | The LLVM package for the host |
+
+One of `ruff` or `pyright-langserver` is enough for Python. Both
+installed means `ruff`. TypeScript and JavaScript share
+`typescript-language-server`. C and C++ share `clangd`. The global `lsp`
+setting must be `on`, which is the default. `off` leaves the tools
+unregistered, so a binary on `PATH` is not started.
+
 `rust-analyzer` settings sent for `workspace/configuration` are
-`checkOnSave: true` with the server's default check command. That is
-what makes a diagnostic a compiler error rather than a parse error.
-The other rows send no settings.
+`checkOnSave: true`, `cargo.targetDir: true`, and `cargo.extraArgs:
+["--locked"]`. The check is what makes a diagnostic a compiler error
+rather than a parse error. The target directory is `target/rust-analyzer`,
+and `--locked` is meant to keep `cargo metadata` and `cargo check` from
+rewriting `Cargo.lock`. Those two settings do not stop the restart
+described under [Failure modes](#failure-modes). The other rows send no
+settings.
 
 ### Process
 
@@ -95,16 +129,28 @@ canonical workspace root plus the server id. Two sessions on that root
 share one `rust-analyzer`. A different root gets its own process.
 
 A server starts on the first tool call that needs it. It is not started
-by a write. Startup is `initialize` with that root as the only workspace
-folder, then `initialized`. The root is the session workspace. The
+by a write. A successful start is logged at info with the server id and
+the root. A start that fails is logged at error, and so is the second
+failure that marks the server failed. An unexpected exit is logged at
+warn. An idle stop is logged at info. A missing binary is logged at warn
+once for that server. Each request logs success at info. A timeout or a
+protocol error is a warn, and a server that stops mid-request is an
+error. Opening, updating, and closing a document are logged at info.
+`window/showMessage` and `window/logMessage` follow the server's
+severity: error, warning, and info are logged at those levels, and other
+lines stay at debug. stderr stays at debug while the server is
+running. When startup fails, the first line of stderr is included
+in that error and in the `server_failed` hint. Startup is
+`initialize` with that root as the only workspace folder, then
+`initialized`. The root is the session workspace. The
 client does not walk above it to find a Cargo workspace or a
 `go.mod`. The server may walk, inside its own process.
 
 The child inherits the API process environment, then drops the same
 secret names the shell drops. It is not inside the shell sandbox.
 `rust-analyzer` has to run `cargo`, and `gopls` has to run the go
-command. The argv is ours, not the model's. stderr is logged and is
-not a tool result.
+command. The argv is ours, not the model's. stderr is logged. The
+tool result includes it only when startup fails.
 
 Idle for five minutes with no request and no open progress token
 sends `shutdown`, then `exit`, then the process is killed if it is
@@ -255,6 +301,20 @@ file. The agent-mode prompt block gains one sentence with the same
 rule, so the instruction survives a registry description the model
 skims. That sentence is added when the tools are registered.
 
+### Setting
+
+`lsp` is a global setting. The values are `on` and `off`. An absent
+key is `on`, and the first read stores that. `PUT` rejects any other
+value. The actor reads the key when it builds the registry. A turn
+that is already running keeps the tools it started with.
+
+`off` leaves `diagnostics`, `definition`, `references`, `hover`, and
+`workspace_symbol` out of ask, plan, agent, and both child
+registries. The agent-mode sentence and the child prompt lines that
+name those tools are omitted with them. Writes do not notify a
+server. A server that is already running is left to its idle
+shutdown. The next call does not start one.
+
 ### Surgery stays a later cut
 
 Rename, code action, and format are the third rung of the roadmap
@@ -312,8 +372,10 @@ these tools.
 - The extension has no row. `reason` is `unsupported`. The model
   does not retry the language server.
 - `initialize` exceeds 30 seconds, or the process exits twice.
-  `reason` is `server_failed`. Later calls do not spawn again until
-  `robi-api` starts again.
+  `reason` is `server_failed`. The hint includes the server's stderr
+  when it wrote any, so a rustup proxy that exits with "Unknown
+  binary" is visible to the model. Later calls do not spawn again
+  until `robi-api` starts again.
 - The path is denied. The tool error matches `read_file`. A path
   outside the workspace is `path is outside the workspace`. The
   server is not told about the file.
@@ -334,3 +396,12 @@ these tools.
   sees a new mtime and sends `didChange` before the request.
 - Cancellation mid-request returns `cancelled` and does not count
   as a server failure.
+- Starting `rust-analyzer` for a diagnostics call on this repository
+  still restarts `make dev-api`. The watcher is `cargo watch` on
+  `Cargo.toml`, `Cargo.lock`, `crates/robi`, and `crates/robi-core`.
+  The restart is logged as `[Running 'cargo run -p robi --bin robi-api']`
+  immediately after the server opens `.rs` files. Ruff does not do
+  this: a Python file is outside those paths, and Ruff does not run
+  Cargo. The API dies while the Rust calls are still unfinished, so
+  they stay `pending` and the chat shows them as approval prompts.
+  `cargo.targetDir` and `--locked` did not stop it. Not fixed.

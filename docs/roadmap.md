@@ -749,7 +749,8 @@ Settled in [lsp.md](design/lsp.md). **D8** is `async-lsp` with `lsp-types`.
 - The first cut is five read-only tools: `diagnostics`, `definition`,
   `references`, `hover`, and `workspace_symbol`. A missing binary returns
   `available: false` and the model uses `grep` or `shell`. The turn does not
-  fail.
+  fail. The `lsp` setting is `on` by default. `off` leaves the five tools
+  unregistered.
 - The catalog is Rust, TypeScript and JavaScript, Python, Go, and C and C++.
   Adding a language is a row.
 - Rename, code action, and format stay a later cut. They apply through the
@@ -775,10 +776,15 @@ can pause it.
 
 Lower priority. Sequence by user demand, not by this order.
 
-- **MCP client** — Robi as an MCP host, so tools come from outside. The official
-  Rust SDK is `rmcp` ([rust-sdk](https://github.com/modelcontextprotocol/rust-sdk)).
+- **MCP client** — Robi as an MCP host, so tools come from outside. Settled in
+  [mcp.md](design/mcp.md). The official Rust SDK is `rmcp`
+  ([rust-sdk](https://github.com/modelcontextprotocol/rust-sdk)).
 - **Skills** — markdown instruction files with frontmatter, catalogued in the
-  prompt and read on demand, as gopi does.
+  prompt and loaded on demand. The user names one with `@id`. The model may
+  load one with the `skill` tool. A bundled `create-skill` writes a new one.
+Discovery roots include `.robi/skills`,
+  `.agents/skills`, and the Claude, Codex, Cursor, and OpenCode directories,
+  at home and in the workspace. See [design/skills.md](design/skills.md).
 - **Project instructions** — the assembler and the `AGENTS.md` chain are in
   [instructions.md](docs/design/instructions.md). Skills and a trust decision
   before reading a project file stay later.
@@ -847,20 +853,23 @@ makes no model call.
 | Content | What the model keeps |
 |---|---|
 | JSON arrays and objects | The schema, a sample of rows, and counts or aggregates for the rest |
-| Logs and shell output | The head, the tail, and collapsed repeated lines |
+| Logs and shell output | The head, the tail, and collapsed repeated lines. The phases, the store, and the decision to keep a learned model last are in [shell-output.md](design/shell-output.md) |
 | Search hits | Paths, line numbers, and a capped set of matching lines |
-| Source, short text, errors | The original. These are already dense, and a crushed file is how an agent edits the wrong lines |
+| Source, short text, errors | The original. These are already dense, and a crushed file is how an agent edits the wrong lines. An outline the model asked for is a different tool, [code-outline.md](design/code-outline.md). `read_file` stays on this row |
 
 The compressed body says that it was compressed, how big the original was, and
 the id the retrieve tool takes. A silent crush has the same failure mode as a
 silent truncate.
 
 - **Open decisions** — (D11) a local learned text model, in the style of
-  Headroom's Kompress fallback, versus staying on structural compressors. A
-  learned model is a heavy optional dependency and does not belong in the first
-  cut or in `robi-core`. Also: which results always pass through because the
+  Headroom's Kompress fallback, versus staying on structural compressors. For
+  shell output that choice is phased in
+  [shell-output.md](design/shell-output.md): structural passes ship first, and
+  the learned model is last, feature-gated, and outside `robi-core`. Still
+  open for the other shapes: which results always pass through because the
   model must quote them exactly (edit failures, diagnostics, plan text), and
-  the size gate below which a result is stored byte-identical.
+  the size gate below which a result is stored byte-identical. Shell's gate
+  is 4 KiB per stream, in that page.
 
 ### F9.3 Retrieval
 
@@ -875,7 +884,10 @@ turned off the first time it hides a bug.
 
 - **Open decision** — (D12) whether the transcript itself stores only the
   compressed form, with the original in the session store, or stores both and
-  lets the provider request select the compressed form. M0's rule is that the
+  lets the provider request select the compressed form. Shell output is
+  settled in [shell-output.md](design/shell-output.md): the transcript stores
+  the compressed view, and `tool_originals` holds the bounded streams. The
+  same question is still open for JSON and search hits. M0's rule is that the
   transcript is the only state the loop needs to resume. Retrieval has to
   survive a restart without breaking that rule, and without rewriting earlier
   turns: stable prefixes stay byte-stable so a provider prompt cache survives.
@@ -887,7 +899,9 @@ passes the original through; the tool card shows the full output; the meter
 shows the saving.
 
 **Design doc needed for** M9.
-See `docs/design/tool-output-compression.md`.
+Shell and log output is [shell-output.md](design/shell-output.md). JSON, search
+hits, and the other pass-through shapes are still
+`docs/design/tool-output-compression.md`.
 
 ---
 
@@ -924,7 +938,7 @@ resolve them.
 | D7 | Vector store | F7.2 | Settled: one `sqlite-vec` file per workspace, plus FTS5. See below and `docs/design/semantic-search.md` |
 | D8 | LSP client approach | F7.1 | Settled: `async-lsp` and `lsp-types`. A missing server degrades the tool. See below and `docs/design/lsp.md` |
 | D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Settled: Seatbelt on macOS, bubblewrap on Linux, no Windows sandbox. A sandboxed call is refused when the mechanism is missing. `unsandboxed: true` runs only after approval. See below and `docs/design/shell-tool.md`. The catalog "D9" in `providers-streaming.md` is a different decision |
-| D10 | MCP in v1 or later | M8 | Affects the tool registry's dynamism from M0 |
+| D10 | MCP in v1 or later | M8 | Settled: M8, host only. The trait stays fixed. The registry gains `remove`. See [mcp.md](design/mcp.md) |
 | D11 | Learned text compression vs. structural compressors only | M9 | A local model is a heavy optional dependency. The first cut is deterministic compressors for JSON, logs, and search hits |
 | D12 | Where a compressed result and its original live | M9 | The model reads the compressed form; retrieval has to survive restart without rewriting earlier turns |
 
@@ -995,6 +1009,18 @@ The profile, the constructed `PATH`, the floor, and the approval rules are in
 [providers-streaming.md](design/providers-streaming.md) uses its own "D9"
 heading for the vendored model catalog. That decision is not this one.
 
+<a id="d10"></a>
+
+### D10: MCP client
+
+Settled. MCP is an M8 host, not a change to the loop. `rmcp` lives in
+`crates/robi`. The `Tool` trait stays as M0 defined it. The registry gains
+`remove` so a server's tools can leave when its list changes. Project
+servers start only after the user accepts the current file hash. Each
+tool asks on its first call in the session. Sampling, elicitation, OAuth,
+resources, and prompts wait. The transports, the config files, and the
+approval rules are in [mcp.md](design/mcp.md).
+
 ---
 
 ## Breakout design docs
@@ -1022,9 +1048,12 @@ Statuses: **needed**, **later**, **done**.
 | `docs/design/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | done |
 | `docs/design/subagents.md` | Child policy, caps, transcript surfacing | M5 | done |
 | `docs/design/code-review.md` | Read-only session review: strip, file tree, unified diff | M6 | done |
-| `docs/design/lsp.md` | **D8**, client, server discovery, capability ladder, degradation | M7 | done |
+| `docs/design/lsp.md` | **D8**, client, server discovery, host binaries on `PATH`, capability ladder, degradation | M7 | done |
 | `docs/design/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | done |
-| `docs/design/tool-output-compression.md` | **D11, D12**, content routing, the retrieve tool, what the transcript stores, the size gate | M9 | later |
+| `docs/design/mcp.md` | **D10**, host, config and trust, registry names, approval | M8 | done |
+| `docs/design/tool-output-compression.md` | **D11, D12** for JSON and search hits, content routing beyond shell | M9 | later |
+| `docs/design/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
+| `docs/design/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit | read tools | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives
 with reasons, the interfaces, and the failure modes. A doc that only describes
@@ -1040,7 +1069,7 @@ What to take, what to leave. Names refer to `../gopi`.
 |---|---|---|
 | `gogent` loop (`agent.go`, `tool_execution.go`, `tool_turn.go`) | `robi-core` | **The spec for M0.** Port the state machine and the three-phase tool execution; rewrite in Rust with async traits and a real cancellation path |
 | `gogent` `Message`, `Tool`, `ToolRegistry` | `robi-core` | Port the shapes and the status enums; the trait signatures stay fixed from M0 through M5 |
-| `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt`, `crates/robi::prompt` | Rendering and the byte cap are in core. File sources are in `crates/robi`. Mode prefixes and the skill catalog stay later |
+| `prompt/` assembly, mode prefixes, skill catalog | `robi-core::prompt`, `crates/robi::prompt` | Rendering and the byte cap are in core. File sources are in `crates/robi`. The skill catalog is [design/skills.md](design/skills.md) |
 | `internal/tools/` (13 tools) | `crates/robi::tools` | Port names, semantics, and *truncation reporting*. Rename to Rust idiom |
 | `internal/policy/`, `internal/secrets/` | `crates/robi::workspace`, `crates/robi::adapters` | Port the glob floor and redaction; replace the secrets file with a keychain |
 | `internal/sandbox/` | `crates/robi::sandbox`, `crates/robi::tools::shell` | Port the deny-default policy. The profile is Seatbelt on macOS and bubblewrap on Linux. See [D9](#d9) |

@@ -209,8 +209,9 @@ impl Tool for Delegate {
                 &self.ctx.root,
                 &thoroughness_or_default(&args.thoroughness),
                 &args.instructions,
+                self.ctx.lsp_enabled,
             ),
-            SubagentMode::General => general_prompt(&self.ctx.root),
+            SubagentMode::General => general_prompt(&self.ctx.root, self.ctx.lsp_enabled),
         };
         let description = card_description(&args.description, &task);
         let snapshot = SubagentSnapshot {
@@ -362,17 +363,33 @@ mod tests {
         let general = child_tool_names(SubagentMode::General, Arc::clone(&harness.ctx));
         assert_eq!(
             explore,
-            vec!["find", "grep", "list_dir", "read_file", "semantic_search"]
+            vec![
+                "definition",
+                "diagnostics",
+                "find",
+                "grep",
+                "hover",
+                "list_dir",
+                "read_file",
+                "references",
+                "semantic_search",
+                "workspace_symbol"
+            ]
         );
         assert_eq!(
             general,
             vec![
+                "definition",
+                "diagnostics",
                 "find",
                 "grep",
+                "hover",
                 "list_dir",
                 "read_file",
+                "references",
                 "semantic_search",
-                "shell"
+                "shell",
+                "workspace_symbol"
             ]
         );
         for name in [

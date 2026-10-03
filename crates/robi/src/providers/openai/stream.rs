@@ -22,7 +22,9 @@ const DONE: &str = "[DONE]";
 /// One chunk of a streamed completion.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ChatChunk {
-    #[serde(default)]
+    /// Absent or null both mean this chunk has no choices. A usage-only chunk
+    /// sends `"choices": null`.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub choices: Vec<ChunkChoice>,
     #[serde(default)]
     pub usage: Option<UsageChunk>,
@@ -48,8 +50,19 @@ pub struct ChunkDelta {
     /// The other spelling. Which one arrives depends on the model.
     #[serde(default)]
     pub reasoning: Option<String>,
-    #[serde(default)]
+    /// Absent or null both mean this chunk carries no tool calls. DeepSeek
+    /// sends `"tool_calls": null` on ordinary text chunks.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tool_calls: Vec<ChunkToolCall>,
+}
+
+/// `null` and a missing field both become [`Default`].
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -432,6 +445,19 @@ mod tests {
         assert!(deltas.contains(&Delta::Text("lo".to_owned())));
         assert_eq!(message.role, Role::Assistant);
         assert_eq!(message.content, "Hello");
+        assert!(!message.has_tool_calls());
+    }
+
+    #[test]
+    fn a_null_tool_call_list_is_an_empty_delta() {
+        let payload = r#"{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":null}}]}"#;
+        let (deltas, message) = run(&[
+            payload,
+            r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+            "[DONE]",
+        ]);
+        assert!(deltas.iter().any(|delta| matches!(delta, Delta::Text(_))));
+        assert_eq!(message.content, "ok");
         assert!(!message.has_tool_calls());
     }
 

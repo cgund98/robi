@@ -5,6 +5,8 @@ export type ChatToolCall = components['schemas']['ChatToolCall']
 export type ToolSummary = {
   verb: string
   target: string
+  /** Inclusive line window, such as `L240-299`, when the call names one. */
+  range?: string
 }
 
 export function toolSummary(call: ChatToolCall): ToolSummary {
@@ -12,8 +14,10 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
   const path = stringField(args, 'path')
   const pattern = stringField(args, 'pattern')
   switch (call.name) {
-    case 'read_file':
-      return { verb: 'Read', target: path || 'file' }
+    case 'read_file': {
+      const range = readLineRange(args)
+      return { verb: 'Read', target: path || 'file', ...(range ? { range } : {}) }
+    }
     case 'grep':
       return { verb: 'Grepped', target: pattern || path || 'workspace' }
     case 'semantic_search':
@@ -605,4 +609,28 @@ function firstHeading(body: string): string {
 function stringField(value: Record<string, unknown> | null, key: string): string {
   const field = value?.[key]
   return typeof field === 'string' ? field : ''
+}
+
+/** `L240-299` from a `read_file` offset and limit. Empty when the call reads the whole file. */
+function readLineRange(args: Record<string, unknown> | null): string {
+  const offset = positiveInt(args, 'offset')
+  const limit = positiveInt(args, 'limit')
+  if (offset && limit) {
+    return `L${offset}-${offset + limit - 1}`
+  }
+  if (limit) {
+    return `L1-${limit}`
+  }
+  if (offset) {
+    return `L${offset}`
+  }
+  return ''
+}
+
+function positiveInt(value: Record<string, unknown> | null, key: string): number | null {
+  const field = value?.[key]
+  if (typeof field !== 'number' || !Number.isInteger(field) || field < 1) {
+    return null
+  }
+  return field
 }

@@ -16,6 +16,7 @@ import {
   toolDetail,
   toolSummary,
   type ChatToolCall,
+  type ToolSummary,
   type DiffLine,
   type EditPreview,
   type PlanView,
@@ -89,7 +90,7 @@ export function ToolCallCard({
       <div className={styles.approval}>
         <p className={styles.approvalText}>
           <span className={styles.verb}>{summary.verb}</span>
-          {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+          <SummaryLabel summary={summary} />
         </p>
         {actions}
       </div>
@@ -149,7 +150,7 @@ export function ToolCallCard({
       >
         <ToolIcon name={call.name} />
         <span className={styles.verb}>{summary.verb}</span>
-        {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+        <SummaryLabel summary={summary} />
         <StatusMark status={status} />
       </button>
       {open && detail ? <Detail detail={detail} /> : null}
@@ -276,9 +277,21 @@ function StepRow({ step }: { step: SubagentStepView }) {
     <li className={`${styles.step} ${failed ? styles.rowFailed : ''}`}>
       <ToolIcon name={step.name} />
       <span className={styles.verb}>{summary.verb}</span>
-      {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+      <SummaryLabel summary={summary} />
       {step.status === 'running' ? <span className={styles.spinner} aria-label="Running" /> : null}
     </li>
+  )
+}
+
+function SummaryLabel({ summary }: { summary: ToolSummary }) {
+  if (!summary.target && !summary.range) {
+    return null
+  }
+  return (
+    <>
+      {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+      {summary.range ? <span className={styles.range}>{summary.range}</span> : null}
+    </>
   )
 }
 
@@ -458,7 +471,7 @@ function ShellCard({
         >
           <ToolIcon name="shell" />
           <span className={styles.verb}>{summary.verb}</span>
-          {summary.target ? <span className={styles.target}>{summary.target}</span> : null}
+          <SummaryLabel summary={summary} />
           {status}
         </button>
         {actions}

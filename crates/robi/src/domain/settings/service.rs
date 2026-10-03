@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use crate::domain::{
     error::ServiceError,
-    settings::{keys::known_setting, store::SettingsStore},
+    settings::{
+        keys::{self, known_setting},
+        store::SettingsStore,
+    },
 };
 
 /// A setting as the API should return it.
@@ -72,6 +75,9 @@ impl SettingsService {
             } else {
                 format!("{key} must not be stored as a secret")
             }));
+        }
+        if key == keys::LSP && value != keys::LSP_ON && value != keys::LSP_OFF {
+            return Err(ServiceError::BadRequest("lsp must be on or off".into()));
         }
         self.store.set(key, value, secret).await
     }
@@ -201,5 +207,33 @@ mod tests {
         assert_eq!(api_key.value, None);
         assert!(api_key.secret);
         assert!(store.get(OPENCODE_GO_API_KEY).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn lsp_defaults_to_on_and_rejects_other_values() {
+        let store = Arc::new(MemorySettingsStore::new());
+        let service = SettingsService {
+            store: Arc::clone(&store) as Arc<dyn SettingsStore>,
+        };
+
+        let setting = service.get(keys::LSP).await.unwrap();
+        assert_eq!(setting.value.as_deref(), Some(keys::LSP_ON));
+        assert!(keys::lsp_enabled(setting.value.as_deref()));
+
+        service
+            .set(keys::LSP, keys::LSP_OFF.into(), false)
+            .await
+            .unwrap();
+        let off = service.get(keys::LSP).await.unwrap();
+        assert!(!keys::lsp_enabled(off.value.as_deref()));
+
+        let error = service
+            .set(keys::LSP, "true".into(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("lsp must be on or off".into())
+        );
     }
 }

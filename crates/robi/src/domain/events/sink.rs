@@ -22,7 +22,30 @@ impl FanOutEventSink {
 #[async_trait]
 impl EventSink for FanOutEventSink {
     async fn emit(&self, event: Event) {
+        log_event(&event);
         self.fanout.publish(EventEnvelope::from_core_event(event));
+    }
+}
+
+fn log_event(event: &Event) {
+    match event {
+        Event::MessageAdded { session, message } => {
+            tracing::info!(%session, %message, "message stored");
+        }
+        Event::MessageUpdated { session, message } => {
+            tracing::info!(%session, %message, "message updated");
+        }
+        Event::ToolCallUpdated {
+            session,
+            message,
+            call,
+        } => {
+            tracing::info!(%session, %message, %call, "tool call updated");
+        }
+        Event::AwaitingApproval { session, call } => {
+            tracing::info!(%session, %call, "waiting for approval");
+        }
+        Event::MessageDelta { .. } | Event::TurnStarted { .. } | Event::TurnFinished { .. } => {}
     }
 }
 

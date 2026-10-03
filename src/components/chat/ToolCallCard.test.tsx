@@ -31,6 +31,18 @@ describe('ToolCallCard', () => {
     expect(screen.getByText('fn main() {}')).toBeTruthy()
   })
 
+  it('shows the requested line window on a read', () => {
+    render(
+      <ToolCallCard
+        call={call({ args: { path: 'chat_runtime.rs', offset: 240, limit: 60 } })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('L240-299')).toBeTruthy()
+  })
+
   it('offers Reject and Approve only while the call is waiting', () => {
     const onDecide = vi.fn()
     const waiting = call({

@@ -60,6 +60,7 @@ One composition. Two columns. No third panel in M2.
 
 ```text
 ┌────────────┬──────────────────────────────────────────┐
+│ ○ ○ ○      │                                          │
 │  Workspace │  Header (session title)                  │
 │            ├──────────────────────────────────────────┤
 │  New       │                                          │
@@ -75,8 +76,11 @@ One composition. Two columns. No third panel in M2.
 └────────────┴──────────────────────────────────────────┘
 ```
 
+The top row is the window bar. It is the same height on every page. On the chat shell its left `--sidebar-width` is `--bg-sidebar` and the rest is `--bg-canvas`, so the row continues the columns under it. On Settings the split follows the settings rail. On Workspaces the whole row is `--bg-canvas`. macOS window buttons sit in that row, inset from the window corner. The workspace dropdown starts just under them. The desktop window uses an overlay title bar so those buttons draw on the app fill instead of a separate system bar.
+
 | Region | Role | M2 content |
 |---|---|---|
+| **Window bar** | Drag region | macOS window controls, inset from the corner |
 | **Sidebar** | Session navigation | Workspace dropdown at the top, Workspaces link under it, New chat, Recents list, active-session highlight, rename dialog, Settings link |
 | **Header** | Orientation | Session title |
 | **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards (empty until M3) |
@@ -220,7 +224,8 @@ heading and a bordered card of rows. **Model Providers** has **Model Defaults**
 effort menu on the same row). An unset mode shows the Global model and effort
 in those menus, and its Default item clears the override. Global effort stays a
 segmented control. and a separate card per provider. OpenCode
-holds the API key and base URL. **General** is a single card. Use the same tokens;
+holds the API key and base URL. **General** is a single card: the workspace, then a
+language-server switch. Use the same tokens;
 active nav is `--bg-surface-active`, the selected effort pill may use `--accent`.
 Text fields, including secrets, sit one step above the card (`--bg-surface-hover`)
 with a `--bg-surface-active` border. Focus moves that border to `--ink-faint`.
@@ -235,7 +240,7 @@ The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
 Both are styled with these tokens. The active workspace uses an open folder. The others use a closed folder. The closed control matches the sidebar, with a
 chevron. A border appears on hover and while the list is open. The open list is the darker canvas color, with a stronger
 edge. The chevron opens the list of workspaces, plus add. Add opens the system folder dialog in the
-desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses the compose mark, a rounded square with a pencil. Workspaces sits under the dropdown and opens the full list.
+desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses the compose mark, a rounded square with a pencil. Workspaces sits under the dropdown and opens the full list. Settings sits at the bottom of the sidebar.
 
 ### Workspaces page
 

@@ -108,6 +108,7 @@ impl Tool for DeleteFile {
             std::fs::remove_file(&resolved.absolute)
                 .map_err(|err| ToolError::Failed(format!("delete file: {err}")))?;
         }
+        self.ctx.note_lsp(&resolved.absolute, true).await;
         Ok(diff_json(&change_diff(&relative, &before, "", true, true)))
     }
 }

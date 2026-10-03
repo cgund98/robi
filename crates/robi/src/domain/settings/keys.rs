@@ -57,6 +57,20 @@ pub const BASE_URL: &str = "base_url";
 /// Extra system-prompt text. Not a secret. Unset adds no user block.
 pub const SYSTEM_PROMPT: &str = "system_prompt";
 
+/// `on` or `off`. Not a secret. Absent and the stored default are `on`.
+pub const LSP: &str = "lsp";
+
+/// Language-server tools are registered.
+pub const LSP_ON: &str = "on";
+
+/// Language-server tools are left out of the registry.
+pub const LSP_OFF: &str = "off";
+
+/// True unless the stored value is [`LSP_OFF`].
+pub fn lsp_enabled(value: Option<&str>) -> bool {
+    value != Some(LSP_OFF)
+}
+
 /// Brave Search subscription token. Always a secret. No default.
 pub const BRAVE_SEARCH_API_KEY: &str = "brave_search_api_key";
 
@@ -80,6 +94,10 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
         MODEL => Some(KnownSetting {
             secret: false,
             default_value: Some(DEFAULT_MODEL),
+        }),
+        LSP => Some(KnownSetting {
+            secret: false,
+            default_value: Some(LSP_ON),
         }),
         REASONING_EFFORT
         | BASE_URL

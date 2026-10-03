@@ -17,10 +17,7 @@ export async function getIndexStatus(id: string): Promise<IndexStatus> {
   )
 }
 
-export async function setIndexState(
-  id: string,
-  state: 'paused' | 'running'
-): Promise<IndexStatus> {
+export async function setIndexState(id: string, state: 'paused' | 'running'): Promise<IndexStatus> {
   const result = await api.PUT('/api/v1/workspaces/{id}/index', {
     params: { path: { id } },
     body: { state }

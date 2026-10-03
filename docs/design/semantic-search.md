@@ -13,6 +13,7 @@ not required for the first index.
 | Grep, find, and the path filter | [read-tools.md](read-tools.md) |
 | LSP navigation, diagnostics, and rename | [lsp.md](lsp.md) (M7) |
 | How a tool result is compressed | `docs/design/tool-output-compression.md` (M9) |
+| Folding a file down to the symbols the model named | [code-outline.md](code-outline.md). Focus strings are these chunk symbols |
 | Agent event types on the SSE stream | [events-sse.md](events-sse.md). This page adds one index event on that same stream |
 
 ## Problem
@@ -205,7 +206,10 @@ indexes.
 ### Keeping the index current
 
 Indexing starts when a workspace has at least one open chat session in
-this process, and stops when the last one closes. One task per workspace
+this process, and stops when the last one closes. Starting that task is
+logged at info. The first time the status becomes `ready`, and each time
+it becomes `ready` again after leaving that state, is logged at info with
+the file count. One task per workspace
 owns the writer connection. Readers use other connections. WAL mode lets
 a search run during a write.
 

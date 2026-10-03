@@ -101,6 +101,7 @@ impl Tool for EditFile {
         )
         .await?;
         atomic_write(&resolved.absolute, &after)?;
+        self.ctx.note_lsp(&resolved.absolute, false).await;
         Ok(diff_json(&change_diff(
             &relative, &before, &after, true, false,
         )))

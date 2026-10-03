@@ -135,7 +135,11 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
         });
         assembler = assembler.source(WorkingDirectory { path: workspace });
     }
-    assembler = assembler.source(ModePrefix { mode: input.mode });
+    let lsp = input.tools.names().iter().any(|name| name == "diagnostics");
+    assembler = assembler.source(ModePrefix {
+        mode: input.mode,
+        lsp,
+    });
     if input.mode == AgentMode::Agent {
         if let Some(path) = input.plan_path.as_deref() {
             if let Some(body) = todos_prompt(path) {
@@ -331,6 +335,10 @@ mod tests {
         let mode = agent.find("<mode>").unwrap();
         assert!(agent.find("- edit_file:").unwrap() < mode);
         assert!(agent.contains("Call todos with that path"));
+        assert!(!agent.contains("call diagnostics"));
+
+        let with_lsp = prompt_for(AgentMode::Agent, &[("diagnostics", "Diagnostics.")]);
+        assert!(with_lsp.contains("call diagnostics on that path"));
     }
 
     #[test]

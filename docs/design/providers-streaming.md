@@ -536,6 +536,7 @@ Quirks to handle, each with a test:
 - A server can omit `tool_calls[].id`. `provider_call_id` stays `None`, and the
   request falls back to the UUID string.
 - Usage arrives on a chunk whose `choices` array is empty.
+- `choices` or `delta.tool_calls` may be JSON `null`. That is an empty list. DeepSeek sends `"tool_calls": null` on a text chunk.
 - `finish_reason: "length"` reports a truncated message. `Message` has nowhere to
   put that, so a truncated turn currently reads as `Complete`. See
   [Known gaps](#known-gaps).
@@ -562,6 +563,9 @@ Quirks to handle, each with a test:
 | Cancellation before response headers | Return `Err` keyed off the token; the loop reports `Cancelled` | No |
 | Cancellation mid-stream | Drop the body; send nothing further | No |
 
+A response whose status is success is logged at info with the model id and
+the status code. A finished stream is logged at info. A stalled stream, a
+transport error, and a stream that fails to assemble are logged at warn.
 The API key never reaches a log, an error message, an event, or a test fixture.
 `ApiKey`'s `Debug` and `Display` both print `<redacted>`, and request building never
 formats a header map.

@@ -51,7 +51,10 @@ async fn main() {
     };
 
     let pool = match sqlite::init_pool(&database_url).await {
-        Ok(pool) => Arc::new(pool),
+        Ok(pool) => {
+            tracing::info!("opened the database");
+            Arc::new(pool)
+        }
         Err(err) => {
             eprintln!("failed to open database: {err}");
             std::process::exit(1);
@@ -65,7 +68,10 @@ async fn main() {
         }
     };
     let settings_store = match TomlSettingsStore::load(&settings_dir) {
-        Ok(store) => Arc::new(store),
+        Ok(store) => {
+            tracing::info!(dir = %settings_dir.display(), "loaded settings");
+            Arc::new(store)
+        }
         Err(err) => {
             eprintln!("failed to load settings: {err}");
             std::process::exit(1);
@@ -108,6 +114,8 @@ async fn main() {
         fanout: Some(Arc::clone(&event_fanout)),
         search,
         index: Some(Arc::clone(&index)),
+        lsp: Some(robi::lsp::LspHub::new()),
+        settings: Some(Arc::clone(&settings)),
     }));
     let state = AppState {
         workspace_service: Arc::new(WorkspaceService {

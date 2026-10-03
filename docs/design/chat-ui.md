@@ -13,6 +13,8 @@ delivery stays in [events-sse.md](events-sse.md).
 | Syntax highlighting, copy, retry, edit-and-resend | Later on this page. Assistant text is Markdown; highlighting is not |
 | Grant and session-allow editing | `docs/design/permissions.md` (M3) |
 | Creating the session row | [persistence.md](persistence.md). The shell delays that call |
+| `@id` skill mentions and the **Using** row | [skills.md](skills.md) |
+| A shell card showing the uncompressed command output | [shell-output.md](shell-output.md). The transcript body the model sees may be the compressed view |
 
 ## Draft session
 
@@ -90,7 +92,10 @@ A turn that is still running, or waiting on approval, does not show it.
 Tool rows from later iterations of the same turn sit in that same stack, with
 no extra gap between quiet rows. An edit card has a little space above and
 below it. A shell card has a little space under it, so two panels do not touch. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
-`Listed`), and the path or pattern. A finished `write_file`, `edit_file`, or
+`Listed`), and the path or pattern. A `read_file` call that names `offset` and
+`limit` adds the inclusive window after the path, in `--ink-faint`, as `L240-299`.
+`limit` alone is `L1-N`. `offset` alone is `L240`. A call that reads the whole file
+shows no window. A finished `write_file`, `edit_file`, or
 `delete_file` is a bordered card: the path the tool was called with
 (`scratch/test.md`, `../gopi/test.md`, `/tmp/test.md`), the `+` / `−` counts beside
 it, and the first 4 diff lines. Added and removed lines carry a left accent in
@@ -148,7 +153,10 @@ phase is idle, is the approval bar. It shows the same verb and target, then
 **Reject** and **Approve**. A pending `web_search` keeps **Search** and **the
 web** on that line, and puts the full query under it so a long query wraps
 instead of clipping. A pending `web_fetch` keeps **Fetch** and the host on
-that line, and puts the full URL under it the same way. Each approval bar has `--space-2` under it, the same
+that line, and puts the full URL under it the same way. A pending MCP call
+keeps **Call** and `server / tool` on that line, puts the arguments under it,
+and adds **Allow for this session** beside **Approve**. The labels and the
+session list are in [mcp.md](mcp.md). Each approval bar has `--space-2` under it, the same
 space as an edit or shell card, so parallel requests do not touch. A pending `edit_file` uses the same diff card as a
 finished edit, built from `old` and `new`: that same path, the counts, the
 first 4 lines, and the same 24-line cap. **Reject** and **Approve** sit on that

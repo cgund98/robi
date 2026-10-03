@@ -17,7 +17,8 @@ that runs the child is [agent-loop.md](agent-loop.md). The card is
 | Ask, plan, and agent mode selection | [agent-modes.md](agent-modes.md) |
 | The sandbox a general child's shell uses | [shell-tool.md](shell-tool.md) |
 | A separate explore model | Later. The child uses the session's current model |
-| Language-server tools on the child | [lsp.md](lsp.md). Both child modes gain the read-only set when it exists |
+| MCP tools on the child | [mcp.md](mcp.md). Neither child mode receives them |
+| Skill files, `@id`, and the `skill` tool | [skills.md](skills.md) |
 
 ## Problem
 
@@ -31,15 +32,16 @@ One tool, `delegate`, with two modes.
 
 | | `explore` | `general` |
 |---|---|---|
-| Tools | `read_file`, `list_dir`, `find`, `grep`, `semantic_search` | those, plus `shell` |
+| Tools | `read_file`, `list_dir`, `find`, `grep`, `semantic_search`, and, when `lsp` is `on`, the read-only language-server tools | those, plus `shell` |
 | Model turns | 40 | 50 |
 | Wall clock | 2 minutes | 2 minutes |
 | Calls per session | 6 | 4 |
 
 `explore` has no shell. Command output is `general`'s job, which is what makes
 explore safe to call for a search. Neither mode can edit, call `grant`, call
-`delegate`, or call `web_search` or `web_fetch`. A child cannot start another
-child.
+`delegate`, call `skill`, call `web_search` or `web_fetch`, or call an MCP
+tool. A child cannot start another child. The child prompt does not include
+the skill catalog.
 
 The agent-mode prompt, and the built-in rules when `delegate` is registered,
 tell the parent to use `explore` for a search that spans more than a couple of
@@ -102,7 +104,10 @@ child and the tool returns timed out.
 ## Failure modes
 
 - The child stops at its iteration cap. The parent still receives whatever
-  answer was produced, or "stopped before a final answer".
+  answer was produced, or "stopped before a final answer". That cap is logged
+  at warn. A finished child is logged at info with its mode and tool-call
+  count. A timeout is warn. A pause or any other failure is error.
+  Cancellation is info.
 - The child pauses. That is a bug in the fail-closed wrapper. The tool returns
   an error instead of leaving the parent waiting.
 - A progress write fails. The in-memory snapshot is still applied when the call

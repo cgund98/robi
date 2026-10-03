@@ -50,6 +50,12 @@ pub async fn create_workspace(
     } else {
         StatusCode::OK
     };
+    tracing::info!(
+        workspace = %opened.workspace.id,
+        root = %opened.workspace.root,
+        created = opened.created,
+        "workspace opened"
+    );
     Ok((status, Json(to_response(opened.workspace))))
 }
 

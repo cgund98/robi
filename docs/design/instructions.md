@@ -11,7 +11,8 @@ lives in `robi-core::prompt`. The sources that fill those blocks live in
 |---|---|
 | How the request prepends the string | [providers-streaming.md](providers-streaming.md) |
 | Which tools exist | [read-tools.md](read-tools.md), [editing-tools.md](editing-tools.md) |
-| Skills, and a trust decision before reading a project file | [roadmap](../roadmap.md) M8 |
+| Skills | [skills.md](skills.md) |
+| A trust decision before reading a project file | [roadmap](../roadmap.md) M8 |
 | Mode prefixes | [agent-modes.md](agent-modes.md) |
 
 ## Problem
@@ -43,9 +44,12 @@ default chain, built by `assemble_session` when a session actor starts, is:
    in that directory only. `fallback_files` on `ProjectAgents` adds extra names
    beside those two. The default chain passes an empty list.
 6. **Working directory.** The workspace root, in `<cwd>`.
-7. **Mode.** The active mode, in `<mode>`. See
+7. **Skills.** Name and description of each skill the model may load, in
+   `<skills>`. The block is omitted when that list is empty. See
+   [skills.md](skills.md).
+8. **Mode.** The active mode, in `<mode>`. See
    [agent-modes.md](agent-modes.md).
-8. **Plan checklist.** When the session is in agent mode and `plan_path`
+9. **Plan checklist.** When the session is in agent mode and `plan_path`
    names a plan that has todos, a `<todos path="…">` block lists each id,
    status, and content. The path is `~/.robi/plans/<session_id>/<file>.md`.
    A missing file, an empty list, or any other mode skips the block. See

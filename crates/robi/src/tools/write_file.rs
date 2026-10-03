@@ -95,6 +95,7 @@ impl Tool for WriteFile {
         .await?;
         ensure_parent(&resolved.absolute)?;
         atomic_write(&resolved.absolute, &args.content)?;
+        self.ctx.note_lsp(&resolved.absolute, false).await;
         Ok(diff_json(&change_diff(
             &relative,
             &before,

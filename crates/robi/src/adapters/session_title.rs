@@ -51,7 +51,7 @@ pub async fn title_completed_turn(
 
     match sessions.set_title_if_unset(session, title.clone()).await {
         Ok(Some(_)) => {
-            tracing::debug!(%session, %title, "session title stored");
+            tracing::info!(%session, %title, "session title stored");
             if let Some(fanout) = fanout {
                 fanout.publish(EventEnvelope::session_updated(session, &title));
             }

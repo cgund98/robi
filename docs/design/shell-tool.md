@@ -15,6 +15,7 @@ the model catalog.
 | A host allowlist and its loopback proxy | A later mode on the same profile. The first shell has `deny` and `unrestricted` |
 | Subagent shells | `docs/design/subagents.md` (M5) |
 | A dedicated audit file beyond the transcript | Later. The tool result is the record of what ran |
+| Collapsing a large stdout or stderr before the model sees it | [shell-output.md](shell-output.md). The tool still returns the capped streams |
 
 ## Problem
 

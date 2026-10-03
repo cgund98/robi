@@ -1,0 +1,57 @@
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+.bar {
+  flex-shrink: 0;
+  height: var(--titlebar-height);
+  user-select: none;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.barPlain {
+  background: var(--bg-canvas);
+}
+
+.barChat {
+  background: linear-gradient(
+    to right,
+    var(--bg-sidebar) var(--sidebar-width),
+    var(--bg-canvas) var(--sidebar-width)
+  );
+}
+
+.barSettings {
+  position: relative;
+  background: linear-gradient(
+    to right,
+    var(--bg-sidebar) var(--settings-rail),
+    var(--bg-canvas) var(--settings-rail)
+  );
+}
+
+.barSettings::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--settings-rail) - 1px);
+  width: 1px;
+  background: var(--rule);
+  pointer-events: none;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+}
+
+.body > * {
+  height: 100%;
+  min-height: 0;
+}

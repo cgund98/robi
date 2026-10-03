@@ -9,6 +9,7 @@ mod launch;
 mod profile;
 mod seatbelt;
 
+pub(crate) use env::secret_name;
 pub use env::{command_env, EnvInput};
 pub use launch::run_command;
 pub use profile::{

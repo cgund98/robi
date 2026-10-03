@@ -58,6 +58,7 @@ pub(crate) async fn run_child(
     registry: Arc<ToolRegistry>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<ChildSummary, ToolError> {
+    tracing::info!(mode = mode_name(mode), "subagent started");
     let store = Arc::new(MemoryStore::default());
     let iterations = match mode {
         SubagentMode::Explore => EXPLORE_ITERATIONS,
@@ -75,9 +76,13 @@ pub(crate) async fn run_child(
     let run_cancel = child_cancel.clone();
     let outcome = tokio::select! {
         biased;
-        () = child_cancel.cancelled() => return Err(ToolError::Cancelled),
+        () = child_cancel.cancelled() => {
+            tracing::info!(mode = mode_name(mode), "subagent cancelled");
+            return Err(ToolError::Cancelled);
+        }
         () = tokio::time::sleep(CHILD_TIMEOUT) => {
             child_cancel.cancel();
+            tracing::warn!(mode = mode_name(mode), "subagent timed out");
             return Err(ToolError::TimedOut);
         }
         outcome = agent.user_input(session, &task, run_cancel) => outcome,
@@ -87,12 +92,36 @@ pub(crate) async fn run_child(
         .await
         .map_err(|err| ToolError::Failed(err.to_string()))?;
     match outcome {
-        TurnOutcome::Complete | TurnOutcome::Failed(AgentError::MaxIterations(_)) => {
-            Ok(summarize(mode, &messages))
+        TurnOutcome::Complete => {
+            let summary = summarize(mode, &messages);
+            tracing::info!(
+                mode = mode_name(mode),
+                tool_calls = summary.tool_calls,
+                "subagent finished"
+            );
+            Ok(summary)
         }
-        TurnOutcome::Paused => Err(ToolError::Failed("subagent paused for approval".into())),
-        TurnOutcome::Cancelled => Err(ToolError::Cancelled),
-        TurnOutcome::Failed(error) => Err(ToolError::Failed(error.to_string())),
+        TurnOutcome::Failed(AgentError::MaxIterations(_)) => {
+            let summary = summarize(mode, &messages);
+            tracing::warn!(
+                mode = mode_name(mode),
+                tool_calls = summary.tool_calls,
+                "subagent hit its iteration cap"
+            );
+            Ok(summary)
+        }
+        TurnOutcome::Paused => {
+            tracing::error!(mode = mode_name(mode), "subagent paused for approval");
+            Err(ToolError::Failed("subagent paused for approval".into()))
+        }
+        TurnOutcome::Cancelled => {
+            tracing::info!(mode = mode_name(mode), "subagent cancelled");
+            Err(ToolError::Cancelled)
+        }
+        TurnOutcome::Failed(error) => {
+            tracing::error!(mode = mode_name(mode), %error, "subagent failed");
+            Err(ToolError::Failed(error.to_string()))
+        }
     }
 }
 
@@ -111,6 +140,21 @@ pub(crate) fn register_child_tools(
     registry.register(read(Arc::new(super::semantic_search::SemanticSearch::new(
         Arc::clone(&ctx),
     ))))?;
+    if ctx.lsp_enabled {
+        registry.register(read(Arc::new(super::lsp::Diagnostics::new(Arc::clone(
+            &ctx,
+        )))))?;
+        registry.register(read(Arc::new(super::lsp::Definition::new(Arc::clone(
+            &ctx,
+        )))))?;
+        registry.register(read(Arc::new(super::lsp::References::new(Arc::clone(
+            &ctx,
+        )))))?;
+        registry.register(read(Arc::new(super::lsp::Hover::new(Arc::clone(&ctx)))))?;
+        registry.register(read(Arc::new(super::lsp::WorkspaceSymbol::new(
+            Arc::clone(&ctx),
+        ))))?;
+    }
     if mode == SubagentMode::General {
         registry.register(read(Arc::new(Shell::new(ctx))))?;
     }
@@ -239,7 +283,17 @@ impl Tool for Reporting {
             });
         });
         self.publish(snapshot).await;
+        tracing::info!(tool = %name, "tool started");
         let result = self.inner.execute(args, run).await;
+        match &result {
+            Ok(value) if value.get("error").and_then(Value::as_str) == Some("access_denied") => {
+                tracing::warn!(tool = %name, "tool denied");
+            }
+            Ok(_) => tracing::info!(tool = %name, "tool finished"),
+            Err(ToolError::Cancelled) => tracing::info!(tool = %name, "tool cancelled"),
+            Err(ToolError::Panicked) => tracing::error!(tool = %name, "tool panicked"),
+            Err(err) => tracing::warn!(tool = %name, %err, "tool failed"),
+        }
         let status = step_status(&result);
         let snapshot = self.mutate(|state| {
             if let Some(step) = state.steps.iter_mut().rev().find(|step| {
@@ -336,6 +390,13 @@ pub(crate) fn summarize(mode: SubagentMode, messages: &[Message]) -> ChildSummar
     }
 }
 
+fn mode_name(mode: SubagentMode) -> &'static str {
+    match mode {
+        SubagentMode::Explore => "explore",
+        SubagentMode::General => "general",
+    }
+}
+
 fn denied_line(content: &str) -> Option<String> {
     let value: Value = serde_json::from_str(content).ok()?;
     if value.get("error").and_then(Value::as_str) != Some("access_denied") {
@@ -353,7 +414,23 @@ fn denied_line(content: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn explore_prompt(root: &Path, thoroughness: &str, instructions: &str) -> String {
+pub(crate) fn explore_prompt(
+    root: &Path,
+    thoroughness: &str,
+    instructions: &str,
+    lsp: bool,
+) -> String {
+    let language_server = if lsp {
+        "\
+- definition, references, and hover: the language server, for a symbol at a
+  1-based line and character. grep is for an exact string.
+- workspace_symbol: find a name when you do not know the file.
+- diagnostics: errors and warnings for one file. available false means there
+  is no language server; keep searching with grep.
+"
+    } else {
+        ""
+    };
     let mut prompt = format!(
         "\
 You are a file search specialist. You explore an unfamiliar codebase and report
@@ -371,6 +448,7 @@ what you found. You do not change anything.
 - list_dir: list one directory.
 - read_file: read a file when you know the path, or a line window with offset and
   limit. Continue from next_offset when truncated is true.
+{language_server}\
 </tools>
 
 <rules>
@@ -412,7 +490,15 @@ The workspace root is {root}.
     prompt
 }
 
-pub(crate) fn general_prompt(root: &Path) -> String {
+pub(crate) fn general_prompt(root: &Path, lsp: bool) -> String {
+    let language_server = if lsp {
+        "\
+- definition, references, hover, workspace_symbol, and diagnostics ask the
+  language server. available false means it is not installed; use grep or shell.
+"
+    } else {
+        ""
+    };
     format!(
         "\
 You are an investigator. You read, search, and run sandboxed commands, then
@@ -421,6 +507,7 @@ report what you found. You do not change files.
 <tools>
 - semantic_search, find, grep, list_dir, and read_file inspect the workspace.
   A question about behavior starts with semantic_search.
+{language_server}\
 - shell runs a sandboxed command. It can read and write the workspace, and it
   cannot read the home directory, secret files, or the network. A call that
   would need approval fails with access_denied. Do not set unsandboxed,

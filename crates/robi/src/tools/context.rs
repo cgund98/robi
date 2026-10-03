@@ -9,6 +9,7 @@ use robi_core::ids::SessionId;
 use crate::domain::chat_session::service::ChatSessionService;
 use crate::domain::file_change::repo::FileChangeRepository;
 use crate::index::IndexHub;
+use crate::lsp::LspHub;
 use crate::workspace::{resolve_path, user_home, PathFilter, ResolvedPath};
 
 /// The workspace and the session whose path rules a tool call reloads.
@@ -18,6 +19,10 @@ pub struct ToolContext {
     pub sessions: Arc<ChatSessionService>,
     pub file_changes: Arc<dyn FileChangeRepository>,
     pub index: Option<Arc<IndexHub>>,
+    pub lsp: Arc<LspHub>,
+    /// When false, language-server tools are not registered and writes do not
+    /// notify a server. Read once, when the actor builds its registry.
+    pub lsp_enabled: bool,
 }
 
 impl ToolContext {
@@ -42,6 +47,17 @@ impl ToolContext {
             .set_plan_path(self.session_id, path.to_owned())
             .await
             .map_err(|err| ToolError::Failed(err.to_string()))
+    }
+
+    /// Tell a running language server that a write just changed this file.
+    ///
+    /// A server that is not running is left stopped. The next tool call reads
+    /// the disk.
+    pub async fn note_lsp(&self, absolute: &std::path::Path, deleted: bool) {
+        if !self.lsp_enabled {
+            return;
+        }
+        self.lsp.note_disk(&self.root, absolute, deleted).await;
     }
 }
 

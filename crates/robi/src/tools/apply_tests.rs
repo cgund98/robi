@@ -62,6 +62,8 @@ pub(crate) async fn harness() -> Harness {
         sessions,
         file_changes: Arc::new(SqliteFileChangeRepository::new(pool)),
         index: None,
+        lsp: crate::lsp::LspHub::new(),
+        lsp_enabled: true,
     });
     Harness {
         ctx,

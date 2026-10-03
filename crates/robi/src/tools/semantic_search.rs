@@ -298,6 +298,8 @@ mod tests {
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
             index: Some(Arc::clone(&hub)),
+            lsp: crate::lsp::LspHub::new(),
+            lsp_enabled: true,
         });
         let tool = SemanticSearch::new(ctx);
         let all = tool

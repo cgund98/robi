@@ -32,6 +32,7 @@ use crate::{
         error::ServiceError,
         events::EventFanOut,
         file_change::repo::FileChangeRepository,
+        settings::store::SettingsStore,
     },
 };
 
@@ -56,6 +57,11 @@ pub struct AgentFactory {
     pub fanout: Option<Arc<EventFanOut>>,
     /// Workspace semantic index. Absent in tests that do not search.
     pub index: Option<Arc<crate::index::IndexHub>>,
+    /// Language servers shared by sessions on one workspace. Absent in tests
+    /// that do not call them; those sessions get a hub of their own.
+    pub lsp: Option<Arc<crate::lsp::LspHub>>,
+    /// Global settings. Absent in tests, which leave language-server tools on.
+    pub settings: Option<Arc<dyn SettingsStore>>,
 }
 
 impl AgentFactory {
@@ -110,12 +116,15 @@ impl AgentFactory {
             ServiceError::Unknown
         })?;
         let registry = ToolRegistry::new();
+        let lsp_enabled = self.lsp_enabled().await?;
         let ctx = Arc::new(crate::tools::ToolContext {
             session_id: session,
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
             index: self.index.clone(),
+            lsp: self.lsp.clone().unwrap_or_else(crate::lsp::LspHub::new),
+            lsp_enabled,
         });
         let models = Arc::new(crate::tools::SessionChildModels {
             session_id: session,
@@ -130,10 +139,21 @@ impl AgentFactory {
             Arc::clone(&self.search),
         )
         .map_err(|err| {
-            tracing::error!(%err, "failed to register tools");
+            tracing::error!(%session, %err, "failed to register tools");
             ServiceError::Unknown
         })?;
+        tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
         Ok((Arc::new(registry), Some(root), mode, choice, chat.plan_path))
+    }
+
+    async fn lsp_enabled(&self) -> Result<bool, ServiceError> {
+        let Some(settings) = &self.settings else {
+            return Ok(true);
+        };
+        let stored = settings.get(crate::domain::settings::keys::LSP).await?;
+        Ok(crate::domain::settings::keys::lsp_enabled(
+            stored.as_ref().map(|setting| setting.value.as_str()),
+        ))
     }
 }
 
@@ -183,6 +203,7 @@ impl SerializedChatRuntime {
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
         let fanout = self.factory.fanout.clone();
+        tracing::info!(%session, "session actor started");
         tokio::spawn(async move {
             run_actor(agent, model, store, sessions, fanout, slots, session).await;
         });
@@ -198,7 +219,7 @@ impl SerializedChatRuntime {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
-            replace_pending(slot, instruction);
+            replace_pending(slot, session, instruction);
             return Ok(SubmitOutcome::Accepted);
         }
         slot.running = true;
@@ -220,6 +241,7 @@ impl SerializedChatRuntime {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
+            tracing::warn!(%session, "decision refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
         slot.running = true;
@@ -251,10 +273,17 @@ impl ChatRuntime for SerializedChatRuntime {
             return Ok(SubmitOutcome::Accepted);
         }
 
-        if awaiting_approval(&self.factory.store, session).await? {
+        // Resolve before the slot is marked running, so a missing key does not
+        // leave an actor that will never start. The same registry decides
+        // whether an unfinished call is actually waiting on a person.
+        let (tools, workspace, mode, choice, plan_path) =
+            self.factory.session_registry(session).await?;
+
+        if awaiting_approval(&self.factory.store, session, &tools).await? {
             if interrupt_if_running(&self.slots, session, &instruction).await {
                 return Ok(SubmitOutcome::Accepted);
             }
+            tracing::info!(%session, "instruction refused while awaiting approval");
             return Ok(SubmitOutcome::AwaitingApproval);
         }
 
@@ -262,20 +291,22 @@ impl ChatRuntime for SerializedChatRuntime {
             let mut slots = self.slots.map.lock().await;
             let slot = slots.entry(session).or_default();
             if slot.running {
-                replace_pending(slot, instruction);
+                replace_pending(slot, session, instruction);
                 return Ok(SubmitOutcome::Accepted);
             }
         }
-
-        // Resolve before the slot is marked running, so a missing key does not
-        // leave an actor that will never start.
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
-        let model = self
+        let model = match self
             .factory
             .models
             .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
-            .await?;
+            .await
+        {
+            Ok(model) => model,
+            Err(error) => {
+                tracing::error!(%session, %error, "failed to build the session model");
+                return Err(error);
+            }
+        };
         self.start_actor(session, instruction, model, tools).await
     }
 
@@ -286,15 +317,25 @@ impl ChatRuntime for SerializedChatRuntime {
         reject: Option<String>,
     ) -> Result<(), ServiceError> {
         if self.actor_running(session).await {
+            tracing::warn!(%session, "decision refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
         let (tools, workspace, mode, choice, plan_path) =
             self.factory.session_registry(session).await?;
-        let model = self
+        let model = match self
             .factory
             .models
             .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
-            .await?;
+            .await
+        {
+            Ok(model) => model,
+            Err(error) => {
+                tracing::error!(%session, %error, "failed to build the session model");
+                return Err(error);
+            }
+        };
+        let approved = reject.is_none();
+        tracing::info!(%session, %call, approved, "tool decision accepted");
         self.start_decision(session, call, reject, model, tools)
             .await
     }
@@ -319,6 +360,7 @@ impl ChatRuntime for SerializedChatRuntime {
             if !slot.running {
                 return Ok(());
             }
+            tracing::info!(%session, "stopping the session actor");
             if let Some(cancel) = &slot.cancel {
                 cancel.cancel();
             }
@@ -337,6 +379,7 @@ impl ChatRuntime for SerializedChatRuntime {
                 .get(&session)
                 .is_some_and(|slot| slot.running && slot.generation == generation);
             if !still_this_actor {
+                tracing::info!(%session, "session actor stopped");
                 return Ok(());
             }
             notified.await;
@@ -352,11 +395,12 @@ async fn interrupt_if_running(slots: &Slots, session: SessionId, instruction: &s
     if !slot.running {
         return false;
     }
-    replace_pending(slot, instruction.to_owned());
+    replace_pending(slot, session, instruction.to_owned());
     true
 }
 
-fn replace_pending(slot: &mut Slot, instruction: String) {
+fn replace_pending(slot: &mut Slot, session: SessionId, instruction: String) {
+    tracing::info!(%session, "replaced the pending instruction");
     if let Some(cancel) = &slot.cancel {
         cancel.cancel();
     }
@@ -366,14 +410,22 @@ fn replace_pending(slot: &mut Slot, instruction: String) {
 async fn awaiting_approval(
     store: &Arc<dyn MessageStore>,
     session: SessionId,
+    tools: &ToolRegistry,
 ) -> Result<bool, ServiceError> {
     let messages = store.messages(session).await.map_err(map_store)?;
-    Ok(transcript_awaits_approval(&messages))
+    Ok(transcript_awaits_approval(&messages, tools).await)
 }
 
-fn transcript_awaits_approval(messages: &[Message]) -> bool {
-    unresolved_turn(messages)
-        .is_some_and(|index| messages[index].pending_approval_calls().next().is_some())
+async fn transcript_awaits_approval(messages: &[Message], tools: &ToolRegistry) -> bool {
+    let Some(index) = unresolved_turn(messages) else {
+        return false;
+    };
+    for call in &messages[index].tool_calls {
+        if tools.awaits_user_decision(call).await {
+            return true;
+        }
+    }
+    false
 }
 
 async fn decide_then_resume(
@@ -388,6 +440,7 @@ async fn decide_then_resume(
         None => agent.approve(session, call).await,
     };
     if let Err(error) = settled {
+        tracing::error!(%session, %call, %error, "failed to settle a tool call");
         return TurnOutcome::Failed(error);
     }
     agent.resume(session, cancel).await
@@ -416,6 +469,7 @@ async fn run_actor(
         let (work, cancel) = {
             let mut guard = slots.map.lock().await;
             let Some(slot) = guard.get_mut(&session) else {
+                tracing::error!(%session, "session actor lost its slot");
                 drop(guard);
                 slots.idle.notify_waiters();
                 return;
@@ -423,6 +477,7 @@ async fn run_actor(
             let Some(work) = slot.pending.take() else {
                 slot.running = false;
                 slot.cancel = None;
+                tracing::info!(%session, "session actor idle");
                 drop(guard);
                 slots.idle.notify_waiters();
                 return;
@@ -433,17 +488,32 @@ async fn run_actor(
         };
 
         let outcome = match work {
-            Work::Instruction(instruction) => agent.user_input(session, &instruction, cancel).await,
+            Work::Instruction(instruction) => {
+                tracing::info!(%session, "session actor started a turn");
+                agent.user_input(session, &instruction, cancel).await
+            }
             Work::Decision { call, reject } => {
+                tracing::info!(
+                    %session,
+                    %call,
+                    approved = reject.is_none(),
+                    "session actor resumed a turn"
+                );
                 decide_then_resume(&agent, session, call, reject, cancel).await
             }
         };
         match &outcome {
-            TurnOutcome::Failed(error) => {
-                tracing::warn!(%session, %error, "chat turn failed");
+            TurnOutcome::Complete => {
+                tracing::info!(%session, "chat turn completed");
             }
-            other => {
-                tracing::debug!(%session, ?other, "chat turn finished");
+            TurnOutcome::Paused => {
+                tracing::info!(%session, "chat turn paused for approval");
+            }
+            TurnOutcome::Cancelled => {
+                tracing::info!(%session, "chat turn cancelled");
+            }
+            TurnOutcome::Failed(error) => {
+                tracing::error!(%session, %error, "chat turn failed");
             }
         }
         let title_sessions = if matches!(outcome, TurnOutcome::Complete) {
@@ -470,13 +540,13 @@ mod tests {
 
     use async_trait::async_trait;
     use robi_core::config::LoopConfig;
-    use robi_core::error::{ModelError, StoreError};
+    use robi_core::error::{ModelError, StoreError, ToolError};
     use robi_core::event::NopSink;
     use robi_core::ids::{MessageId, SessionId, WorkspaceId};
     use robi_core::message::{Message, Role, ToolCall};
     use robi_core::model::{Delta, Model, ModelStream};
     use robi_core::store::MessageStore;
-    use robi_core::tool::ToolRegistry;
+    use robi_core::tool::{ApprovalDecision, Tool, ToolRegistry, ToolRun};
     use tokio::sync::{mpsc, Notify};
     use tokio_util::sync::CancellationToken;
 
@@ -490,6 +560,7 @@ mod tests {
     };
     use crate::domain::error::ServiceError;
     use crate::domain::events::{EventFanOut, SESSION_UPDATED};
+    use crate::domain::settings::store::SettingsStore;
     use crate::domain::workspace::repo::AnyWorkspace;
 
     struct MemoryStore {
@@ -618,17 +689,27 @@ mod tests {
     }
 
     fn runtime(store: Arc<dyn MessageStore>, model: Arc<dyn Model>) -> SerializedChatRuntime {
+        runtime_with(store, model, Arc::new(ToolRegistry::new()))
+    }
+
+    fn runtime_with(
+        store: Arc<dyn MessageStore>,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+    ) -> SerializedChatRuntime {
         SerializedChatRuntime::new(AgentFactory {
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FixedModelSource::new(model)),
-            tools: Arc::new(ToolRegistry::new()),
+            tools,
             config: LoopConfig::default(),
             sessions: None,
             file_changes: None,
             fanout: None,
             search: idle_search(),
             index: None,
+            lsp: None,
+            settings: None,
         })
     }
 
@@ -753,13 +834,106 @@ mod tests {
             .await
             .unwrap();
         let before = store.messages(session).await.unwrap();
-        let runtime = runtime(store.clone(), Arc::new(robi_core::model::UnavailableModel));
+        let tools = ToolRegistry::new();
+        tools
+            .register(Arc::new(GateTool {
+                name: "shell",
+                decision: ApprovalDecision::NeedsApproval,
+            }))
+            .unwrap();
+        let runtime = runtime_with(
+            store.clone(),
+            Arc::new(robi_core::model::UnavailableModel),
+            Arc::new(tools),
+        );
 
         assert_eq!(
             runtime.submit(session, "hello".into()).await.unwrap(),
             SubmitOutcome::AwaitingApproval
         );
         assert_eq!(store.messages(session).await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn an_unfinished_call_that_needs_no_approval_is_settled() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        store
+            .append(
+                session,
+                Message::assistant_with_tool_calls(
+                    "check",
+                    vec![ToolCall::new("diagnostics", serde_json::json!({}))],
+                ),
+            )
+            .await
+            .unwrap();
+        let tools = ToolRegistry::new();
+        tools
+            .register(Arc::new(GateTool {
+                name: "diagnostics",
+                decision: ApprovalDecision::AllowImmediately,
+            }))
+            .unwrap();
+        let runtime = runtime_with(
+            store.clone(),
+            Arc::new(robi_core::model::UnavailableModel),
+            Arc::new(tools),
+        );
+
+        assert_eq!(
+            runtime.submit(session, "hello".into()).await.unwrap(),
+            SubmitOutcome::Accepted
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let messages = store.messages(session).await.unwrap();
+                if messages.iter().any(|message| message.content == "hello") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the instruction was appended");
+        let messages = store.messages(session).await.unwrap();
+        let call = &messages[0].tool_calls[0];
+        assert_eq!(
+            call.execution_status,
+            robi_core::message::ExecutionStatus::Succeeded
+        );
+    }
+
+    struct GateTool {
+        name: &'static str,
+        decision: ApprovalDecision,
+    }
+
+    #[async_trait]
+    impl Tool for GateTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            "a test tool"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        async fn requires_approval(&self, _args: &serde_json::Value) -> ApprovalDecision {
+            self.decision
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _run: ToolRun,
+        ) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({"ok": true}))
+        }
     }
 
     struct HoldModel {
@@ -866,6 +1040,8 @@ mod tests {
             fanout: None,
             search: idle_search(),
             index: None,
+            lsp: None,
+            settings: None,
         });
 
         let error = runtime.submit(session, "hello".into()).await.unwrap_err();
@@ -971,6 +1147,8 @@ mod tests {
             fanout: None,
             search: idle_search(),
             index: None,
+            lsp: None,
+            settings: None,
         });
 
         runtime.submit(session, "hello".into()).await.unwrap();
@@ -978,6 +1156,75 @@ mod tests {
             seen.lock().expect("choice").clone(),
             Some((AgentMode::Agent, choice.agent.clone()))
         );
+    }
+
+    #[tokio::test]
+    async fn lsp_off_keeps_the_language_server_tools_out_of_the_actor() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::new(session)),
+            workspaces: Arc::new(AnyWorkspace),
+        });
+        let settings = Arc::new(crate::domain::settings::memory::MemorySettingsStore::new());
+        settings
+            .set(
+                crate::domain::settings::keys::LSP,
+                crate::domain::settings::keys::LSP_OFF.into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let names = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&names);
+        let runtime = SerializedChatRuntime::new(AgentFactory {
+            store,
+            events: Arc::new(NopSink),
+            models: Arc::new(ToolListSource {
+                names: seen,
+                model: Arc::new(TitleModel {
+                    calls: AtomicUsize::new(0),
+                    prompts: Mutex::new(Vec::new()),
+                    fail_user_turns: false,
+                }),
+            }),
+            tools: Arc::new(ToolRegistry::new()),
+            config: LoopConfig::default(),
+            sessions: Some(sessions),
+            file_changes: Some(Arc::new(
+                crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
+            )),
+            fanout: None,
+            search: idle_search(),
+            index: None,
+            lsp: None,
+            settings: Some(settings),
+        });
+
+        runtime.submit(session, "hello".into()).await.unwrap();
+        let names = names.lock().expect("names").clone();
+        assert!(names.iter().any(|name| name == "read_file"));
+        assert!(!names.iter().any(|name| name == "diagnostics"));
+    }
+
+    struct ToolListSource {
+        names: Arc<Mutex<Vec<String>>>,
+        model: Arc<dyn Model>,
+    }
+
+    #[async_trait]
+    impl ModelSource for ToolListSource {
+        async fn model(
+            &self,
+            tools: Arc<ToolRegistry>,
+            _workspace: Option<std::path::PathBuf>,
+            _mode: AgentMode,
+            _choice: ModeOverride,
+            _plan_path: Option<String>,
+        ) -> Result<Arc<dyn Model>, ServiceError> {
+            *self.names.lock().expect("names") = tools.names();
+            Ok(Arc::clone(&self.model))
+        }
     }
 
     fn titled_runtime(
@@ -999,6 +1246,8 @@ mod tests {
             fanout: Some(fanout),
             search: idle_search(),
             index: None,
+            lsp: None,
+            settings: None,
         })
     }
 

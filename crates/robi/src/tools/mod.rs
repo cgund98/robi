@@ -12,6 +12,7 @@ mod find;
 mod grant;
 mod grep;
 mod list_dir;
+mod lsp;
 mod memory_store;
 pub(crate) mod plan_file;
 mod read_file;
@@ -30,8 +31,10 @@ mod apply_tests;
 
 use std::sync::Arc;
 
-use robi_core::error::RegistryError;
-use robi_core::tool::ToolRegistry;
+use async_trait::async_trait;
+use robi_core::error::{RegistryError, ToolError};
+use robi_core::tool::{Concurrency, Tool, ToolRegistry, ToolRun};
+use serde_json::Value;
 
 use crate::domain::chat_session::model::AgentMode;
 use crate::web::{HttpFetcher, SearchEngine};
@@ -44,14 +47,25 @@ pub fn register_read_tools(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
 ) -> Result<(), RegistryError> {
-    registry.register(Arc::new(read_file::ReadFile::new(Arc::clone(&ctx))))?;
-    registry.register(Arc::new(list_dir::ListDir::new(Arc::clone(&ctx))))?;
-    registry.register(Arc::new(find::Find::new(Arc::clone(&ctx))))?;
-    registry.register(Arc::new(grep::Grep::new(Arc::clone(&ctx))))?;
-    registry.register(Arc::new(semantic_search::SemanticSearch::new(Arc::clone(
-        &ctx,
-    ))))?;
-    registry.register(Arc::new(grant::Grant::new(ctx)))?;
+    register(
+        registry,
+        Arc::new(read_file::ReadFile::new(Arc::clone(&ctx))),
+    )?;
+    register(registry, Arc::new(list_dir::ListDir::new(Arc::clone(&ctx))))?;
+    register(registry, Arc::new(find::Find::new(Arc::clone(&ctx))))?;
+    register(registry, Arc::new(grep::Grep::new(Arc::clone(&ctx))))?;
+    register(
+        registry,
+        Arc::new(semantic_search::SemanticSearch::new(Arc::clone(&ctx))),
+    )?;
+    register(registry, Arc::new(grant::Grant::new(Arc::clone(&ctx))))?;
+    if ctx.lsp_enabled {
+        register(registry, Arc::new(lsp::Diagnostics::new(Arc::clone(&ctx))))?;
+        register(registry, Arc::new(lsp::Definition::new(Arc::clone(&ctx))))?;
+        register(registry, Arc::new(lsp::References::new(Arc::clone(&ctx))))?;
+        register(registry, Arc::new(lsp::Hover::new(Arc::clone(&ctx))))?;
+        register(registry, Arc::new(lsp::WorkspaceSymbol::new(ctx)))?;
+    }
     Ok(())
 }
 
@@ -60,9 +74,15 @@ pub fn register_edit_tools(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
 ) -> Result<(), RegistryError> {
-    registry.register(Arc::new(write_file::WriteFile::new(Arc::clone(&ctx))))?;
-    registry.register(Arc::new(edit_file::EditFile::new(Arc::clone(&ctx))))?;
-    registry.register(Arc::new(delete_file::DeleteFile::new(ctx)))?;
+    register(
+        registry,
+        Arc::new(write_file::WriteFile::new(Arc::clone(&ctx))),
+    )?;
+    register(
+        registry,
+        Arc::new(edit_file::EditFile::new(Arc::clone(&ctx))),
+    )?;
+    register(registry, Arc::new(delete_file::DeleteFile::new(ctx)))?;
     Ok(())
 }
 
@@ -71,7 +91,7 @@ pub fn register_shell_tool(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
 ) -> Result<(), RegistryError> {
-    registry.register(Arc::new(shell::Shell::new(ctx)))?;
+    register(registry, Arc::new(shell::Shell::new(ctx)))?;
     Ok(())
 }
 
@@ -84,7 +104,7 @@ pub fn register_plan_tool(
     ctx: Arc<ToolContext>,
     create: bool,
 ) -> Result<(), RegistryError> {
-    registry.register(Arc::new(write_plan::WritePlan::new(ctx, create)))?;
+    register(registry, Arc::new(write_plan::WritePlan::new(ctx, create)))?;
     Ok(())
 }
 
@@ -94,11 +114,11 @@ pub fn register_web_tools(
     ctx: Arc<ToolContext>,
     search: Arc<dyn SearchEngine>,
 ) -> Result<(), RegistryError> {
-    registry.register(Arc::new(web_search::WebSearch::new(search)))?;
-    registry.register(Arc::new(web_fetch::WebFetch::new(
-        ctx,
-        Arc::new(HttpFetcher),
-    )))?;
+    register(registry, Arc::new(web_search::WebSearch::new(search)))?;
+    register(
+        registry,
+        Arc::new(web_fetch::WebFetch::new(ctx, Arc::new(HttpFetcher))),
+    )?;
     Ok(())
 }
 
@@ -122,11 +142,60 @@ pub fn register_tools_for_mode(
             register_edit_tools(registry, Arc::clone(&ctx))?;
             register_shell_tool(registry, Arc::clone(&ctx))?;
             register_plan_tool(registry, Arc::clone(&ctx), false)?;
-            registry.register(Arc::new(todos::Todos::new(Arc::clone(&ctx))))?;
-            registry.register(Arc::new(Delegate::new(ctx, models)))?;
+            register(registry, Arc::new(todos::Todos::new(Arc::clone(&ctx))))?;
+            register(registry, Arc::new(Delegate::new(ctx, models)))?;
         }
     }
     Ok(())
+}
+
+fn register(registry: &ToolRegistry, tool: Arc<dyn Tool>) -> Result<(), RegistryError> {
+    registry.register(Arc::new(LoggingTool { inner: tool }))
+}
+
+/// Logs the start and the result of one call. Arguments stay out of the log.
+struct LoggingTool {
+    inner: Arc<dyn Tool>,
+}
+
+#[async_trait]
+impl Tool for LoggingTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn parameters(&self) -> Value {
+        self.inner.parameters()
+    }
+
+    fn concurrency(&self) -> Concurrency {
+        self.inner.concurrency()
+    }
+
+    async fn requires_approval(&self, args: &Value) -> robi_core::tool::ApprovalDecision {
+        self.inner.requires_approval(args).await
+    }
+
+    async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
+        let tool = self.inner.name();
+        tracing::info!(tool, "tool started");
+        let result = self.inner.execute(args, run).await;
+        log_tool_result(tool, &result);
+        result
+    }
+}
+
+fn log_tool_result(tool: &str, result: &Result<Value, ToolError>) {
+    match result {
+        Ok(_) => tracing::info!(tool, "tool finished"),
+        Err(ToolError::Cancelled) => tracing::info!(tool, "tool cancelled"),
+        Err(ToolError::Panicked) => tracing::error!(tool, "tool panicked"),
+        Err(err) => tracing::warn!(tool, %err, "tool failed"),
+    }
 }
 
 #[cfg(test)]
@@ -154,47 +223,62 @@ mod registry_tests {
         assert_eq!(
             ask,
             vec![
+                "definition",
+                "diagnostics",
                 "find",
                 "grant",
                 "grep",
+                "hover",
                 "list_dir",
                 "read_file",
+                "references",
                 "semantic_search",
                 "web_fetch",
-                "web_search"
+                "web_search",
+                "workspace_symbol"
             ]
         );
         assert_eq!(
             plan,
             vec![
+                "definition",
+                "diagnostics",
                 "find",
                 "grant",
                 "grep",
+                "hover",
                 "list_dir",
                 "read_file",
+                "references",
                 "semantic_search",
                 "shell",
                 "web_fetch",
                 "web_search",
+                "workspace_symbol",
                 "write_plan"
             ]
         );
         assert_eq!(
             agent,
             vec![
+                "definition",
                 "delegate",
                 "delete_file",
+                "diagnostics",
                 "edit_file",
                 "find",
                 "grant",
                 "grep",
+                "hover",
                 "list_dir",
                 "read_file",
+                "references",
                 "semantic_search",
                 "shell",
                 "todos",
                 "web_fetch",
                 "web_search",
+                "workspace_symbol",
                 "write_file",
                 "write_plan"
             ]
@@ -216,5 +300,43 @@ mod registry_tests {
             .into_iter()
             .map(|tool| tool.name().to_owned())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn lsp_off_omits_the_language_server_tools() {
+        let harness = apply_tests::harness().await;
+        let ctx = Arc::new(ToolContext {
+            session_id: harness.ctx.session_id,
+            root: harness.ctx.root.clone(),
+            sessions: Arc::clone(&harness.ctx.sessions),
+            file_changes: Arc::clone(&harness.ctx.file_changes),
+            index: None,
+            lsp: crate::lsp::LspHub::new(),
+            lsp_enabled: false,
+        });
+        let registry = ToolRegistry::new();
+        register_tools_for_mode(
+            &registry,
+            Arc::clone(&ctx),
+            AgentMode::Agent,
+            Arc::new(UnavailableChildModels),
+            Arc::new(IdleSearch),
+        )
+        .unwrap();
+        let names = registry.names();
+        for tool in [
+            "diagnostics",
+            "definition",
+            "references",
+            "hover",
+            "workspace_symbol",
+        ] {
+            assert!(!names.iter().any(|name| name == tool), "{names:?}");
+        }
+        assert!(names.iter().any(|name| name == "read_file"));
+
+        let child = subagent::child_tool_names(robi_core::message::SubagentMode::Explore, ctx);
+        assert!(!child.iter().any(|name| name == "diagnostics"));
+        assert!(child.iter().any(|name| name == "grep"));
     }
 }
