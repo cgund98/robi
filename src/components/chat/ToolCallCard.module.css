@@ -319,6 +319,7 @@
 .shell {
   width: 100%;
   overflow: hidden;
+  margin-top: var(--space-2);
   margin-bottom: var(--space-2);
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);

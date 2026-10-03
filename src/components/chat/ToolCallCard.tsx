@@ -495,7 +495,7 @@ function outputPreview(
   count: number
 ): { text: string; moreAbove: boolean; moreBelow: boolean } {
   const lines = output.split('\n')
-  if (lines.at(-1) === '') {
+  if (lines[lines.length - 1] === '') {
     lines.pop()
   }
   const start = Math.max(0, lines.length - count)

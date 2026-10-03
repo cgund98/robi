@@ -149,7 +149,7 @@ export function AppLayout() {
     const apply = () => {
       thread.style.setProperty('--dock-height', `${dock.offsetHeight}px`)
       const composer = dock.lastElementChild
-      if (composer) {
+      if (composer instanceof HTMLElement) {
         thread.style.setProperty('--composer-height', `${composer.offsetHeight}px`)
       }
     }

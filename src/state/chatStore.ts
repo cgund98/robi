@@ -19,6 +19,7 @@ import {
   type ChatSession,
   type ModelConfigBody
 } from '../api/sessions'
+import { fetchStillCurrent, startFetch } from '../app/latestFetch'
 import { useWorkspaceStore } from './workspaceStore'
 
 export type AgentPhase = 'idle' | 'thinking' | 'responding'
@@ -191,33 +192,68 @@ function nextPhase(current: AgentPhase | undefined, hasPending: boolean): AgentP
   return 'thinking'
 }
 
+function sessionKey(sessionId: string): string {
+  return `session:${sessionId}`
+}
+
+function sessionsListKey(workspaceId: string): string {
+  return `sessions:${workspaceId}`
+}
+
 async function readTranscript(
   sessionId: string,
   epoch: number
-): Promise<{ messages: ChatMessage[]; session: ChatSession } | null> {
+): Promise<{ messages: ChatMessage[] | null; session: ChatSession | null } | null> {
   const token = beginList(sessionId)
-  const [messages, session] = await Promise.all([listMessages(sessionId), getSession(sessionId)])
-  if (epoch !== hydrateEpoch || !listIsCurrent(sessionId, token)) {
+  const sessionGeneration = startFetch(sessionKey(sessionId))
+  const [messagesResult, sessionResult] = await Promise.allSettled([
+    listMessages(sessionId),
+    getSession(sessionId)
+  ])
+  if (epoch !== hydrateEpoch) {
     return null
   }
-  return { messages, session }
+  const listCurrent = listIsCurrent(sessionId, token)
+  const sessionCurrent = fetchStillCurrent(sessionKey(sessionId), sessionGeneration)
+  const failure = [messagesResult, sessionResult].find(
+    (result, index) => result.status === 'rejected' && (index === 0 ? listCurrent : sessionCurrent)
+  )
+  if (failure?.status === 'rejected') {
+    throw failure.reason
+  }
+  const currentMessages =
+    listCurrent && messagesResult.status === 'fulfilled' ? messagesResult.value : null
+  const currentSession =
+    sessionCurrent && sessionResult.status === 'fulfilled' ? sessionResult.value : null
+  if (!currentMessages && !currentSession) {
+    return null
+  }
+  return { messages: currentMessages, session: currentSession }
 }
 
-function applyTranscript(sessionId: string, messages: ChatMessage[], session: ChatSession): void {
-  useChatStore.setState((state) => ({
-    sessions: replaceSession(state.sessions, session),
-    messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
-    pendingEcho: withoutEcho(
-      state.pendingEcho,
-      sessionId,
-      state.messagesBySession[sessionId] ?? [],
-      messages
-    ),
-    phaseBySession: {
-      ...state.phaseBySession,
-      [sessionId]: nextPhase(state.phaseBySession[sessionId], session.has_pending_agent)
+function applyTranscript(
+  sessionId: string,
+  messages: ChatMessage[] | null,
+  session: ChatSession | null
+): void {
+  useChatStore.setState((state) => {
+    const previous = state.messagesBySession[sessionId] ?? []
+    return {
+      sessions: session ? replaceSession(state.sessions, session) : state.sessions,
+      messagesBySession: messages
+        ? { ...state.messagesBySession, [sessionId]: messages }
+        : state.messagesBySession,
+      pendingEcho: messages
+        ? withoutEcho(state.pendingEcho, sessionId, previous, messages)
+        : state.pendingEcho,
+      phaseBySession: session
+        ? {
+            ...state.phaseBySession,
+            [sessionId]: nextPhase(state.phaseBySession[sessionId], session.has_pending_agent)
+          }
+        : state.phaseBySession
     }
-  }))
+  })
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -254,9 +290,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
       return
     }
+    const listGeneration = startFetch(sessionsListKey(workspaceId))
     try {
       const next = await listSessions(workspaceId)
       if (epoch !== hydrateEpoch) {
+        return
+      }
+      if (!fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)) {
+        set({ loading: false, busy: false })
         return
       }
       if (options?.draft) {
@@ -291,6 +332,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       if (epoch !== hydrateEpoch) {
+        return
+      }
+      if (!fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)) {
+        set({ loading: false, busy: false })
         return
       }
       set({
@@ -456,6 +501,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       if (transcript) {
         applyTranscript(sessionId, transcript.messages, transcript.session)
+        get().bumpReview(sessionId)
       }
       set((state) => ({
         pendingEcho: state.pendingEcho?.sessionId === sessionId ? null : state.pendingEcho
@@ -602,6 +648,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return
       }
       applyTranscript(sessionId, transcript.messages, transcript.session)
+      // The review fetch on the event can lose to a request that started
+      // before the writes landed. Check again once this turn is stored.
+      get().bumpReview(sessionId)
       if (failedMessage) {
         set({ error: failedMessage })
       }
@@ -609,12 +658,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // refetch can still see has_pending_agent and put the phase back on
       // Thinking after the turn is stored. Read the session once more.
       if (
-        transcript.session.has_pending_agent &&
+        transcript.session?.has_pending_agent &&
         get().stoppingSessionId !== sessionId &&
         get().phaseBySession[sessionId] !== 'idle'
       ) {
+        const againGeneration = startFetch(sessionKey(sessionId))
         const again = await getSession(sessionId)
-        if (tick !== stopTick || epoch !== hydrateEpoch || get().stoppingSessionId === sessionId) {
+        if (
+          tick !== stopTick ||
+          epoch !== hydrateEpoch ||
+          get().stoppingSessionId === sessionId ||
+          !fetchStillCurrent(sessionKey(sessionId), againGeneration)
+        ) {
           return
         }
         if (!again.has_pending_agent) {
@@ -651,6 +706,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return
       }
       applyTranscript(sessionId, transcript.messages, transcript.session)
+      get().bumpReview(sessionId)
     } catch (err) {
       if (epoch !== hydrateEpoch) {
         return
@@ -663,16 +719,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   refreshSession: async (sessionId) => {
     const epoch = hydrateEpoch
+    const generation = startFetch(sessionKey(sessionId))
     try {
       const session = await getSession(sessionId)
-      if (epoch !== hydrateEpoch) {
+      if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
         return
       }
       set((state) => ({
         sessions: replaceSession(state.sessions, session)
       }))
     } catch (err) {
-      if (epoch !== hydrateEpoch) {
+      if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
         return
       }
       if (err instanceof ApiError && err.status === 404) {
@@ -689,9 +746,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!workspaceId) {
       return
     }
+    const listGeneration = startFetch(sessionsListKey(workspaceId))
     try {
       const next = await listSessions(workspaceId)
-      if (epoch !== hydrateEpoch) {
+      if (
+        epoch !== hydrateEpoch ||
+        !fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)
+      ) {
         return
       }
       set({ sessions: next })
@@ -708,15 +769,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const transcript = await readTranscript(fallback.id, epoch)
         if (transcript) {
           applyTranscript(fallback.id, transcript.messages, transcript.session)
+          get().bumpReview(fallback.id)
         }
         return
       }
       const transcript = await readTranscript(activeSessionId, epoch)
       if (transcript) {
         applyTranscript(activeSessionId, transcript.messages, transcript.session)
+        get().bumpReview(activeSessionId)
       }
     } catch (err) {
-      if (epoch !== hydrateEpoch) {
+      if (
+        epoch !== hydrateEpoch ||
+        !fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)
+      ) {
         return
       }
       set({ error: errorText(err, 'Failed to load chat sessions') })

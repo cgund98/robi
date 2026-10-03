@@ -38,7 +38,10 @@ painted from the current text.
 
 The chat shell keeps one line above the composer when `files` is not empty:
 `N file(s) edited`, and **Review**. It refetches when the session is
-selected and when `tool_call_updated` or `turn_finished` arrives. **Review**
+selected, when `tool_call_updated` or `turn_finished` arrives, and again
+after that turn's transcript is stored. The same check runs when the event
+stream opens and when the two-second catch-up reloads a turn, so a frame
+that never arrived still reveals the strip. **Review**
 goes to `#/sessions/:id/review`. That route keeps the session sidebar. The
 main column is the review. **Back** returns to the chat for that session.
 Choosing another session, or New chat, leaves the review.
@@ -56,7 +59,9 @@ lines stay in the list. **Current** is the whole current text.
 which renders the current text. Headings step down by level. A deleted
 markdown file renders the baseline. An added file on **Previous**, or a
 deleted file on **Current**, shows `File added` or `File deleted`. **Approve** keeps the file as it is and folds that text
-into the baseline, so the path leaves the review. **Reject** writes the
+into the baseline, so the path leaves the review. The path leaves the list
+as soon as **Approve** is clicked. If that request fails, the file comes
+back and the error is shown. **Reject** writes the
 baseline back. A file this session created, fully rejected, is removed.
 
 Each block between gaps is a hunk. Hovering it shows **Reject** and

@@ -8,6 +8,7 @@ import { useIndexStore } from '../state/indexStore'
 import { useWorkspaceStore } from '../state/workspaceStore'
 import { postApprovalNotice, releaseApprovalPause } from './approvalNotice'
 import { AGENT_EVENT_TYPES, buildAgentEventsStreamUrl, parseEventEnvelope } from './agentEvents'
+import { fetchStillCurrent, startFetch } from './latestFetch'
 import { transcriptCatchUpDue } from './transcriptCatchUp'
 
 type DeltaData = {
@@ -106,11 +107,19 @@ export function useAgentEventsSSE(): void {
         if (!messageId) {
           return
         }
+        const key = `message:${sessionId}:${messageId}`
+        const generation = startFetch(key)
         void getMessage(sessionId, messageId)
           .then((message) => {
+            if (!fetchStillCurrent(key, generation)) {
+              return
+            }
             useChatStore.getState().upsertMessage(sessionId, message)
           })
           .catch((err: unknown) => {
+            if (!fetchStillCurrent(key, generation)) {
+              return
+            }
             if (err instanceof ApiError && err.status === 404) {
               return
             }

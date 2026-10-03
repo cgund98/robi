@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { decideReview } from '../../api/review'
@@ -40,12 +40,17 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   const navigate = useNavigate()
   const sessions = useChatStore((state) => state.sessions)
   const session = sessions.find((item) => item.id === sessionId) ?? null
-  const { files, error, loading } = useSessionReview(sessionId)
+  const { files: loaded, error, loading } = useSessionReview(sessionId)
   const bumpReview = useChatStore((state) => state.bumpReview)
   const [view, setView] = useState<ReviewView>('diff')
   const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [decideError, setDecideError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  const [hiddenPaths, setHiddenPaths] = useState<string[]>([])
+  const files = useMemo(
+    () => loaded.filter((file) => !hiddenPaths.includes(file.path)),
+    [loaded, hiddenPaths]
+  )
   const anchors = useRef(new Map<string, HTMLElement>())
   const orderedPaths = useMemo(() => filesInTreeOrder(files.map((file) => file.path)), [files])
   const orderedFiles = useMemo(() => {
@@ -58,6 +63,10 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   const tree = useMemo(() => buildFileTree(orderedPaths), [orderedPaths])
   const active = selected && orderedPaths.includes(selected) ? selected : (orderedPaths[0] ?? null)
 
+  useEffect(() => {
+    setHiddenPaths((current) => current.filter((path) => loaded.some((file) => file.path === path)))
+  }, [loaded])
+
   function register(path: string, node: HTMLElement | null) {
     if (node) {
       anchors.current.set(path, node)
@@ -69,6 +78,10 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   async function decide(path: string, decision: 'approve' | 'reject', hunkIds?: string[]) {
     const file = files.find((item) => item.path === path)
     const ordered = orderHunks(file?.hunks ?? [], hunkIds, decision)
+    if (decision === 'approve' && ordered.length === 0) {
+      await approveFile(path)
+      return
+    }
     setPendingKey(hunkIds ? `${path}:${hunkIds[0]}` : path)
     setDecideError(null)
     try {
@@ -84,6 +97,18 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
       setDecideError(err instanceof Error ? err.message : 'Failed to update review')
     } finally {
       setPendingKey(null)
+    }
+  }
+
+  async function approveFile(path: string) {
+    setHiddenPaths((current) => (current.includes(path) ? current : [...current, path]))
+    setDecideError(null)
+    try {
+      await decideReview(sessionId, path, 'approve')
+      bumpReview(sessionId)
+    } catch (err: unknown) {
+      setHiddenPaths((current) => current.filter((item) => item !== path))
+      setDecideError(err instanceof Error ? err.message : 'Failed to update review')
     }
   }
 

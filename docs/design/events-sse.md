@@ -205,8 +205,10 @@ One connection for the shell, mounted from `AppLayout`.
 | Envelope parse | `JSON.parse(event.data)` as `EventEnvelope`; dispatch on `type` |
 
 Handlers stay thin. They refetch HTTP and update the activity phase. They do
-not write message text from a frame. The behavior is specified in
-[chat-ui.md](chat-ui.md).
+not write message text from a frame. Two refetches of the same URL can be in
+flight together; only the one that started later is applied. A slower earlier
+`GET` of that message, session, session list, or index status is dropped. The
+behavior is specified in [chat-ui.md](chat-ui.md).
 
 | `type` | Shell |
 |---|---|

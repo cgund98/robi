@@ -1,4 +1,5 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import type { FocusEvent } from 'react'
 
 import styles from './ChoiceMenu.module.css'
 
@@ -38,6 +39,18 @@ export function ChoiceMenu({
   includeDefault = true,
   defaultLabel = 'Use default'
 }: ChoiceMenuProps) {
+  // Radix omits `onOpenAutoFocus` from the public `DropdownMenuContent` type but
+  // forwards it to the underlying focus scope at runtime, so pass it through a
+  // spread to keep the typing honest while preserving the behavior.
+  const contentProps = {
+    onOpenAutoFocus: (event: FocusEvent<HTMLDivElement>) => {
+      const content = event.currentTarget
+      requestAnimationFrame(() => {
+        content.querySelector('[data-state="checked"]')?.scrollIntoView({ block: 'nearest' })
+      })
+    }
+  }
+
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className={triggerClassName} aria-label={ariaLabel}>
@@ -48,19 +61,11 @@ export function ChoiceMenu({
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
+          {...contentProps}
           className={styles.panel}
           side={side}
           align={align}
           sideOffset={6}
-          onOpenAutoFocus={(event) => {
-            const content = event.currentTarget
-            if (!(content instanceof HTMLElement)) {
-              return
-            }
-            requestAnimationFrame(() => {
-              content.querySelector('[data-state="checked"]')?.scrollIntoView({ block: 'nearest' })
-            })
-          }}
         >
           <DropdownMenu.RadioGroup
             value={value || DEFAULT_VALUE}

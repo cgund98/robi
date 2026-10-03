@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import { getIndexStatus, setIndexState, type IndexStatus } from '../api/codeIndex'
+import { fetchStillCurrent, startFetch } from '../app/latestFetch'
 import { useWorkspaceStore } from './workspaceStore'
 
 /** Pause or resume has been requested and the task has not caught up. */
@@ -33,9 +34,14 @@ export const useIndexStore = create<IndexStore>((set, get) => ({
     if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
       return
     }
+    const key = `index:${workspaceId}`
+    const generation = startFetch(key)
     try {
       const status = await getIndexStatus(workspaceId)
-      if (workspaceId === useWorkspaceStore.getState().activeWorkspaceId) {
+      if (
+        workspaceId === useWorkspaceStore.getState().activeWorkspaceId &&
+        fetchStillCurrent(key, generation)
+      ) {
         set((state) => ({
           workspaceId,
           status,
@@ -43,7 +49,9 @@ export const useIndexStore = create<IndexStore>((set, get) => ({
         }))
       }
     } catch {
-      set({ workspaceId, status: null, pending: null })
+      if (fetchStillCurrent(key, generation)) {
+        set({ workspaceId, status: null, pending: null })
+      }
     }
   },
   setPaused: async (paused) => {
