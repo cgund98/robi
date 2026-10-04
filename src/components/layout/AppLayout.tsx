@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMatch, useNavigate } from 'react-router-dom'
 
 import { listModels, type CatalogModel } from '../../api/models'
@@ -13,11 +13,13 @@ import { Composer } from '../chat/Composer'
 import { EditReviewStrip } from '../chat/EditReviewStrip'
 import { EmptyGreeting } from '../chat/EmptyGreeting'
 import { RenameSessionDialog } from '../chat/RenameSessionDialog'
+import { DeleteSessionDialog } from '../chat/DeleteSessionDialog'
 import { PlanPage } from '../chat/PlanPage'
 import { planBuildInstruction, type PlanView } from '../chat/toolCallView'
 import { Transcript } from '../chat/Transcript'
 import { DocsScreen } from '../docs/DocsScreen'
 import { ReviewScreen } from '../review/ReviewScreen'
+import { ErrorNotices } from './ErrorNotices'
 import { Sidebar } from './Sidebar'
 import styles from './AppLayout.module.css'
 
@@ -56,19 +58,19 @@ export function AppLayout() {
   const messagesBySession = useChatStore((state) => state.messagesBySession)
   const phaseBySession = useChatStore((state) => state.phaseBySession)
   const pendingEcho = useChatStore((state) => state.pendingEcho)
-  const error = useChatStore((state) => state.error)
   const loading = useChatStore((state) => state.loading)
   const transcriptLoading = useChatStore((state) => state.transcriptLoading)
   const busy = useChatStore((state) => state.busy)
   const loadSessions = useChatStore((state) => state.loadSessions)
   const workspacesLoaded = useWorkspaceStore((state) => state.loaded)
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
-  const workspaceError = useWorkspaceStore((state) => state.error)
   const loadWorkspaces = useWorkspaceStore((state) => state.loadWorkspaces)
   const workspaceCount = useWorkspaceStore((state) => state.workspaces.length)
   const previousWorkspace = useRef<string | null | undefined>(undefined)
   const [renameId, setRenameId] = useState<string | null>(null)
   const [renameError, setRenameError] = useState<string | null>(null)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [plan, setPlan] = useState<{ view: PlanView; sessionId: string | null } | null>(null)
   const navigate = useNavigate()
   const reviewMatch = useMatch('/sessions/:sessionId/review')
@@ -170,6 +172,12 @@ export function AppLayout() {
   const renameTarget = renameId
     ? (sessions.find((session) => session.id === renameId) ?? null)
     : null
+  const deleteTarget = deleteId
+    ? (sessions.find((session) => session.id === deleteId) ?? null)
+    : null
+  const deleteTargetRunning = deleteTarget
+    ? deleteTarget.has_pending_agent || (phaseBySession[deleteTarget.id] ?? 'idle') !== 'idle'
+    : false
 
   async function handleSaveTitle(title: string) {
     if (!renameId) {
@@ -184,23 +192,51 @@ export function AppLayout() {
     setRenameId(null)
   }
 
-  async function handleDeleteSession(id: string) {
-    const current = sessions.find((session) => session.id === id)
-    const label = sessionDisplayTitle(current)
-    if (!window.confirm(`Delete “${label}”? This cannot be undone.`)) {
+  async function handleConfirmDelete(id: string) {
+    await removeSession(id)
+    const message = useChatStore.getState().error
+    if (message) {
+      setDeleteError(message)
       return
     }
-    await removeSession(id)
+    setDeleteId(null)
   }
 
   const sessionTitle =
     loading && !activeSession && !draftSelected ? 'Loading…' : sessionDisplayTitle(activeSession)
+  const transcriptVisible = !reviewSessionId && !docsOpen && !plan
   const mode: AgentMode = draftSelected || !activeSession ? draftMode : sessionMode(activeSession)
   const modeDefault = modeDefaults[mode]
   const defaultModelId = modeDefault.model ?? fallbackModelId
   const defaultEffort = modeDefault.effort ?? fallbackEffort
   const modelId = draftSelected || !activeSession ? draftModel : sessionModel(activeSession, mode)
   const effort = draftSelected || !activeSession ? draftEffort : sessionEffort(activeSession, mode)
+
+  const openSession = useCallback(
+    (id: string) => {
+      setPlan(null)
+      if (reviewSessionId || docsOpen) {
+        navigate('/')
+      }
+      void selectSession(id)
+    },
+    [docsOpen, navigate, reviewSessionId, selectSession]
+  )
+  const openDraft = useCallback(() => {
+    setPlan(null)
+    if (reviewSessionId || docsOpen) {
+      navigate('/')
+    }
+    selectDraft()
+  }, [docsOpen, navigate, reviewSessionId, selectDraft])
+  const askRename = useCallback((id: string) => {
+    setRenameError(null)
+    setRenameId(id)
+  }, [])
+  const askDelete = useCallback((id: string) => {
+    setDeleteError(null)
+    setDeleteId(id)
+  }, [])
 
   return (
     <div className={styles.shell}>
@@ -211,43 +247,14 @@ export function AppLayout() {
         docsSelected={docsOpen}
         disabled={loading}
         runningSessionIds={runningSessionIds(sessions, phaseBySession)}
-        onSelectSession={(id) => {
-          setPlan(null)
-          if (reviewSessionId || docsOpen) {
-            navigate('/')
-          }
-          void selectSession(id)
-        }}
-        onNewSession={() => {
-          setPlan(null)
-          if (reviewSessionId || docsOpen) {
-            navigate('/')
-          }
-          selectDraft()
-        }}
-        onRenameSession={(id) => {
-          setRenameError(null)
-          setRenameId(id)
-        }}
-        onDeleteSession={(id) => void handleDeleteSession(id)}
+        onSelectSession={openSession}
+        onNewSession={openDraft}
+        onRenameSession={askRename}
+        onDeleteSession={askDelete}
       />
       <div className={styles.main}>
         <ChatHeader sessionTitle={docsOpen ? 'Documentation' : sessionTitle} />
-        {workspaceError || error ? (
-          <div className={styles.banner} role="alert">
-            <span>{workspaceError ?? error}</span>
-            <button
-              type="button"
-              className={styles.bannerRetry}
-              onClick={() => {
-                void loadWorkspaces()
-                void loadSessions()
-              }}
-            >
-              Retry
-            </button>
-          </div>
-        ) : null}
+        <ErrorNotices placement="top" transcriptVisible={transcriptVisible} />
         {reviewSessionId ? (
           <ReviewScreen key={reviewSessionId} sessionId={reviewSessionId} />
         ) : docsOpen ? (
@@ -271,6 +278,7 @@ export function AppLayout() {
         ) : fresh ? (
           <div className={styles.welcome}>
             <EmptyGreeting />
+            <ErrorNotices placement="transcript" transcriptVisible={transcriptVisible} />
             <Composer
               placement="welcome"
               disabled={composerLocked}
@@ -299,6 +307,7 @@ export function AppLayout() {
             <div className={styles.thread} ref={threadRef}>
               <Transcript
                 messages={messages}
+                sessionId={activeSessionId}
                 echo={echo}
                 phase={phase}
                 mode={mode}
@@ -317,6 +326,7 @@ export function AppLayout() {
                 }}
               />
               <div className={styles.dock} ref={dockRef}>
+                <ErrorNotices placement="transcript" transcriptVisible={transcriptVisible} />
                 {activeSessionId ? (
                   <EditReviewStrip key={activeSessionId} sessionId={activeSessionId} />
                 ) : null}
@@ -358,6 +368,21 @@ export function AppLayout() {
             setRenameId(null)
           }}
           onSave={(title) => void handleSaveTitle(title)}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <DeleteSessionDialog
+          key={deleteTarget.id}
+          open
+          title={sessionDisplayTitle(deleteTarget)}
+          running={deleteTargetRunning}
+          busy={busy}
+          error={deleteError}
+          onCancel={() => {
+            setDeleteError(null)
+            setDeleteId(null)
+          }}
+          onDelete={() => void handleConfirmDelete(deleteTarget.id)}
         />
       ) : null}
     </div>

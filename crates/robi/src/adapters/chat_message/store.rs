@@ -13,13 +13,45 @@ use robi_core::message::Message;
 use robi_core::store::MessageStore;
 use sqlx::SqlitePool;
 
+use crate::adapters::session_blobs::SessionBlobs;
+
 pub struct SqliteMessageStore {
     pool: Arc<SqlitePool>,
+    blobs: SessionBlobs,
 }
 
 impl SqliteMessageStore {
-    pub fn new(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+    pub fn new(pool: Arc<SqlitePool>, blobs: SessionBlobs) -> Self {
+        Self { pool, blobs }
+    }
+
+    async fn persist_results(
+        &self,
+        session: SessionId,
+        message: &mut Message,
+    ) -> Result<(), StoreError> {
+        let blobs = self.blobs.clone();
+        let stored = message.clone();
+        tokio::task::spawn_blocking(move || blobs.sync_results(session, &stored))
+            .await
+            .map_err(|err| StoreError::Backend(err.to_string()))?
+            .map_err(StoreError::Backend)?;
+        crate::adapters::session_blobs::take_results(message);
+        Ok(())
+    }
+
+    async fn fill(&self, session: SessionId, message: &mut Message) -> Result<(), StoreError> {
+        let blobs = self.blobs.clone();
+        let mut message_for_fill = message.clone();
+        let filled = tokio::task::spawn_blocking(move || {
+            blobs.fill_results(session, &mut message_for_fill)?;
+            Ok::<_, String>(message_for_fill)
+        })
+        .await
+        .map_err(|err| StoreError::Backend(err.to_string()))?
+        .map_err(StoreError::Backend)?;
+        *message = filled;
+        Ok(())
     }
 }
 
@@ -66,13 +98,15 @@ impl MessageStore for SqliteMessageStore {
         .await
         .map_err(backend)?;
 
-        rows.into_iter()
-            .map(|(id, body)| {
-                serde_json::from_str(&body).map_err(|error| {
-                    StoreError::Backend(format!("chat message {id} is not a message: {error}"))
-                })
-            })
-            .collect()
+        let mut messages = Vec::with_capacity(rows.len());
+        for (id, body) in rows {
+            let mut message: Message = serde_json::from_str(&body).map_err(|error| {
+                StoreError::Backend(format!("chat message {id} is not a message: {error}"))
+            })?;
+            self.fill(session, &mut message).await?;
+            messages.push(message);
+        }
+        Ok(messages)
     }
 
     async fn message(
@@ -103,12 +137,14 @@ impl MessageStore for SqliteMessageStore {
             return Ok(None);
         };
 
-        serde_json::from_str(&body).map(Some).map_err(|error| {
+        let mut message: Message = serde_json::from_str(&body).map_err(|error| {
             StoreError::Backend(format!("chat message {id} is not a message: {error}"))
-        })
+        })?;
+        self.fill(session, &mut message).await?;
+        Ok(Some(message))
     }
 
-    async fn append(&self, session: SessionId, message: Message) -> Result<(), StoreError> {
+    async fn append(&self, session: SessionId, mut message: Message) -> Result<(), StoreError> {
         if !session_exists(Arc::clone(&self.pool), session)
             .await
             .map_err(backend)?
@@ -116,6 +152,7 @@ impl MessageStore for SqliteMessageStore {
             return Err(StoreError::SessionNotFound(session));
         }
 
+        self.persist_results(session, &mut message).await?;
         let body = serde_json::to_string(&message).map_err(|error| {
             StoreError::Backend(format!(
                 "chat message {} did not serialize: {error}",
@@ -168,7 +205,7 @@ impl MessageStore for SqliteMessageStore {
         Ok(())
     }
 
-    async fn update(&self, session: SessionId, message: Message) -> Result<(), StoreError> {
+    async fn update(&self, session: SessionId, mut message: Message) -> Result<(), StoreError> {
         if !session_exists(Arc::clone(&self.pool), session)
             .await
             .map_err(backend)?
@@ -176,6 +213,7 @@ impl MessageStore for SqliteMessageStore {
             return Err(StoreError::SessionNotFound(session));
         }
 
+        self.persist_results(session, &mut message).await?;
         let body = serde_json::to_string(&message).map_err(|error| {
             StoreError::Backend(format!(
                 "chat message {} did not serialize: {error}",
@@ -258,6 +296,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::SqliteMessageStore;
+    use crate::adapters::session_blobs::SessionBlobs;
     use crate::adapters::sqlite;
 
     async fn store() -> (SqliteMessageStore, Arc<SqlitePool>) {
@@ -266,7 +305,11 @@ mod tests {
             Uuid::now_v7().simple()
         );
         let pool = Arc::new(sqlite::init_pool(&url).await.expect("in-memory pool opens"));
-        (SqliteMessageStore::new(Arc::clone(&pool)), pool)
+        let root = std::env::temp_dir().join(format!("robi-msg-blobs-{}", Uuid::now_v7().simple()));
+        (
+            SqliteMessageStore::new(Arc::clone(&pool), SessionBlobs::new(root)),
+            pool,
+        )
     }
 
     async fn insert_workspace(pool: &SqlitePool, id: WorkspaceId) {

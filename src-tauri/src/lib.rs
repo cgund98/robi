@@ -16,25 +16,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let origin = if external_api() {
-                tracing::info!("ROBI_EXTERNAL_API is set; not starting the in-process API");
-                String::new()
-            } else {
-                let database_url = database_url(app)?;
-                let settings_dir =
-                    robi::adapters::settings::home_dir().map_err(|err| err.to_string())?;
-                let listen = listen_from_env()?;
-                let addr = bootstrap::spawn(
-                    AppConfig {
-                        database_url,
-                        settings_dir,
-                    },
-                    listen,
-                )
-                .map_err(|err| err.to_string())?;
-                let origin = format!("http://{addr}");
-                tracing::info!(%origin, "in-process API listening");
-                origin
+            let origin = match start_api(app) {
+                Ok(origin) => origin,
+                Err(err) => {
+                    // Tauri turns this error into a panic on the AppKit thread,
+                    // and that panic aborts. The line has to be on disk first.
+                    tracing::error!(error = %err, "failed to start the in-process API");
+                    robi::logs::record_error(&format!("failed to start the in-process API: {err}"));
+                    return Err(err.into());
+                }
             };
             app.manage(ApiOrigin(origin));
             Ok(())
@@ -52,6 +42,27 @@ pub fn run() {
 #[tauri::command]
 fn api_base_url(origin: State<ApiOrigin>) -> String {
     origin.0.clone()
+}
+
+fn start_api(app: &tauri::App) -> Result<String, String> {
+    if external_api() {
+        tracing::info!("ROBI_EXTERNAL_API is set; not starting the in-process API");
+        return Ok(String::new());
+    }
+    let database_url = database_url(app)?;
+    let settings_dir = robi::adapters::settings::home_dir().map_err(|err| err.to_string())?;
+    let listen = listen_from_env()?;
+    let addr = bootstrap::spawn(
+        AppConfig {
+            database_url,
+            settings_dir,
+        },
+        listen,
+    )
+    .map_err(|err| err.to_string())?;
+    let origin = format!("http://{addr}");
+    tracing::info!(%origin, "in-process API listening");
+    Ok(origin)
 }
 
 /// Dev-only. Packaged builds always start the API in-process.
@@ -73,10 +84,16 @@ fn database_url(app: &tauri::App) -> Result<String, String> {
     if let Ok(url) = std::env::var("ROBI_DATABASE_URL") {
         return Ok(url);
     }
-    let dir = app
+    let mut dir = app
         .path()
         .app_data_dir()
         .map_err(|err| format!("could not resolve the app data directory: {err}"))?;
+    // `tauri dev` and a packaged build share the identifier, so they would
+    // otherwise share one file. A migration applied in dev then refuses to
+    // open in an older installed binary.
+    if tauri::is_dev() {
+        dir.push("dev");
+    }
     std::fs::create_dir_all(&dir).map_err(|err| {
         format!(
             "could not create the app data directory {}: {err}",

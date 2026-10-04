@@ -208,7 +208,8 @@ These are the chrome pieces the style owns. Behavior of each is specified in
 - Diagram text is the UI sans stack at 14px, a little smaller than body copy,
   matching the fenced code block it replaces.
 - While the render is in flight, and when mermaid cannot parse the source, the
-  block is an ordinary fenced code block, not a placeholder surface.
+  block is an ordinary fenced code block, not a placeholder surface. Mermaid's
+  error diagram is suppressed; the failure is logged.
 
 ### Activity lines
 
@@ -226,18 +227,20 @@ text. Not cards. Tool **results** that need inspection become tool cards
   leaves the ring still.
 - Section labels (Recents): uppercase or small caps optional; prefer plain muted
   label text over heavy chrome.
+- **Show more** sits under the list in muted 13px text. The first paint is five
+  sessions; each click adds ten.
 
 ### Composer
 
 - Tall rounded field on `--bg-surface`, placeholder `--ink-faint`.
-- Send control on the right inside the field (arrow / return affordance). While a turn is running, that control is a stop square in the same slot.
+- Send control on the right inside the field (arrow / return affordance). While a turn is running, that control is a filled circle with a rounded square cut out of it, in the same slot.
 - Below the field: mode on the left, and model, effort, and the context meter on the right. Controls are quiet
-  text + chevron, not colored pills. The meter is a 14px ring. The track is
+  text + a Lucide `ChevronDown`, not colored pills. The meter is a 14px ring. The track is
   `--ink-faint` and the filled share is `--ink-muted`. Clicking it opens a
   popover. No attach control in the shell mock.
 - An empty chat lifts that same field into one bordered card under the greeting.
-  The model row sits inside the card. The greeting is the workspaces title
-  type, with no mark beside it.
+  The model row sits inside the card, without the context meter. The greeting is
+  the workspaces title type, with no mark beside it.
 
 ### Settings
 
@@ -252,7 +255,8 @@ segmented control. and a separate card per provider. OpenCode
 holds the API key and base URL. **Permissions** is a single card: switches for
 web search approval and web fetch approval, both on by default. **General** is a
 single card: the workspace, a language-server switch, then max iterations and
-subagent max iterations, a subagent timeout, and a tool timeout. Use the same tokens;
+subagent max iterations, a subagent timeout, and a tool timeout. **Audit log**
+lists errors from this run of the app, newest first. It is not saved. Use the same tokens;
 active nav is `--bg-surface-active`, the selected effort pill may use `--accent`.
 Text fields, including secrets, sit one step above the card (`--bg-surface-hover`)
 with a `--bg-surface-active` border. Focus moves that border to `--ink-faint`.
@@ -267,7 +271,7 @@ The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
 Both are styled with these tokens. The active workspace uses an open folder. The others use a closed folder. The closed control matches the sidebar, with a
 chevron. A border appears on hover and while the list is open. The open list is the darker canvas color, with a stronger
 edge. The chevron opens the list of workspaces, plus add. Add opens the system folder dialog in the
-desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses the compose mark, a rounded square with a pencil. Workspaces sits under the dropdown and opens the full list. Settings sits at the bottom of the sidebar.
+desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses Lucide `SquarePen`. Workspaces sits under the dropdown and opens the full list. Settings sits at the bottom of the sidebar.
 
 ### Workspaces page
 
@@ -304,12 +308,16 @@ chat.
 Do not paste diffs into the transcript. The review screen owns the tree and
 the hunks ([code-review.md](../review/code-review.md)).
 
+## Icons
+
+Interface icons come from [Lucide](https://lucide.dev) (`lucide-react`). Pick an existing Lucide icon instead of drawing a new SVG. Size and stroke stay with the control: sidebar nav is 18px at stroke 1.75, and smaller chrome is 12–14px. Color is `currentColor`, so the icon inherits the text token. The context meter is a usage ring, and Mermaid output is a diagram. Neither is an icon.
+
 ## CSS architecture (when implementing)
 
 - Put tokens in `src/styles/tokens.css` (or `:root` in `global.css` until a
   split is needed).
 - One CSS Module per component / region (`Sidebar`, `Transcript`, `Composer`).
-- Do not add Tailwind or a component kit. Tokens + modules only.
+- Do not add Tailwind or a component kit. Tokens + modules only. Icons are Lucide, not a second icon set.
 - Delete a module when its component goes away.
 
 ## Open decisions

@@ -43,6 +43,7 @@ status of 400, 404, 409, or 500.
 | `PUT` | `/api/v1/workspaces/{id}/index` | Pause or resume the index (`state`: `paused` / `running`). |
 | `GET` | `/api/v1/workspaces/{id}/docs` | The markdown files in the workspace, gitignore respected. |
 | `GET` | `/api/v1/workspaces/{id}/docs/{path}` | One markdown file's text. |
+| `GET` | `/api/v1/workspaces/{id}/docs/search` | Markdown search. `engine` is `semantic` (default, the index) or `ripgrep` (a literal scan that does not start the index). |
 
 ## Chat sessions
 

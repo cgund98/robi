@@ -1,3 +1,5 @@
+import { memo, useEffect, useRef, useState } from 'react'
+import { BookOpen, LayoutGrid, Settings, SquarePen } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
@@ -19,6 +21,72 @@ type SidebarProps = {
   onDeleteSession: (id: string) => void
 }
 
+const SessionRow = memo(function SessionRow({
+  id,
+  title,
+  active,
+  running,
+  disabled,
+  onSelect,
+  onRename,
+  onDelete
+}: {
+  id: string
+  title: string
+  active: boolean
+  running: boolean
+  disabled: boolean
+  onSelect: (id: string) => void
+  onRename: (id: string) => void
+  onDelete: (id: string) => void
+}) {
+  return (
+    <li className={styles.sessionRow}>
+      <button
+        type="button"
+        className={`${styles.sessionButton} ${active ? styles.sessionButtonActive : ''}`}
+        onClick={() => onSelect(id)}
+        title={running ? `${title} (running)` : title}
+        aria-label={running ? `${title}, agent running` : undefined}
+        disabled={disabled}
+      >
+        {running ? <RunningSpinner /> : null}
+        <span className={styles.sessionTitle}>{title}</span>
+      </button>
+      <div className={styles.sessionActions}>
+        <button
+          type="button"
+          className={styles.sessionAction}
+          onClick={() => onRename(id)}
+          disabled={disabled}
+          title="Rename"
+          aria-label={`Rename ${title}`}
+        >
+          ✎
+        </button>
+        <button
+          type="button"
+          className={styles.sessionAction}
+          onClick={() => onDelete(id)}
+          disabled={disabled}
+          title="Delete"
+          aria-label={`Delete ${title}`}
+        >
+          ×
+        </button>
+      </div>
+    </li>
+  )
+})
+
+/** The ring is its own render. A row update must not reconcile it, or the spin restarts. */
+const RunningSpinner = memo(function RunningSpinner() {
+  return <span className={styles.spinner} aria-hidden />
+})
+
+const INITIAL_VISIBLE = 5
+const SHOW_MORE_STEP = 10
+
 export function Sidebar({
   sessions,
   activeSessionId,
@@ -32,6 +100,25 @@ export function Sidebar({
   onDeleteSession
 }: SidebarProps) {
   const navigate = useNavigate()
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
+  const newestId = sessions[0]?.id
+  const previousNewestId = useRef(newestId)
+
+  useEffect(() => {
+    if (previousNewestId.current === newestId) {
+      return
+    }
+    const previous = previousNewestId.current
+    previousNewestId.current = newestId
+    if (previous !== undefined && !sessions.some((session) => session.id === previous)) {
+      setVisibleCount(INITIAL_VISIBLE)
+    }
+  }, [newestId, sessions])
+
+  const activeIndex = sessions.findIndex((session) => session.id === activeSessionId)
+  const shownCount = Math.max(visibleCount, activeIndex + 1)
+  const visibleSessions = sessions.slice(0, shownCount)
+  const hiddenCount = sessions.length - visibleSessions.length
 
   return (
     <aside className={styles.sidebar}>
@@ -45,19 +132,7 @@ export function Sidebar({
         aria-current={draftSelected ? 'page' : undefined}
       >
         <span className={styles.navIcon} aria-hidden>
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
-          </svg>
+          <SquarePen size={18} strokeWidth={1.75} />
         </span>
         New chat
       </button>
@@ -69,21 +144,7 @@ export function Sidebar({
         onClick={() => navigate('/workspaces')}
       >
         <span className={styles.navIcon} aria-hidden>
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="3" width="7" height="7" rx="1.5" />
-            <rect x="14" y="3" width="7" height="7" rx="1.5" />
-            <rect x="3" y="14" width="7" height="7" rx="1.5" />
-            <rect x="14" y="14" width="7" height="7" rx="1.5" />
-          </svg>
+          <LayoutGrid size={18} strokeWidth={1.75} />
         </span>
         Workspaces
       </button>
@@ -96,19 +157,7 @@ export function Sidebar({
         aria-current={docsSelected ? 'page' : undefined}
       >
         <span className={styles.navIcon} aria-hidden>
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 7v14" />
-            <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
-          </svg>
+          <BookOpen size={18} strokeWidth={1.75} />
         </span>
         Documentation
       </button>
@@ -116,49 +165,30 @@ export function Sidebar({
       <div className={styles.section}>
         <div className={styles.sectionLabel}>Recents</div>
         <ul className={styles.sessionList}>
-          {sessions.map((session) => {
-            const active = session.id === activeSessionId
-            const title = sessionDisplayTitle(session)
-            const running = runningSessionIds?.has(session.id) ?? false
-            return (
-              <li key={session.id} className={styles.sessionRow}>
-                <button
-                  type="button"
-                  className={`${styles.sessionButton} ${active ? styles.sessionButtonActive : ''}`}
-                  onClick={() => onSelectSession(session.id)}
-                  title={running ? `${title} (running)` : title}
-                  aria-label={running ? `${title}, agent running` : undefined}
-                  disabled={disabled}
-                >
-                  {running ? <span className={styles.spinner} aria-hidden /> : null}
-                  <span className={styles.sessionTitle}>{title}</span>
-                </button>
-                <div className={styles.sessionActions}>
-                  <button
-                    type="button"
-                    className={styles.sessionAction}
-                    onClick={() => onRenameSession(session.id)}
-                    disabled={disabled}
-                    title="Rename"
-                    aria-label={`Rename ${title}`}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.sessionAction}
-                    onClick={() => onDeleteSession(session.id)}
-                    disabled={disabled}
-                    title="Delete"
-                    aria-label={`Delete ${title}`}
-                  >
-                    ×
-                  </button>
-                </div>
-              </li>
-            )
-          })}
+          {visibleSessions.map((session) => (
+            <SessionRow
+              key={session.id}
+              id={session.id}
+              title={sessionDisplayTitle(session)}
+              active={session.id === activeSessionId}
+              running={runningSessionIds?.has(session.id) ?? false}
+              disabled={disabled}
+              onSelect={onSelectSession}
+              onRename={onRenameSession}
+              onDelete={onDeleteSession}
+            />
+          ))}
         </ul>
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            className={styles.showMore}
+            onClick={() => setVisibleCount(shownCount + SHOW_MORE_STEP)}
+            disabled={disabled}
+          >
+            Show more
+          </button>
+        ) : null}
       </div>
 
       <div className={styles.footer}>
@@ -170,19 +200,7 @@ export function Sidebar({
           onClick={() => navigate('/settings/providers')}
         >
           <span className={styles.navIcon} aria-hidden>
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
-              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
-            </svg>
+            <Settings size={18} strokeWidth={1.75} />
           </span>
           Settings
         </button>

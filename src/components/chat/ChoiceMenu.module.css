@@ -5,8 +5,14 @@
 }
 
 .chevron {
+  display: grid;
+  place-items: center;
   margin-left: 4px;
   color: var(--ink-faint);
+}
+
+:global([data-state='open']) > .chevron {
+  transform: rotate(180deg);
 }
 
 .panel {

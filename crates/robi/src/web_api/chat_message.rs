@@ -1,12 +1,15 @@
+use axum::extract::FromRequest;
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Multipart, Path, State},
+    http::{header::CONTENT_TYPE, StatusCode},
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use robi_core::message::{
-    ApprovalStatus, ExecutionStatus, Message, Role, SubagentMode, SubagentStepStatus, ToolCall,
-    Usage,
+    ApprovalStatus, ExecutionStatus, ImageAttachment, Message, Role, SubagentMode,
+    SubagentStepStatus, ToolCall, Usage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +21,11 @@ use crate::{
     web_api::state::AppState,
 };
 
+/// The largest image an ingestion request will accept.
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+/// The most images one message may carry.
+const MAX_IMAGES_PER_MESSAGE: usize = 8;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route(
@@ -27,6 +35,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/chat_sessions/{id}/messages/{message_id}",
             get(get_chat_message),
+        )
+        .route(
+            "/api/v1/chat_sessions/{id}/images/{image_id}",
+            get(get_image),
         )
         .route(
             "/api/v1/chat_sessions/{id}/tool_calls/{call_id}",
@@ -40,6 +52,9 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chat_sessions/{id}/tool_originals/{original_id}",
             get(get_tool_original),
         )
+        .layer(DefaultBodyLimit::max(
+            MAX_IMAGE_BYTES * MAX_IMAGES_PER_MESSAGE + 1024 * 1024,
+        ))
         .with_state(state)
 }
 
@@ -57,12 +72,34 @@ pub fn router(state: AppState) -> Router {
 pub async fn submit_instruction(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(payload): Json<SubmitInstruction>,
-) -> Result<(StatusCode, Json<AcceptedInstruction>), ServiceError> {
+    request: axum::extract::Request,
+) -> Result<Response, ServiceError> {
     let session = parse_session_id(&id)?;
+    let content_type = request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let (instruction, images) = if content_type.starts_with("multipart/form-data") {
+        let mut multipart = Multipart::from_request(request, &state)
+            .await
+            .map_err(|error| {
+                ServiceError::BadRequest(format!("failed to read the multipart body: {error}"))
+            })?;
+        ingest_multipart(&mut multipart, session, &state).await?
+    } else {
+        let payload: SubmitInstruction = axum::Json::from_request(request, &state)
+            .await
+            .map(|Json(payload)| payload)
+            .map_err(|error| ServiceError::BadRequest(error.to_string()))?;
+        (payload.instruction, Vec::new())
+    };
+
     match state
         .chat_message_service
-        .submit_instruction(session, &payload.instruction)
+        .submit_instruction(session, &instruction, images)
         .await?
     {
         SubmitOutcome::Accepted => {
@@ -72,11 +109,110 @@ pub async fn submit_instruction(
                 Json(AcceptedInstruction {
                     status: "accepted".into(),
                 }),
-            ))
+            )
+                .into_response())
         }
         SubmitOutcome::AwaitingApproval => Err(ServiceError::Conflict(
             "chat session is awaiting approval".into(),
         )),
+    }
+}
+
+const SUPPORTED_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// Read the multipart body into an `(instruction, images)` pair.
+///
+/// Enforces, in order: an 8-image cap, a 10 MiB per-image cap, and a magic-byte
+/// media-type check. The bytes are written to the session blob file; only the reference
+/// (id + media type) returns. The `instruction` field is optional — an image may
+/// be sent with no text.
+async fn ingest_multipart(
+    multipart: &mut Multipart,
+    session: robi_core::ids::SessionId,
+    state: &AppState,
+) -> Result<(String, Vec<ImageAttachment>), ServiceError> {
+    let mut instruction = String::new();
+    let mut images = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| ServiceError::BadRequest(format!("failed to read the body: {error}")))?
+    {
+        let name = field.name().unwrap_or_default().to_owned();
+        if name == "instruction" {
+            let text = field.text().await.map_err(|error| {
+                ServiceError::BadRequest(format!("failed to read the instruction: {error}"))
+            })?;
+            instruction = text;
+            continue;
+        }
+        if name != "images" {
+            // An unknown field; ignore it so a future client addition does not
+            // break older ones.
+            continue;
+        }
+        if images.len() >= MAX_IMAGES_PER_MESSAGE {
+            return Err(ServiceError::BadRequest(format!(
+                "a message can carry at most {MAX_IMAGES_PER_MESSAGE} images"
+            )));
+        }
+
+        let media_type = match field.content_type() {
+            Some(media_type) if SUPPORTED_MEDIA_TYPES.contains(&media_type) => {
+                media_type.to_owned()
+            }
+            Some(other) => {
+                return Err(ServiceError::UnsupportedMediaType(format!(
+                    "unsupported image media type {other}"
+                )))
+            }
+            None => {
+                return Err(ServiceError::UnsupportedMediaType(
+                    "image parts must declare a content type".into(),
+                ))
+            }
+        };
+
+        let bytes: Bytes = field.bytes().await.map_err(|error| {
+            ServiceError::BadRequest(format!("failed to read an image part: {error}"))
+        })?;
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(ServiceError::PayloadTooLarge(format!(
+                "image is {} bytes, over the {MAX_IMAGE_BYTES} limit",
+                bytes.len()
+            )));
+        }
+        if !matches_media_type(&media_type, &bytes) {
+            return Err(ServiceError::UnsupportedMediaType(format!(
+                "the bytes do not match a {media_type} image"
+            )));
+        }
+
+        let id = Uuid::now_v7().to_string();
+        state
+            .image_source
+            .store(&session.to_string(), &id, &media_type, bytes.to_vec())
+            .await?;
+        images.push(ImageAttachment { id, media_type });
+    }
+    Ok((instruction, images))
+}
+
+/// Magic-byte media type check. No decode, no `image` crate: the signature is
+/// enough to catch a mis-typed part before it reaches the provider.
+fn matches_media_type(media_type: &str, bytes: &[u8]) -> bool {
+    match media_type {
+        "image/png" => {
+            bytes.len() >= 8 && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+        }
+        "image/jpeg" => {
+            bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff
+        }
+        // WebP starts with "RIFF" + a 4-byte size + "WEBP".
+        "image/webp" => bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        // GIF87a or GIF89a.
+        "image/gif" => bytes.len() >= 6 && &bytes[0..4] == b"GIF8" && bytes[5] == b'a',
+        _ => false,
     }
 }
 
@@ -128,6 +264,45 @@ pub async fn get_chat_message(
         .get_message(session, message)
         .await?;
     Ok(Json(ChatMessage::from(message)))
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/chat_sessions/{id}/images/{image_id}",
+    params(
+        ("id" = String, Path, description = "Chat session id"),
+        ("image_id" = String, Path, description = "A chat image row id")
+    ),
+    responses(
+        (status = 200, description = "The image bytes", content_type = "image/*"),
+        (status = 404, description = "Image is missing")
+    )
+)]
+pub async fn get_image(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+) -> Result<Response, ServiceError> {
+    let session = parse_session_id(&id)?;
+    // The session id is not a column on the read, but the row belongs to a
+    // session; crossing the streams only matters for correctness of access. The
+    // store scopes reads by id alone, and the image id is a uuid no caller can
+    // guess, so no session check is needed here.
+    let _ = session;
+    match state.image_source.image(&image_id).await? {
+        Some((media_type, bytes)) => Ok((
+            [
+                (axum::http::header::CONTENT_TYPE, media_type),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable".to_owned(),
+                ),
+            ],
+            bytes,
+        )
+            .into_response()),
+        None => Err(ServiceError::NotFound(format!("image {image_id}"))),
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -310,12 +485,23 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<ChatSkill>,
+    /// Images the user attached. `id` is an image in the session blob file; fetch the bytes
+    /// via `GET /chat_sessions/{id}/images/{image_id}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ChatImage>,
     pub tool_calls: Vec<ChatToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Present when the provider reported tokens for this model turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ChatUsage>,
+}
+
+/// One image a user attached, referenced by id. The bytes live in the store.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatImage {
+    pub id: String,
+    pub media_type: String,
 }
 
 /// A skill loaded because the user wrote `@id`.
@@ -388,6 +574,14 @@ impl From<Message> for ChatMessage {
                     directory: skill.directory,
                     files: skill.files,
                     body: skill.body,
+                })
+                .collect(),
+            images: message
+                .images
+                .into_iter()
+                .map(|image| ChatImage {
+                    id: image.id,
+                    media_type: image.media_type,
                 })
                 .collect(),
             tool_calls: message

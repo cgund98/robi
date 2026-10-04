@@ -330,6 +330,7 @@ mod tests {
             &self,
             _session: SessionId,
             _instruction: String,
+            _images: Vec<robi_core::message::ImageAttachment>,
         ) -> Result<SubmitOutcome, ServiceError> {
             unreachable!("events stream does not submit")
         }
@@ -388,11 +389,13 @@ mod tests {
             repository: Arc::new(Unused),
             workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
             events: None,
+            plan_cleaner: None,
         });
         let settings: Arc<dyn SettingsStore> = Arc::new(MemorySettingsStore::new());
         AppState {
             workspace_service: Arc::new(crate::domain::workspace::service::WorkspaceService {
                 repository: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
+                asset_cleaner: None,
             }),
             chat_session_service: Arc::clone(&sessions),
             chat_message_service: Arc::new(ChatMessageService {
@@ -412,6 +415,7 @@ mod tests {
             )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
+            image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
         }
     }
 

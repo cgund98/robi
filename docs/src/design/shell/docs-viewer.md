@@ -70,12 +70,111 @@ and code blocks readable when the window is narrow; the pane scrolls
 horizontally rather than crushing the text. At wide sizes the sheet stays
 centered and does not stretch to a hard-to-read line length.
 
+The pane is the only scroller on that side of the screen. It is
+`position: relative`, so the hidden source label on a diagram stays inside
+it and does not extend the window. The screen title stays in the window
+bar, which sits above this column, so this column does not clip it.
+
 The selected document renders with the same `AssistantMarkdown` component as
 assistant text, in its `document` mode: GFM, headings stepped down by level,
-tables, and fenced `mermaid` diagrams. No document opens on page load: the
+tables, and fenced `mermaid` diagrams. A relative link whose path ends in
+`.md` or `.markdown` resolves against the open file and selects that page in
+the viewer. A link that would leave the workspace stays a link. Absolute
+URLs and in-page fragments still open as links. No document opens on page load: the
 viewer starts with a centered **Select a document to open it.**, and the tree
 waits for a click. Choosing another session, or **New chat**, leaves the
 viewer for the chat.
+
+**Each open page is a history entry.** Selecting a file, a search hit, or a
+document link sets `file` on `#/docs` and pushes a history entry. The side
+mouse buttons walk that history: button 3 goes back, button 4 goes forward,
+through pages and then through the routes that led here. The page remembered
+from the last visit is written with replace, so returning to the viewer does
+not add an extra step. Backing up to an entry with no `file` shows the empty
+prompt again.
+
+## Search
+
+A query field sits in the screen header, with a
+**Semantic** / **Text** control. The search starts half a second after the
+last keystroke. Another keystroke, or a change of engine, clears that wait
+and aborts a request already in flight, so only one search is open and only
+the latest text is sent. Switching engines searches the current text
+immediately. While that pause or the request is still open, a spinner sits
+in the field and the results pane says **Searching…**. Ranked hits then
+replace the tree; the viewer on the right still shows whichever document is
+open, and clicking a hit opens it. Clearing the field brings the tree back.
+
+**One route, two engines.** `GET
+/api/v1/workspaces/{id}/docs/search?q={query}&limit={n}&engine={engine}`
+picks the engine. `engine` defaults to `semantic`. `ripgrep` is the Text
+control. Anything else is `400`. `limit` defaults to 10 and may not exceed
+20; a blank or missing `q`, or a `limit` outside 1 to 20, is `400`.
+
+**Semantic** runs the fused vector-plus-FTS query described in
+[semantic-search.md](../intelligence/semantic-search.md) and keeps only
+markdown hits. The filter runs after fusion, so a code hit cannot hold a
+ranked slot.
+
+**Text** is a case-insensitive literal scan of markdown. It runs `rg` when
+that binary is on `PATH` (`--fixed-strings`, `--ignore-case`, markdown globs, ripgrep's own
+hidden and gitignore defaults). If `rg` is missing or fails to launch, the
+handler scans the same markdown set the tree lists. It does not start the
+index. Each file appears once, at its first matching line, and files are
+ordered by how many lines matched. `start_line` and `end_line` are that
+line, `title` is the file name, `snippet` is the line cut at 500 bytes,
+and `score` is the match count. The response still includes `engine` and
+`index`, and the screen does not treat `index` as a partial-result notice
+for this engine.
+
+**The response says whether it is complete.** Each response carries the
+index status its hits were taken from:
+
+```json
+{
+  "query": "how do sessions pause",
+  "engine": "semantic",
+  "index": { "state": "ready", "files_done": 120, "files_total": 120, "error": null },
+  "hits": [
+    {
+      "path": "docs/src/design/core/agent-loop.md",
+      "start_line": 40,
+      "end_line": 88,
+      "title": "The paused turn",
+      "snippet": "The invariant the whole design rests on…",
+      "score": 0.0322
+    }
+  ]
+}
+```
+
+For a semantic hit, `title` is the section's heading chain (`Install.Overview`),
+`snippet` is the chunk's opening cut at 500 bytes on a character boundary, and
+`score` is the fusion score. A state other than `ready` means the corpus was
+incomplete, so the hits may be too, and the screen says so above the results.
+That notice is only for the semantic engine:
+
+| `state` | Notice |
+|---|---|
+| `indexing` | Indexing `files_done`/`files_total` — results may be incomplete |
+| `downloading` | Preparing search… |
+| `paused` | Search index paused, with **Resume** |
+| `failed` | Search index failed, with **Resume** |
+
+**The first query starts the index.** The request holds a lease, so the scan
+begins if no chat session has one, and the hub keeps the task for a 60-second
+linger after the request ends. Until the scan catches up the state is
+`indexing`, the hits are partial, and that is the honest answer rather than
+an error.
+
+**While a notice is up, the screen polls.** The event stream's index frames
+follow the session's event stream, which a docs visit does not open, so the
+screen `GET`s `/api/v1/workspaces/{id}/index` every 2 seconds while the state
+is not `ready` and re-runs the search when the state changes. That keeps the
+counts ticking and swaps in fuller results the moment the scan finishes.
+`paused` and `failed` wait for **Resume** instead: it calls
+`PUT /api/v1/workspaces/{id}/index` with `running`, and the next poll picks
+the scan up. `ready` draws no notice and stops the poll.
 
 ## Rejected alternatives
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 
 import { useIndexStore } from '../../state/indexStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
@@ -41,7 +41,7 @@ export function IndexStatusLine() {
   return (
     <>
       <div className={styles.indexLine} title={title} aria-busy={pending ? true : undefined}>
-        {busy || pending ? <span className={styles.spinner} aria-hidden /> : null}
+        {busy || pending ? <IndexSpinner /> : null}
         <span className={styles.indexText}>{label}</span>
         <button
           type="button"
@@ -58,6 +58,10 @@ export function IndexStatusLine() {
     </>
   )
 }
+
+const IndexSpinner = memo(function IndexSpinner() {
+  return <span className={styles.spinner} aria-hidden />
+})
 
 function lineLabel(state: string, done: number, total: number): string {
   switch (state) {

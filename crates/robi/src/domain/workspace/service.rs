@@ -5,6 +5,7 @@ use robi_core::ids::WorkspaceId;
 use crate::domain::{
     error::ServiceError,
     workspace::{
+        assets::WorkspaceAssetCleaner,
         model::{OpenedWorkspace, Workspace},
         repo::WorkspaceRepository,
     },
@@ -12,6 +13,10 @@ use crate::domain::{
 
 pub struct WorkspaceService {
     pub repository: Arc<dyn WorkspaceRepository>,
+    /// Removes derived files such as the semantic index. Absent in tests.
+    /// Best effort: a failure is logged and the delete still succeeds, because
+    /// the row is already gone.
+    pub asset_cleaner: Option<Arc<dyn WorkspaceAssetCleaner>>,
 }
 
 impl WorkspaceService {
@@ -63,7 +68,13 @@ impl WorkspaceService {
     }
 
     pub async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError> {
-        self.repository.delete_workspace(id).await
+        self.repository.delete_workspace(id).await?;
+        if let Some(cleaner) = &self.asset_cleaner {
+            if let Err(err) = cleaner.remove_workspace_assets(id).await {
+                tracing::warn!(workspace = %id, %err, "failed to remove workspace assets");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -86,6 +97,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
+    use crate::domain::workspace::assets::WorkspaceAssetCleaner;
 
     struct FakeRepo {
         canonical: Mutex<HashMap<String, Result<String, ServiceError>>>,
@@ -204,7 +216,10 @@ mod tests {
     }
 
     fn service(repo: Arc<FakeRepo>) -> WorkspaceService {
-        WorkspaceService { repository: repo }
+        WorkspaceService {
+            repository: repo,
+            asset_cleaner: None,
+        }
     }
 
     #[tokio::test]
@@ -313,6 +328,77 @@ mod tests {
         );
     }
 
+    struct FakeCleaner {
+        removed: Mutex<Vec<WorkspaceId>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl WorkspaceAssetCleaner for FakeCleaner {
+        async fn remove_workspace_assets(&self, id: WorkspaceId) -> Result<(), String> {
+            self.removed.lock().expect("cleaner").push(id);
+            if self.fail {
+                return Err("cleaner failed".into());
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_removes_derived_assets() {
+        let repo = Arc::new(FakeRepo::new());
+        let opened = service(Arc::clone(&repo))
+            .open_workspace("/work/robi")
+            .await
+            .unwrap();
+        let cleaner = Arc::new(FakeCleaner {
+            removed: Mutex::new(Vec::new()),
+            fail: false,
+        });
+        let service = WorkspaceService {
+            repository: repo,
+            asset_cleaner: Some(cleaner.clone()),
+        };
+        service.delete_workspace(opened.workspace.id).await.unwrap();
+        assert_eq!(
+            cleaner.removed.lock().unwrap().as_slice(),
+            &[opened.workspace.id]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_succeeds_when_asset_cleanup_fails() {
+        let repo = Arc::new(FakeRepo::new());
+        let opened = service(Arc::clone(&repo))
+            .open_workspace("/work/robi")
+            .await
+            .unwrap();
+        let service = WorkspaceService {
+            repository: repo,
+            asset_cleaner: Some(Arc::new(FakeCleaner {
+                removed: Mutex::new(Vec::new()),
+                fail: true,
+            })),
+        };
+        service.delete_workspace(opened.workspace.id).await.unwrap();
+        assert!(service.get_workspace(opened.workspace.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_skips_assets_when_the_row_is_missing() {
+        let cleaner = Arc::new(FakeCleaner {
+            removed: Mutex::new(Vec::new()),
+            fail: false,
+        });
+        let service = WorkspaceService {
+            repository: Arc::new(FakeRepo::new()),
+            asset_cleaner: Some(cleaner.clone()),
+        };
+        let id = WorkspaceId::new();
+        assert!(service.delete_workspace(id).await.is_err());
+        assert!(cleaner.removed.lock().unwrap().is_empty());
+    }
+
     /// The pre-check misses a row that insert then rejects. The follow-up read
     /// returns that row, so two openers still share one workspace.
     struct RaceRepo {
@@ -382,6 +468,7 @@ mod tests {
                 workspace: workspace.clone(),
                 gets: Mutex::new(0),
             }),
+            asset_cleaner: None,
         };
         let opened = service.open_workspace("/work/robi").await.unwrap();
         assert!(!opened.created);

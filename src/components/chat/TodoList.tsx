@@ -1,3 +1,5 @@
+import { CircleCheck } from 'lucide-react'
+
 import type { PlanTodo } from './toolCallView'
 import type { FinishedTodo } from './todoProgress'
 import styles from './TodoList.module.css'
@@ -54,17 +56,5 @@ function DoneMark({ status }: { status: FinishedTodo['status'] }) {
   if (status === 'canceled') {
     return <span className={styles.mark} data-status="canceled" aria-hidden />
   }
-  return (
-    <svg className={styles.check} viewBox="0 0 16 16" aria-hidden>
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M5.2 8.2 7.1 10.1 10.8 6.2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
+  return <CircleCheck className={styles.check} size={14} strokeWidth={1.4} aria-hidden />
 }

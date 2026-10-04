@@ -23,6 +23,12 @@ pub struct ModelInfo {
     pub max_output: u64,
     pub supports_tools: bool,
     pub supports_reasoning: bool,
+    /// Whether the model accepts image input. Permissive by default: a model
+    /// whose snapshot does not state the flag is assumed capable, so a missing
+    /// flag never blocks a working model — the provider's 400 is the fallback.
+    /// The vendored table sets it explicitly on every row so a bad regeneration
+    /// fails the snapshot test rather than silently taking a guess.
+    pub supports_vision: bool,
 }
 
 /// Every model one endpoint serves.
@@ -93,6 +99,27 @@ mod tests {
             "the catalog lists models without tool support: {tool_less:?}"
         );
         assert_eq!(catalog.tool_capable().count(), catalog.len());
+    }
+
+    #[test]
+    fn every_row_states_whether_it_accepts_images() {
+        // D13: vision is a real capability, and gating happens in the adapter at
+        // request build. The generator fills `supports_vision` on every row, so a
+        // row that somehow lost the flag would be a generator bug a regeneration
+        // would have to make deliberately. Pin the count so the permissive default
+        // cannot change by accident: if a regeneration flips a row, the reviewer
+        // sees the count and the table move together.
+        let catalog = ModelCatalog::opencode_go();
+        assert_eq!(catalog.len(), 33);
+        assert_eq!(
+            catalog
+                .models()
+                .iter()
+                .filter(|m| m.supports_vision)
+                .count(),
+            catalog.len(),
+            "every vendored row must state whether it accepts image input"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod config;
 pub mod error;
 pub mod factory;
+pub mod images;
 pub mod openai;
 pub mod retry;
 
@@ -16,4 +17,5 @@ pub use catalog::{ModelCatalog, ModelInfo};
 pub use config::{ApiKey, ModelId, ProviderId, ProviderSettings, ReasoningEffort};
 pub use error::ProviderError;
 pub use factory::build_model;
+pub use images::{ImageSource, ImageStore};
 pub use retry::RetryPolicy;

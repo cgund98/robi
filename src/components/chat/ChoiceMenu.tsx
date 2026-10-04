@@ -1,4 +1,5 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import { ChevronDown } from 'lucide-react'
 import type { FocusEvent } from 'react'
 
 import styles from './ChoiceMenu.module.css'
@@ -56,7 +57,7 @@ export function ChoiceMenu({
       <DropdownMenu.Trigger className={triggerClassName} aria-label={ariaLabel}>
         <span className={styles.triggerLabel}>{label}</span>
         <span className={styles.chevron} aria-hidden>
-          ▾
+          <ChevronDown size={12} strokeWidth={1.5} />
         </span>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>

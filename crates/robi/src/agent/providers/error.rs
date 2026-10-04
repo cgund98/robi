@@ -37,6 +37,12 @@ pub enum ProviderError {
     #[error("the provider closed the stream before finishing the message")]
     StreamClosed,
 
+    #[error("image {id} is missing from the store")]
+    MissingImage { id: String },
+
+    #[error("model '{model}' does not accept image input")]
+    NoVision { model: String },
+
     #[error("the request was cancelled")]
     Cancelled,
 }

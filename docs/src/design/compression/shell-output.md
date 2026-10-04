@@ -357,32 +357,15 @@ sees today. A missing row shows the transcript text. The turn does not
 fail. Restart loads the transcript as stored, so a provider prompt-cache
 prefix is not rewritten, and `retrieve` still resolves the id.
 
-`robi-core` records the id on the tool call. The bytes go in the session
-database:
-
-```sql
-CREATE TABLE tool_originals (
-  id TEXT PRIMARY KEY,
-  chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  tool_call_id TEXT NOT NULL,
-  sha256 TEXT NOT NULL,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE INDEX tool_originals_session ON tool_originals (chat_session_id, sha256);
-```
+`robi-core` records the id on the tool call. The bytes go in that session's
+`~/.robi/sessions/<session_id>/blobs.redb`, table `originals`, keyed by `id`.
+`originals_by_sha` keys `{sha256}/{id}` so the 16-hex check digit still
+resolves. Deleting the session deletes the directory. The body is not a row
+in the shared SQLite file, so a large original does not hold that writer lock.
 
 `id` is a UUIDv7, the same shape as a message id. `sha256` is the hex
 SHA-256 of `body`. `body` is the JSON above, not a second compression.
 `tool_call_id` is the call whose result was replaced.
-
-The logical key-value record, which is what a `redb` table would have been,
-is `(session_id, id) -> body`. The session database is that map. A `redb`
-file at `~/.robi/logs.redb`, keyed by `session_id || id` with the body as
-the value, duplicates a database the process already opens and does not
-cascade when the session row is deleted. `sled` is the same split. Neither
-crate is added.
 
 ### The marker the model sees
 
@@ -515,9 +498,6 @@ phase 1.
   lines.
 - **Inventing `Passed` and `Failed` counts.** A wrong parse of the summary
   is worse than copying the real `test result:` line from the tail.
-- **Storing the body in `redb` or `sled`.** The record is
-  `(session, id) -> body`. The session database already cascades that on
-  delete. A second file does not.
 - **A `retrieve_raw_output` tool.** It is `retrieve` with an id. A second
   name is a second schema for one read.
 - **Putting the original only in the transcript, and also sending it to

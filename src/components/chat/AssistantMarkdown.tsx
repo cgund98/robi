@@ -1,7 +1,8 @@
-import { Children, isValidElement, memo, type ReactNode } from 'react'
+import { Children, isValidElement, memo, useMemo, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+import { resolveMarkdownLink } from '../docs/docLink'
 import { MermaidDiagram } from './MermaidDiagram'
 import styles from './AssistantMarkdown.module.css'
 
@@ -9,11 +10,41 @@ type AssistantMarkdownProps = {
   text: string
   /** Document headings step down by level. Chat keeps one size. */
   document?: boolean
+  /**
+   * When set, a relative markdown link opens that workspace path instead of
+   * a new tab. `docPath` is the open file the link is resolved against.
+   */
+  docPath?: string
+  onDocLink?: (path: string) => void
 }
 
 const remarkPlugins = [remarkGfm]
 
-function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+function MarkdownLink({
+  href,
+  children,
+  docPath,
+  onDocLink
+}: {
+  href?: string
+  children?: ReactNode
+  docPath?: string
+  onDocLink?: (path: string) => void
+}) {
+  const target = href && docPath && onDocLink ? resolveMarkdownLink(docPath, href) : null
+  if (target && onDocLink) {
+    return (
+      <a
+        href={href}
+        onClick={(event) => {
+          event.preventDefault()
+          onDocLink(target)
+        }}
+      >
+        {children}
+      </a>
+    )
+  }
   return (
     <a href={href} target="_blank" rel="noreferrer">
       {children}
@@ -43,15 +74,24 @@ function MarkdownPre({ children }: { children?: ReactNode }) {
   return <pre>{children}</pre>
 }
 
-const components: Components = { a: MarkdownLink, code: MarkdownCode, pre: MarkdownPre }
+const components: Components = { code: MarkdownCode, pre: MarkdownPre }
 
 export const AssistantMarkdown = memo(function AssistantMarkdown({
   text,
-  document = false
+  document = false,
+  docPath,
+  onDocLink
 }: AssistantMarkdownProps) {
+  const rendered = useMemo<Components>(
+    () => ({
+      ...components,
+      a: (props) => <MarkdownLink {...props} docPath={docPath} onDocLink={onDocLink} />
+    }),
+    [docPath, onDocLink]
+  )
   return (
     <div className={document ? `${styles.markdown} ${styles.document}` : styles.markdown}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={rendered}>
         {text}
       </ReactMarkdown>
     </div>

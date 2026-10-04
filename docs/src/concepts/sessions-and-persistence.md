@@ -17,10 +17,14 @@ The tables a user should know about:
 - `workspaces` — each workspace root, plus its MCP trust hash.
 - `chat_sessions` — the title, mode, per-mode model config, path grants,
   approved MCP pairs, the plan path, and timestamps.
-- `chat_messages` — the transcript, in order.
+- `chat_messages` — the transcript, in order. A tool call's result payload is not in this row.
 - `session_file_baselines` — the file baselines that [checkpoints](../design/tools/checkpoints.md)
   and review are computed against.
-- `tool_originals` — the stored originals of compressed tool results.
+
+Tool results, the stored originals of compressed results, and image bytes live in
+`~/.robi/sessions/<session_id>/blobs.redb`, one file per session. The transcript
+records an image as an id and a media type. Deleting a session removes that
+directory.
 
 Deleting a session cascades to its messages. `last_used_at` moves when a message
 is appended; `updated_at` moves when metadata or a title changes.

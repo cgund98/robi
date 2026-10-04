@@ -2,6 +2,7 @@ import { createHashRouter, Navigate } from 'react-router-dom'
 
 import { AppLayout } from '../components/layout/AppLayout'
 import { WindowFrame } from '../components/layout/WindowFrame'
+import { AuditLogSettings } from '../pages/settings/AuditLogSettings'
 import { GeneralSettings } from '../pages/settings/GeneralSettings'
 import { McpSettings } from '../pages/settings/McpSettings'
 import { PermissionsSettings } from '../pages/settings/PermissionsSettings'
@@ -30,7 +31,8 @@ export const appRouter = createHashRouter([
           { path: 'providers', element: <ModelProvidersSettings /> },
           { path: 'mcp', element: <McpSettings /> },
           { path: 'permissions', element: <PermissionsSettings /> },
-          { path: 'general', element: <GeneralSettings /> }
+          { path: 'general', element: <GeneralSettings /> },
+          { path: 'audit', element: <AuditLogSettings /> }
         ]
       }
     ]

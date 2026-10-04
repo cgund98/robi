@@ -2,6 +2,12 @@ import { create } from 'zustand'
 
 import { focusMcp } from '../api/mcp'
 import { createWorkspace, deleteWorkspace, listWorkspaces, type Workspace } from '../api/workspaces'
+import { useErrorLog } from './errorLog'
+
+function noteError(message: string): string {
+  useErrorLog.getState().report(message, null)
+  return message
+}
 
 const ACTIVE_WORKSPACE_KEY = 'robi.activeWorkspaceId'
 
@@ -72,7 +78,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     } catch (err) {
       set({
         loaded: true,
-        error: errorText(err, 'Failed to load workspaces')
+        error: noteError(errorText(err, 'Failed to load workspaces'))
       })
     }
   },
@@ -103,7 +109,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       })
       focusOpenWorkspace(workspace.id)
     } catch (err) {
-      set({ error: errorText(err, 'Failed to add workspace') })
+      set({ error: noteError(errorText(err, 'Failed to add workspace')) })
     }
   },
 
@@ -112,7 +118,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     try {
       await deleteWorkspace(id)
     } catch (err) {
-      set({ error: errorText(err, 'Failed to remove workspace') })
+      set({ error: noteError(errorText(err, 'Failed to remove workspace')) })
       return
     }
     const workspaces = get().workspaces.filter((workspace) => workspace.id !== id)

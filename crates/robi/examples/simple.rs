@@ -27,7 +27,9 @@ use std::error::Error;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use robi::agent::providers::{build_model, ApiKey, ModelId, ProviderSettings, ReasoningEffort};
+use robi::agent::providers::{
+    build_model, ApiKey, ImageSource, ModelId, ProviderSettings, ReasoningEffort,
+};
 use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
 use robi_core::error::{StoreError, ToolError, TurnOutcome};
@@ -37,6 +39,23 @@ use robi_core::message::{Message, Role};
 use robi_core::store::MessageStore;
 use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRegistry, ToolRun};
 use tokio_util::sync::CancellationToken;
+
+/// An image source that answers "none": the entrypoint sends no images.
+struct TextOnly;
+
+#[async_trait]
+impl ImageSource for TextOnly {
+    async fn image(
+        &self,
+        _id: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, robi::agent::providers::ProviderError> {
+        Ok(None)
+    }
+}
+
+fn no_images() -> Arc<dyn ImageSource> {
+    Arc::new(TextOnly)
+}
 
 /// The system prompt this entrypoint always sends.
 ///
@@ -75,7 +94,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     tools.register(Arc::new(TwoNumberTool::addition()))?;
     tools.register(Arc::new(TwoNumberTool::multiplication()))?;
 
-    let model = build_model(settings, tools.clone())?;
+    let model = build_model(settings, tools.clone(), no_images())?;
     let store = Arc::new(MemoryStore::default());
 
     println!("tools: {:?}", tools.names());

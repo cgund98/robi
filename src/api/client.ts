@@ -68,7 +68,8 @@ async function fetchWithBase(input: RequestInfo | URL, init?: RequestInit): Prom
     cache: request.cache,
     redirect: request.redirect,
     referrer: request.referrer,
-    integrity: request.integrity
+    integrity: request.integrity,
+    signal: request.signal
   })
 }
 

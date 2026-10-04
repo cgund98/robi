@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use robi_core::ids::SessionId;
+use robi_core::ids::{SessionId, WorkspaceId};
 
 use crate::agent::providers::catalog::ModelCatalog;
 use crate::agent::providers::config::{ModelId, ReasoningEffort};
@@ -10,6 +11,7 @@ use crate::domain::{
             ChatSession, CreateChatSessionCommand, ModeOverride, ModeOverrideUpdate, ModelConfig,
             UpdateChatSessionCommand,
         },
+        plans::SessionPlanCleaner,
         repo::ChatSessionRepository,
     },
     error::ServiceError,
@@ -20,11 +22,18 @@ use crate::domain::{
 /// A chat session title longer than this is rejected before it is written.
 pub const CHAT_SESSION_TITLE_MAX_CHARS: usize = 200;
 
+/// Sessions kept per workspace when the process starts.
+pub const MAX_SESSIONS_PER_WORKSPACE: usize = 50;
+
 pub struct ChatSessionService {
     pub repository: Arc<dyn ChatSessionRepository>,
     pub workspaces: Arc<dyn WorkspaceRepository>,
     /// Publishes session create, update, and delete. Absent in tests.
     pub events: Option<Arc<EventBus>>,
+    /// Removes a session's plan files under `~/.robi/plans/<session_id>`.
+    /// Absent in tests. Best effort: a failure is logged and the delete still
+    /// succeeds, because the row is already gone.
+    pub plan_cleaner: Option<Arc<dyn SessionPlanCleaner>>,
 }
 
 impl ChatSessionService {
@@ -64,7 +73,7 @@ impl ChatSessionService {
 
     pub async fn list_chat_sessions(
         &self,
-        workspace_id: Option<robi_core::ids::WorkspaceId>,
+        workspace_id: Option<WorkspaceId>,
     ) -> Result<Vec<ChatSession>, ServiceError> {
         self.repository.list_chat_sessions(workspace_id).await
     }
@@ -130,8 +139,39 @@ impl ChatSessionService {
 
     pub async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
         self.repository.delete_chat_session(id).await?;
+        if let Some(cleaner) = &self.plan_cleaner {
+            if let Err(err) = cleaner.remove_session_plans(id).await {
+                tracing::warn!(session = %id, %err, "failed to remove session plan files");
+            }
+        }
         self.publish(EventEnvelope::session_deleted(id));
         Ok(())
+    }
+
+    /// Drop sessions past [`MAX_SESSIONS_PER_WORKSPACE`], least recently used first.
+    ///
+    /// The list is newest-first, so the tail of each workspace is the oldest.
+    /// Each removal goes through [`Self::delete_chat_session`].
+    pub async fn prune_excess_sessions(&self) -> Result<usize, ServiceError> {
+        let sessions = self.repository.list_chat_sessions(None).await?;
+        let mut by_workspace: HashMap<WorkspaceId, Vec<SessionId>> = HashMap::new();
+        for session in sessions {
+            by_workspace
+                .entry(session.workspace_id)
+                .or_default()
+                .push(session.id);
+        }
+        let mut removed = 0;
+        for ids in by_workspace.values() {
+            if ids.len() <= MAX_SESSIONS_PER_WORKSPACE {
+                continue;
+            }
+            for id in ids[MAX_SESSIONS_PER_WORKSPACE..].iter().rev() {
+                self.delete_chat_session(*id).await?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     fn publish(&self, envelope: EventEnvelope) {
@@ -261,6 +301,10 @@ mod tests {
         fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<SessionId, ChatSession>> {
             self.sessions.lock().expect("fake chat session repo lock")
         }
+
+        fn insert(&self, session: ChatSession) {
+            self.lock().insert(session.id, session);
+        }
     }
 
     #[async_trait]
@@ -370,6 +414,47 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
+            plan_cleaner: None,
+        }
+    }
+
+    /// Records the sessions it was asked to clean. `fail` flips the result.
+    struct FakeCleaner {
+        removed: Mutex<Vec<SessionId>>,
+        fail: bool,
+    }
+
+    impl FakeCleaner {
+        fn new() -> Self {
+            Self {
+                removed: Mutex::new(Vec::new()),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                removed: Mutex::new(Vec::new()),
+                fail: true,
+            }
+        }
+
+        fn removed(&self) -> Vec<SessionId> {
+            self.removed.lock().expect("fake cleaner lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl SessionPlanCleaner for FakeCleaner {
+        async fn remove_session_plans(&self, session: SessionId) -> Result<(), String> {
+            self.removed
+                .lock()
+                .expect("fake cleaner lock")
+                .push(session);
+            if self.fail {
+                return Err("cleaner failed".into());
+            }
+            Ok(())
         }
     }
 
@@ -429,6 +514,7 @@ mod tests {
             repository: repository.clone(),
             workspaces: Arc::new(MissingWorkspace),
             events: None,
+            plan_cleaner: None,
         };
         let workspace_id = WorkspaceId::new();
         let error = service
@@ -764,6 +850,65 @@ mod tests {
         );
     }
 
+    fn session_at(workspace_id: WorkspaceId, last_used_at: chrono::DateTime<Utc>) -> ChatSession {
+        ChatSession {
+            id: SessionId::new(),
+            workspace_id,
+            title: None,
+            path_rules: PathRules::default(),
+            allow_hosts: Vec::new(),
+            mcp_allows: Vec::new(),
+            mode: AgentMode::Agent,
+            model_config: ModelConfig::default(),
+            plan_path: None,
+            created_at: last_used_at,
+            updated_at: last_used_at,
+            last_used_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn prune_excess_sessions_drops_the_least_recently_used() {
+        let repo = Arc::new(FakeRepo::new());
+        let full = WorkspaceId::new();
+        let small = WorkspaceId::new();
+        let start = Utc::now();
+        let mut oldest = None;
+        let mut newest = None;
+        for index in 0..=MAX_SESSIONS_PER_WORKSPACE {
+            let session = session_at(full, start + chrono::Duration::seconds(index as i64));
+            if index == 0 {
+                oldest = Some(session.id);
+            }
+            if index == MAX_SESSIONS_PER_WORKSPACE {
+                newest = Some(session.id);
+            }
+            repo.insert(session);
+        }
+        let kept_small = session_at(small, start);
+        let small_id = kept_small.id;
+        repo.insert(kept_small);
+
+        let service = ChatSessionService {
+            repository: repo,
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            plan_cleaner: None,
+        };
+        assert_eq!(service.prune_excess_sessions().await.unwrap(), 1);
+
+        let remaining = service.list_chat_sessions(None).await.unwrap();
+        let full_ids: Vec<_> = remaining
+            .iter()
+            .filter(|session| session.workspace_id == full)
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(full_ids.len(), MAX_SESSIONS_PER_WORKSPACE);
+        assert!(!full_ids.contains(&oldest.unwrap()));
+        assert!(full_ids.contains(&newest.unwrap()));
+        assert!(remaining.iter().any(|session| session.id == small_id));
+    }
+
     #[tokio::test]
     async fn update_rejects_an_unknown_model() {
         let service = service();
@@ -827,5 +972,55 @@ mod tests {
             service.delete_chat_session(missing).await.unwrap_err(),
             ServiceError::NotFound(missing.to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_plan_files_for_the_deleted_session() {
+        let cleaner = Arc::new(FakeCleaner::new());
+        let service = ChatSessionService {
+            repository: Arc::new(FakeRepo::new()),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            plan_cleaner: Some(cleaner.clone()),
+        };
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        service.delete_chat_session(session.id).await.unwrap();
+        assert_eq!(cleaner.removed(), vec![session.id]);
+
+        // A miss does not reach the cleaner.
+        let missing = SessionId::new();
+        assert!(service.delete_chat_session(missing).await.is_err());
+        assert_eq!(cleaner.removed(), vec![session.id]);
+    }
+
+    #[tokio::test]
+    async fn a_cleaner_failure_does_not_fail_the_delete() {
+        let service = ChatSessionService {
+            repository: Arc::new(FakeRepo::new()),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            plan_cleaner: Some(Arc::new(FakeCleaner::failing())),
+        };
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        service.delete_chat_session(session.id).await.unwrap();
+        assert!(service.get_chat_session(session.id).await.is_err());
     }
 }

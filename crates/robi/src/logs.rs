@@ -1,13 +1,17 @@
 //! API process logs under `~/.robi/logs/`.
 //!
-//! Each start opens a new `robi-api-<timestamp>.log` and never truncates an
-//! existing file. The newest file from the previous start is kept even when it
-//! is old or the directory is over the cap, so the run you just left is still
-//! there after a reopen.
+//! Each start opens a new log file and never truncates an existing one. A
+//! release build uses `robi-api-<timestamp>.log`. A dev build, including
+//! `pnpm tauri dev`, uses `robi-dev-<timestamp>.log`, so the two do not prune
+//! each other's files. The newest file from the previous start is kept even
+//! when it is old or the directory is over the cap, so the run you just left
+//! is still there after a reopen.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Write};
+use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use chrono::{SecondsFormat, Utc};
@@ -20,8 +24,24 @@ const MAX_LOG_FILES: usize = 8;
 /// Files older than this are deleted, except the previous run.
 const MAX_LOG_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// Release builds. Dev builds use [`DEV_PREFIX`] so a debug run does not prune
+/// the installed app's logs, and the other way around. `robi-dev-` does not
+/// start with `robi-api-`, so a prefix check cannot match both.
 const PREFIX: &str = "robi-api-";
+const DEV_PREFIX: &str = "robi-dev-";
 const SUFFIX: &str = ".log";
+
+fn log_prefix() -> &'static str {
+    if cfg!(debug_assertions) {
+        DEV_PREFIX
+    } else {
+        PREFIX
+    }
+}
+
+/// The file this process is appending to. A startup failure writes here
+/// directly: the background logger does not flush when the process aborts.
+static LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Install the process-wide tracing subscriber.
 ///
@@ -38,6 +58,8 @@ pub fn init() {
                 if let Err(err) = prune_logs(&dir, &path, SystemTime::now()) {
                     eprintln!("could not prune old log files: {err}");
                 }
+                let _ = LOG_FILE.set(path.clone());
+                install_panic_hook();
                 let (writer, guard) = tracing_appender::non_blocking(file);
                 // The guard flushes the worker on drop. It has to outlive the process.
                 Box::leak(Box::new(guard));
@@ -77,6 +99,47 @@ pub fn init() {
     }
 }
 
+/// Append one error line and flush it. Used when the process is about to
+/// abort and the background logger would lose the line.
+pub fn record_error(message: &str) {
+    let stamp = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
+    let line = format!("{stamp} ERROR {message}");
+    eprintln!("{line}");
+    let Some(path) = LOG_FILE.get() else {
+        return;
+    };
+    if let Ok(mut file) = OpenOptions::new().append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+    }
+}
+
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        record_error(&panic_message(info));
+        previous(info);
+    }));
+}
+
+fn panic_message(info: &PanicHookInfo<'_>) -> String {
+    let payload = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("Box<dyn Any>");
+    match info.location() {
+        Some(location) => format!(
+            "panic at {}:{}:{}: {payload}",
+            location.file(),
+            location.line(),
+            location.column()
+        ),
+        None => format!("panic: {payload}"),
+    }
+}
+
 fn home_logs() -> io::Result<PathBuf> {
     let home = crate::adapters::settings::home_dir()
         .map_err(|err| io::Error::new(ErrorKind::NotFound, err.to_string()))?;
@@ -93,9 +156,9 @@ fn open_log_file(dir: &Path) -> io::Result<(PathBuf, File)> {
     let mut n = 1u32;
     loop {
         let name = if n == 1 {
-            format!("{PREFIX}{stamp}{SUFFIX}")
+            format!("{}{stamp}{SUFFIX}", log_prefix())
         } else {
-            format!("{PREFIX}{stamp}-{n}{SUFFIX}")
+            format!("{}{stamp}-{n}{SUFFIX}", log_prefix())
         };
         let path = dir.join(name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -146,7 +209,7 @@ fn is_log_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    name.starts_with(PREFIX) && name.ends_with(SUFFIX)
+    name.starts_with(log_prefix()) && name.ends_with(SUFFIX)
 }
 
 #[cfg(test)]
@@ -161,31 +224,54 @@ mod tests {
     }
 
     #[test]
+    fn record_error_flushes_the_line_to_the_log_file() {
+        let dir = std::env::temp_dir().join(format!("robi-logs-error-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robi-api-error.log");
+        fs::write(&path, b"").unwrap();
+        LOG_FILE.set(path.clone()).ok();
+
+        record_error("migration 9 was missing");
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("ERROR migration 9 was missing"), "{text}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn keeps_the_previous_run_and_drops_old_or_excess_files() {
         let dir = std::env::temp_dir().join(format!("robi-logs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
         let now = SystemTime::now();
-        let current = dir.join("robi-api-current.log");
+        let current = dir.join(format!("{}current.log", log_prefix()));
         fs::write(&current, b"now").unwrap();
 
         // Newest prior file, and older than the age cap. It stays.
-        let previous = dir.join("robi-api-previous.log");
+        let previous = dir.join(format!("{}previous.log", log_prefix()));
         touch(&previous, Duration::from_secs(1));
 
         let young: Vec<_> = (0..6)
             .map(|i| {
-                let path = dir.join(format!("robi-api-young-{i}.log"));
+                let path = dir.join(format!("{}young-{i}.log", log_prefix()));
                 touch(&path, Duration::from_secs(60 * (i as u64 + 2)));
                 path
             })
             .collect();
-        let excess = dir.join("robi-api-excess.log");
+        let excess = dir.join(format!("{}excess.log", log_prefix()));
         touch(&excess, Duration::from_secs(60 * 60));
-        let ancient = dir.join("robi-api-ancient.log");
+        let ancient = dir.join(format!("{}ancient.log", log_prefix()));
         touch(&ancient, Duration::from_secs(10 * 24 * 60 * 60));
         fs::write(dir.join("notes.txt"), b"leave me").unwrap();
+        let other_prefix = if cfg!(debug_assertions) {
+            PREFIX
+        } else {
+            DEV_PREFIX
+        };
+        let other = dir.join(format!("{other_prefix}other.log"));
+        touch(&other, Duration::from_secs(10 * 24 * 60 * 60));
 
         prune_logs(&dir, &current, now).unwrap();
 
@@ -197,15 +283,16 @@ mod tests {
         assert!(!excess.exists());
         assert!(!ancient.exists());
         assert!(dir.join("notes.txt").exists());
+        assert!(other.exists());
 
         let only = std::env::temp_dir().join(format!("robi-logs-old-{}", std::process::id()));
         let _ = fs::remove_dir_all(&only);
         fs::create_dir_all(&only).unwrap();
-        let current_only = only.join("robi-api-current.log");
+        let current_only = only.join(format!("{}current.log", log_prefix()));
         fs::write(&current_only, b"now").unwrap();
-        let old_previous = only.join("robi-api-old.log");
+        let old_previous = only.join(format!("{}old.log", log_prefix()));
         touch(&old_previous, Duration::from_secs(30 * 24 * 60 * 60));
-        let also_old = only.join("robi-api-also-old.log");
+        let also_old = only.join(format!("{}also-old.log", log_prefix()));
         touch(&also_old, Duration::from_secs(40 * 24 * 60 * 60));
         prune_logs(&only, &current_only, SystemTime::now()).unwrap();
         assert!(old_previous.exists());

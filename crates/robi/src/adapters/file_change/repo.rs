@@ -194,6 +194,7 @@ mod tests {
         let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
         let workspace = WorkspaceService {
             repository: workspaces.clone(),
+            asset_cleaner: None,
         }
         .open_workspace(dir.to_str().unwrap())
         .await
@@ -203,6 +204,7 @@ mod tests {
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
+            plan_cleaner: None,
         };
         let chat = sessions
             .create_chat_session(CreateChatSessionCommand {

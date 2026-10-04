@@ -45,8 +45,7 @@ retries, cancellation, a model catalog, an SSE decoder, and the tests for each.
 **Out of scope.** The Anthropic client, the OpenAI *Responses* API, embeddings,
 structured outputs, per-session model selection in a UI, and the
 settings and keychain layer. This milestone defines the seam that layer plugs
-into; it does not build it. Image inputs are remaining M1 work, tracked on the
-[roadmap](../../roadmap.md#what-remains): the adapter still sends text only.
+into; it does not build it.
 
 ## Provider facts
 
@@ -347,6 +346,146 @@ Two rules:
 M1 needs `id`, `display_name`, `context_window`, `max_output`, and
 `supports_reasoning`. Pricing rides along from the snapshot, unused until M2.
 
+### D10 — The transcript stores image references, never bytes
+
+A user attaches images to a message. The transcript records only the reference —
+an id and a media type — not the bytes:
+
+```rust
+// crates/robi-core/src/message.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    pub id: String,          // the `chat_images` row id
+    pub media_type: String,  // "image/png", "image/jpeg", "image/webp", "image/gif"
+}
+
+// Message gains:
+#[serde(default, skip_serializing_if = "Vec::is_empty")]
+pub images: Vec<ImageAttachment>,
+```
+
+`#[serde(default)]` keeps every stored transcript row deserializing, the same as
+the `provider_call_id` and `subagent` precedents. Only `Role::User` messages carry
+images.
+
+**Rejected: a `data:` URI (or the bytes) inside `Message`.** The transcript is
+serialized into the `chat_messages.body` TEXT column, fanned out on the SSE event
+stream, and returned by every `GET /messages`. Base64 there bloats the database
+~33% per image, ships megabytes on every transcript read, and leaks into the DTO
+and events. The wire needs the data URI; the transcript does not.
+
+### D11 — The adapter resolves bytes at send time, through a provider-side port
+
+`Model::generate` receives only the transcript, and the adapter is stateless
+across restarts. So `providers` declares its own read port, and an `ImageStore`
+port that also accepts new rows:
+
+```rust
+// crates/robi/src/agent/providers/images.rs
+#[async_trait]
+pub trait ImageSource: Send + Sync {
+    async fn image(&self, id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError>;
+}
+
+#[async_trait]
+pub trait ImageStore: ImageSource {
+    async fn store(&self, chat_session_id: &str, id: &str, media_type: &str,
+                   bytes: Vec<u8>) -> Result<(), ProviderError>;
+}
+```
+
+`ImageSource` is what the model's request builder sees. `ImageStore` adds the
+write surface the ingestion handler uses, keeping it out of the read-only port the
+provider reaches. `BlobImageStore` implements both over the session blob file;
+`factory::build_model` and the web layer each take `Arc<dyn ImageSource>`
+or `Arc<dyn ImageStore>` as appropriate, wired the same way the `ToolRegistry`
+already is.
+
+`generate` resolves every attachment id up front into a
+`HashMap<String, (String, Vec<u8>)>` and passes that into `build_request`, which
+stays pure and golden-testable.
+
+**Failure: a missing row fails the turn.** `image <id> is missing from the store`
+reaches the loop as a `ModelError::Provider`. Never send a silently truncated
+message and never drop the part: the user attached it, and quiet loss is the one
+failure neither the model nor the user can detect.
+
+### D12 — Content parts on the wire; text-only bodies stay byte-identical
+
+In `wire.rs`, `ChatMessage.content: String` becomes an untagged content enum:
+
+```rust
+// providers/openai/wire.rs
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum WireContent {
+    Text(String),          // a plain string, exactly as before
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },   // { url: "data:<media_type>;base64,<b64>" }
+}
+```
+
+Rules, each with a test:
+
+- Only a `Role::User` message with non-empty `images` uses `Parts`. Every other
+  message — and a text-only user message — serializes byte-for-byte as before, so
+  prompt-cache prefixes and golden tests are unchanged.
+- A user message with images always emits a text part first (its content, even
+  when empty), then one `image_url` part per attachment in attach order.
+- Assistant, tool, and system messages stay strings. The provider does not need
+  images echoed back beyond the turn that carried them, and chat-completions
+  vision models accept the history either way; we send the parts each relevant
+  turn so multi-turn image questions keep working.
+- The `image_url` is a `data:` URI built from the resolved bytes. No remote
+  `https` URLs in the first cut — the desktop app has local files, not URLs.
+
+### D13 — Vision capability is catalogued, and gating happens in the adapter
+
+`ModelInfo` gains `supports_vision: bool`. The vendored table sets it per row;
+where the models.dev snapshot does not state it, the default is **permissive**
+(`true`) so a capable model is never blocked by missing metadata — the provider's
+own 400 is the honest fallback.
+
+Gating happens inside `generate` at request build: images present and the
+configured model `!supports_vision` → the turn fails with `ProviderError::NoVision`
+naming the model ("visionless does not accept image input"). It surfaces as a
+failed turn the UI can show, not a submit-time refusal: the model choice can
+change between attach and send (D8), so the actor that builds the request is the
+only place that knows. A text-only turn never touches the flag or the store.
+
+### D14 — One multipart request ingests images; a side table stores the bytes
+
+`POST /api/v1/chat_sessions/{id}/messages` accepts `multipart/form-data`: one
+`instruction` text field plus `images` file parts. The existing JSON body keeps
+working for text-only (the handler dispatches on content type). Limits, enforced
+at the handler:
+
+| Limit | Value | On breach |
+|---|---|---|
+| Per image | 10 MiB | 413 naming the file |
+| Per message | 8 images | 400 |
+| Media types | `image/png`, `image/jpeg`, `image/webp`, `image/gif` | 415 |
+
+The media type is validated by magic bytes (PNG/JPEG/WEBP/GIF signatures, a
+~30-line matcher). No decode, no re-encode, no `image` crate: providers handle
+large images by tiling or rejecting, and the token cost comes back in `Usage`.
+
+Bytes go in `~/.robi/sessions/<session_id>/blobs.redb` (schema in
+[persistence.md](../persistence/persistence.md)). They never enter
+`chat_messages`. Session delete removes that directory. A
+`GET /chat_sessions/{id}/images/{image_id}` route serves the bytes for the
+UI's message bubbles.
+
+**Rejected: a separate upload endpoint returning an id.** It needs orphan cleanup
+for images attached but never sent, and it splits one user action across two
+requests that can fail between them.
+
 ## Modules
 
 `AGENTS.md` puts providers in a module of `crates/robi`, not a crate of its own.
@@ -354,24 +493,28 @@ M1 needs `id`, `display_name`, `context_window`, `max_output`, and
 ```
 crates/robi-core/src/model.rs     # Model::generate takes the session id (D4)
 crates/robi-core/src/agent.rs     # model_turn passes the id it already holds (D4)
-crates/robi-core/src/message.rs   # + ToolCall.provider_call_id (D3)
+crates/robi-core/src/message.rs   # + ToolCall.provider_call_id (D3), + Message.images (D10)
 crates/robi/src/agent/providers/
   mod.rs          # re-exports, ProviderId, ModelId
   config.rs       # ProviderSettings, redacting ApiKey
-  factory.rs      # build_model(settings). The session choice is resolved earlier, in adapters::model_source (D8)
+  factory.rs      # build_model(settings, tools, images). The session choice is resolved earlier, in adapters::model_source (D8)
   error.rs        # ProviderError, and its mapping into ModelError
+  images.rs       # ImageSource (read) and ImageStore (read + write) ports (D11)
   retry.rs        # RetryPolicy, backoff, classify
-  catalog/        # mod.rs, opencode_go.rs — vendored, generated
-  openai/         # mod.rs (impl Model), wire.rs, sse.rs, stream.rs
+  catalog/        # mod.rs, opencode_go.rs — vendored, generated; + supports_vision (D13)
+  openai/         # mod.rs (impl Model), wire.rs (WireContent, D12), sse.rs, stream.rs
+crates/robi/src/adapters/chat_image_store.rs  # BlobImageStore (D11), MemoryImageStore (tests)
+crates/robi/src/adapters/session_blobs.rs     # per-session redb file
+crates/robi/src/web_api/chat_message.rs       # multipart ingestion + GET image route (D14)
 crates/robi/tests/provider.rs  # the fake SSE server and its cases
 
-M1 makes three edits to `robi-core`: one additive field (D3), one parameter on
-`Model::generate` (D4), and one new cancellation point at the call site. The third
-exists because a cancel that fires before response headers arrives would otherwise
-surface as a connection failure rather than `Cancelled`. All three are recorded in
-[agent-loop.md](../core/agent-loop.md), which owns the transcript types and the `Model`
-trait. Everything else in the core stays as M0 left it: the turn state machine, the
-approval path, the delta vocabulary, and the other three traits.
+M1 makes these edits to `robi-core`: the additive `provider_call_id` field (D3),
+the `user_input_with_skills`/`Model::generate` signatures (D4), the new
+cancellation point at the call site, and the additive `Message.images` field with
+`Message::user_with_images` (D10). All are recorded in
+[agent-loop.md](../core/agent-loop.md), which owns the transcript types and the
+`Model` trait. Everything else in the core stays as M0 left it: the turn state
+machine, the approval path, the delta vocabulary, and the other three traits.
 
 `docs/src/roadmap.md` F0.1 names `robi-providers` as the M1 crate. `AGENTS.md` is the
 layout authority and says `crates/robi`; follow `AGENTS.md`, and fix the roadmap.
@@ -490,6 +633,7 @@ parked in `chunk().await`. After a cancellation the task sends no
 |---|---|
 | `settings.system_prompt` | prepended `{"role":"system","content":…}` (D2) |
 | `Role::User` | `{"role":"user","content": msg.content}` |
+| `Role::User` with images | `{"role":"user","content": [{type:"text",text:…}, {type:"image_url",image_url:{url:"data:…"}}…]}` (D12) |
 | `Role::Assistant` | `content`, plus `tool_calls` when the message has calls |
 | `Role::Assistant` with calls | `tool_calls: [{ id: wire_id(call), type: "function", function: { name, arguments } }]` |
 | `Role::Tool` | `{"role":"tool","tool_call_id": wire_id_for(msg.tool_call_id), "content": msg.content}` |
@@ -561,12 +705,16 @@ Quirks to handle, each with a test:
 | Malformed SSE line | Skip, log at debug | — |
 | Tool arguments that do not parse | `ToolCall.args_error`, never `{}` (agent-loop Deviation 3) | — |
 | A provider that omits a tool-call id | `provider_call_id` stays `None`; fall back to the UUID string | — |
+| Images on a non-vision model | `ProviderError::NoVision` naming the model (D13) | No |
+| A transcript that references a missing image row | `ProviderError::MissingImage` naming the id; the turn fails (D11) | No |
 | Cancellation before response headers | Return `Err` keyed off the token; the loop reports `Cancelled` | No |
 | Cancellation mid-stream | Drop the body; send nothing further | No |
 
 A response whose status is success is logged at info with the model id and
-the status code. A finished stream is logged at info. A stalled stream, a
-transport error, and a stream that fails to assemble are logged at warn.
+the status code. A finished stream is logged at info. A `finish_reason` of
+`length` is logged at warn when the message is settled, because that turn
+still completes. A stalled stream, a transport error, and a stream that fails
+to assemble are logged at warn.
 The API key never reaches a log, an error message, an event, or a test fixture.
 `ApiKey`'s `Debug` and `Display` both print `<redacted>`, and request building never
 formats a header map.
@@ -589,6 +737,11 @@ Link loopback access to run it inside the sandbox, or run the suite unsandboxed.
 | Session id reaches the model | A stub records the `SessionId` it was given, and it equals the session the turn ran in, across every turn of one conversation |
 | Session header | Every chat request carries `x-opencode-session` equal to that `SessionId`, plus the bearer credential and a `robi/` user agent |
 | Model validation | `build_model` rejects an unknown id and a tool-less model, each naming the id |
+| Image wire shape | A user message with images emits content parts — text first, then one `image_url` per attachment with a `data:` URI from the resolved bytes, in attach order |
+| Text-only bytes | A body without images serializes byte-identical with an empty resolution map, so prompt-cache prefixes hold |
+| Missing image reference | A transcript referencing an unresolved id fails the build naming the id, rather than dropping the part |
+| Vision gating | A non-vision model rejects the turn naming itself; a vision model resolves the bytes; a text-only turn skips both the store and the flag |
+| Vision | `ModelInfo.supports_vision` is explicit on every vendored row |
 | Text and reasoning | Chunks become `Text` and `Reasoning` deltas, both field spellings are read, and reasoning stays out of the message |
 | Tool-call assembly | Interleaved fragments assemble in order, with ids that match the `ToolCallStart` deltas, and a second call at one index is refused rather than merged |
 | SSE edge cases | A chunk boundary inside a `data:` line, a split multi-byte character, CRLF endings, a `:` comment, multi-line `data:`, and a final event with no blank line all parse |
@@ -614,9 +767,15 @@ Recorded rather than papered over:
 - **No live turn has been run.** The framing, the header names, and the model ids
   come from vendor documentation, not from a response. The fake server in
   `tests/provider.rs` encodes the same assumptions, so it cannot catch a wrong one.
+- **No live image turn has been run either (D12–D14).** The `data:` URI content
+  part, the vision flag source, and which models genuinely accept images come from
+  vendor documentation and models.dev, not from a response. The catalog defaults
+  vision permissive where the snapshot is silent, so the provider's own 400 is what
+  actually reports a wrong flag.
 - **A truncated message reads as `Complete`.** `finish_reason: "length"` has nowhere
   to go in `Message`, so the transcript cannot distinguish a finished answer from
-  one the output limit cut off. Add a field to `Message` when a UI needs to show it.
+  one the output limit cut off. The adapter logs that finish at warn. Add a field
+  to `Message` when a UI needs to show it.
 - **The catalog's figures are not verified against the endpoint.** A window that is
   larger than the provider enforces means a context meter that under-reports.
 - **The system prompt is invisible to a session record** (D2).

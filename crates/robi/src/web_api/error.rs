@@ -13,6 +13,10 @@ impl IntoResponse for ServiceError {
             ServiceError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             ServiceError::NotFound(id) => (StatusCode::NOT_FOUND, format!("Entity {id} not found")),
             ServiceError::Conflict(message) => (StatusCode::CONFLICT, message),
+            ServiceError::PayloadTooLarge(message) => (StatusCode::PAYLOAD_TOO_LARGE, message),
+            ServiceError::UnsupportedMediaType(message) => {
+                (StatusCode::UNSUPPORTED_MEDIA_TYPE, message)
+            }
             ServiceError::Unknown => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "An internal error occurred".into(),

@@ -229,10 +229,10 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 | `robi.agent.v1.message_delta` | `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored |
 | `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. `tool_call_updated` also refreshes the review strip |
 | `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
-| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome shows its `message`. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared. When another session is on screen: clear that row's running mark only. No transcript fetch |
+| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome is recorded and shown at the bottom of that transcript until dismissed. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared. When another session is on screen: clear that row's running mark. A `failed` outcome is still recorded and shown at the top of the shell until dismissed. No transcript fetch |
 | `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
-| `robi.app.v1.error` | Show `message` on the shell error line |
+| `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
 | `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. The stream publishes once when it opens, then again as the index changes |
 
 Do not open a second `EventSource` per feature.

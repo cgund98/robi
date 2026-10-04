@@ -70,12 +70,12 @@ jobs:
       - name: Checksums
         run: |
           set -euo pipefail
-          mkdir -p dist
-          cp target/release/bundle/dmg/*.dmg dist/
-          (cd dist && shasum -a 256 ./*.dmg > checksums.txt)
-          cat dist/checksums.txt
+          mkdir -p release
+          cp target/release/bundle/dmg/*.dmg release/
+          (cd release && shasum -a 256 ./*.dmg > checksums.txt)
+          cat release/checksums.txt
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" release/*.dmg release/checksums.txt --clobber

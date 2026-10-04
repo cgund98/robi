@@ -176,6 +176,10 @@ pub async fn delete_chat_session(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ServiceError> {
     let id = parse_chat_session_id(&id)?;
+    // Stop a running turn before the row goes. `stop` checks the session exists
+    // and returns after that session's actor has exited, so this is 404 for a
+    // missing session and a no-op for an idle one.
+    state.chat_message_service.stop(id).await?;
     state.chat_session_service.delete_chat_session(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -420,7 +424,37 @@ fn rfc3339(timestamp: DateTime<Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ModelConfigPatch;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use axum::extract::{Path, State};
+    use robi_core::ids::{SessionId, ToolCallId};
+    use robi_core::store::MessageStore;
+    use uuid::Uuid;
+
+    use crate::{
+        adapters::{
+            chat_message::SqliteMessageStore, chat_session::repo::SqliteChatSessionRepository,
+            sqlite, workspace::repo::SqliteWorkspaceRepository,
+        },
+        domain::{
+            chat_message::{
+                runtime::{ChatRuntime, SubmitOutcome},
+                service::ChatMessageService,
+            },
+            chat_session::{
+                model::{AgentMode, CreateChatSessionCommand},
+                service::ChatSessionService,
+            },
+            error::ServiceError,
+            events::EventBus,
+            settings::{memory::MemorySettingsStore, store::SettingsStore, SettingsService},
+            workspace::service::WorkspaceService,
+        },
+        web_api::state::AppState,
+    };
+
+    use super::{delete_chat_session, ModelConfigPatch};
 
     #[test]
     fn a_null_key_clears_and_an_omitted_key_stays() {
@@ -436,5 +470,150 @@ mod tests {
         let plan = set.plan.unwrap();
         assert_eq!(plan.model, Some(Some("glm-5.2".into())));
         assert_eq!(plan.reasoning_effort, None);
+    }
+
+    /// Records every `stop` it was asked to perform.
+    struct RecordingRuntime {
+        stopped: Mutex<Vec<SessionId>>,
+    }
+
+    impl RecordingRuntime {
+        fn new() -> Self {
+            Self {
+                stopped: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn stopped(&self) -> Vec<SessionId> {
+            self.stopped.lock().expect("runtime lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ChatRuntime for RecordingRuntime {
+        async fn submit(
+            &self,
+            _session: SessionId,
+            _instruction: String,
+            _images: Vec<robi_core::message::ImageAttachment>,
+        ) -> Result<SubmitOutcome, ServiceError> {
+            Ok(SubmitOutcome::Accepted)
+        }
+
+        async fn running_session_ids(&self) -> Vec<SessionId> {
+            Vec::new()
+        }
+
+        async fn decide(
+            &self,
+            _session: SessionId,
+            _call: ToolCallId,
+            _reject: Option<String>,
+        ) -> Result<(), ServiceError> {
+            Ok(())
+        }
+
+        async fn stop(&self, session: SessionId) -> Result<(), ServiceError> {
+            self.stopped.lock().expect("runtime lock").push(session);
+            Ok(())
+        }
+    }
+
+    async fn state_with(runtime: Arc<dyn ChatRuntime>) -> AppState {
+        let url = format!(
+            "sqlite://file:robi-delete-{}?mode=memory&cache=shared",
+            Uuid::now_v7().simple()
+        );
+        let pool = Arc::new(sqlite::init_pool(&url).await.expect("pool"));
+        let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
+        let workspace_service = Arc::new(WorkspaceService {
+            repository: workspaces.clone(),
+            asset_cleaner: None,
+        });
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
+            workspaces,
+            events: None,
+            plan_cleaner: None,
+        });
+        let store: Arc<dyn MessageStore> = Arc::new(SqliteMessageStore::new(
+            Arc::clone(&pool),
+            crate::adapters::session_blobs::SessionBlobs::new(
+                std::env::temp_dir().join(format!("robi-delete-blobs-{}", Uuid::now_v7().simple())),
+            ),
+        ));
+        AppState {
+            workspace_service,
+            chat_session_service: Arc::clone(&sessions),
+            chat_message_service: Arc::new(ChatMessageService {
+                sessions,
+                runtime,
+                store,
+            }),
+            settings_service: Arc::new(SettingsService {
+                store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
+            }),
+            event_bus: Arc::new(EventBus::new()),
+            file_changes: Arc::new(
+                crate::adapters::file_change::repo::SqliteFileChangeRepository::new(Arc::clone(
+                    &pool,
+                )),
+            ),
+            index: Arc::new(crate::agent::index::IndexHub::new(
+                std::env::temp_dir(),
+                Arc::new(EventBus::new()),
+                Arc::new(robi_index::FakeEmbedder::new(4)),
+            )),
+            mcp: None,
+            originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
+            image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_stops_the_running_actor_before_removing_the_row() {
+        let runtime = Arc::new(RecordingRuntime::new());
+        let state = state_with(runtime.clone()).await;
+        let root = std::env::temp_dir().join(format!("robi-delete-{}", Uuid::now_v7().simple()));
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = state
+            .workspace_service
+            .open_workspace(root.to_str().unwrap())
+            .await
+            .unwrap();
+        let session = state
+            .chat_session_service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: workspace.workspace.id,
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let status = delete_chat_session(State(state.clone()), Path(session.id.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(runtime.stopped(), vec![session.id]);
+        assert!(state
+            .chat_session_service
+            .get_chat_session(session.id)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_of_a_missing_session_is_not_found_and_does_not_stop() {
+        let runtime = Arc::new(RecordingRuntime::new());
+        let state = state_with(runtime.clone()).await;
+        let missing = SessionId::new();
+
+        let error = delete_chat_session(State(state), Path(missing.to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, ServiceError::NotFound(missing.to_string()));
+        assert!(runtime.stopped().is_empty());
     }
 }

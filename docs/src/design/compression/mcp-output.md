@@ -79,7 +79,7 @@ under 4 KiB -----------------> unchanged, no row
     savings under 1 KiB -------> unchanged, no row
     |
     v
-one tool_originals row, kind "mcp"
+one originals entry in the session blob file, kind "mcp"
 header line carries that row's id
     |
     v

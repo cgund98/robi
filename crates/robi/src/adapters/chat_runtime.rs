@@ -226,7 +226,10 @@ impl AgentFactory {
 }
 
 enum Work {
-    Instruction(String),
+    Instruction {
+        instruction: String,
+        images: Vec<robi_core::message::ImageAttachment>,
+    },
     Decision {
         call: ToolCallId,
         reject: Option<String>,
@@ -289,18 +292,22 @@ impl SerializedChatRuntime {
         &self,
         session: SessionId,
         instruction: String,
+        images: Vec<robi_core::message::ImageAttachment>,
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
     ) -> Result<SubmitOutcome, ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
-            replace_pending(slot, session, instruction);
+            replace_pending(slot, session, instruction, images);
             return Ok(SubmitOutcome::Accepted);
         }
         slot.running = true;
         slot.generation += 1;
-        slot.pending = Some(Work::Instruction(instruction));
+        slot.pending = Some(Work::Instruction {
+            instruction,
+            images,
+        });
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
         self.spawn_actor(session, model, tools, max_iterations);
@@ -346,8 +353,9 @@ impl ChatRuntime for SerializedChatRuntime {
         &self,
         session: SessionId,
         instruction: String,
+        images: Vec<robi_core::message::ImageAttachment>,
     ) -> Result<SubmitOutcome, ServiceError> {
-        if interrupt_if_running(&self.slots, session, &instruction).await {
+        if interrupt_if_running(&self.slots, session, &instruction, images.clone()).await {
             return Ok(SubmitOutcome::Accepted);
         }
 
@@ -361,7 +369,7 @@ impl ChatRuntime for SerializedChatRuntime {
             let mut slots = self.slots.map.lock().await;
             let slot = slots.entry(session).or_default();
             if slot.running {
-                replace_pending(slot, session, instruction);
+                replace_pending(slot, session, instruction, images);
                 return Ok(SubmitOutcome::Accepted);
             }
         }
@@ -377,7 +385,8 @@ impl ChatRuntime for SerializedChatRuntime {
                 return Err(error);
             }
         };
-        self.start_actor(session, instruction, model, tools).await
+        self.start_actor(session, instruction, images, model, tools)
+            .await
     }
 
     async fn decide(
@@ -457,7 +466,12 @@ impl ChatRuntime for SerializedChatRuntime {
     }
 }
 
-async fn interrupt_if_running(slots: &Slots, session: SessionId, instruction: &str) -> bool {
+async fn interrupt_if_running(
+    slots: &Slots,
+    session: SessionId,
+    instruction: &str,
+    images: Vec<robi_core::message::ImageAttachment>,
+) -> bool {
     let mut slots = slots.map.lock().await;
     let Some(slot) = slots.get_mut(&session) else {
         return false;
@@ -465,16 +479,24 @@ async fn interrupt_if_running(slots: &Slots, session: SessionId, instruction: &s
     if !slot.running {
         return false;
     }
-    replace_pending(slot, session, instruction.to_owned());
+    replace_pending(slot, session, instruction.to_owned(), images);
     true
 }
 
-fn replace_pending(slot: &mut Slot, session: SessionId, instruction: String) {
+fn replace_pending(
+    slot: &mut Slot,
+    session: SessionId,
+    instruction: String,
+    images: Vec<robi_core::message::ImageAttachment>,
+) {
     tracing::info!(%session, "replaced the pending instruction");
     if let Some(cancel) = &slot.cancel {
         cancel.cancel();
     }
-    slot.pending = Some(Work::Instruction(instruction));
+    slot.pending = Some(Work::Instruction {
+        instruction,
+        images,
+    });
 }
 
 async fn decide_then_resume(
@@ -550,11 +572,14 @@ async fn run_actor(
         };
 
         let outcome = match work {
-            Work::Instruction(instruction) => {
+            Work::Instruction {
+                instruction,
+                images,
+            } => {
                 tracing::info!(%session, "session actor started a turn");
                 let skills = skill_loads(sessions.as_ref(), session, &instruction).await;
                 agent
-                    .user_input_with_skills(session, &instruction, skills, cancel)
+                    .user_input_with_skills(session, &instruction, skills, images, cancel)
                     .await
             }
             Work::Decision { call, reject } => {
@@ -801,7 +826,10 @@ mod tests {
         );
 
         assert_eq!(
-            runtime.submit(session, "first".into()).await.unwrap(),
+            runtime
+                .submit(session, "first".into(), Vec::new())
+                .await
+                .unwrap(),
             SubmitOutcome::Accepted
         );
         let first = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
@@ -811,7 +839,10 @@ mod tests {
         assert_eq!(first, 1);
 
         assert_eq!(
-            runtime.submit(session, "second".into()).await.unwrap(),
+            runtime
+                .submit(session, "second".into(), Vec::new())
+                .await
+                .unwrap(),
             SubmitOutcome::Accepted
         );
         let second = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
@@ -860,7 +891,10 @@ mod tests {
             }),
         );
 
-        runtime.submit(session, "first".into()).await.unwrap();
+        runtime
+            .submit(session, "first".into(), Vec::new())
+            .await
+            .unwrap();
         let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
             .await
             .expect("model call")
@@ -915,7 +949,10 @@ mod tests {
         );
 
         assert_eq!(
-            runtime.submit(session, "hello".into()).await.unwrap(),
+            runtime
+                .submit(session, "hello".into(), Vec::new())
+                .await
+                .unwrap(),
             SubmitOutcome::Accepted
         );
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -977,7 +1014,10 @@ mod tests {
         );
 
         assert_eq!(
-            runtime.submit(session, "hello".into()).await.unwrap(),
+            runtime
+                .submit(session, "hello".into(), Vec::new())
+                .await
+                .unwrap(),
             SubmitOutcome::Accepted
         );
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1069,7 +1109,10 @@ mod tests {
 
         assert!(runtime.running_session_ids().await.is_empty());
 
-        runtime.submit(first, "one".into()).await.unwrap();
+        runtime
+            .submit(first, "one".into(), Vec::new())
+            .await
+            .unwrap();
         let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
             .await
             .expect("first actor")
@@ -1077,7 +1120,10 @@ mod tests {
         assert_eq!(started, first);
         assert_eq!(runtime.running_session_ids().await, vec![first]);
 
-        runtime.submit(second, "two".into()).await.unwrap();
+        runtime
+            .submit(second, "two".into(), Vec::new())
+            .await
+            .unwrap();
         let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
             .await
             .expect("second actor")
@@ -1141,7 +1187,10 @@ mod tests {
             originals: None,
         });
 
-        let error = runtime.submit(session, "hello".into()).await.unwrap_err();
+        let error = runtime
+            .submit(session, "hello".into(), Vec::new())
+            .await
+            .unwrap_err();
         assert_eq!(
             error,
             ServiceError::BadRequest("opencode_go_api_key is not set".into())
@@ -1223,6 +1272,7 @@ mod tests {
             repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
+            plan_cleaner: None,
         });
         let seen = Arc::new(Mutex::new(None));
         let runtime = SerializedChatRuntime::new(AgentFactory {
@@ -1251,7 +1301,10 @@ mod tests {
             originals: None,
         });
 
-        runtime.submit(session, "hello".into()).await.unwrap();
+        runtime
+            .submit(session, "hello".into(), Vec::new())
+            .await
+            .unwrap();
         assert_eq!(
             seen.lock().expect("choice").clone(),
             Some((AgentMode::Agent, choice.agent.clone()))
@@ -1266,6 +1319,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
+            plan_cleaner: None,
         });
         let settings = Arc::new(crate::domain::settings::memory::MemorySettingsStore::new());
         settings
@@ -1304,7 +1358,10 @@ mod tests {
             originals: None,
         });
 
-        runtime.submit(session, "hello".into()).await.unwrap();
+        runtime
+            .submit(session, "hello".into(), Vec::new())
+            .await
+            .unwrap();
         let names = names.lock().expect("names").clone();
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(!names.iter().any(|name| name == "diagnostics"));
@@ -1382,6 +1439,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
+            plan_cleaner: None,
         });
         let bus = Arc::new(EventBus::new());
         let mut subscription = bus.subscribe();
@@ -1398,7 +1456,7 @@ mod tests {
         );
 
         runtime
-            .submit(session, "rename the parser".into())
+            .submit(session, "rename the parser".into(), Vec::new())
             .await
             .unwrap();
 
@@ -1454,6 +1512,7 @@ mod tests {
             repository: Arc::new(MemorySessions::named(session, "Kept")),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
+            plan_cleaner: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1467,7 +1526,10 @@ mod tests {
             Arc::new(EventBus::new()),
         );
 
-        runtime.submit(session, "hello".into()).await.unwrap();
+        runtime
+            .submit(session, "hello".into(), Vec::new())
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if runtime.running_session_ids().await.is_empty()
@@ -1502,6 +1564,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
+            plan_cleaner: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1515,7 +1578,10 @@ mod tests {
             Arc::new(EventBus::new()),
         );
 
-        runtime.submit(session, "hello".into()).await.unwrap();
+        runtime
+            .submit(session, "hello".into(), Vec::new())
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if runtime.running_session_ids().await.is_empty() {

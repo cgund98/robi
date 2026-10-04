@@ -788,6 +788,71 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/docs/search": {
+      "get": {
+        "tags": [
+          "docs"
+        ],
+        "operationId": "search_docs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A natural language question, or a literal string when engine is ripgrep. Required, non-blank.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many hits to return. Default 10, maximum 20.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "engine",
+            "in": "query",
+            "description": "semantic (default) or ripgrep. Anything else is 400.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ranked markdown hits with the engine and the index state they came from",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocSearchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`q` is missing or blank, `limit` is out of range, or `engine` is unknown"
+          },
+          "404": {
+            "description": "No such workspace"
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/docs/{path}": {
       "get": {
         "tags": [
@@ -1064,6 +1129,22 @@
           }
         }
       },
+      "ChatImage": {
+        "type": "object",
+        "description": "One image a user attached, referenced by id. The bytes live in the store.",
+        "required": [
+          "id",
+          "media_type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          }
+        }
+      },
       "ChatMessage": {
         "type": "object",
         "required": [
@@ -1078,6 +1159,13 @@
           },
           "id": {
             "type": "string"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatImage"
+            },
+            "description": "Images the user attached. `id` is an image in the session blob file; fetch the bytes\nvia `GET /chat_sessions/{id}/images/{image_id}`."
           },
           "role": {
             "type": "string"
@@ -1468,6 +1556,76 @@
           "path": {
             "type": "string",
             "description": "Workspace-relative, `/` separated."
+          }
+        }
+      },
+      "DocSearchHit": {
+        "type": "object",
+        "required": [
+          "path",
+          "start_line",
+          "end_line",
+          "title",
+          "snippet",
+          "score"
+        ],
+        "properties": {
+          "end_line": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative, `/` separated."
+          },
+          "score": {
+            "type": "number",
+            "format": "double",
+            "description": "Reciprocal rank fusion score. Higher is better."
+          },
+          "snippet": {
+            "type": "string",
+            "description": "The chunk's opening text, cut at 500 bytes on a character boundary."
+          },
+          "start_line": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "The heading chain of the section this chunk belongs to, joined by `.`\n(`Install.Overview`). Empty when the page did not parse into sections."
+          }
+        }
+      },
+      "DocSearchResult": {
+        "type": "object",
+        "required": [
+          "query",
+          "engine",
+          "index",
+          "hits"
+        ],
+        "properties": {
+          "engine": {
+            "type": "string",
+            "description": "`semantic` or `ripgrep`."
+          },
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocSearchHit"
+            },
+            "description": "Ranked markdown hits, best first."
+          },
+          "index": {
+            "$ref": "#/components/schemas/IndexStatusBody",
+            "description": "The index state the hits were taken from. For `semantic`, anything but\n`ready` means the corpus was incomplete, so the hits may be too.\n`ripgrep` does not start the index and does not treat this as partial."
+          },
+          "query": {
+            "type": "string",
+            "description": "The trimmed query that was run."
           }
         }
       },

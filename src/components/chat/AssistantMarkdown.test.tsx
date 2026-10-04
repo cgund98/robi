@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AssistantMarkdown } from './AssistantMarkdown'
@@ -32,6 +32,22 @@ describe('AssistantMarkdown', () => {
       expect(screen.getByRole('img', { name: 'Diagram' })).toBeTruthy()
     })
     expect(screen.getByRole('img', { name: 'Diagram' }).closest('pre')).toBeNull()
+  })
+
+  it('opens a relative markdown link in the viewer', () => {
+    const onDocLink = vi.fn()
+    render(
+      <AssistantMarkdown
+        text={'See [chat](./chat-ui.md) and [web](https://example.com).'}
+        docPath="docs/src/design/shell/docs-viewer.md"
+        onDocLink={onDocLink}
+      />
+    )
+    fireEvent.click(screen.getByRole('link', { name: 'chat' }))
+    expect(onDocLink).toHaveBeenCalledWith('docs/src/design/shell/chat-ui.md')
+    const external = screen.getByRole('link', { name: 'web' })
+    expect(external.getAttribute('target')).toBe('_blank')
+    expect(external.getAttribute('href')).toBe('https://example.com')
   })
 
   it('keeps a non-mermaid fence as a code block', () => {

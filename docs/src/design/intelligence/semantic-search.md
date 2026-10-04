@@ -205,9 +205,13 @@ indexes.
 
 ### Keeping the index current
 
-Indexing starts when a workspace has at least one open chat session in
-this process, and stops when the last one closes. Starting that task is
-logged at info. The first time the status becomes `ready`, and each time
+Indexing starts when a workspace gains its first **open surface**: a chat
+session's event stream, or a
+[docs search](../shell/docs-viewer.md). It stops once every surface has
+been closed for 60 seconds. That linger is what lets a search — which holds a
+lease only for the length of one request — keep a warm index instead of
+restarting the scan between queries. Starting that task is logged at info.
+The first time the status becomes `ready`, and each time
 it becomes `ready` again after leaving that state, is logged at info with
 the file count. One task per workspace
 owns the writer connection. Readers use other connections. WAL mode lets
@@ -290,8 +294,9 @@ grayscale spinner as a running session, and it also sits at the start of
 the `downloading` and `indexing` lines. Reduced motion leaves the ring
 still.
 
-There is no battery API in this version. The index runs only while a
-session for that workspace is open, and the user can pause it.
+There is no battery API in this version. The index runs while a surface
+for that workspace is open — a chat session or a docs search, plus the
+60-second linger after the last one closes — and the user can pause it.
 
 ### Retrieval
 
@@ -326,6 +331,15 @@ A cut chunk ends with a marker, and `truncated` is true.
 The result also includes `state`, `files_done`, and `files_total`, so
 a partial index is visible to the model. Empty `hits` with
 `state: "indexing"` is success. The model can call `grep`.
+
+`GET /api/v1/workspaces/{id}/docs/search` is the other consumer of
+`Index::search`. It runs the same fused query, then drops every non-markdown
+hit **after** fusion, so a code hit cannot occupy a ranked slot, and returns
+the index status beside the hits so a caller can say the corpus was
+incomplete. It holds a lease for the request alone; the linger above keeps
+the task running between queries. The shell side of that contract — the
+response shape, the partial-result notice, and the poll — is
+[docs-viewer.md](../shell/docs-viewer.md).
 
 LSP symbol hits are a third ranked list into the same fusion function
 once a language server is running. This page does not spawn one. v1

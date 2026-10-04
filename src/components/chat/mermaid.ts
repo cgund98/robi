@@ -72,6 +72,9 @@ const CONFIG = {
   // Diagram text sits a little smaller than body copy, matching the fenced
   // code blocks it replaces. `fontSize` is a number of px, not a CSS length.
   fontSize: 14,
+  // A parse failure otherwise draws a wide error diagram into the page. The
+  // caller logs it and keeps the source fence.
+  suppressErrorRendering: true,
   themeVariables: THEME_VARIABLES
 } satisfies MermaidConfig
 
@@ -101,10 +104,18 @@ export function renderMermaid(source: string): Promise<string> {
   const run = async () => {
     const mermaid = await loadMermaid()
     const id = `mermaid-${++counter}`
-    const { svg } = await mermaid.render(id, source)
+    let svg: string
+    try {
+      const rendered = await mermaid.render(id, source)
+      svg = rendered.svg
+    } catch (err) {
+      console.error('mermaid diagram failed to render', err)
+      throw err
+    }
     if (svg === '') {
       // Some environments produce no markup. Treat it as a failed render so the
       // caller keeps the source fence instead of an empty surface.
+      console.error('mermaid diagram failed to render', 'produced no svg')
       throw new Error('mermaid produced no svg')
     }
     return svg

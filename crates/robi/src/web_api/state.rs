@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::agent::index::IndexHub;
+use crate::agent::providers::ImageStore;
 use crate::domain::{
     chat_message::service::ChatMessageService, chat_session::service::ChatSessionService,
     events::EventBus, file_change::repo::FileChangeRepository, settings::SettingsService,
@@ -22,4 +23,7 @@ pub struct AppState {
     pub mcp: Option<Arc<crate::agent::mcp::McpHub>>,
     /// Capped streams for the shell card.
     pub originals: Arc<dyn crate::agent::compress::OriginalStore>,
+    /// The stored bytes behind a user message's image attachments. Concrete so
+    /// the ingestion handler can write new rows.
+    pub image_source: Arc<dyn ImageStore>,
 }

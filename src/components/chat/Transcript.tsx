@@ -10,6 +10,7 @@ import {
 } from 'react'
 
 import type { ChatMessage } from '../../api/messages'
+import { imageUrl } from '../../api/messages'
 import type { AgentMode } from '../../api/sessions'
 import type { AgentPhase } from '../../state/chatStore'
 import { AssistantMarkdown } from './AssistantMarkdown'
@@ -24,6 +25,8 @@ import { formatElapsed, pendingSeconds, workedLabel } from './turnDuration'
 
 type TranscriptProps = {
   messages: ChatMessage[]
+  /** Current session id, for resolving stored image bytes. */
+  sessionId?: string | null
   echo: string | null
   phase: AgentPhase
   /** Open tasks stay off until a build starts in agent mode. */
@@ -189,6 +192,8 @@ function useLocalStart(active: boolean): number | null {
 
 type TurnViewProps = {
   group: ChatMessage[]
+  /** Current session id, for resolving stored image bytes. */
+  sessionId?: string | null
   last: boolean
   phase: AgentPhase
   deciding: boolean
@@ -212,6 +217,7 @@ function sameGroup(left: ChatMessage[], right: ChatMessage[]): boolean {
 
 const TurnView = memo(function TurnView({
   group,
+  sessionId,
   last,
   phase,
   deciding,
@@ -229,6 +235,20 @@ const TurnView = memo(function TurnView({
     <Fragment>
       {start ? (
         <li key={start.id} className={styles.user}>
+          {start.images && start.images.length > 0 ? (
+            <div className={styles.images}>
+              {start.images.map((image) =>
+                sessionId ? (
+                  <img
+                    key={image.id}
+                    src={imageUrl(sessionId, image.id)}
+                    alt=""
+                    className={styles.bubble}
+                  />
+                ) : null
+              )}
+            </div>
+          ) : null}
           {start.content}
           {start.skills?.map((skill) => (
             <details key={skill.id} className={styles.skill}>
@@ -264,6 +284,9 @@ const TurnView = memo(function TurnView({
 
 function turnViewPropsEqual(prev: TurnViewProps, next: TurnViewProps): boolean {
   if (!sameGroup(prev.group, next.group) || prev.last !== next.last) {
+    return false
+  }
+  if (prev.sessionId !== next.sessionId) {
     return false
   }
   if (!next.last) {
@@ -400,6 +423,7 @@ function useFollowTail(
 
 export function Transcript({
   messages,
+  sessionId,
   echo,
   phase,
   mode,
@@ -440,6 +464,7 @@ export function Transcript({
           <TurnView
             key={group[0].id}
             group={group}
+            sessionId={sessionId}
             last={index === turns.length - 1}
             phase={phase}
             deciding={deciding}

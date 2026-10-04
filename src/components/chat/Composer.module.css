@@ -19,13 +19,21 @@
 .field {
   position: relative;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-2);
   width: 100%;
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   box-sizing: border-box;
+}
+
+.fieldRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  width: 100%;
 }
 
 .input {
@@ -77,6 +85,14 @@
   line-height: 1.4;
 }
 
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+}
+
 .cardBar {
   display: flex;
   align-items: center;
@@ -108,8 +124,8 @@
 
 .stopIcon {
   display: block;
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 
 .pending {
@@ -151,8 +167,8 @@
   gap: var(--space-1);
 }
 
-.mode {
-  margin-right: auto;
+.modelEffort {
+  max-width: 16rem;
 }
 
 .control {
@@ -188,7 +204,7 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  margin-left: var(--space-1);
+  margin-left: 0;
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -252,4 +268,121 @@
   margin: 2px 0 0;
   color: var(--ink);
   font-size: 13px;
+}
+
+/* Hidden file input whose label the attach button activates. */
+.fileInput {
+  display: none;
+}
+
+.attach {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0;
+  border-radius: var(--radius-md);
+}
+
+.attach:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.attach:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.thumbnails {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.thumbnail {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--rule);
+}
+
+.thumbnailImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.removeThumb {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-canvas);
+  color: var(--ink);
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.thumbnail:hover .removeThumb,
+.thumbnail:focus-within .removeThumb {
+  display: flex;
+}
+
+.fileChip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.fileName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.removeChip {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.removeChip:hover {
+  color: var(--ink);
+}
+
+.attachError {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
 }

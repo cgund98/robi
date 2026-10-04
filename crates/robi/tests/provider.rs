@@ -17,7 +17,9 @@ use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
 use bytes::Bytes;
-use robi::agent::providers::{build_model, ApiKey, ModelId, ProviderSettings, RetryPolicy};
+use robi::agent::providers::{
+    build_model, ApiKey, ImageSource, ModelId, ProviderSettings, RetryPolicy,
+};
 use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
 use robi_core::error::StoreError;
@@ -202,7 +204,24 @@ fn settings(base_url: String) -> ProviderSettings {
 }
 
 fn build(base_url: String, tools: Arc<ToolRegistry>) -> Arc<dyn Model> {
-    build_model(settings(base_url), tools).expect("the model builds")
+    build_model(settings(base_url), tools, no_images()).expect("the model builds")
+}
+
+/// No image is resolved by these fake-provider tests.
+struct NoImages;
+
+#[async_trait]
+impl ImageSource for NoImages {
+    async fn image(
+        &self,
+        _id: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, robi::agent::providers::ProviderError> {
+        Ok(None)
+    }
+}
+
+fn no_images() -> Arc<dyn ImageSource> {
+    Arc::new(NoImages)
 }
 
 /// Drain a stream, returning every delta and the finished message.
@@ -674,7 +693,7 @@ async fn a_gap_longer_than_the_chunk_timeout_ends_the_turn() {
 
     let mut settings = settings(base);
     settings.chunk_timeout = Duration::from_millis(50);
-    let model = build_model(settings, Arc::new(ToolRegistry::new())).expect("builds");
+    let model = build_model(settings, Arc::new(ToolRegistry::new()), no_images()).expect("builds");
 
     let stream = model
         .generate(
@@ -709,7 +728,7 @@ async fn a_gap_within_the_chunk_timeout_streams_normally() {
 
     let mut settings = settings(base);
     settings.chunk_timeout = Duration::from_secs(5);
-    let model = build_model(settings, Arc::new(ToolRegistry::new())).expect("builds");
+    let model = build_model(settings, Arc::new(ToolRegistry::new()), no_images()).expect("builds");
 
     let stream = model
         .generate(

@@ -1,3 +1,4 @@
+import { AlignLeft, File, Search, Terminal } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 
 import { getToolOriginal } from '../../api/messages'
@@ -347,65 +348,17 @@ function fetchHost(url: string): string {
 }
 
 function ToolIcon({ name }: { name: string }) {
+  const icon = { className: styles.icon, size: 14, strokeWidth: 1.4, 'aria-hidden': true }
   if (name === 'retrieve') {
-    return (
-      <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
-        <path
-          d="M3 4.5h10M3 8h10M3 11.5h6"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-        />
-      </svg>
-    )
+    return <AlignLeft {...icon} />
   }
   if (name === 'shell') {
-    return (
-      <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
-        <path
-          d="M3 4.5 6.8 8 3 11.5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M8.5 12.5h5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-        />
-      </svg>
-    )
+    return <Terminal {...icon} />
   }
   if (name === 'grep' || name === 'find' || name === 'web_search') {
-    return (
-      <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
-        <circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <path
-          d="M10.2 10.2 13.2 13.2"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-        />
-      </svg>
-    )
+    return <Search {...icon} />
   }
-  return (
-    <svg className={styles.icon} viewBox="0 0 16 16" aria-hidden>
-      <path
-        d="M4 2.5h5.2L12.5 6v7.5h-8.5z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-      <path d="M9 2.7V6h3.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
-    </svg>
-  )
+  return <File {...icon} />
 }
 
 function ApprovalActions({

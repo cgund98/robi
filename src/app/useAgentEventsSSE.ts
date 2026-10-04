@@ -4,6 +4,7 @@ import { getMessage } from '../api/messages'
 import { ApiError } from '../api/sessions'
 import { useReconnectingEventSource } from '../infra/useReconnectingEventSource'
 import { useChatStore } from '../state/chatStore'
+import { useErrorLog } from '../state/errorLog'
 import { useIndexStore } from '../state/indexStore'
 import { postApprovalNotice, releaseApprovalPause } from './approvalNotice'
 import { AGENT_EVENT_TYPES, buildAgentEventsStreamUrl, parseEventEnvelope } from './agentEvents'
@@ -107,6 +108,7 @@ export function useAgentEventsSSE(): void {
               return
             }
             const message = err instanceof Error ? err.message : 'Failed to load message'
+            useErrorLog.getState().report(message, sessionId)
             useChatStore.setState({ error: message })
           })
         return
@@ -124,6 +126,10 @@ export function useAgentEventsSSE(): void {
       case 'robi.agent.v1.turn_finished': {
         if (!viewing()) {
           useChatStore.getState().noteRunning(sessionId, false)
+          const outcome = data?.outcome
+          if (outcome?.kind === 'failed') {
+            useErrorLog.getState().report(outcome.message ?? 'The turn failed', sessionId)
+          }
           return
         }
         useChatStore.getState().bumpReview(sessionId)
@@ -148,6 +154,7 @@ export function useAgentEventsSSE(): void {
       case 'robi.app.v1.error': {
         const message = data?.message
         if (typeof message === 'string' && message.length > 0) {
+          useErrorLog.getState().report(message, null)
           useChatStore.setState({ error: message })
         }
         return

@@ -1,9 +1,11 @@
 import { Outlet, useLocation } from 'react-router-dom'
 
+import { useMouseHistory } from '../../app/mouseHistory'
 import styles from './WindowFrame.module.css'
 
 export function WindowFrame() {
   const { pathname } = useLocation()
+  useMouseHistory()
   const tone = pathname.startsWith('/settings')
     ? styles.barSettings
     : pathname === '/' || pathname.startsWith('/sessions/') || pathname === '/docs'

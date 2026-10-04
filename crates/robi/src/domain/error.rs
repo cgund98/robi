@@ -15,6 +15,18 @@ pub enum ServiceError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
+    #[error("Unsupported media type: {0}")]
+    UnsupportedMediaType(String),
+
     #[error("Internal server error")]
     Unknown,
+}
+
+impl From<crate::agent::providers::ProviderError> for ServiceError {
+    fn from(_error: crate::agent::providers::ProviderError) -> Self {
+        ServiceError::Unknown
+    }
 }

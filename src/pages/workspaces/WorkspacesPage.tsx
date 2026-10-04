@@ -1,3 +1,4 @@
+import { Folders, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -181,29 +182,9 @@ export function WorkspacesPage() {
 }
 
 function SearchIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M16 16.5 20 20.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-    </svg>
-  )
+  return <Search size={14} strokeWidth={1.75} aria-hidden />
 }
 
 function FolderMark() {
-  return (
-    <svg className={styles.mark} width="72" height="72" viewBox="0 0 72 72" fill="none" aria-hidden>
-      <rect x="10" y="16" width="28" height="22" rx="3" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="22" y="26" width="28" height="22" rx="3" stroke="currentColor" strokeWidth="1.5" />
-      <rect
-        x="34"
-        y="36"
-        width="28"
-        height="22"
-        rx="3"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        fill="var(--bg-canvas)"
-      />
-    </svg>
-  )
+  return <Folders className={styles.mark} size={72} strokeWidth={1.5} aria-hidden />
 }

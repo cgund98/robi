@@ -265,6 +265,7 @@ mod tests {
             &self,
             _session: SessionId,
             _instruction: String,
+            _images: Vec<robi_core::message::ImageAttachment>,
         ) -> Result<SubmitOutcome, ServiceError> {
             Ok(SubmitOutcome::Accepted)
         }
@@ -330,6 +331,7 @@ mod tests {
         let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
         let workspace_service = Arc::new(WorkspaceService {
             repository: workspaces.clone(),
+            asset_cleaner: None,
         });
         let opened = workspace_service
             .open_workspace(root.to_str().unwrap())
@@ -339,6 +341,7 @@ mod tests {
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
+            plan_cleaner: None,
         });
         let session = sessions
             .create_chat_session(CreateChatSessionCommand {
@@ -382,6 +385,7 @@ mod tests {
             )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
+            image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
         };
 
         let body = get_session_review(State(state), Path(session.id.to_string()))

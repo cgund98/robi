@@ -220,6 +220,7 @@ mod tests {
         let pool = Arc::new(sqlite::init_pool(&url).await.expect("in-memory pool opens"));
         let service = WorkspaceService {
             repository: Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool))),
+            asset_cleaner: None,
         };
         (service, pool)
     }

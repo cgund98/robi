@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use robi_core::model::Model;
 use robi_core::tool::ToolRegistry;
 
-use crate::agent::providers::{build_model, ApiKey, ModelId, ProviderSettings, ReasoningEffort};
+use crate::agent::providers::{
+    build_model, ApiKey, ImageSource, ModelId, ProviderSettings, ReasoningEffort,
+};
 use crate::domain::{
     chat_session::model::{AgentMode, ModeOverride},
     error::ServiceError,
@@ -80,11 +82,17 @@ impl ModelSource for FixedModelSource {
 /// Resolves provider settings from the store, then builds a model.
 pub struct SettingsModelSource {
     settings: Arc<dyn SettingsStore>,
+    /// Resolves a user message's attachment ids to bytes for the model.
+    images: Arc<dyn ImageSource>,
 }
 
 impl SettingsModelSource {
-    pub fn new(settings: Arc<dyn SettingsStore>) -> Self {
-        Self { settings }
+    pub fn new(settings: Arc<dyn SettingsStore>, images: Arc<dyn ImageSource>) -> Self {
+        Self { settings, images }
+    }
+
+    fn images(&self) -> Arc<dyn ImageSource> {
+        Arc::clone(&self.images)
     }
 
     async fn provider_settings(
@@ -167,7 +175,7 @@ impl ModelSource for SettingsModelSource {
                 plan_path,
                 max_bytes: crate::agent::prompt::DEFAULT_MAX_BYTES,
             });
-        build_model(settings, tools)
+        build_model(settings, tools, self.images())
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }
 
@@ -180,7 +188,7 @@ impl ModelSource for SettingsModelSource {
     ) -> Result<Arc<dyn Model>, ServiceError> {
         let mut settings = self.provider_settings(mode, &choice).await?;
         settings.system_prompt = system_prompt;
-        build_model(settings, tools)
+        build_model(settings, tools, self.images())
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }
 }
@@ -201,10 +209,26 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::agent::providers::ProviderError;
     use crate::domain::settings::{
         keys::{self, OPENCODE_GO_API_KEY},
         memory::MemorySettingsStore,
     };
+
+    /// No attachment is ever resolved in these tests; build_model only touches it
+    /// when a transcript carries images, which none of these do.
+    struct NoImages;
+
+    #[async_trait]
+    impl ImageSource for NoImages {
+        async fn image(&self, _id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
+            Ok(None)
+        }
+    }
+
+    fn no_images() -> Arc<dyn ImageSource> {
+        Arc::new(NoImages)
+    }
 
     #[tokio::test]
     async fn a_later_build_uses_the_key_written_between_calls() {
@@ -217,7 +241,7 @@ mod tests {
             .set(keys::REASONING_EFFORT, "low".into(), false)
             .await
             .unwrap();
-        let source = SettingsModelSource::new(store.clone());
+        let source = SettingsModelSource::new(store.clone(), no_images());
         let tools = Arc::new(ToolRegistry::new());
 
         let first = source
@@ -270,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_key_refuses_to_build() {
-        let source = SettingsModelSource::new(Arc::new(MemorySettingsStore::new()));
+        let source = SettingsModelSource::new(Arc::new(MemorySettingsStore::new()), no_images());
         let error = match source
             .model(
                 Arc::new(ToolRegistry::new()),
@@ -305,7 +329,7 @@ mod tests {
             .set(keys::REASONING_EFFORT, "low".into(), false)
             .await
             .unwrap();
-        let source = SettingsModelSource::new(store);
+        let source = SettingsModelSource::new(store, no_images());
         let tools = Arc::new(ToolRegistry::new());
 
         let effort_only = source
@@ -372,7 +396,7 @@ mod tests {
             .set(keys::REASONING_EFFORT_PLAN, "medium".into(), false)
             .await
             .unwrap();
-        let source = SettingsModelSource::new(store);
+        let source = SettingsModelSource::new(store, no_images());
 
         let from_mode = source
             .provider_settings(AgentMode::Plan, &ModeOverride::default())

@@ -152,7 +152,7 @@ pub struct ToolCall {
     /// finishes. Absent on every other tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<SubagentSnapshot>,
-    /// The `tool_originals` id when compression replaced this result.
+    /// The originals-table id when compression replaced this result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_id: Option<String>,
 }
@@ -205,6 +205,21 @@ impl ToolCall {
     }
 }
 
+/// An image attached to a user message.
+///
+/// The transcript holds the reference; the bytes live in the store
+/// (the session blob file), and the provider adapter resolves them when it builds a
+/// request. A `data:` URI or the raw bytes never enter the transcript: they
+/// would bloat the persisted `chat_messages.body`, the event stream, and every
+/// `GET /messages`. The wire needs the data URI; the transcript does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    /// The image id in the session blob file.
+    pub id: String,
+    /// `image/png`, `image/jpeg`, `image/webp`, or `image/gif`.
+    pub media_type: String,
+}
+
 /// A skill the host loaded because the user wrote `@id`.
 ///
 /// The typed text stays in [`Message::content`]. The provider appends one
@@ -226,6 +241,11 @@ pub struct Message {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillLoad>,
+    /// Images the user attached to this message. Ids, never bytes; the adapter
+    /// resolves them when it builds a request. Only `Role::User` messages carry
+    /// them. Old rows have no field and deserialize as an empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageAttachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     /// Set on a `Role::Tool` message, naming the call it answers.
@@ -242,10 +262,18 @@ impl Message {
             role: Role::User,
             content: content.into(),
             skills: Vec::new(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
         }
+    }
+
+    /// A user message carrying images. The text part still ships first on the
+    /// wire, so it reads like what the user said followed by what they showed.
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageAttachment>) -> Self {
+        let user = Self::user(content);
+        Self { images, ..user }
     }
 
     pub fn with_skills(mut self, skills: Vec<SkillLoad>) -> Self {
@@ -259,6 +287,7 @@ impl Message {
             role: Role::Assistant,
             content: content.into(),
             skills: Vec::new(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
@@ -281,6 +310,7 @@ impl Message {
             role: Role::Tool,
             content: content.into(),
             skills: Vec::new(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id),
             usage: None,
@@ -402,5 +432,57 @@ mod tests {
         assert!(message.call_mut(a.id).is_some());
         assert!(message.call_mut(b.id).is_some());
         assert_eq!(message.tool_calls.len(), 2);
+    }
+
+    #[test]
+    fn images_round_trip_with_the_message() {
+        let images = vec![
+            ImageAttachment {
+                id: "img_1".to_owned(),
+                media_type: "image/png".to_owned(),
+            },
+            ImageAttachment {
+                id: "img_2".to_owned(),
+                media_type: "image/jpeg".to_owned(),
+            },
+        ];
+        let message = Message::user_with_images("look at these", images.clone());
+        let json = serde_json::to_value(&message).expect("a message with images serializes");
+        assert_eq!(
+            json.get("images"),
+            Some(&serde_json::json!([
+                {"id": "img_1", "media_type": "image/png"},
+                {"id": "img_2", "media_type": "image/jpeg"},
+            ])),
+            "the images reference both parts of the attachment"
+        );
+
+        let back: Message = serde_json::from_value(json).expect("it deserializes");
+        assert_eq!(back.images, images);
+        assert_eq!(back.content, "look at these");
+    }
+
+    #[test]
+    fn a_message_without_images_omits_the_field() {
+        let json = serde_json::to_value(Message::user("plain")).expect("it serializes");
+        assert!(
+            json.get("images").is_none(),
+            "no images means no images field on the wire"
+        );
+    }
+
+    #[test]
+    fn a_transcript_written_before_images_existed_still_deserializes() {
+        // The shape `Message` had before `images` existed, plus the newer fields.
+        let old = serde_json::json!({
+            "id": MessageId::new(),
+            "role": "user",
+            "content": "hi",
+            "skills": [],
+        });
+
+        let message: Message = serde_json::from_value(old).expect("an older transcript loads");
+        assert!(message.images.is_empty());
+        assert_eq!(message.content, "hi");
     }
 }

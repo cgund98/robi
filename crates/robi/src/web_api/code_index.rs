@@ -31,7 +31,7 @@ pub struct IndexStatusBody {
 }
 
 impl IndexStatusBody {
-    fn from_status(status: robi_index::IndexStatus) -> Self {
+    pub(crate) fn from_status(status: robi_index::IndexStatus) -> Self {
         Self {
             state: match status.state {
                 IndexState::Downloading => "downloading",

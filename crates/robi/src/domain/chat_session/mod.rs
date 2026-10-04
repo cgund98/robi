@@ -1,4 +1,5 @@
 pub mod model;
+pub mod plans;
 pub mod repo;
 pub mod service;
 mod title;

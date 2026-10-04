@@ -1,27 +1,27 @@
-//! `tool_originals` on the session database.
-
-use std::sync::Arc;
+//! Tool originals in the per-session blob file.
+//!
+//! The id still rides on the tool call. The body is not a SQLite row.
 
 use async_trait::async_trait;
 use chrono::Utc;
 use robi_core::ids::SessionId;
-use serde_json::Value;
-use sqlx::SqlitePool;
 
 use crate::agent::compress::{sha256_hex, Inserted, Lookup, OriginalStore};
 
-pub struct SqliteOriginals {
-    pool: Arc<SqlitePool>,
+use super::session_blobs::SessionBlobs;
+
+pub struct BlobOriginals {
+    blobs: SessionBlobs,
 }
 
-impl SqliteOriginals {
-    pub fn new(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+impl BlobOriginals {
+    pub fn new(blobs: SessionBlobs) -> Self {
+        Self { blobs }
     }
 }
 
 #[async_trait]
-impl OriginalStore for SqliteOriginals {
+impl OriginalStore for BlobOriginals {
     async fn insert(
         &self,
         session: SessionId,
@@ -31,65 +31,32 @@ impl OriginalStore for SqliteOriginals {
         let id = crate::agent::compress::new_id();
         let sha256 = sha256_hex(body);
         let created_at = Utc::now().to_rfc3339();
-        sqlx::query(
-            r#"
-            INSERT INTO tool_originals (id, chat_session_id, tool_call_id, sha256, body, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
-        )
-        .bind(&id)
-        .bind(session.to_string())
-        .bind(tool_call_id)
-        .bind(&sha256)
-        .bind(body)
-        .bind(created_at)
-        .execute(self.pool.as_ref())
+        let blobs = self.blobs.clone();
+        let tool_call_id = tool_call_id.to_owned();
+        let body = body.to_owned();
+        tokio::task::spawn_blocking(move || {
+            blobs.insert_original(session, &id, &tool_call_id, &sha256, &body, &created_at)?;
+            Ok(Inserted { id, sha256 })
+        })
         .await
-        .map_err(|err| err.to_string())?;
-        Ok(Inserted { id, sha256 })
+        .map_err(|err| err.to_string())?
     }
 
     async fn lookup(&self, session: SessionId, id: &str) -> Result<Lookup, String> {
-        let rows: Vec<(String, String)> = if is_check_digit(id) {
-            sqlx::query_as(
-                r#"
-                SELECT id, body
-                FROM tool_originals
-                WHERE chat_session_id = ?1 AND substr(sha256, 1, 16) = ?2
-                "#,
-            )
-            .bind(session.to_string())
-            .bind(id)
-            .fetch_all(self.pool.as_ref())
+        let blobs = self.blobs.clone();
+        let id = id.to_owned();
+        let rows = tokio::task::spawn_blocking(move || blobs.lookup_originals(session, &id))
             .await
-            .map_err(|err| err.to_string())?
-        } else {
-            sqlx::query_as(
-                r#"
-                SELECT id, body
-                FROM tool_originals
-                WHERE chat_session_id = ?1 AND id = ?2
-                "#,
-            )
-            .bind(session.to_string())
-            .bind(id)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|err| err.to_string())?
-        };
+            .map_err(|err| err.to_string())??;
         rows_to_lookup(rows)
     }
-}
-
-fn is_check_digit(id: &str) -> bool {
-    id.len() == 16 && id.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn rows_to_lookup(rows: Vec<(String, String)>) -> Result<Lookup, String> {
     match rows.len() {
         0 => Ok(Lookup::Missing),
         1 => {
-            let body = serde_json::from_str::<Value>(&rows[0].1).map_err(|err| err.to_string())?;
+            let body = serde_json::from_str(&rows[0].1).map_err(|err| err.to_string())?;
             Ok(Lookup::One(body))
         }
         _ => Ok(Lookup::Ambiguous(

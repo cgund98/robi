@@ -12,6 +12,7 @@ robi-index = { path = "../robi-index" }
 
 async-lsp.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 axum = { workspace = true, features = ["macros"] }
@@ -22,6 +23,7 @@ futures-util.workspace = true
 http.workspace = true
 globset.workspace = true
 ignore.workspace = true
+redb.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 scraper.workspace = true

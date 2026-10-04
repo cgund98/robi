@@ -85,7 +85,6 @@ section that owns it.
 | Milestone | Piece | State |
 |---|---|---|
 | M1 | Anthropic's own wire format | Open. The client speaks OpenAI-compatible endpoints. |
-| M1 | Image ingestion on OpenAI-compatible providers | Open. Requests are text-only. A user image should go out as an OpenAI chat-completions image part (`image_url` / `data:` URI) on models that accept vision. |
 | M2 | Process placement (D3): in-process loop vs sidecar | Desktop hosts the API in-process. `robi-api` remains for headless and `pnpm dev`. |
 | M2 | Tool-card expand default, and whether it persists per session | Open in `docs/src/design/shell/visual-style.md`. |
 | M3 | Auto-compaction and a manual trigger (F3.4) | Not built. Specified in [context-management.md](design/workspace/context-management.md). |
@@ -922,7 +921,7 @@ turned off the first time it hides a bug.
   compressed form, with the original in the session store, or stores both and
   lets the provider request select the compressed form. Shell output is
   settled in [shell-output.md](design/compression/shell-output.md): the transcript stores
-  the compressed view, and `tool_originals` holds the bounded streams. The
+  the compressed view, and the session blob file holds the bounded streams. The
   same question is still open for JSON and search hits. M0's rule is that the
   transcript is the only state the loop needs to resume. Retrieval has to
   survive a restart without breaking that rule, and without rewriting earlier

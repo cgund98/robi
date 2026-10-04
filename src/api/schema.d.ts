@@ -244,6 +244,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/docs/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["search_docs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{id}/docs/{path}": {
         parameters: {
             query?: never;
@@ -340,9 +356,19 @@ export interface components {
             display_name: string;
             id: string;
         };
+        /** @description One image a user attached, referenced by id. The bytes live in the store. */
+        ChatImage: {
+            id: string;
+            media_type: string;
+        };
         ChatMessage: {
             content: string;
             id: string;
+            /**
+             * @description Images the user attached. `id` is an image in the session blob file; fetch the bytes
+             *     via `GET /chat_sessions/{id}/images/{image_id}`.
+             */
+            images?: components["schemas"]["ChatImage"][];
             role: string;
             skills?: components["schemas"]["ChatSkill"][];
             tool_call_id?: string | null;
@@ -455,6 +481,40 @@ export interface components {
         DocEntry: {
             /** @description Workspace-relative, `/` separated. */
             path: string;
+        };
+        DocSearchHit: {
+            /** Format: int32 */
+            end_line: number;
+            /** @description Workspace-relative, `/` separated. */
+            path: string;
+            /**
+             * Format: double
+             * @description Reciprocal rank fusion score. Higher is better.
+             */
+            score: number;
+            /** @description The chunk's opening text, cut at 500 bytes on a character boundary. */
+            snippet: string;
+            /** Format: int32 */
+            start_line: number;
+            /**
+             * @description The heading chain of the section this chunk belongs to, joined by `.`
+             *     (`Install.Overview`). Empty when the page did not parse into sections.
+             */
+            title: string;
+        };
+        DocSearchResult: {
+            /** @description `semantic` or `ripgrep`. */
+            engine: string;
+            /** @description Ranked markdown hits, best first. */
+            hits: components["schemas"]["DocSearchHit"][];
+            /**
+             * @description The index state the hits were taken from. For `semantic`, anything but
+             *     `ready` means the corpus was incomplete, so the hits may be too.
+             *     `ripgrep` does not start the index and does not treat this as partial.
+             */
+            index: components["schemas"]["IndexStatusBody"];
+            /** @description The trimmed query that was run. */
+            query: string;
         };
         DocsListing: {
             files: components["schemas"]["DocEntry"][];
@@ -1250,6 +1310,50 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DocsListing"];
                 };
+            };
+        };
+    };
+    search_docs: {
+        parameters: {
+            query: {
+                /** @description A natural language question, or a literal string when engine is ripgrep. Required, non-blank. */
+                q: string;
+                /** @description How many hits to return. Default 10, maximum 20. */
+                limit?: number;
+                /** @description semantic (default) or ripgrep. Anything else is 400. */
+                engine?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ranked markdown hits with the engine and the index state they came from */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocSearchResult"];
+                };
+            };
+            /** @description `q` is missing or blank, `limit` is out of range, or `engine` is unknown */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

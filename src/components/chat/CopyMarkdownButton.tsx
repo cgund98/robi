@@ -1,4 +1,5 @@
 import * as Tooltip from '@radix-ui/react-tooltip'
+import { Check, Clipboard } from 'lucide-react'
 import { useState } from 'react'
 
 import styles from './CopyMarkdownButton.module.css'
@@ -38,7 +39,11 @@ export function CopyMarkdownButton({ text }: CopyMarkdownButtonProps) {
               })
             }}
           >
-            {copied ? <CheckIcon /> : <ClipboardIcon />}
+            {copied ? (
+              <Check size={14} strokeWidth={1.6} aria-hidden />
+            ) : (
+              <Clipboard size={14} strokeWidth={1.3} aria-hidden />
+            )}
           </button>
         </Tooltip.Trigger>
         <Tooltip.Portal>
@@ -48,43 +53,5 @@ export function CopyMarkdownButton({ text }: CopyMarkdownButtonProps) {
         </Tooltip.Portal>
       </Tooltip.Root>
     </Tooltip.Provider>
-  )
-}
-
-function ClipboardIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden>
-      <rect
-        x="4"
-        y="3.5"
-        width="8"
-        height="10"
-        rx="1.2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.3"
-      />
-      <path
-        d="M6 3.5h4v-1a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v1z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.3"
-      />
-    </svg>
-  )
-}
-
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden>
-      <path
-        d="M3.5 8.2 6.4 11l6.1-6.2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   )
 }

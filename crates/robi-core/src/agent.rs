@@ -240,16 +240,18 @@ impl Agent {
         text: &str,
         cancel: CancellationToken,
     ) -> TurnOutcome {
-        self.user_input_with_skills(session, text, Vec::new(), cancel)
+        self.user_input_with_skills(session, text, Vec::new(), Vec::new(), cancel)
             .await
     }
 
-    /// [`user_input`](Self::user_input) with skill bodies the host already loaded.
+    /// [`user_input`](Self::user_input) with skill bodies the host already loaded
+    /// and images the user attached.
     pub async fn user_input_with_skills(
         &self,
         session: SessionId,
         text: &str,
         skills: Vec<crate::message::SkillLoad>,
+        images: Vec<crate::message::ImageAttachment>,
         cancel: CancellationToken,
     ) -> TurnOutcome {
         match self.settle_unresolved(&session, &cancel).await {
@@ -273,7 +275,7 @@ impl Agent {
             Err(error) => return TurnOutcome::Failed(error),
         }
 
-        let message = Message::user(text).with_skills(skills);
+        let message = Message::user_with_images(text, images).with_skills(skills);
         if let Err(error) = self.store.append(session, message.clone()).await {
             return TurnOutcome::Failed(error.into());
         }

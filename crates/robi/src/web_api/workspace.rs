@@ -113,7 +113,6 @@ pub async fn delete_workspace(
 ) -> Result<StatusCode, ServiceError> {
     let id = parse_workspace_id(&id)?;
     state.workspace_service.delete_workspace(id).await?;
-    state.index.remove_files(id);
     if let Some(mcp) = &state.mcp {
         mcp.close(id).await;
     }

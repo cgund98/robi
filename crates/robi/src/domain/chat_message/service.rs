@@ -27,14 +27,17 @@ impl ChatMessageService {
         &self,
         session: SessionId,
         instruction: &str,
+        images: Vec<robi_core::message::ImageAttachment>,
     ) -> Result<SubmitOutcome, ServiceError> {
-        if instruction.trim().is_empty() {
+        if instruction.trim().is_empty() && images.is_empty() {
             return Err(ServiceError::BadRequest(
                 "instruction must not be empty".into(),
             ));
         }
         self.sessions.get_chat_session(session).await?;
-        self.runtime.submit(session, instruction.to_owned()).await
+        self.runtime
+            .submit(session, instruction.to_owned(), images)
+            .await
     }
 
     /// Approve or reject one paused call and resume that turn.
@@ -232,6 +235,7 @@ mod tests {
             &self,
             session: SessionId,
             instruction: String,
+            _images: Vec<robi_core::message::ImageAttachment>,
         ) -> Result<SubmitOutcome, ServiceError> {
             self.seen
                 .lock()
@@ -328,6 +332,7 @@ mod tests {
                 repository: sessions.clone(),
                 workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
                 events: None,
+                plan_cleaner: None,
             }),
             runtime: runtime.clone(),
             store: store.clone(),
@@ -342,7 +347,7 @@ mod tests {
         sessions.insert(session);
 
         let error = service
-            .submit_instruction(session, "   ")
+            .submit_instruction(session, "   ", Vec::new())
             .await
             .unwrap_err();
         assert_eq!(
@@ -359,7 +364,7 @@ mod tests {
 
         assert_eq!(
             service
-                .submit_instruction(session, "hello")
+                .submit_instruction(session, "hello", Vec::new())
                 .await
                 .unwrap_err(),
             ServiceError::NotFound(session.to_string())
@@ -389,7 +394,7 @@ mod tests {
 
         assert_eq!(
             service
-                .submit_instruction(session, "do the thing")
+                .submit_instruction(session, "do the thing", Vec::new())
                 .await
                 .unwrap(),
             SubmitOutcome::Accepted

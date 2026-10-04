@@ -53,6 +53,25 @@
   box-sizing: border-box;
 }
 
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--space-2);
+}
+
+.images:last-child {
+  margin-bottom: 0;
+}
+
+.bubble {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  display: block;
+}
+
 .turn {
   contain: layout style;
   display: flex;

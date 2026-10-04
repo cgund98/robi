@@ -30,13 +30,15 @@ regex = "1.11.2"
 ignore = "0.4.23"
 globset = "0.4.16"
 thiserror = "2.0.20"
+# The `data:` URI in a chat-completions image part needs base64 (D12).
+base64 = "0.22.1"
 tokio = { version = "1.53.1", features = ["sync", "time", "rt", "macros"] }
 tokio-util = "0.7.19"
 tracing = "0.1.41"
 uuid = { version = "1.24.0", features = ["v7", "serde"] }
 
 # Local HTTP API (`robi-api`) and the fake SSE server in provider tests.
-axum = "0.8.4"
+axum = { version = "0.8.4", features = ["multipart", "macros", "json"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
 toml = "0.8.23"
@@ -58,6 +60,7 @@ tree-sitter-javascript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
 tree-sitter-md = "0.3"
+redb = "2.6.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 notify = "8"

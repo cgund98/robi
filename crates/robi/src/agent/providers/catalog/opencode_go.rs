@@ -83,6 +83,11 @@ pub(super) fn models() -> Vec<ModelInfo> {
             // Every model this endpoint serves reports tool calling and reasoning.
             supports_tools: true,
             supports_reasoning: true,
+            // Vision acceptance is permissive: every row states it explicitly, and
+            // a capability we cannot confirm is assumed present rather than guessed
+            // absent (D13). The provider's own 400 is the honest fallback for a
+            // model that rejects images.
+            supports_vision: true,
         })
         .collect()
 }

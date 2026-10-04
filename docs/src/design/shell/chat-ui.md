@@ -45,6 +45,16 @@ is a Radix dialog. An unset title starts the field empty. Save sends `PATCH`
 with the trimmed title. Cancel and Escape leave the title as it is. An empty
 title is refused in the dialog and is not sent.
 
+The `×` on a session opens a delete confirm dialog, also a Radix dialog, in
+place of a native `window.confirm`. It names the session and says the delete
+cannot be undone. When that session's agent is running it adds a muted line,
+**A running turn will be stopped.** **Delete** sends `DELETE`; the server stops
+the running actor first, so the request can take a moment. While that request
+is in flight, **Delete** carries a spinner and both buttons are disabled, and
+Escape and an outside click do not close the dialog. A failure shows the error
+line and keeps the dialog open. Success closes it and the session leaves the
+list.
+
 ## Transcript
 
 Zustand holds the session list, the active id, messages keyed by session, and
@@ -65,7 +75,7 @@ The transcript is HTTP, not the event stream.
 | `turn_finished` | The session and the message list again |
 | `robi.session.v1.created`, `robi.session.v1.updated` | That session again. The message list is left as it is |
 | `robi.session.v1.deleted` | Drop that session from the list |
-| `robi.app.v1.error` | Show `message` on the shell error line |
+| `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
 | Phase is `thinking` or `responding`, and no frame has arrived for 2 seconds | The session and the message list again |
 
 `message_delta` does not change message text. `kind: "reasoning"` sets
@@ -74,7 +84,11 @@ ignored. `turn_started` sets **Thinking**. `turn_finished` sets `idle`, then
 the session refetch restores **Thinking** when `has_pending_agent` is still
 true. That flag is still set while the actor emits `turn_finished`, so the
 shell reads the session once more and returns to `idle` when the actor has
-exited. The 2-second refetch is what paints a stored turn when the frame that
+exited. A failed turn, and every other shell error, is kept in memory and listed
+under Settings → Audit log until Robi restarts. Several can be open at once.
+One for the chat on screen sits at the bottom of that transcript. One for
+another chat, or for the app, sits at the top of the shell and names that chat
+when it has one. Dismiss hides it. The audit log keeps it. The 2-second refetch is what paints a stored turn when the frame that
 would have loaded it was dropped. A frame resets that wait.
 
 Opening the stream refetches even on the first connect. A frame published
@@ -192,8 +206,8 @@ the main bundle. While the render is in flight the fence shows as an ordinary
 code block; when the SVG is ready it replaces the source in a centered,
 horizontally scrollable surface (see
 [visual-style.md](visual-style.md#mermaid-diagrams)). A source mermaid cannot
-parse keeps the code fence — the fence is the error surface, with no separate
-message.
+parse keeps the code fence. Mermaid's own error diagram is suppressed, so a
+bad diagram does not paint a wide error into the page; the failure is logged.
 
 The theme is the same dark token set as the shell, mapped to mermaid's
 `themeVariables`, so diagrams do not fall back to its default palette. The
@@ -222,7 +236,7 @@ dots that step `.`, `..`, `...` beside it. The count waits until one second
 has passed. Reduced motion shows `...` and does not step. That line is the
 busy signal.
 
-The ring at the end of the model row is the context meter. It is a button.
+The ring at the right of that row is the context meter. It is a button.
 The arc is the share of the model's context window the next request would
 use. The latest assistant `usage.input` is the prompt size through the
 request that reported it. Each report is cumulative, so the meter does not
@@ -242,13 +256,18 @@ Unsent text stays with the chat it was typed in. Switching sessions, or moving b
 The textarea stays editable while a turn runs and while a send is in flight.
 Enter does not submit during session load, a send that has not returned, or
 while the phase is not `idle`. Until that send returns, the send slot is a
-spinner. After it returns, the control becomes **Stop**: a square in the same
+spinner. After it returns, the control becomes **Stop**: a filled circle with a rounded square cut out, in the same
 slot as the return mark. Stop posts `POST /chat_sessions/{id}/stop` and stays
 in that slot until the call returns, which is after the actor has exited. The
 client does not send a second instruction while the phase is not `idle`.
 Another session can still be running; the lock follows the session on screen.
 Selecting it again refetches, and `has_pending_agent` restores the phase when
 the actor is still running.
+
+Recents shows the five most recently used sessions. **Show more** reveals the
+next ten, then the ten after that, until the list is open. The session on
+screen stays in that list when it is older than the window. Switching
+workspace returns the list to five.
 
 A session whose agent is still running shows a grayscale spinner on its row
 in the sidebar. That is the phase when it is not `idle`, or `has_pending_agent`
@@ -260,14 +279,17 @@ is not on screen are not applied, so the row does not update on each token.
 A session refetch replaces the row when the title, mode, model, grants, or
 running flag change. Reduced motion keeps the ring still.
 
-Mode, model, and effort are quiet dropdowns in that row, and inside the
-welcome card. Mode sits on the left. Model, effort, and the context meter sit
-on the right. Mode is `ask`, `plan`, or `agent`. The selected mode, and each
-row in its menu, uses that mode's color: ask is `--mode-ask`, plan is
-`--mode-plan`, and agent stays `--ink-muted`. Model and effort show the
-value in effect for that mode: the session override when one is stored,
-otherwise that mode's setting, then the fallback setting. **Use default**
-clears that mode's session key. A saved session writes the choice with
+Mode and the model menu are quiet dropdowns on the left of that row, and
+inside the welcome card. The context meter sits on the right of an open
+session's row. The welcome card does not show it. Mode is `ask`,
+`plan`, or `agent`. The selected mode, and each row in its menu, uses that
+mode's color: ask is `--mode-ask`, plan is `--mode-plan`, and agent stays
+`--ink-muted`. The model menu's label is the model and effort in effect,
+such as `Grok 4.7 Low`. Opening it shows a Model row and an Effort row, and
+each opens its own list. Model and effort show the value in effect for that
+mode: the session override when one is stored, otherwise that mode's
+setting, then the fallback setting. **Use default** clears that mode's
+session key. A saved session writes the choice with
 `PATCH`. A draft keeps it in the client until the first send, which stores
 it on `POST /chat_sessions` before the instruction. The dropdowns stay
 usable while a turn is running. The actor already built keeps its mode,
@@ -275,3 +297,16 @@ model, and tools; the next one reads the new choice. The catalog comes from
 `GET /api/v1/models`, and each model includes `context_window`. Settings
 hold the fallback model and effort, and an optional model and effort per
 mode. The mode rules are in [agent-modes.md](../core/agent-modes.md).
+
+Attached images sit as 32px thumbnails in a row at the top left of the field,
+above the text. Text files sit in that same row as name chips. Hovering a
+thumbnail shows its remove control; a chip carries its own remove control.
+The paperclip accepts PNG, JPEG, WebP, and GIF, plus common source and text
+extensions. A message holds at most eight attachments. A text file larger
+than 256 KB, or one that contains a NUL byte, stays in the field and the
+composer reports why. On send, each text file is read in the browser and
+appended to the instruction as `<file name="…">` … `</file>`, so the model
+sees the contents as ordinary message text. Images still travel as multipart
+file parts. The paperclip sits in the control row beside the context meter.
+A sent message shows images as a row of 32px thumbnails above the message
+text; the injected file text is part of that message.

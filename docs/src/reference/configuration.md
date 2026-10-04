@@ -80,15 +80,19 @@ Set by the user or the shell, not by a settings file.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ROBI_DATABASE_URL` | `sqlite://robi.db?mode=rwc` for `robi-api`; the desktop app uses `robi.db` in the app data directory | The session database. |
+| `ROBI_DATABASE_URL` | `sqlite://robi.db?mode=rwc` for `robi-api`. The packaged app uses `robi.db` in the app data directory. `pnpm tauri dev` uses `dev/robi.db` there | The session database. |
 | `ROBI_BIND` | `127.0.0.1:1431`, then the next free port through `1450` | Listen address. Must be loopback when set. When unset, a taken `1431` falls through to the next port. When set, that address is used exactly. |
 | `ROBI_EXTERNAL_API` | unset | Set to `1` with `pnpm tauri dev` to skip the in-process API and use `make dev-api` through the Vite proxy. Ignored in a packaged build. |
 | `HOME` | — | Resolves the `~/.robi` directory. Required. |
 
 `robi-api` and the desktop process honor `RUST_LOG` for tracing output
 (default `robi=info`). Each start writes a new file under `~/.robi/logs/` named
-`robi-api-<timestamp>.log`. An existing file is never truncated. Debug builds
-also print the same events to stderr.
+`robi-api-<timestamp>.log`. A dev build, including `pnpm tauri dev` and
+`robi-api` built for debug, uses `robi-dev-<timestamp>.log` instead, and each
+prefix is pruned on its own. An existing file is never truncated. Debug builds
+also print the same events to stderr. A failure starting the in-process API, and
+any panic, is appended to that file and flushed before the process exits. The
+background logger does not flush when the process aborts.
 
 On startup the process keeps the new file and the newest older log, then
 deletes the rest when a file is older than 7 days or when more than 8 files

@@ -6,7 +6,8 @@ const ITEMS = [
   { to: '/settings/providers', label: 'Model Providers' },
   { to: '/settings/mcp', label: 'MCP' },
   { to: '/settings/permissions', label: 'Permissions' },
-  { to: '/settings/general', label: 'General' }
+  { to: '/settings/general', label: 'General' },
+  { to: '/settings/audit', label: 'Audit log' }
 ] as const
 
 export function SettingsLayout() {

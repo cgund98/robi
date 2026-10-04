@@ -18,16 +18,20 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     adapters::{
+        chat_image_store::BlobImageStore,
         chat_message::SqliteMessageStore,
         chat_runtime::{AgentFactory, SerializedChatRuntime},
         chat_session::repo::SqliteChatSessionRepository,
         file_change::repo::SqliteFileChangeRepository,
         model_source::SettingsModelSource,
-        originals::SqliteOriginals,
+        originals::BlobOriginals,
+        session_blobs::{evacuate_sqlite, SessionBlobs},
+        session_plans::FilesystemSessionPlans,
         settings::TomlSettingsStore,
         sqlite,
         workspace::repo::SqliteWorkspaceRepository,
     },
+    agent::providers::ImageSource,
     agent::{compress::OriginalStore, index::IndexHub, lsp::LspHub, mcp::McpHub, web::BraveSearch},
     domain::{
         chat_message::service::ChatMessageService,
@@ -35,7 +39,7 @@ use crate::{
         events::{BusEventSink, EventBus},
         file_change::repo::FileChangeRepository,
         settings::{store::SettingsStore, SettingsService},
-        workspace::service::WorkspaceService,
+        workspace::{assets::WorkspaceAssetCleaner, service::WorkspaceService},
     },
     web_api::{self, state::AppState},
 };
@@ -71,6 +75,12 @@ pub enum BootstrapError {
 
     #[error("{0}")]
     Bind(String),
+
+    #[error("failed to prune chat sessions: {0}")]
+    Prune(String),
+
+    #[error("failed to move session blobs out of sqlite: {0}")]
+    Blobs(String),
 }
 
 /// Parse `ROBI_BIND`. The address must be loopback.
@@ -107,14 +117,22 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
             &config.settings_dir,
         ))),
     ));
+    let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
+    evacuate_sqlite(&pool, &blobs)
+        .await
+        .map_err(BootstrapError::Blobs)?;
     let store: Arc<dyn robi_core::store::MessageStore> =
-        Arc::new(SqliteMessageStore::new(Arc::clone(&pool)));
-    let originals: Arc<dyn OriginalStore> = Arc::new(SqliteOriginals::new(Arc::clone(&pool)));
+        Arc::new(SqliteMessageStore::new(Arc::clone(&pool), blobs.clone()));
+    let image_source: Arc<BlobImageStore> = Arc::new(BlobImageStore::new(blobs.clone()));
+    let originals: Arc<dyn OriginalStore> = Arc::new(BlobOriginals::new(blobs.clone()));
     let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
     let chat_session_service = Arc::new(ChatSessionService {
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces: workspaces.clone(),
         events: Some(Arc::clone(&event_bus)),
+        plan_cleaner: Some(Arc::new(
+            FilesystemSessionPlans::default().with_blobs(blobs),
+        )),
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
@@ -126,7 +144,10 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
         events: Arc::new(BusEventSink::new(Arc::clone(&event_bus))),
-        models: Arc::new(SettingsModelSource::new(Arc::clone(&settings))),
+        models: Arc::new(SettingsModelSource::new(
+            Arc::clone(&settings),
+            Arc::clone(&image_source) as Arc<dyn ImageSource>,
+        )),
         tools,
         config: LoopConfig::default(),
         sessions: Some(Arc::clone(&chat_session_service)),
@@ -139,9 +160,17 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         mcp: Some(Arc::clone(&mcp)),
         originals: Some(Arc::clone(&originals)),
     }));
+    let removed = chat_session_service
+        .prune_excess_sessions()
+        .await
+        .map_err(|err| BootstrapError::Prune(err.to_string()))?;
+    if removed > 0 {
+        tracing::info!(removed, "pruned chat sessions");
+    }
     Ok(AppState {
         workspace_service: Arc::new(WorkspaceService {
             repository: workspaces,
+            asset_cleaner: Some(index.clone() as Arc<dyn WorkspaceAssetCleaner>),
         }),
         chat_session_service: Arc::clone(&chat_session_service),
         chat_message_service: Arc::new(ChatMessageService {
@@ -155,6 +184,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         index,
         mcp: Some(mcp),
         originals,
+        image_source,
     })
 }
 
@@ -172,37 +202,50 @@ pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapE
     std::thread::Builder::new()
         .name("robi-api".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(err) => {
-                    let _ = tx.send(Err(BootstrapError::Bind(format!(
-                        "failed to start the server runtime: {err}"
-                    ))));
-                    return;
-                }
-            };
-            let started = rt.block_on(async move {
-                let state = build_app_state(config).await?;
-                let listener = bind(listen).await?;
-                let addr = listener.local_addr().map_err(|err| {
-                    BootstrapError::Bind(format!("failed to read the bound address: {err}"))
-                })?;
-                let app = router(state);
-                Ok::<_, BootstrapError>((listener, app, addr))
-            });
-            match started {
-                Ok((listener, app, addr)) => {
-                    let _ = tx.send(Ok(addr));
-                    if let Err(err) = rt.block_on(async move { axum::serve(listener, app).await }) {
-                        tracing::error!(%err, "server stopped");
+            let report = tx.clone();
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(err) => {
+                        let _ = tx.send(Err(BootstrapError::Bind(format!(
+                            "failed to start the server runtime: {err}"
+                        ))));
+                        return;
+                    }
+                };
+                let started = rt.block_on(async move {
+                    let state = build_app_state(config).await?;
+                    let listener = bind(listen).await?;
+                    let addr = listener.local_addr().map_err(|err| {
+                        BootstrapError::Bind(format!("failed to read the bound address: {err}"))
+                    })?;
+                    let app = router(state);
+                    Ok::<_, BootstrapError>((listener, app, addr))
+                });
+                match started {
+                    Ok((listener, app, addr)) => {
+                        let _ = tx.send(Ok(addr));
+                        if let Err(err) =
+                            rt.block_on(async move { axum::serve(listener, app).await })
+                        {
+                            tracing::error!(%err, "server stopped");
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
                     }
                 }
-                Err(err) => {
-                    let _ = tx.send(Err(err));
-                }
+            }));
+            if let Err(payload) = panicked {
+                let message = panic_payload(payload.as_ref());
+                tracing::error!(%message, "server thread panicked");
+                crate::logs::record_error(&format!("server thread panicked: {message}"));
+                let _ = report.send(Err(BootstrapError::Bind(format!(
+                    "the server thread panicked: {message}"
+                ))));
             }
         })
         .map_err(|err| BootstrapError::Bind(format!("failed to spawn the server thread: {err}")))?;
@@ -245,6 +288,15 @@ pub async fn bind(listen: Listen) -> Result<TcpListener, BootstrapError> {
             )))
         }
     }
+}
+
+fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("Box<dyn Any>")
+        .to_string()
 }
 
 fn cors_layer() -> CorsLayer {

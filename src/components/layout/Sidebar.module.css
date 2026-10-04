@@ -56,6 +56,28 @@
   font-size: 12px;
 }
 
+.showMore {
+  align-self: flex-start;
+  margin: var(--space-1) 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  text-align: left;
+}
+
+.showMore:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg-surface-hover);
+}
+
+.showMore:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .sessionList {
   list-style: none;
   margin: 0;

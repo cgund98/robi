@@ -355,6 +355,18 @@ impl Agent {
     pub async fn new_chat(&self, workspace: WorkspaceId) -> Result<SessionId>;
     pub async fn user_input(&self, session: SessionId, text: &str,
                             cancel: CancellationToken) -> Result<TurnOutcome>;
+    /// `user_input` with skill bodies and images the host
+    /// already loaded. The loop appends them to the user message; the provider
+    /// resolves the image ids to bytes at request build (D11). `user_input`
+    /// forwards empty lists.
+    pub async fn user_input_with_skills(
+        &self,
+        session: SessionId,
+        text: &str,
+        skills: Vec<SkillLoad>,
+        images: Vec<ImageAttachment>,   // (D10)
+        cancel: CancellationToken,
+    ) -> Result<TurnOutcome>;
     /// Settles any outstanding turn. If that executed tool calls, the loop
     /// continues into a model turn so the model reads their results.
     pub async fn resume(&self, session: SessionId,

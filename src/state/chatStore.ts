@@ -21,7 +21,13 @@ import {
 } from '../api/sessions'
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
 import { claimComposerDraft, writeComposerDraft } from './composerDrafts'
+import { useErrorLog } from './errorLog'
 import { useWorkspaceStore } from './workspaceStore'
+
+function noteError(message: string, sessionId?: string | null): string {
+  useErrorLog.getState().report(message, sessionId ?? null)
+  return message
+}
 
 export type AgentPhase = 'idle' | 'thinking' | 'responding'
 
@@ -56,7 +62,7 @@ type ChatState = {
   setModeChoice: (mode: AgentMode) => Promise<void>
   setModelChoice: (model: string | null) => Promise<void>
   setEffortChoice: (effort: string | null) => Promise<void>
-  sendInstruction: (instruction: string) => Promise<boolean>
+  sendInstruction: (instruction: string, images?: File[]) => Promise<boolean>
   stopAgent: () => Promise<void>
   decideCall: (sessionId: string, callId: string, decision: 'approve' | 'reject') => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
@@ -189,7 +195,7 @@ async function setChoice(
       error: null
     }))
   } catch (err) {
-    set({ error: errorText(err, 'Failed to update the model') })
+    set({ error: noteError(errorText(err, 'Failed to update the model'), activeSessionId) })
   }
 }
 
@@ -367,7 +373,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         loading: false,
         busy: false,
-        error: errorText(err, 'Failed to load chat sessions'),
+        error: noteError(errorText(err, 'Failed to load chat sessions')),
         draftSelected: get().activeSessionId ? get().draftSelected : true
       })
     }
@@ -400,7 +406,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       set({
         transcriptLoading: false,
-        error: errorText(err, 'Failed to load chat session')
+        error: noteError(errorText(err, 'Failed to load chat session'), id)
       })
     }
   },
@@ -434,7 +440,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         error: null
       }))
     } catch (err) {
-      set({ error: errorText(err, 'Failed to update the mode') })
+      set({ error: noteError(errorText(err, 'Failed to update the mode'), activeSessionId) })
     }
   },
 
@@ -446,9 +452,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await setChoice(get, set, 'reasoning_effort', effort)
   },
 
-  sendInstruction: async (instruction) => {
+  sendInstruction: async (instruction, images) => {
     const text = instruction.trim()
-    if (!text || get().busy) {
+    const hasImages = (images?.length ?? 0) > 0
+    if ((!text && !hasImages) || get().busy) {
       return false
     }
     const { draftSelected, activeSessionId } = get()
@@ -466,7 +473,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (creating) {
         const workspaceId = useWorkspaceStore.getState().activeWorkspaceId
         if (!workspaceId) {
-          set({ busy: false, error: 'Choose a workspace first' })
+          set({ busy: false, error: noteError('Choose a workspace first') })
           return false
         }
         const created = await createSession(workspaceId, undefined, draftConfig(get()))
@@ -481,13 +488,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           draftEffort: null
         }))
         try {
-          await submitInstruction(created.id, text)
+          await submitInstruction(created.id, text, images)
         } catch (err) {
           if (epoch !== hydrateEpoch) {
             set({ busy: false })
             return false
           }
-          set({ busy: false, error: errorText(err, 'Failed to send message') })
+          set({
+            busy: false,
+            error: noteError(errorText(err, 'Failed to send message'), activeSessionId)
+          })
           return false
         }
         if (epoch !== hydrateEpoch) {
@@ -503,7 +513,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return true
       }
 
-      await submitInstruction(activeSessionId, text)
+      await submitInstruction(activeSessionId, text, images)
       set((state) => ({
         busy: false,
         pendingEcho: { sessionId: activeSessionId, text },
@@ -512,7 +522,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       writeComposerDraft(activeSessionId, '')
       return true
     } catch (err) {
-      set({ busy: false, error: errorText(err, 'Failed to send message') })
+      set({
+        busy: false,
+        error: noteError(errorText(err, 'Failed to send message'), activeSessionId)
+      })
       return false
     }
   },
@@ -551,7 +564,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set((state) => ({
         stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
-        error: errorText(err, 'Failed to stop')
+        error: noteError(errorText(err, 'Failed to stop'), sessionId)
       }))
     }
   },
@@ -568,7 +581,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set((state) => ({
         busy: false,
-        error: errorText(err, 'Failed to settle the tool call'),
+        error: noteError(errorText(err, 'Failed to settle the tool call'), sessionId),
         phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
       }))
     }
@@ -583,7 +596,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: state.sessions.map((session) => (session.id === id ? updated : session))
       }))
     } catch (err) {
-      set({ busy: false, error: errorText(err, 'Failed to rename chat session') })
+      set({ busy: false, error: noteError(errorText(err, 'Failed to rename chat session'), id) })
     }
   },
 
@@ -592,7 +605,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await deleteSession(id)
     } catch (err) {
-      set({ busy: false, error: errorText(err, 'Failed to delete chat session') })
+      set({ busy: false, error: noteError(errorText(err, 'Failed to delete chat session'), id) })
       return
     }
 
@@ -630,7 +643,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (epoch !== hydrateEpoch) {
         return
       }
-      set({ error: errorText(err, 'Failed to load chat session') })
+      set({ error: noteError(errorText(err, 'Failed to load chat session'), fallback.id) })
     }
   },
 
@@ -704,6 +717,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const tick = stopTick
     const epoch = hydrateEpoch
     const stopping = get().stoppingSessionId === sessionId
+    if (failedMessage) {
+      noteError(failedMessage, sessionId)
+    }
     if (!stopping) {
       set((state) => ({
         phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' },
@@ -753,7 +769,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (epoch !== hydrateEpoch) {
         return
       }
-      set({ error: errorText(err, 'Failed to load chat session') })
+      set({ error: noteError(errorText(err, 'Failed to load chat session'), sessionId) })
     }
   },
 
@@ -805,7 +821,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (err instanceof ApiError && err.status === 404) {
         return
       }
-      set({ error: errorText(err, 'Failed to load chat session') })
+      set({ error: noteError(errorText(err, 'Failed to load chat session'), sessionId) })
     }
   },
 
@@ -855,7 +871,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ) {
         return
       }
-      set({ error: errorText(err, 'Failed to load chat sessions') })
+      set({ error: noteError(errorText(err, 'Failed to load chat sessions')) })
     }
   },
 
