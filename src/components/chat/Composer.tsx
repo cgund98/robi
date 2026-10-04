@@ -15,6 +15,7 @@ import {
 } from '../../state/composerDrafts'
 import {
   fileAccept,
+  filesFromTransfer,
   instructionWithTextFiles,
   isImageFile,
   isTextFile,
@@ -70,6 +71,10 @@ type ComposerProps = {
   /** Instruction echoed in the transcript before the stored user row exists. */
   pendingText?: string | null
   workspaceId?: string | null
+}
+
+function hasFiles(data: DataTransfer): boolean {
+  return Array.from(data.types).includes('Files')
 }
 
 function modelLabel(models: CatalogModel[], id: string | null, fallback: string): string {
@@ -128,6 +133,8 @@ export function Composer({
   }
   const fieldRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const dragDepth = useRef(0)
+  const [dragOver, setDragOver] = useState(false)
   const attachmentCount = images.length + textFiles.length
   const canSend = !disabled && (draft.trim().length > 0 || attachmentCount > 0)
   const welcome = placement === 'welcome'
@@ -164,8 +171,8 @@ export function Composer({
     }
   }
 
-  function onPick(files: FileList | null) {
-    if (!files) {
+  function onPick(files: FileList | File[] | null) {
+    if (!files || disabled) {
       return
     }
     const room = MAX_ATTACHMENTS - images.length - textFiles.length
@@ -254,7 +261,36 @@ export function Composer({
   return (
     <div className={welcome ? styles.welcome : styles.composer}>
       <div className={styles.column}>
-        <div className={welcome ? styles.card : styles.field}>
+        <div
+          className={`${welcome ? styles.card : styles.field} ${dragOver ? styles.dropTarget : ''}`}
+          onDragEnter={(event) => {
+            if (disabled || !hasFiles(event.dataTransfer)) {
+              return
+            }
+            event.preventDefault()
+            dragDepth.current += 1
+            setDragOver(true)
+          }}
+          onDragOver={(event) => {
+            if (disabled || !hasFiles(event.dataTransfer)) {
+              return
+            }
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'copy'
+          }}
+          onDragLeave={() => {
+            dragDepth.current = Math.max(0, dragDepth.current - 1)
+            if (dragDepth.current === 0) {
+              setDragOver(false)
+            }
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            dragDepth.current = 0
+            setDragOver(false)
+            onPick(filesFromTransfer(event.dataTransfer))
+          }}
+        >
           {attachmentCount > 0 ? (
             <div className={styles.thumbnails}>
               {images.map((image, index) => (
@@ -312,6 +348,14 @@ export function Composer({
                   event.preventDefault()
                   void submit()
                 }
+              }}
+              onPaste={(event) => {
+                const files = filesFromTransfer(event.clipboardData)
+                if (files.length === 0) {
+                  return
+                }
+                event.preventDefault()
+                onPick(files)
               }}
               aria-label="Message"
             />

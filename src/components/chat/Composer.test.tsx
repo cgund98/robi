@@ -113,6 +113,31 @@ describe('Composer mode color', () => {
     expect((screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value).toBe('')
   })
 
+  it('adds a pasted image to the field', () => {
+    renderComposer('agent')
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.paste(field, {
+      clipboardData: {
+        files: [new File(['x'], 'shot.png', { type: 'image/png' })],
+        items: []
+      }
+    })
+    expect(screen.getByRole('button', { name: 'Remove shot.png' })).toBeTruthy()
+  })
+
+  it('adds a dropped text file to the field', () => {
+    renderComposer('agent')
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.drop(field, {
+      dataTransfer: {
+        types: ['Files'],
+        files: [new File(['fn main() {}'], 'main.rs', { type: 'text/plain' })],
+        items: []
+      }
+    })
+    expect(screen.getByRole('button', { name: 'Remove main.rs' })).toBeTruthy()
+  })
+
   it('marks ask and plan with their colors', () => {
     renderComposer('ask')
     expect(screen.getByRole('button', { name: 'Mode' }).className).toContain(styles.modeAsk)

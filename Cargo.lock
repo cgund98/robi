@@ -5202,7 +5202,7 @@ dependencies = [
 
 [[package]]
 name = "robi"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-lsp",
  "async-trait",
@@ -5244,7 +5244,7 @@ dependencies = [
 
 [[package]]
 name = "robi-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "mac-notification-sys",
  "notify-rust",
@@ -5260,7 +5260,7 @@ dependencies = [
 
 [[package]]
 name = "robi-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "serde",
@@ -5273,7 +5273,7 @@ dependencies = [
 
 [[package]]
 name = "robi-index"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "fastembed",

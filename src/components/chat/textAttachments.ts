@@ -45,16 +45,60 @@ export const MAX_ATTACHMENTS = 8
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'])
+
+function extension(name: string): string {
+  const dot = name.lastIndexOf('.')
+  if (dot < 0 || dot === name.length - 1) {
+    return ''
+  }
+  return name.slice(dot + 1).toLowerCase()
+}
+
 export function isImageFile(file: File): boolean {
-  return IMAGE_TYPES.has(file.type)
+  if (IMAGE_TYPES.has(file.type)) {
+    return true
+  }
+  // A drop from the desktop often arrives with an empty type. The extension
+  // is enough for the types the paperclip already accepts.
+  if (file.type && file.type !== 'application/octet-stream') {
+    return false
+  }
+  return IMAGE_EXTENSIONS.has(extension(file.name))
 }
 
 export function isTextFile(file: File): boolean {
-  const dot = file.name.lastIndexOf('.')
-  if (dot < 0 || dot === file.name.length - 1) {
-    return false
+  return TEXT_EXTENSIONS.has(extension(file.name))
+}
+
+/**
+ * Files from a paste or a drop.
+ *
+ * A screenshot paste often has no name. Give it one so the thumbnail and the
+ * remove control have something to say.
+ */
+export function filesFromTransfer(data: DataTransfer | null): File[] {
+  if (!data) {
+    return []
   }
-  return TEXT_EXTENSIONS.has(file.name.slice(dot + 1).toLowerCase())
+  const listed = Array.from(data.files)
+  const files =
+    listed.length > 0
+      ? listed
+      : Array.from(data.items)
+          .filter((item) => item.kind === 'file')
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => file !== null)
+  return files.map(nameClipboardFile)
+}
+
+function nameClipboardFile(file: File): File {
+  if (file.name) {
+    return file
+  }
+  const subtype = file.type.split('/')[1]
+  const ext = subtype === 'jpeg' ? 'jpg' : subtype || 'bin'
+  return new File([file], `pasted.${ext}`, { type: file.type })
 }
 
 export function fileAccept(): string {

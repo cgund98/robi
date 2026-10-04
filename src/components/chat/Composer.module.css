@@ -16,6 +16,11 @@
   pointer-events: auto;
 }
 
+.dropTarget {
+  outline: 1px dashed var(--ink-faint);
+  outline-offset: -1px;
+}
+
 .field {
   position: relative;
   display: flex;

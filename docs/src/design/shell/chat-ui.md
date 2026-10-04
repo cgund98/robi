@@ -302,11 +302,15 @@ Attached images sit as 32px thumbnails in a row at the top left of the field,
 above the text. Text files sit in that same row as name chips. Hovering a
 thumbnail shows its remove control; a chip carries its own remove control.
 The paperclip accepts PNG, JPEG, WebP, and GIF, plus common source and text
-extensions. A message holds at most eight attachments. A text file larger
+extensions. Pasting those files, or dropping them on the field, adds them
+the same way. A screenshot paste with no filename is named `pasted.png`. A message holds at most eight attachments. A text file larger
 than 256 KB, or one that contains a NUL byte, stays in the field and the
 composer reports why. On send, each text file is read in the browser and
 appended to the instruction as `<file name="…">` … `</file>`, so the model
 sees the contents as ordinary message text. Images still travel as multipart
 file parts. The paperclip sits in the control row beside the context meter.
 A sent message shows images as a row of 32px thumbnails above the message
-text; the injected file text is part of that message.
+text. Each thumbnail loads from
+`GET /api/v1/chat_sessions/{id}/images/{image_id}` on the API origin. In the
+desktop app that origin is `http://127.0.0.1:<port>`, not the webview, so the
+`src` is absolute. The injected file text is part of that message.

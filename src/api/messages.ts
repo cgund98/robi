@@ -124,7 +124,14 @@ async function safeError(response: Response): Promise<string | Error | undefined
   }
 }
 
-/** The served URL for a stored image, for a message bubble's `src`. */
+/** The served URL for a stored image, for a message bubble's `src`.
+ *
+ * The desktop page is not the API host. A path-only URL would load from the
+ * webview origin and the thumbnail would fail. Prefix the bound API origin
+ * the same way other requests do.
+ */
 export function imageUrl(sessionId: string, imageId: string): string {
-  return `/api/v1/chat_sessions/${sessionId}/images/${imageId}`
+  const path = `/api/v1/chat_sessions/${sessionId}/images/${imageId}`
+  const base = apiBaseUrl().replace(/\/$/, '')
+  return base ? `${base}${path}` : path
 }
