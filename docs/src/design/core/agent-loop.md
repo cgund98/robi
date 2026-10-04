@@ -337,7 +337,7 @@ pub struct LoopConfig {
 
 | Setting | Default | Enforced by |
 |---|---|---|
-| `max_iterations` | 50 | The loop's step 3 |
+| `max_iterations` | 50, or the `max_iterations` setting when a session actor starts | The loop's step 3 |
 | `max_concurrent_tools` | 5 | The semaphore bounding a `Batch` |
 | `serial_tools` | `false` | Every call becomes a `Solo`; see [Segments](#segments) |
 | `max_tool_result_bytes` | 256 KiB | The core, after the tool has had its chance |
@@ -496,9 +496,11 @@ The invariant:
 > whatever the user typed.
 
 `user_input` implements this by calling `settle_unresolved` before it appends
-anything. If the turn is still paused after settling, the call returns `Paused`
-and the user's text is **not** appended. In M2 the composer keeps that text
-locally and re-sends it once the pending calls are settled.
+anything. If that settle pauses on calls still waiting for a decision, those
+calls are rejected with the reason `the user sent a new message`. The loop
+settles the rejections, writing each as a tool result, and only then appends
+the user's text. A turn that is still paused after that returns `Paused` and
+does not append.
 
 Why it matters: providers reject a transcript whose assistant message has
 unanswered tool calls, and a user cannot reason about an ordering where their
@@ -771,7 +773,7 @@ Required cases:
 - A tool error does not end the run, and the model sees a structured error.
 - An approval pause, then `approve`, then completion.
 - An approval pause, then `reject`, and the model sees the rejection.
-- `user_input` while paused: returns `Paused` and does not append the text.
+- `user_input` while paused: rejects the pending calls, records those rejections before the new message, and then continues the turn.
 - Result ordering is model order when the first tool is the slowest.
 - The concurrency bound holds: in-flight never exceeds the limit.
 - **Model order under segments.** For a turn of `[read A, exclusive B, read C]`,

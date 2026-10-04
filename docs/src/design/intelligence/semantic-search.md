@@ -281,7 +281,7 @@ line. `ready` draws nothing.
 | `paused` | Index paused | Resume |
 | `failed` | Index failed | Resume |
 
-`indexing` keeps the counts at `0/0` until the walk has seen a file.
+`indexing` stays hidden for the first 5 seconds. If `state` leaves `indexing` before that, the line never appears. `downloading`, `paused`, and `failed` appear immediately. `indexing` keeps the counts at `0/0` until the walk has seen a file.
 `failed` puts `error` on the line's title. Pause and Resume call the
 `PUT`. The task finishes the current file, or the model load, before
 `state` changes. Until then the control reads Pausing or Resuming, the

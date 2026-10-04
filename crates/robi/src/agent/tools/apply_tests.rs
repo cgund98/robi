@@ -68,6 +68,7 @@ pub(crate) async fn harness() -> Harness {
         lsp: crate::agent::lsp::LspHub::new(),
         lsp_enabled: true,
         originals: None,
+        settings: None,
     });
     Harness {
         ctx,

@@ -13,7 +13,16 @@ export const SETTING_KEYS = {
   reasoningEffortAsk: 'reasoning_effort_ask',
   reasoningEffortPlan: 'reasoning_effort_plan',
   reasoningEffortAgent: 'reasoning_effort_agent',
-  lsp: 'lsp'
+  lsp: 'lsp',
+  pathAllowRead: 'path_allow_read',
+  pathAllowWrite: 'path_allow_write',
+  pathEntries: 'path_entries',
+  maxIterations: 'max_iterations',
+  subagentMaxIterations: 'subagent_max_iterations',
+  subagentTimeoutSeconds: 'subagent_timeout_seconds',
+  toolTimeoutSeconds: 'tool_timeout_seconds',
+  webSearchApproval: 'web_search_approval',
+  webFetchApproval: 'web_fetch_approval'
 } as const
 
 export type SettingView = {

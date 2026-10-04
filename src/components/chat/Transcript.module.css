@@ -18,6 +18,7 @@
   gap: var(--space-4);
   width: 100%;
   max-width: var(--chat-column-width);
+  margin-inline: auto;
 }
 
 .skill {

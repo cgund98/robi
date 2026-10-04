@@ -73,8 +73,11 @@ Tests inject the engine. The result has no page bodies. The description tells
 the model to cite the title and URL, and to ignore instructions inside a
 snippet.
 
-`requires_approval` returns `NeedsApproval` on every call. Approving one
-query does not approve the next. A search does not write a host grant. The
+`requires_approval` returns `NeedsApproval` on every call while
+`web_search_approval` is `on` (the default). `off` returns `AllowImmediately`.
+The setting is read when the session actor starts; a running turn keeps its
+value. Approving one query does not approve the next. A search does not write
+a host grant. The
 approval bar shows **Search** and **the web**, and the full query underneath,
 wrapping. Rejection does not call Brave.
 
@@ -111,10 +114,12 @@ is the final URL on the same host. `title` is present when the HTML had one.
 
 ### Approval
 
-`web_search` always waits. Brave is rate limited, and a host allow would let
-the model spend that quota with no one reading the query.
+`web_search` waits on every call while `web_search_approval` is `on`. Brave is
+rate limited, and a host allow would let the model spend that quota with no
+one reading the query. `off` skips the card.
 
-`web_fetch` reads the session. It returns `NeedsApproval` when the URL host
+`web_fetch` reads the session while `web_fetch_approval` is `on`. It returns
+`NeedsApproval` when the URL host
 is absent from that session's `allow_hosts`. The match is the host after
 lowercasing and stripping a trailing dot. `www.example.com` and
 `example.com` are different hosts. Two fetches of a new host in the same

@@ -85,10 +85,10 @@ section that owns it.
 | Milestone | Piece | State |
 |---|---|---|
 | M1 | Anthropic's own wire format | Open. The client speaks OpenAI-compatible endpoints. |
+| M1 | Image ingestion on OpenAI-compatible providers | Open. Requests are text-only. A user image should go out as an OpenAI chat-completions image part (`image_url` / `data:` URI) on models that accept vision. |
 | M2 | Process placement (D3): in-process loop vs sidecar | Desktop hosts the API in-process. `robi-api` remains for headless and `pnpm dev`. |
 | M2 | Tool-card expand default, and whether it persists per session | Open in `docs/src/design/shell/visual-style.md`. |
-| M2 | Mermaid in rendered markdown | Open. A fenced `mermaid` block in assistant text, a plan page, or a markdown file preview stays source. |
-| M3 | Auto-compaction and a manual trigger (F3.4) | Not built. `docs/src/design/workspace/context-management.md` is still needed. |
+| M3 | Auto-compaction and a manual trigger (F3.4) | Not built. Specified in [context-management.md](design/workspace/context-management.md). |
 | M3 | Permission and grant design page | Behavior exists in code. `docs/src/design/workspace/permissions.md` is still needed. |
 | M3 | Price display | Deferred. Secrets stay in `~/.robi/secrets.toml`. |
 | M6 | Inline comments, and sending one to the assistant | Later, in `docs/src/design/review/code-review.md`. |
@@ -100,7 +100,7 @@ section that owns it.
 | M9 | Built-in JSON and search-hit compression | Not built. `docs/src/design/compression/tool-output-compression.md` is later. D12 is settled for shell output. |
 | M9 | Learned line model for shell output (phase 4) | Not in the first cut. Feature-gated and last (D11). |
 | M9 | Context meter showing tokens saved | Required by the M9 exit criteria. The meter shows usage. |
-| M10 | Docs mode, filtered file tree, and a shared editor | Not built. `docs/src/design/shell/docs-mode.md` is still needed. |
+| M10 | Docs mode, filtered file tree, and a shared editor | The read-only docs viewer is built — `docs/src/design/shell/docs-viewer.md`. The mode and the editor are later. |
 
 ---
 
@@ -401,6 +401,9 @@ that a trait is only "fixed" once a real implementation has exercised it.
   wire format. One client serves every endpoint that speaks it: Kimi, DeepSeek,
   and OpenRouter are the same request shape with a different base URL,
   credential, and model table. Anthropic's own format is still open work.
+  Image ingestion is still open work too: the adapter sends text only, and a
+  later change should attach user images as chat-completions image parts on
+  models that accept them.
 - What the endpoint requires, now that it is built and tested:
   - `POST {base}/chat/completions` with `stream: true` and
     `stream_options.include_usage`. Base URL
@@ -516,7 +519,9 @@ made. The fix and its tests are in `robi-core`; see
 
 - Message list, composer, streaming render with a caret, and scroll-lock that
   yields when the user scrolls up.
-- Markdown and syntax highlighting in code blocks. A fenced `mermaid` block renders as a diagram in assistant text, on a plan page, and in the markdown file preview. Until that ships, the fence stays source.
+- Markdown rendering, plus syntax highlighting in code blocks (still open). A
+  fenced `mermaid` block renders as a diagram in assistant text, on a plan
+  page, and in the markdown file preview.
 - Copy a message, copy a code block, retry the last turn, edit-and-resend.
 - Tool-call cards exist in the layout from day one — collapsed and empty until
   M3, and they are where approval prompts will live. Retrofitting cards into a
@@ -611,9 +616,9 @@ and every feature after this one adds context pressure.
 - Token accounting per message; a visible context meter.
 - Auto-compaction when the window fills, plus a manual trigger. gopi ships
   manual-only `/compact`; a GUI should do it automatically and say when it did.
-- **Open decisions** — what compaction preserves (system prompt, plan file,
-  recent turns, tool results) and whether it is lossy-summarized or
-  structured-truncated.
+  Settled in [context-management.md](design/workspace/context-management.md):
+  a lossy summary of the older prefix, the current turn kept whole, the
+  system prompt left alone because it is not a message.
 - Compaction rewrites older turns once the window fills. Shrinking one result
   as the tool returns it, and keeping the original retrievable, is M9. The two
   compose: compression keeps a turn inside the window longer, and compaction
@@ -720,9 +725,10 @@ One `delegate` tool, two child modes. See [subagents.md](design/core/subagents.m
   value is context isolation: the parent gets the answer, not the file bodies.
 - `general` — the explore tools plus a sandboxed shell. No edits, no `grant`,
   no nested `delegate`.
-- Caps: 40 model turns and 6 calls per session for explore, 50 turns and 4
-  calls for general, two minutes either way. A spent budget returns
-  `explore_limit` or `delegate_limit`.
+- Caps: `subagent_max_iterations` model turns (default 50) for either child, 6
+  explore calls and 4 general calls per session, and `subagent_timeout_seconds`
+  (default two minutes) either way. A spent
+  budget returns `explore_limit` or `delegate_limit`.
 - **Fail closed.** A child call that would need approval returns `access_denied`.
   The user is never prompted from inside a child.
 - The child's tool calls render as rows on the parent card while it runs, and
@@ -959,6 +965,10 @@ already exist from M4. It does not need review, the index, MCP, or compression.
 - Choosing a file opens it. The filter is the default. The user can widen it
   when a page names a file outside that set.
 
+The read-only viewer is built: see
+[docs/src/design/shell/docs-viewer.md](design/shell/docs-viewer.md). Editing,
+the `docs` mode, and widening the filter are still to come.
+
 ### F10.3 Editing
 
 - The open file is an editor. The user types in it. A save goes through the M4
@@ -1110,7 +1120,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/src/design/tools/read-tools.md` | Read tools, path resolution, session path filter, ripgrep fallback | M3 | done |
 | `docs/src/design/core/instructions.md` | System prompt sources: built-in tool list, user text, global and project `AGENTS.md` | M3 | done |
 | `docs/src/design/workspace/permissions.md` | Approval, policy floor, grants, protected paths | M3 | needed |
-| `docs/src/design/workspace/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | needed |
+| `docs/src/design/workspace/context-management.md` | Token accounting, compaction triggers, what survives compaction | M3 | done |
 | `docs/src/design/tools/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | done |
 | `docs/src/design/tools/checkpoints.md` | Edit journal, undo, relation to git | M4 | done |
 | `docs/src/design/tools/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, output limits | M4 | done |

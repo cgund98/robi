@@ -61,7 +61,14 @@ non-root directory fails `allows_read`, so a walk does not descend into
 
 The built-in deny patterns live in source and are always applied. Create
 stores `[]` for all four lists. A stored list is appended after that built-in
-list. Allow lists have no stored built-in patterns. Compiling a filter for a
+list. Allow lists have no stored built-in patterns. `path_allow_read` and
+`path_allow_write` in `~/.robi/config.toml` are newline-separated paths.
+The factory gives each new agent the settings store, and the filter reads
+those two keys from it on every call. `path_entries` is appended to the
+read allow list the same way. A line starting with `~/` expands to
+the home directory. Each path is appended to that session's allow list: a
+file is an exact allow, and any other path is that directory and its
+children. Compiling a filter for a
 session adds one read allow for `~/.robi/plans/<session_id>`, matched on the
 workspace-relative path, including a path that starts with `..`. That allow
 covers the directory and the markdown files in it. It does not cover another

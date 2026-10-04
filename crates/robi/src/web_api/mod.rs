@@ -10,6 +10,7 @@ use crate::web_api::state::AppState;
 pub mod chat_message;
 pub mod chat_session;
 pub mod code_index;
+pub mod docs;
 pub mod error;
 pub mod events;
 pub mod models;
@@ -24,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state.clone())
         .merge(workspace::router(state.clone()))
         .merge(code_index::router(state.clone()))
+        .merge(docs::router(state.clone()))
         .merge(chat_session::router(state.clone()))
         .merge(review::router(state.clone()))
         .merge(chat_message::router(state.clone()))
@@ -57,9 +59,12 @@ async fn health_check() -> &'static str {
         workspace::delete_workspace,
         workspace::list_skills,
         workspace::list_mcp_servers,
+        workspace::focus_mcp,
         workspace::get_mcp_config,
         code_index::get_index,
         code_index::put_index,
+        docs::list_docs,
+        docs::get_doc,
         chat_session::create_chat_session,
         chat_session::list_chat_sessions,
         chat_session::get_chat_session,
@@ -87,6 +92,9 @@ async fn health_check() -> &'static str {
         workspace::McpConfig,
         code_index::IndexStatusBody,
         code_index::IndexCommand,
+        docs::DocsListing,
+        docs::DocEntry,
+        docs::DocContent,
         chat_session::CreateChatSession,
         chat_session::UpdateChatSession,
         chat_session::ChatSession,

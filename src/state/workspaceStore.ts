@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 
+import { focusMcp } from '../api/mcp'
 import { createWorkspace, deleteWorkspace, listWorkspaces, type Workspace } from '../api/workspaces'
 
 const ACTIVE_WORKSPACE_KEY = 'robi.activeWorkspaceId'
@@ -39,6 +40,15 @@ function errorText(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
 
+function focusOpenWorkspace(id: string | null) {
+  if (!id) {
+    return
+  }
+  void focusMcp(id).catch(() => {
+    // Status stays disconnected until the next switch or agent turn.
+  })
+}
+
 function chooseActive(workspaces: Workspace[], preferred: string | null): string | null {
   if (preferred && workspaces.some((workspace) => workspace.id === preferred)) {
     return preferred
@@ -58,6 +68,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const activeWorkspaceId = chooseActive(workspaces, readActiveId() ?? get().activeWorkspaceId)
       writeActiveId(activeWorkspaceId)
       set({ workspaces, activeWorkspaceId, loaded: true, error: null })
+      focusOpenWorkspace(activeWorkspaceId)
     } catch (err) {
       set({
         loaded: true,
@@ -75,6 +86,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
     writeActiveId(id)
     set({ activeWorkspaceId: id, error: null })
+    focusOpenWorkspace(id)
   },
 
   addWorkspace: async (root) => {
@@ -89,6 +101,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         loaded: true,
         error: null
       })
+      focusOpenWorkspace(workspace.id)
     } catch (err) {
       set({ error: errorText(err, 'Failed to add workspace') })
     }
@@ -107,5 +120,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       get().activeWorkspaceId === id ? (workspaces[0]?.id ?? null) : get().activeWorkspaceId
     writeActiveId(activeWorkspaceId)
     set({ workspaces, activeWorkspaceId, error: null })
+    if (activeWorkspaceId !== id) {
+      focusOpenWorkspace(activeWorkspaceId)
+    }
   }
 }))

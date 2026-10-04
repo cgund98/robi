@@ -16,6 +16,7 @@ import { RenameSessionDialog } from '../chat/RenameSessionDialog'
 import { PlanPage } from '../chat/PlanPage'
 import { planBuildInstruction, type PlanView } from '../chat/toolCallView'
 import { Transcript } from '../chat/Transcript'
+import { DocsScreen } from '../docs/DocsScreen'
 import { ReviewScreen } from '../review/ReviewScreen'
 import { Sidebar } from './Sidebar'
 import styles from './AppLayout.module.css'
@@ -57,6 +58,7 @@ export function AppLayout() {
   const pendingEcho = useChatStore((state) => state.pendingEcho)
   const error = useChatStore((state) => state.error)
   const loading = useChatStore((state) => state.loading)
+  const transcriptLoading = useChatStore((state) => state.transcriptLoading)
   const busy = useChatStore((state) => state.busy)
   const loadSessions = useChatStore((state) => state.loadSessions)
   const workspacesLoaded = useWorkspaceStore((state) => state.loaded)
@@ -71,7 +73,12 @@ export function AppLayout() {
   const navigate = useNavigate()
   const reviewMatch = useMatch('/sessions/:sessionId/review')
   const reviewSessionId = reviewMatch?.params.sessionId ?? null
-  if (plan && (draftSelected || reviewSessionId !== null || plan.sessionId !== activeSessionId)) {
+  const docsMatch = useMatch('/docs')
+  const docsOpen = docsMatch !== null
+  if (
+    plan &&
+    (draftSelected || reviewSessionId !== null || docsOpen || plan.sessionId !== activeSessionId)
+  ) {
     setPlan(null)
   }
   const selectSession = useChatStore((state) => state.selectSession)
@@ -134,6 +141,7 @@ export function AppLayout() {
       : null
   const agentRunning = phase !== 'idle'
   const composerLocked = loading || busy || agentRunning
+  const composerDraftKey = draftSelected || !activeSessionId ? 'draft' : activeSessionId
   const stopping =
     !draftSelected && activeSessionId !== null && stoppingSessionId === activeSessionId
   const fresh = messages.length === 0 && echo === null
@@ -200,18 +208,19 @@ export function AppLayout() {
         sessions={sessions}
         activeSessionId={draftSelected ? '' : (activeSession?.id ?? '')}
         draftSelected={draftSelected}
-        disabled={loading || busy}
+        docsSelected={docsOpen}
+        disabled={loading}
         runningSessionIds={runningSessionIds(sessions, phaseBySession)}
         onSelectSession={(id) => {
           setPlan(null)
-          if (reviewSessionId) {
+          if (reviewSessionId || docsOpen) {
             navigate('/')
           }
           void selectSession(id)
         }}
         onNewSession={() => {
           setPlan(null)
-          if (reviewSessionId) {
+          if (reviewSessionId || docsOpen) {
             navigate('/')
           }
           selectDraft()
@@ -223,6 +232,7 @@ export function AppLayout() {
         onDeleteSession={(id) => void handleDeleteSession(id)}
       />
       <div className={styles.main}>
+        <ChatHeader sessionTitle={docsOpen ? 'Documentation' : sessionTitle} />
         {workspaceError || error ? (
           <div className={styles.banner} role="alert">
             <span>{workspaceError ?? error}</span>
@@ -240,6 +250,8 @@ export function AppLayout() {
         ) : null}
         {reviewSessionId ? (
           <ReviewScreen key={reviewSessionId} sessionId={reviewSessionId} />
+        ) : docsOpen ? (
+          <DocsScreen key={activeWorkspaceId ?? 'none'} workspaceId={activeWorkspaceId} />
         ) : plan ? (
           <PlanPage
             plan={plan.view}
@@ -251,12 +263,18 @@ export function AppLayout() {
               void buildPlan(path)
             }}
           />
+        ) : transcriptLoading && messages.length === 0 && echo === null ? (
+          <div className={styles.loadingTranscript} role="status">
+            <span className={styles.spinner} aria-hidden />
+            Loading conversation
+          </div>
         ) : fresh ? (
           <div className={styles.welcome}>
             <EmptyGreeting />
             <Composer
               placement="welcome"
               disabled={composerLocked}
+              pending={busy}
               running={agentRunning}
               stopping={stopping}
               onStop={() => void stopAgent()}
@@ -271,13 +289,13 @@ export function AppLayout() {
               onModelChange={(model) => void setModelChoice(model)}
               onEffortChange={(next) => void setEffortChoice(next)}
               messages={messages}
+              draftKey={composerDraftKey}
               pendingText={echo}
               workspaceId={activeWorkspaceId}
             />
           </div>
         ) : (
           <div className={styles.chat}>
-            <ChatHeader sessionTitle={sessionTitle} />
             <div className={styles.thread} ref={threadRef}>
               <Transcript
                 messages={messages}
@@ -304,6 +322,7 @@ export function AppLayout() {
                 ) : null}
                 <Composer
                   disabled={composerLocked}
+                  pending={busy}
                   running={agentRunning}
                   stopping={stopping}
                   onStop={() => void stopAgent()}
@@ -318,6 +337,7 @@ export function AppLayout() {
                   onModelChange={(model) => void setModelChoice(model)}
                   onEffortChange={(next) => void setEffortChoice(next)}
                   messages={messages}
+                  draftKey={composerDraftKey}
                   pendingText={echo}
                   workspaceId={activeWorkspaceId}
                 />

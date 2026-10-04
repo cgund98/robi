@@ -13,7 +13,8 @@ export default tseslint.config(
       'node_modules/**',
       '.pnpm-store/**',
       'target/**',
-      'crates/**'
+      'crates/**',
+      'docs/book/**'
     ]
   },
   js.configs.recommended,

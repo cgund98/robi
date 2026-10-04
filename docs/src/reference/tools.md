@@ -78,9 +78,10 @@ without a prompt. A prompt appears for any of:
 The sandbox is a requirement, not an option: a sandboxed call is refused where no
 mechanism exists. macOS uses Seatbelt (`/usr/bin/sandbox-exec`); Linux uses
 bubblewrap; Windows has no sandbox, so only an approved `unsandboxed: true` call
-runs there. The child gets a constructed `PATH`, a scrubbed environment, and the
-workspace root as its working directory. Output is a bounded artifact, not a
-stream, and is killed at 120 seconds or on cancel.
+runs there. A sandboxed child gets a constructed `PATH`. An approved
+unsandboxed child gets the parent `PATH` unchanged. Both get a scrubbed
+environment, and the workspace root as the working directory. Output is a bounded artifact, not a
+stream, and is killed at `tool_timeout_seconds` (default 120) or on cancel.
 
 ## Plan and todos
 
@@ -107,11 +108,13 @@ is never prompted from inside a child. See [Subagents](../concepts/subagents.md)
 
 | Tool | Arguments | Behavior | Approval |
 |---|---|---|---|
-| `web_search` | `query` | Brave web search, up to five hits. | always |
-| `web_fetch` | `url` | Fetch one public URL and reduce it to text. | first call per host |
+| `web_search` | `query` | Brave web search, up to five hits. | every call when `web_search_approval` is `on` |
+| `web_fetch` | `url` | Fetch one public URL and reduce it to text. | first call per host when `web_fetch_approval` is `on` |
 
-`web_search` asks on every call because each spends Brave quota. `web_fetch` asks
-the first time a host is used in the session, then remembers that host. Page text
+Both approvals default to `on`. `web_search` asks on every call because each spends
+Brave quota. `web_fetch` asks the first time a host is used in the session, then
+remembers that host. `off` skips the card. A turn already running keeps the
+value it started with. Page text
 and snippets are untrusted data; an instruction inside a fetched page is data,
 not a command.
 

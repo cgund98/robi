@@ -664,8 +664,12 @@ async fn settling_a_call_twice_is_a_no_op() {
 }
 
 #[tokio::test]
-async fn user_input_while_paused_does_not_append() {
-    let tools = vec![FunctionTool::new("write").needs_approval().arc()];
+async fn user_input_while_paused_rejects_the_pending_calls() {
+    let probe = Probe::new();
+    let tools = vec![FunctionTool::new("write")
+        .needs_approval()
+        .probed(probe.clone())
+        .arc()];
     let model = asking_then(&["write"], "done");
     let h = harness(model, tools, LoopConfig::default());
 
@@ -673,19 +677,30 @@ async fn user_input_while_paused_does_not_append() {
         h.agent.user_input(h.session, "go", no_cancel()).await,
         TurnOutcome::Paused
     );
-    let before = h.transcript().len();
 
     let outcome = h
         .agent
         .user_input(h.session, "are you there?", no_cancel())
         .await;
 
-    assert_eq!(outcome, TurnOutcome::Paused);
-    assert_eq!(h.transcript().len(), before, "the text was not appended");
-    assert!(!h
-        .transcript()
+    assert_eq!(outcome, TurnOutcome::Complete);
+    assert!(!probe.ran("write"), "a rejected call never runs");
+    let call = &h.calls()[0];
+    assert_eq!(call.approval_status, ApprovalStatus::Rejected);
+    assert!(call
+        .error
+        .as_deref()
+        .is_some_and(|reason| reason.contains("new message")));
+    let transcript = h.transcript();
+    let user_at = transcript
         .iter()
-        .any(|message| message.content == "are you there?"));
+        .position(|message| message.content == "are you there?")
+        .expect("the text was appended");
+    let tool_at = transcript
+        .iter()
+        .position(|message| message.role == Role::Tool)
+        .expect("the rejection was recorded");
+    assert!(tool_at < user_at, "the rejection precedes the new message");
 }
 
 #[tokio::test]
@@ -741,14 +756,33 @@ async fn an_interrupted_call_that_needs_approval_still_pauses() {
         h.agent.pending_tool_calls(h.session).await.unwrap().len(),
         1
     );
-    let before = h.transcript().len();
+
+    // A later message is a refusal of that decision, same as a pause the user
+    // already saw. The rejection is recorded before the text, then the turn
+    // continues.
     assert_eq!(
         h.agent
             .user_input(h.session, "are you there?", no_cancel())
             .await,
-        TurnOutcome::Paused
+        TurnOutcome::Complete
     );
-    assert_eq!(h.transcript().len(), before);
+    assert!(!probe.ran("write"), "a rejected call never runs");
+    let call = &h.calls()[0];
+    assert_eq!(call.approval_status, ApprovalStatus::Rejected);
+    assert!(call
+        .error
+        .as_deref()
+        .is_some_and(|reason| reason.contains("new message")));
+    let transcript = h.transcript();
+    let user_at = transcript
+        .iter()
+        .position(|message| message.content == "are you there?")
+        .expect("the text was appended");
+    let tool_at = transcript
+        .iter()
+        .position(|message| message.role == Role::Tool)
+        .expect("the rejection was recorded");
+    assert!(tool_at < user_at, "the rejection precedes the new message");
 }
 
 #[tokio::test]

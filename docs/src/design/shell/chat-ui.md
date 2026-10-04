@@ -11,7 +11,7 @@ delivery stays in [events-sse.md](events-sse.md).
 |---|---|
 | Streaming caret and painting `message_delta` text | Later on this page. The assistant row is stored only when the model stream finishes, so this cut does not paint tokens |
 | Syntax highlighting, copy, retry, edit-and-resend | Later on this page. Assistant text is Markdown; highlighting is not |
-| Mermaid diagrams | Later. A fenced `mermaid` block in assistant text, on a plan page, and in the markdown file preview stays source |
+| Mermaid diagrams | This page. A fenced `mermaid` block renders as a diagram in assistant text, on a plan page, and in the markdown file preview |
 | Grant and session-allow editing | `docs/src/design/workspace/permissions.md` (M3) |
 | Creating the session row | [persistence.md](../persistence/persistence.md). The shell delays that call |
 | `@id` skill mentions and the **Using** row | [skills.md](../reach/skills.md) |
@@ -35,7 +35,7 @@ the message post.
 App load lists sessions and selects the most recent. An empty list opens the
 draft.
 
-Until a prompt is submitted, the main column has no session title. A greeting
+The window bar shows “New chat” on the draft and the session title once a row exists. MCP server marks sit on the right of that line in both cases. The first click on a session that has not been opened in this window shows a spinner and “Loading conversation” until its transcript loads. A later click on the same session does not. Until a prompt is submitted, a greeting
 sits in the center — **Good morning**, **Good afternoon**, or **Good evening**,
 from the local hour — with the composer in a card under it. The first echo or
 stored message returns the title, the transcript, and the bottom composer.
@@ -102,7 +102,7 @@ below it. A shell card has a little space above and below it, so two panels do n
 shows no window. A finished `write_file`, `edit_file`, or
 `delete_file` is a bordered card: the path the tool was called with
 (`scratch/test.md`, `../gopi/test.md`, `/tmp/test.md`), the `+` / `−` counts beside
-it, and the first 4 diff lines. Added and removed lines carry a left accent in
+it, and 4 diff lines starting at the first added or removed line. Context above that change stays out of the closed card. Added and removed lines carry a left accent in
 `--diff-add` or `--diff-del`. Clicking the name opens the rest, at most 24
 lines, then `N more lines` when the change is longer. A running call shows a spinner.
 A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
@@ -177,6 +177,43 @@ still where the call is approved or rejected. The next `turn_started` clears
 that notice so a later pause can post again. The browser shell does not post
 one.
 
+## Mermaid diagrams
+
+A fenced ` ```mermaid ` block renders as a diagram, not as source, everywhere
+assistant Markdown is shown: an assistant message in the transcript, a plan
+page body, and the markdown file preview in the review file inspector. One
+renderer, `AssistantMarkdown`, backs all three, so the fence behaves
+identically in each. The file inspector's Diff, Current, and Previous views
+still show the raw file lines.
+
+The diagram is drawn client-side, and the `mermaid` package is dynamically
+imported, so it loads only the first time a fence renders and never sits in
+the main bundle. While the render is in flight the fence shows as an ordinary
+code block; when the SVG is ready it replaces the source in a centered,
+horizontally scrollable surface (see
+[visual-style.md](visual-style.md#mermaid-diagrams)). A source mermaid cannot
+parse keeps the code fence — the fence is the error surface, with no separate
+message.
+
+The theme is the same dark token set as the shell, mapped to mermaid's
+`themeVariables`, so diagrams do not fall back to its default palette. The
+look is `classic`. Mermaid's default `neo` look adds a light gray drop shadow
+that reads as a second fill on the dark shell, worst when a box contains a box.
+`securityLevel` stays `strict`: the source is model output, so mermaid keeps
+its sanitization.
+
+Both fenced `flowchart` blocks and `sequenceDiagram` blocks use that theme. A
+sequence diagram reads its own variable groups — `actor*` for the participant
+boxes and lifelines, `signal*` for messages, `note*` for notes, and `labelBox*`
+/ `activation*` for the loop/alt frames and the bars inside them — so those are
+set explicitly rather than left to mermaid's light defaults.
+
+Diagram text is the shell's UI sans at 14px, matching the fenced code block it
+replaces. The font comes from the top-level `fontFamily` key rather than a
+theme variable: sequence diagrams read their own `actorFontFamily` /
+`noteFontFamily` / `messageFontFamily`, and mermaid fills those in from the
+top-level value.
+
 ## Activity and the composer
 
 While the phase is not `idle`, the transcript shows a muted line, **Thinking**
@@ -196,23 +233,32 @@ An empty chat, or a turn that has not reported usage, leaves
 the arc empty. A model with no advertised window leaves it empty too.
 Clicking the ring opens a popover: used against the window and the percent,
 the last turn's input, output, and cached tokens, and the uncounted
-estimate when it is not zero. Cached is omitted when it is zero. The ring
+estimate when it is not zero. **Compact** in that popover runs the manual
+rewrite in [context-management.md](../workspace/context-management.md). Cached is omitted when it is zero. The ring
 holds its fill while a turn runs.
 
-The textarea is disabled for that whole stretch, and during session load and
-other in-flight session requests. Enter does not submit. The send control
-becomes **Stop**: a square in the same slot as the return mark. Stop posts
-`POST /chat_sessions/{id}/stop` and stays in that slot until the call
-returns, which is after the actor has exited. The field stays disabled until
-then. The client does not send a second instruction while the phase is not
-`idle`. Another session can still be running; the lock follows the session
-on screen. Selecting it again refetches, and `has_pending_agent` restores
-the phase when the actor is still running.
+Unsent text stays with the chat it was typed in. Switching sessions, or moving between the greeting card and the bottom field, restores that chat's draft. A successful send clears it. The new-chat draft is its own slot until the first send creates a row.
+
+The textarea stays editable while a turn runs and while a send is in flight.
+Enter does not submit during session load, a send that has not returned, or
+while the phase is not `idle`. Until that send returns, the send slot is a
+spinner. After it returns, the control becomes **Stop**: a square in the same
+slot as the return mark. Stop posts `POST /chat_sessions/{id}/stop` and stays
+in that slot until the call returns, which is after the actor has exited. The
+client does not send a second instruction while the phase is not `idle`.
+Another session can still be running; the lock follows the session on screen.
+Selecting it again refetches, and `has_pending_agent` restores the phase when
+the actor is still running.
 
 A session whose agent is still running shows a grayscale spinner on its row
 in the sidebar. That is the phase when it is not `idle`, or `has_pending_agent`
-when the list was loaded with the actor already running. Reduced motion
-keeps the ring still.
+when the list was loaded with the actor already running. Leaving that chat
+does not drop the spinner. `turn_finished` for that session still arrives on
+the open stream and clears the mark, without refetching its transcript.
+`turn_started` sets the mark the same way. Message frames for a session that
+is not on screen are not applied, so the row does not update on each token.
+A session refetch replaces the row when the title, mode, model, grants, or
+running flag change. Reduced motion keeps the ring still.
 
 Mode, model, and effort are quiet dropdowns in that row, and inside the
 welcome card. Mode sits on the left. Model, effort, and the context meter sit

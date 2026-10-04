@@ -57,6 +57,10 @@ use config::{merge, ServerConfig};
 /// One supervisor for the process. Sessions of a workspace share its servers.
 pub struct McpHub {
     inner: Mutex<HubState>,
+    /// Serializes connect and close so a switch cannot race a start.
+    gate: Mutex<()>,
+    /// Workspace the shell has open. `None` until the first focus.
+    open: Mutex<Option<WorkspaceId>>,
     settings: Arc<dyn SettingsStore>,
     home: PathBuf,
     bus: Arc<EventBus>,
@@ -72,12 +76,13 @@ struct WorkspaceServers {
     live: std::collections::HashMap<String, LiveServer>,
 }
 
-#[derive(Clone)]
 struct LiveServer {
     status: &'static str,
     title: Option<String>,
     icon: Option<String>,
     tool_count: u32,
+    session: Option<Arc<dyn McpSession>>,
+    listed: Option<Listed>,
 }
 
 /// The user and project MCP files, unread of their secrets.
@@ -106,17 +111,46 @@ impl McpHub {
             inner: Mutex::new(HubState {
                 workspaces: std::collections::HashMap::new(),
             }),
+            gate: Mutex::new(()),
+            open: Mutex::new(None),
             settings,
             home,
             bus,
         }
     }
 
+    /// Start this workspace's servers and close every other workspace's.
+    ///
+    /// The shell calls this when the open workspace changes. Connections stay
+    /// up for that workspace until the next switch, a delete, or process exit.
+    pub async fn focus(
+        &self,
+        workspace: WorkspaceId,
+        root: &Path,
+        stored_hash: Option<&str>,
+        open: &dyn session::SessionOpener,
+    ) {
+        let _gate = self.gate.lock().await;
+        *self.open.lock().await = Some(workspace);
+        self.close_except(workspace).await;
+        self.ensure(workspace, root, stored_hash, open).await;
+    }
+
+    /// Drop this workspace's connections. In-flight tool calls see a closed session.
+    pub async fn close(&self, workspace: WorkspaceId) {
+        let _gate = self.gate.lock().await;
+        if self.open.lock().await.as_ref() == Some(&workspace) {
+            *self.open.lock().await = None;
+        }
+        self.close_except_keeping(Some(workspace), true).await;
+    }
+
     /// Read both JSON files and register tools for the servers that connect.
     ///
-    /// Agent mode calls this before the first model request. A server that is
-    /// still down is omitted. The project file is used only when `stored_hash`
-    /// equals the file's SHA-256.
+    /// Agent mode calls this before the first model request. Servers already
+    /// open for the workspace are reused. A server that is still down is
+    /// omitted. The project file is used only when `stored_hash` equals the
+    /// file's SHA-256.
     pub async fn attach(
         &self,
         workspace: WorkspaceId,
@@ -126,6 +160,39 @@ impl McpHub {
         allows: Arc<dyn AllowList>,
         open: &dyn session::SessionOpener,
     ) {
+        let _gate = self.gate.lock().await;
+        self.ensure(workspace, root, stored_hash, open).await;
+        let state = self.inner.lock().await;
+        let Some(slot) = state.workspaces.get(&workspace) else {
+            return;
+        };
+        let ready: Vec<_> = slot
+            .live
+            .iter()
+            .filter_map(|(id, live)| {
+                Some((id.clone(), live.session.clone()?, live.listed.clone()?))
+            })
+            .collect();
+        drop(state);
+        let mut state = self.inner.lock().await;
+        let Some(slot) = state.workspaces.get_mut(&workspace) else {
+            return;
+        };
+        for (id, session, listed) in ready {
+            let _live = register_connected(registry, allows.clone(), slot, &id, session, listed);
+        }
+    }
+
+    async fn ensure(
+        &self,
+        workspace: WorkspaceId,
+        root: &Path,
+        stored_hash: Option<&str>,
+        open: &dyn session::SessionOpener,
+    ) {
+        if self.open.lock().await.is_some_and(|id| id != workspace) {
+            return;
+        }
         let user = read_file(&user_path(&self.home));
         let project_file = project_path(root);
         let project_bytes = std::fs::read(&project_file).unwrap_or_default();
@@ -137,7 +204,7 @@ impl McpHub {
             %workspace,
             servers = servers.len(),
             project_trusted = trusted,
-            "mcp attach"
+            "mcp workspace"
         );
         if !trusted && !project_bytes.is_empty() {
             tracing::info!(
@@ -148,29 +215,66 @@ impl McpHub {
         for error in errors {
             tracing::error!(server = %error.id, reason = %error.message, "skipped mcp server");
         }
-        let mut state = self.inner.lock().await;
-        let slot = state
-            .workspaces
-            .entry(workspace)
-            .or_insert_with(|| WorkspaceServers {
-                names: NameIndex::default(),
-                root: root.to_path_buf(),
-                live: std::collections::HashMap::new(),
-            });
-        slot.root = root.to_path_buf();
-        for server in &servers {
-            slot.live.insert(
-                server.id.clone(),
-                LiveServer {
-                    status: "starting",
-                    title: None,
-                    icon: None,
-                    tool_count: 0,
-                },
-            );
+        let mut pending = Vec::new();
+        {
+            let mut state = self.inner.lock().await;
+            let slot = state
+                .workspaces
+                .entry(workspace)
+                .or_insert_with(|| WorkspaceServers {
+                    names: NameIndex::default(),
+                    root: root.to_path_buf(),
+                    live: std::collections::HashMap::new(),
+                });
+            slot.root = root.to_path_buf();
+            let configured: std::collections::HashSet<_> =
+                servers.iter().map(|server| server.id.clone()).collect();
+            let stale: Vec<_> = slot
+                .live
+                .keys()
+                .filter(|id| !configured.contains(*id))
+                .cloned()
+                .collect();
+            let mut closed = Vec::new();
+            for id in stale {
+                slot.names.forget_server(&id);
+                if let Some(row) = slot.live.remove(&id) {
+                    if let Some(session) = row.session {
+                        closed.push(session);
+                    }
+                }
+            }
+            drop(state);
+            for session in closed {
+                session.close().await;
+            }
+            let mut state = self.inner.lock().await;
+            let Some(slot) = state.workspaces.get_mut(&workspace) else {
+                return;
+            };
+            for server in &servers {
+                if slot
+                    .live
+                    .get(&server.id)
+                    .is_some_and(|row| row.session.is_some())
+                {
+                    continue;
+                }
+                slot.live.insert(
+                    server.id.clone(),
+                    LiveServer {
+                        status: "starting",
+                        title: None,
+                        icon: None,
+                        tool_count: 0,
+                        session: None,
+                        listed: None,
+                    },
+                );
+                pending.push(server.clone());
+            }
         }
-        drop(state);
-        for server in servers {
+        for server in pending {
             tracing::info!(
                 server = %server.id,
                 target = %server_target(&server),
@@ -179,27 +283,32 @@ impl McpHub {
             let opened = connect_server(open, &server, root).await;
             let mut state = self.inner.lock().await;
             let Some(slot) = state.workspaces.get_mut(&workspace) else {
+                if let Ok((session, _)) = opened {
+                    session.close().await;
+                }
                 continue;
             };
             match opened {
                 Ok((session, listed)) => {
-                    let live = register_connected(
-                        registry,
-                        allows.clone(),
-                        slot,
-                        &server.id,
-                        session,
-                        listed,
-                    );
                     tracing::info!(
                         server = %server.id,
-                        tools = live.tool_count,
+                        tools = listed.tools.len(),
                         "mcp server connected"
                     );
-                    if let Some(icon) = live.icon.clone() {
+                    if let Some(icon) = listed.icon.clone() {
                         remember_icon(&self.home, &server.id, &icon);
                     }
-                    slot.live.insert(server.id.clone(), live);
+                    slot.live.insert(
+                        server.id,
+                        LiveServer {
+                            status: "connected",
+                            title: listed.title.clone(),
+                            icon: listed.icon.clone(),
+                            tool_count: listed.tools.len() as u32,
+                            session: Some(session),
+                            listed: Some(listed),
+                        },
+                    );
                 }
                 Err(err) => {
                     tracing::error!(server = %server.id, reason = %err, "mcp server failed");
@@ -207,19 +316,56 @@ impl McpHub {
                         "MCP server {} failed to start: {err}",
                         server.id
                     )));
-                    let previous = slot.live.get(&server.id).cloned();
+                    let title = slot.live.get(&server.id).and_then(|row| row.title.clone());
                     slot.names.forget_server(&server.id);
                     slot.live.insert(
                         server.id,
                         LiveServer {
                             status: "failed",
-                            title: previous.and_then(|row| row.title),
+                            title,
                             icon: None,
                             tool_count: 0,
+                            session: None,
+                            listed: None,
                         },
                     );
                 }
             }
+        }
+    }
+
+    async fn close_except(&self, keep: WorkspaceId) {
+        self.close_except_keeping(Some(keep), false).await;
+    }
+
+    async fn close_except_keeping(&self, target: Option<WorkspaceId>, only_target: bool) {
+        let mut state = self.inner.lock().await;
+        let ids: Vec<_> = state
+            .workspaces
+            .keys()
+            .copied()
+            .filter(|id| {
+                if only_target {
+                    Some(*id) == target
+                } else {
+                    Some(*id) != target
+                }
+            })
+            .collect();
+        let mut sessions = Vec::new();
+        for id in ids {
+            if let Some(slot) = state.workspaces.remove(&id) {
+                tracing::info!(workspace = %id, "mcp workspace closed");
+                for row in slot.live.into_values() {
+                    if let Some(session) = row.session {
+                        sessions.push(session);
+                    }
+                }
+            }
+        }
+        drop(state);
+        for session in sessions {
+            session.close().await;
         }
     }
 
@@ -327,8 +473,7 @@ async fn connect_server(
     };
     let connected = tokio::time::timeout(std::time::Duration::from_secs(15), open.open(spec))
         .await
-        .map_err(|_| "initialize exceeded 15 seconds".to_owned())?
-        .map_err(|err| err)?;
+        .map_err(|_| "initialize exceeded 15 seconds".to_owned())??;
     let listed = connected.list_tools().await?;
     if let Some(instructions) = &listed.instructions {
         tracing::info!(
@@ -396,7 +541,7 @@ fn register_connected(
         registry,
         server,
         &listed,
-        session,
+        Arc::clone(&session),
         Arc::new(Mutex::new(())),
         allows,
         &previous,
@@ -407,6 +552,8 @@ fn register_connected(
         title,
         icon,
         tool_count: rows.len() as u32,
+        session: Some(session),
+        listed: Some(listed),
     }
 }
 
@@ -416,7 +563,7 @@ mod tests {
     use crate::domain::settings::memory::MemorySettingsStore;
 
     #[tokio::test]
-    async fn a_configured_server_is_disconnected_until_an_actor_starts_it() {
+    async fn a_configured_server_is_disconnected_until_the_workspace_is_focused() {
         let dir = std::env::temp_dir().join(format!("robi-mcp-status-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(

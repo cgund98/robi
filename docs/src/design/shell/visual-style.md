@@ -175,8 +175,7 @@ These are the chrome pieces the style owns. Behavior of each is specified in
   as wide as its text, and never wider than 85% of the column. Text is
   `--ink-bright` so it matches the brightness of assistant prose.
 - Large radius (`--radius-lg`).
-- The chat column itself caps at `--chat-column-width` (`48rem`); user bubbles,
-  assistant prose, and the composer share that bound.
+- The chat column itself caps at `--chat-column-width` (`48rem`) and stays centered in the main pane when the window is wider. User bubbles, assistant prose, and the composer share that bound.
 
 ### Assistant message
 
@@ -184,6 +183,32 @@ These are the chrome pieces the style owns. Behavior of each is specified in
 - Inline code: `--code-bg` chip, `--radius-sm`, mono stack.
 - Fenced code blocks: same surface family, slightly taller padding; syntax
   highlighting comes later and must stay readable on `#0b0b0b`.
+
+### Mermaid diagrams
+
+- A fenced `mermaid` block renders on `--bg-canvas`, the same ground as the
+  transcript, with `--radius-md` and `--space-3` padding. The diagram sits
+  centered in it. The ground is the SVG's own `background` /
+  `edgeLabelBackground` value, so the diagram's `--bg-surface` nodes and
+  `--code-bg` containers step up from it. On `--code-bg` the containers were the
+  same color as the block and the nodes barely differed, so the diagram read as
+  a flat patch.
+- The surface scrolls horizontally and caps at `max-width: 100%`, so a diagram
+  wider than the chat column scrolls like a wide code block instead of
+  stretching the column.
+- The SVG uses the same tokens as the shell, not mermaid's default palette:
+  node fill `--bg-surface`, borders and edges `--rule`, node text
+  `--ink-bright`, container fill `--code-bg`, on the `--bg-canvas` background.
+  Sequence diagrams use the same tokens: actor boxes `--bg-surface` on `--rule`
+  borders, lifelines and messages `--rule` and `--ink`, notes on `--code-bg`.
+  State composites (a state that contains states) fill with `--code-bg` on both
+  the title and the body. The diagram uses mermaid's classic look, which is a
+  flat fill. Mermaid's default neo look adds a light gray drop shadow, and on
+  this ground that shadow reads as a second fill where a box sits inside a box.
+- Diagram text is the UI sans stack at 14px, a little smaller than body copy,
+  matching the fenced code block it replaces.
+- While the render is in flight, and when mermaid cannot parse the source, the
+  block is an ordinary fenced code block, not a placeholder surface.
 
 ### Activity lines
 
@@ -217,14 +242,17 @@ text. Not cards. Tool **results** that need inspection become tool cards
 ### Settings
 
 A full-page shell, not a dialog. Left rail: back to the chat, then the section
-list. Right pane: a title, then one or more sections. Each section is a muted
+list. Right pane: a title, then one or more sections, in the same centered
+column as the chat (`--chat-column-width`). Each section is a muted
 heading and a bordered card of rows. **Model Providers** has **Model Defaults**
 (one row per Global, Agent, Ask, and Plan: mode name, model menu on the left,
 effort menu on the same row). An unset mode shows the Global model and effort
 in those menus, and its Default item clears the override. Global effort stays a
 segmented control. and a separate card per provider. OpenCode
-holds the API key and base URL. **General** is a single card: the workspace, then a
-language-server switch. Use the same tokens;
+holds the API key and base URL. **Permissions** is a single card: switches for
+web search approval and web fetch approval, both on by default. **General** is a
+single card: the workspace, a language-server switch, then max iterations and
+subagent max iterations, a subagent timeout, and a tool timeout. Use the same tokens;
 active nav is `--bg-surface-active`, the selected effort pill may use `--accent`.
 Text fields, including secrets, sit one step above the card (`--bg-surface-hover`)
 with a `--bg-surface-active` border. Focus moves that border to `--ink-faint`.
@@ -232,7 +260,7 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line in the window bar, over the chat column. No toolbar of icons. The transcript starts on the next row, level with the workspace dropdown.
+The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
 
 The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
@@ -244,9 +272,10 @@ desktop window, and asks for a path in a normal browser. **Workspaces**, **New c
 ### Workspaces page
 
 A full-page list at `/workspaces`, in the same role as a projects home. The
-title sits on the left. Search and **New workspace** sit on the right. With no workspaces, the canvas center holds a short prompt
-and the same create action. With some, the cards stack in one column, each as
-wide as the page. The name and Open / Remove share the top line. The path sits
+page content sits in the same centered column as the chat (`--chat-column-width`). The
+title sits on the left of that column. Search and **New workspace** sit on the right. With no workspaces, the column center holds a short prompt
+and the same create action. With some, the cards stack in that column, each as
+wide as the column. The name and Open / Remove share the top line. The path sits
 below on a darker strip in mono. Opening a card selects it and returns to the
 chat. The chat shell sends you here when the list is empty. **Chat** returns
 when one is already selected.

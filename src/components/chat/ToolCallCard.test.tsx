@@ -115,7 +115,7 @@ describe('ToolCallCard', () => {
     expect(screen.getByText('+31')).toBeTruthy()
     expect(screen.getByText('-1')).toBeTruthy()
     expect(screen.getByText('old')).toBeTruthy()
-    expect(screen.getAllByText('extra')).toHaveLength(1)
+    expect(screen.getAllByText('extra')).toHaveLength(2)
     expect(screen.queryByText('9 more lines')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /replace\.rs/ }))
     expect(screen.getByText('old')).toBeTruthy()

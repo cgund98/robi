@@ -122,11 +122,20 @@ pub fn register_web_tools(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
     search: Arc<dyn SearchEngine>,
+    search_approval: bool,
+    fetch_approval: bool,
 ) -> Result<(), RegistryError> {
-    register(registry, Arc::new(web_search::WebSearch::new(search)))?;
     register(
         registry,
-        Arc::new(web_fetch::WebFetch::new(ctx, Arc::new(HttpFetcher))),
+        Arc::new(web_search::WebSearch::new(search, search_approval)),
+    )?;
+    register(
+        registry,
+        Arc::new(web_fetch::WebFetch::new(
+            ctx,
+            Arc::new(HttpFetcher),
+            fetch_approval,
+        )),
     )?;
     Ok(())
 }
@@ -138,10 +147,18 @@ pub fn register_tools_for_mode(
     mode: AgentMode,
     models: Arc<dyn ChildModels>,
     search: Arc<dyn SearchEngine>,
+    search_approval: bool,
+    fetch_approval: bool,
 ) -> Result<(), RegistryError> {
     register_read_tools(registry, Arc::clone(&ctx))?;
     register(registry, Arc::new(skill::Skill::new(Arc::clone(&ctx))))?;
-    register_web_tools(registry, Arc::clone(&ctx), search)?;
+    register_web_tools(
+        registry,
+        Arc::clone(&ctx),
+        search,
+        search_approval,
+        fetch_approval,
+    )?;
     match mode {
         AgentMode::Ask => {}
         AgentMode::Plan => {
@@ -311,6 +328,8 @@ mod registry_tests {
             mode,
             std::sync::Arc::new(UnavailableChildModels),
             std::sync::Arc::new(IdleSearch),
+            true,
+            true,
         )
         .unwrap();
         registry
@@ -332,6 +351,7 @@ mod registry_tests {
             lsp: crate::agent::lsp::LspHub::new(),
             lsp_enabled: false,
             originals: None,
+            settings: None,
         });
         let registry = ToolRegistry::new();
         register_tools_for_mode(
@@ -340,6 +360,8 @@ mod registry_tests {
             AgentMode::Agent,
             Arc::new(UnavailableChildModels),
             Arc::new(IdleSearch),
+            true,
+            true,
         )
         .unwrap();
         let names = registry.names();

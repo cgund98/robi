@@ -154,6 +154,15 @@ formatting and lints for Rust and the frontend, and runs the doc link check.
 `make docs` builds the mdBook at `docs/`; `make docs-serve` serves it locally
 with live reload.
 
+Pull requests run `.github/workflows/ci.yml`, which mirrors those commands in
+three jobs. `frontend` runs ESLint + Prettier, `tsc`, and vitest. `rust` runs
+rustfmt, clippy with `-D warnings`, and `cargo test --workspace` on macOS —
+macOS because the workspace tests execute the OS sandbox, and it is the shipping
+target. That job builds the front end first, because `src-tauri`'s
+`generate_context!` needs `dist/` to compile. `docs` runs the doc-link check and
+builds the mdBook, the same steps as the Pages workflow. Keep the jobs and the
+`Makefile` in step: when a make target changes, change the job too.
+
 ## Working rules
 
 - **Add a module, not a crate.** A new subsystem starts as a directory under

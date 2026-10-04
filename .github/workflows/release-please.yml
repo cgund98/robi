@@ -54,7 +54,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.90"
+          toolchain: '1.90'
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -64,7 +64,7 @@ jobs:
 
       - name: Build the Apple Silicon app
         env:
-          APPLE_SIGNING_IDENTITY: "-"
+          APPLE_SIGNING_IDENTITY: '-'
         run: pnpm tauri build --bundles dmg
 
       - name: Checksums

@@ -721,6 +721,7 @@ mod tests {
             lsp: hub,
             originals: None,
             lsp_enabled: true,
+            settings: None,
         });
         (harness, ctx)
     }
@@ -778,6 +779,7 @@ mod tests {
             lsp: LspHub::build(Timing::fast(), Arc::new(|_| None)),
             originals: None,
             lsp_enabled: true,
+            settings: None,
         });
         let missing = Diagnostics::new(Arc::clone(&ctx))
             .execute(json!({ "path": "lib.rs" }), run())

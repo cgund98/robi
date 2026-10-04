@@ -1,5 +1,6 @@
 //! Ask the user to allow a path for the rest of this session.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -133,6 +134,27 @@ struct GrantArgs {
 ///
 /// A directory matches itself and its children. The workspace root matches
 /// every relative path, and still loses to a deny that names more literals.
+/// Allow patterns for a newline-separated settings value.
+///
+/// Blank lines are skipped. A leading `~` or `~/` is the home directory.
+/// A path that is a file is an exact allow. Any other path, including one
+/// that does not exist yet, is that directory and its children.
+pub fn allows_from_setting(workspace: &Path, home: &Path, value: &str) -> Vec<String> {
+    let mut patterns = Vec::new();
+    for line in value.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(resolved) = crate::agent::workspace::resolve_path(workspace, line, home) else {
+            continue;
+        };
+        let directory = !resolved.absolute.is_file();
+        push_unique(&mut patterns, allow_pattern(&resolved.relative, directory));
+    }
+    patterns
+}
+
 pub fn allow_pattern(relative: &str, directory: bool) -> String {
     if relative.is_empty() {
         return r"^.*$".to_owned();
@@ -153,7 +175,7 @@ fn push_unique(patterns: &mut Vec<String>, pattern: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::allow_pattern;
+    use super::{allow_pattern, allows_from_setting};
 
     #[test]
     fn a_file_pattern_is_an_exact_path() {
@@ -163,6 +185,25 @@ mod tests {
     #[test]
     fn a_directory_pattern_includes_children() {
         assert_eq!(allow_pattern("gopi/.git", true), r"^gopi/\.git(/|$)");
+    }
+
+    #[test]
+    fn a_home_path_in_settings_becomes_an_absolute_allow() {
+        let root = std::env::temp_dir().join(format!("robi-allow-{}", std::process::id()));
+        let workspace = root.join("ws");
+        let home = root.join("home");
+        let pnpm = home.join("pnpm");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&pnpm).unwrap();
+        let workspace = std::fs::canonicalize(&workspace).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        let patterns = allows_from_setting(&workspace, &home, "\n~/pnpm\n\n  ~/pnpm \n");
+        assert_eq!(patterns.len(), 1);
+        let resolved = crate::agent::workspace::resolve_path(&workspace, "~/pnpm", &home).unwrap();
+        assert!(resolved.absolute.starts_with(&home));
+        assert_eq!(patterns[0], allow_pattern(&resolved.relative, true));
+        assert!(patterns[0].contains("pnpm"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

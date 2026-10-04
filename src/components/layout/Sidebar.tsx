@@ -3,13 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
 import styles from './Sidebar.module.css'
 import { IndexStatusLine } from './IndexStatusLine'
-import { McpTray } from './McpTray'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 type SidebarProps = {
   sessions: ChatSession[]
   activeSessionId: string
   draftSelected?: boolean
+  docsSelected?: boolean
   disabled?: boolean
   /** Sessions whose agent is still running. */
   runningSessionIds?: ReadonlySet<string>
@@ -23,6 +23,7 @@ export function Sidebar({
   sessions,
   activeSessionId,
   draftSelected = false,
+  docsSelected = false,
   disabled = false,
   runningSessionIds,
   onSelectSession,
@@ -87,7 +88,30 @@ export function Sidebar({
         Workspaces
       </button>
 
-      <McpTray />
+      <button
+        type="button"
+        className={`${styles.navLink} ${docsSelected ? styles.navLinkActive : ''}`}
+        disabled={disabled}
+        onClick={() => navigate('/docs')}
+        aria-current={docsSelected ? 'page' : undefined}
+      >
+        <span className={styles.navIcon} aria-hidden>
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 7v14" />
+            <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
+          </svg>
+        </span>
+        Documentation
+      </button>
 
       <div className={styles.section}>
         <div className={styles.sectionLabel}>Recents</div>

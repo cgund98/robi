@@ -37,8 +37,10 @@ Details that are enforced:
 - `timeout_seconds` defaults to 60; a value over 300 is a config error.
 - Unknown fields are ignored.
 
-The config is read when an agent-mode turn starts, so an edit applies on your next
-message.
+The config is read when the workspace becomes the open one, and again on an
+agent-mode turn for a server that is not already connected. An edit applies
+the next time that workspace is focused, or on the next message if the
+server is not up yet.
 
 ## Trust
 
@@ -64,8 +66,10 @@ backend path.
   fails the server. Static headers authenticate.
 
 One connection per enabled server per workspace is shared across that workspace's
-sessions. A server that drops restarts with backoff (1s, 2s, 4s, 8s, then 30s),
-at most five times in ten minutes.
+sessions. The servers start when the workspace is the one open in the shell, and
+they close when you switch to another workspace or remove this one. A server
+that drops restarts with backoff (1s, 2s, 4s, 8s, then 30s), at most five times
+in ten minutes.
 
 ## Tools and approval
 
@@ -83,7 +87,7 @@ change the decision.
 ## Status
 
 `GET /api/v1/workspaces/{id}/mcp` reports each configured server's status —
-`disconnected` until an agent actor starts it, then `starting`, `connected`, or
+`disconnected` until the workspace is open, then `starting`, `connected`, or
 `failed` — along with its tool count and icon. Icons are cached in
 `~/.robi/mcp-icons.json`.
 

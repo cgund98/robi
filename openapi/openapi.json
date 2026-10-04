@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.0"
+    "version": "0.1.2"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -757,6 +757,83 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/docs": {
+      "get": {
+        "tags": [
+          "docs"
+        ],
+        "operationId": "list_docs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown files in this workspace, gitignore respected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocsListing"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/docs/{path}": {
+      "get": {
+        "tags": [
+          "docs"
+        ],
+        "operationId": "get_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Workspace-relative path to a markdown file",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocContent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a markdown file, or not UTF-8"
+          },
+          "404": {
+            "description": "No such file, or a path outside the workspace"
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/index": {
       "get": {
         "tags": [
@@ -860,6 +937,28 @@
                 }
               }
             }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "focus_mcp",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "This workspace's MCP servers are starting; other workspaces are closed"
           }
         }
       }
@@ -1342,6 +1441,47 @@
               "null"
             ],
             "description": "Shown to the model when `decision` is `reject`. Omitted uses a default."
+          }
+        }
+      },
+      "DocContent": {
+        "type": "object",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "DocEntry": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative, `/` separated."
+          }
+        }
+      },
+      "DocsListing": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocEntry"
+            }
           }
         }
       },

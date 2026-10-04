@@ -36,6 +36,9 @@ pub trait McpSession: Send + Sync {
         args: Value,
         cancel: &CancellationToken,
     ) -> Result<Value, String>;
+
+    /// Drop the transport. A later call fails. Tools may still hold this session.
+    async fn close(&self) {}
 }
 
 /// Opens one configured server. Tests supply a session directly.

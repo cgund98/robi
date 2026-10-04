@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { decideReview } from '../../api/review'
@@ -47,6 +47,11 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   const [decideError, setDecideError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [hiddenPaths, setHiddenPaths] = useState<string[]>([])
+  const [hiddenFor, setHiddenFor] = useState(loaded)
+  if (hiddenFor !== loaded) {
+    setHiddenFor(loaded)
+    setHiddenPaths((current) => current.filter((path) => loaded.some((file) => file.path === path)))
+  }
   const files = useMemo(
     () => loaded.filter((file) => !hiddenPaths.includes(file.path)),
     [loaded, hiddenPaths]
@@ -62,10 +67,6 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   }, [files, orderedPaths])
   const tree = useMemo(() => buildFileTree(orderedPaths), [orderedPaths])
   const active = selected && orderedPaths.includes(selected) ? selected : (orderedPaths[0] ?? null)
-
-  useEffect(() => {
-    setHiddenPaths((current) => current.filter((path) => loaded.some((file) => file.path === path)))
-  }, [loaded])
 
   function register(path: string, node: HTMLElement | null) {
     if (node) {

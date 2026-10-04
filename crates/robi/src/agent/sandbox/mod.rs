@@ -10,11 +10,11 @@ mod profile;
 mod seatbelt;
 
 pub(crate) use env::secret_name;
-pub use env::{command_env, EnvInput};
+pub use env::{command_env, install_path_wrappers, EnvInput};
 pub use launch::run_command;
 pub use profile::{
-    apply_allow_read, apply_deny, classify_path, parse_rule, push_classified, AccessClass,
-    NetworkMode, ParsedRule, Profile, ProfileError,
+    apply_allow_read, apply_allow_write, apply_deny, classify_path, parse_rule, push_classified,
+    AccessClass, NetworkMode, ParsedRule, Profile, ProfileError,
 };
 pub use seatbelt::seatbelt_policy;
 
@@ -23,7 +23,6 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-pub const TIMEOUT: Duration = Duration::from_secs(120);
 /// Matches `LoopConfig::max_tool_result_bytes`, so the tool result stays under
 /// the core's ceiling and still reports truncation itself.
 pub const OUTPUT_LIMIT: usize = 256 * 1024;
@@ -43,13 +42,14 @@ pub async fn launch(
     profile: &Profile,
     command: &str,
     cancel: CancellationToken,
+    timeout: Duration,
 ) -> Result<CommandOutput, String> {
     let argv = launch_argv(profile, command)?;
     run_command(launch::Request {
         argv,
         cwd: profile.cwd.clone(),
         env: profile.env.clone(),
-        timeout: TIMEOUT,
+        timeout,
         output_limit: OUTPUT_LIMIT,
         cancel,
     })
@@ -78,11 +78,67 @@ fn launch_argv(profile: &Profile, command: &str) -> Result<Vec<String>, String> 
     Err("sandboxed shell is not available on this platform. Set unsandboxed to true to ask the user to approve an unsandboxed command.".to_owned())
 }
 
+/// Home-relative trees a sandboxed command may read so language tools resolve.
+/// Parent `PATH` entries inside these trees are kept. The list is read-only.
+pub const TOOLCHAIN_ROOTS: &[&str] = &[
+    ".cargo/bin",
+    ".rustup",
+    ".local/bin",
+    // Python: pyenv, and uv's managed interpreters.
+    ".pyenv",
+    ".local/share/uv",
+    // Go: installed commands, and the SDK from `go install`.
+    "go/bin",
+    "sdk/go",
+    // TypeScript and Node: version managers and package-manager bins.
+    ".nvm",
+    ".volta",
+    ".fnm",
+    ".local/share/fnm",
+    ".bun",
+    ".local/share/pnpm",
+    "Library/pnpm",
+];
+
 /// Directories a sandboxed command may read so the constructed `PATH` works.
+/// Each path is the canonical absolute directory, so a symlink or firmlink
+/// matches the path the kernel checks.
 pub fn toolchain_reads(home: &Path) -> Vec<PathBuf> {
-    [".cargo/bin", ".rustup", ".local/bin"]
-        .into_iter()
-        .map(|name| home.join(name))
-        .filter(|path| path.is_dir())
+    TOOLCHAIN_ROOTS
+        .iter()
+        .filter_map(|name| canonical_dir(&home.join(name)))
         .collect()
+}
+
+fn canonical_dir(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_symlinked_toolchain_root_is_the_canonical_directory() {
+        let root = std::env::temp_dir().join(format!("robi-toolchain-{}", std::process::id()));
+        let home = root.join("home");
+        let real = root.join("real-cargo-bin");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(home.join(".cargo")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, home.join(".cargo/bin")).unwrap();
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(home.join(".cargo/bin")).unwrap();
+        let reads = toolchain_reads(&home);
+        let cargo = reads
+            .iter()
+            .find(|path| path.ends_with(".cargo/bin") || path.ends_with("real-cargo-bin"))
+            .expect("cargo bin");
+        assert_eq!(cargo, &real.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

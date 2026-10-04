@@ -53,7 +53,7 @@ impl ClientHandler for Handler {
 
 pub struct RmcpSession {
     peer: rmcp::service::Peer<RoleClient>,
-    _service: RunningService<RoleClient, Handler>,
+    service: tokio::sync::Mutex<Option<RunningService<RoleClient, Handler>>>,
 }
 
 #[async_trait]
@@ -132,6 +132,10 @@ impl McpSession for RmcpSession {
             }
         }
     }
+
+    async fn close(&self) {
+        self.service.lock().await.take();
+    }
 }
 
 fn icon_src(icons: Option<&[rmcp::model::Icon]>) -> Option<String> {
@@ -188,7 +192,7 @@ impl SessionOpener for RmcpOpener {
         let peer = service.peer().clone();
         Ok(Box::new(RmcpSession {
             peer,
-            _service: service,
+            service: tokio::sync::Mutex::new(Some(service)),
         }))
     }
 }

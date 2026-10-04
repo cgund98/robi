@@ -4,17 +4,27 @@
   right: 0;
   left: 0;
   z-index: 2;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr minmax(0, var(--chat-column-width)) 1fr;
   align-items: center;
   height: var(--titlebar-height);
-  padding: 0 var(--space-5);
+  padding: 0 var(--space-4) 0 var(--space-5);
   user-select: none;
 }
 
 .title {
+  grid-column: 2;
+  justify-self: center;
+  max-width: 100%;
   color: var(--ink);
   overflow: hidden;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+.header > :last-child:not(.title) {
+  grid-column: 3;
+  justify-self: end;
 }

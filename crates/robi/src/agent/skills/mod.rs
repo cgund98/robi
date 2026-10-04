@@ -346,7 +346,7 @@ fn parse_skill(
         return None;
     }
     let (front, body) = split_frontmatter(text)?;
-    let meta = parse_frontmatter(&front);
+    let meta = parse_frontmatter(front);
     let description = meta.description.or_else(|| first_paragraph(body))?;
     let description = cut_chars(&description, DESCRIPTION_MAX);
     if description.is_empty() {

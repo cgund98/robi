@@ -297,6 +297,17 @@ fn render_raw(
     payload
 }
 
+fn cap_bytes(text: &str, max: usize) -> (String, bool, Option<usize>) {
+    if text.len() <= max {
+        return (text.to_owned(), false, None);
+    }
+    let mut cut = max;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (text[..cut].to_owned(), true, Some(cut))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,15 +352,4 @@ mod tests {
         assert_eq!(page["exit_code"], 1);
         assert!(page.get("kind").is_none());
     }
-}
-
-fn cap_bytes(text: &str, max: usize) -> (String, bool, Option<usize>) {
-    if text.len() <= max {
-        return (text.to_owned(), false, None);
-    }
-    let mut cut = max;
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    (text[..cut].to_owned(), true, Some(cut))
 }

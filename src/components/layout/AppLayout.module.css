@@ -47,6 +47,18 @@
   min-height: 0;
 }
 
+.thread::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  right: 12px;
+  height: 1.25rem;
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--bg-canvas), transparent);
+}
+
 .dock {
   position: absolute;
   right: 0;
@@ -75,6 +87,38 @@
 .dock > * {
   position: relative;
   z-index: 1;
+}
+
+.loadingTranscript {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--ink-faint);
+  border-top-color: var(--ink);
+  animation: transcriptSpin 0.8s linear infinite;
+}
+
+@keyframes transcriptSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
 }
 
 .banner {

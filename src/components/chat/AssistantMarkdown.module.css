@@ -118,6 +118,53 @@
   white-space: pre;
 }
 
+/* A fenced mermaid block waiting to render, or one mermaid could not parse. */
+.markdown .diagramSource {
+  margin: 0;
+}
+
+.markdown .diagram {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  overflow-x: auto;
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  /* The canvas ground, matching the SVG's own `background` /
+     `edgeLabelBackground` theme variables. The diagram's filled nodes
+     (`--bg-surface`) and containers (`--code-bg`) then step up from the
+     ground. On `--code-bg` the containers were the same color as the block
+     and the nodes barely differed, so the diagram had no contrast. */
+  background: var(--bg-canvas);
+}
+
+.markdown .diagramSvg {
+  display: flex;
+  justify-content: center;
+}
+
+.markdown .diagramSvg svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Mermaid hardcodes this alt-region fill to #e0e0e0, which is a light patch
+   on the dark shell. The id-prefixed stylesheet beats a normal rule. */
+.markdown .diagramSvg svg .stateGroup .alt-composit {
+  fill: #1a1a19 !important; /* --code-bg */
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .markdown blockquote {
   margin-left: 0;
   padding-left: var(--space-3);

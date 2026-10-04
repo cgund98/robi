@@ -210,6 +210,14 @@ impl Agent {
         self.settle_call(session, call, None).await
     }
 
+    /// Reject every call still waiting on a decision.
+    async fn reject_pending(&self, session: SessionId, reason: &str) -> Result<(), AgentError> {
+        for call in self.pending_tool_calls(session).await? {
+            self.reject(session, call.id, reason).await?;
+        }
+        Ok(())
+    }
+
     /// Reject one call, with a reason the model reads.
     pub async fn reject(
         &self,
@@ -223,9 +231,9 @@ impl Agent {
 
     /// Add a user message and run.
     ///
-    /// Settles any unresolved turn first. If the turn is still paused after
-    /// settling, the text is not appended: user input never runs ahead of an
-    /// unresolved turn.
+    /// Settles any unresolved turn first. Calls still waiting on a decision are
+    /// rejected, and those rejections are written before the text. User input
+    /// never runs ahead of an unresolved turn.
     pub async fn user_input(
         &self,
         session: SessionId,
@@ -245,7 +253,22 @@ impl Agent {
         cancel: CancellationToken,
     ) -> TurnOutcome {
         match self.settle_unresolved(&session, &cancel).await {
-            Ok(Settle::Paused) => return TurnOutcome::Paused,
+            Ok(Settle::Paused) => {
+                // A new message is a refusal of the calls still waiting. Settle
+                // those rejections before the text is appended, so the transcript
+                // answers the tool calls and then records what the user typed.
+                if let Err(error) = self
+                    .reject_pending(session, "the user sent a new message")
+                    .await
+                {
+                    return TurnOutcome::Failed(error);
+                }
+                match self.settle_unresolved(&session, &cancel).await {
+                    Ok(Settle::Paused) => return TurnOutcome::Paused,
+                    Ok(_) => {}
+                    Err(error) => return TurnOutcome::Failed(error),
+                }
+            }
             Ok(_) => {}
             Err(error) => return TurnOutcome::Failed(error),
         }

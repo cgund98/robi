@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 import { useIndexStore } from '../../state/indexStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
 import styles from './Sidebar.module.css'
@@ -8,7 +10,25 @@ export function IndexStatusLine() {
   const pending = useIndexStore((state) => state.pending)
   const setPaused = useIndexStore((state) => state.setPaused)
 
-  if (!status || status.state === 'ready') {
+  const indexing = status?.state === 'indexing'
+  const [indexingVisible, setIndexingVisible] = useState(false)
+  const [wasIndexing, setWasIndexing] = useState(indexing)
+  if (wasIndexing !== indexing) {
+    setWasIndexing(indexing)
+    if (!indexing) {
+      setIndexingVisible(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!indexing) {
+      return
+    }
+    const timer = window.setTimeout(() => setIndexingVisible(true), 5000)
+    return () => window.clearTimeout(timer)
+  }, [indexing])
+
+  if (!status || status.state === 'ready' || (indexing && !indexingVisible)) {
     return null
   }
 

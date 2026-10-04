@@ -59,8 +59,8 @@ memory.
 
 - Sending a message while a turn is running is allowed; the latest instruction
   wins.
-- A `409` from the message route means the session is awaiting approval; settle
-  the pending calls first (see [Approvals](approvals.md)).
+- Sending a message while the turn is paused rejects the calls still waiting
+  on approval, then runs the new instruction (see [Approvals](approvals.md)).
 - `stop` cancels the running turn through the cancellation token. A cancelled
   turn leaves a transcript that is either resumable or cleanly finished, never a
   half-written assistant message with dangling tool calls.

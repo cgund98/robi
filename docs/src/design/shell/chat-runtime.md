@@ -88,8 +88,7 @@ has been submitted to, for the life of the process.
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Running: submit, transcript is not awaiting approval
-  Idle --> Idle: submit while awaiting approval
+  Idle --> Running: submit
   Running --> Running: newer instruction cancels and replaces pending
   Running --> Idle: actor finishes and pending is empty
 ```
@@ -99,31 +98,24 @@ stateDiagram-v2
 1. If `running` is set, cancel the stored token when there is one, replace
    `pending` with this instruction, and return `Accepted`. The transcript is
    not read.
-2. Otherwise read the transcript. If the newest unresolved assistant message
-   has a call whose tool still returns needs-approval, check `running` again.
-   A turn that started during the read is interrupted as in step 1. If the
-   session is still idle, return `AwaitingApproval`. The instruction is not
-   stored. An unfinished call the tool would run immediately is not this
-   state; the next submit settles it and then appends.
-3. Otherwise take the lock. If `running` became set while the transcript was
-   being read, interrupt as in step 1. If it is still idle, set `running`,
+2. Otherwise take the lock. If `running` became set while the session registry
+   was being built, interrupt as in step 1. If it is still idle, set `running`,
    store the instruction as `pending`, drop the lock, spawn the actor, and
    return `Accepted`.
 
 `Accepted` means the slot holds the instruction. The model has not run.
-`AwaitingApproval` is the same predicate the loop uses before it refuses to
-append: `unresolved_turn` finds the newest assistant message with unfinished
-tool calls, and `requires_approval` on one of those calls returns
-needs-approval. Calls that are approved and not yet run are not this state.
-Neither is a `pending` call the tool would run immediately. `user_input` will
-settle those, then append.
+A transcript that is paused on approval is accepted the same way. `user_input`
+rejects each call still waiting, settles those rejections, and then appends
+the instruction. An unfinished call the tool would run immediately is settled
+the same way, then the instruction is appended.
 
 A blank or whitespace instruction never reaches `submit`.
 `ChatMessageService` returns `BadRequest` first, and it also returns
 `NotFound` when the chat session row is missing. The web layer maps
-`Accepted` to `202` `{ "status": "accepted" }`, `AwaitingApproval` to `409`
-with `{ "error": "chat session is awaiting approval" }`, `BadRequest` to
-`400`, and `NotFound` to `404`.
+`Accepted` to `202` `{ "status": "accepted" }`, `BadRequest` to `400`, and
+`NotFound` to `404`. `AwaitingApproval` is still a `SubmitOutcome`, mapped to
+`409` with `{ "error": "chat session is awaiting approval" }`. `submit` does
+not return it.
 
 ### Actor
 
@@ -175,15 +167,14 @@ The loop owns these outcomes. The runtime depends on them.
   model turn returns `Cancelled` and does not append a partial assistant
   message. The actor then runs the replacement, which appends the newer user
   message. The model's second transcript contains both user messages.
-- `user_input` returns `Paused` without appending when the transcript is
-  waiting on approval. Settle maps cancellation during tool execution to that
-  same `Paused` result. The actor has already taken the instruction out of
-  `pending`, so that text is not retried. The HTTP call already returned `202`
-  if the slot was `running` when it was submitted.
+- `user_input` rejects calls that are still waiting on approval, settles those
+  rejections, and then appends. Settle maps cancellation during tool execution
+  to `Paused`. The actor has already taken the instruction out of `pending`,
+  so that text is not retried. The HTTP call already returned `202` if the
+  slot was `running` when it was submitted.
 
-The idle path avoids the third case by reading the transcript before it
-spawns. The running path cannot: the decision to accept was made while a turn
-was still in flight.
+The idle path and the running path both accept the instruction. A turn that
+is still in flight is cancelled first; the replacement then runs.
 
 ### Stop
 
@@ -317,8 +308,8 @@ to the factory.
   Stopping an idle session returns `202` and changes nothing.
 - `decide` while the actor is running returns `409`. While idle, it approves
   or rejects that call and resumes the turn.
-- A submit while idle and awaiting approval returns `409`. The transcript is
-  unchanged, and nothing is cancelled.
+- A submit while idle and awaiting approval is `202`. The actor rejects the
+  pending calls, records those rejections, and then appends the instruction.
 - A submit whose `user_input` then returns `Paused` was already accepted. The
   text is not appended and is not put back in `pending`.
 - A store error while reading the transcript for the approval check is
@@ -337,16 +328,15 @@ to the factory.
   info. `Failed` is logged at error. The actor then takes the next `pending`
   instruction, or exits if there is none. The HTTP response was already `202`.
   A failed turn is not titled.
-- An accepted instruction is logged at info with the session id. An instruction
-  refused because the transcript is awaiting approval is logged at info. The
+- An accepted instruction is logged at info with the session id. The
   instruction text is not logged.
 - A title that is stored is logged at info. A title estimate that fails, or an
   empty reply, is logged or ignored. The turn's outcome is unchanged and the
   title stays null.
 - A title that is already stored is not replaced, and the model is not asked.
 - The actor is a detached task. Process shutdown drops it. A restart has no
-  slots. The next submit builds a new actor, and a transcript that is waiting
-  on approval gets `409` again.
+  slots. The next submit builds a new actor. A transcript that is waiting on
+  approval is rejected by that submit and then the new instruction runs.
 - `GET` during a write is a normal SQLite read. It does not wait on the actor.
 
 ## Testing
@@ -358,10 +348,10 @@ to the factory.
 - `stop` on that same blocked model returns only after the actor is idle.
   The transcript keeps the user message and has no assistant message. A
   second `stop` on the idle session returns immediately.
-- A transcript with a pending tool call whose tool needs approval returns
-  `AwaitingApproval` and the message list is unchanged. A pending call the
-  tool would run immediately is accepted; the tool runs, then the instruction
-  is appended.
+- A transcript with a pending tool call whose tool needs approval is accepted.
+  The call is rejected, that rejection is stored before the instruction, and
+  the tool does not run. A pending call the tool would run immediately is
+  accepted; the tool runs, then the instruction is appended.
 - `ChatMessageService` with a fake `ChatRuntime`: a blank instruction is
   `BadRequest` and the runtime is not called; a missing chat session is
   `NotFound` for submit, list, and get; a real instruction is passed through

@@ -6,7 +6,7 @@ export function WindowFrame() {
   const { pathname } = useLocation()
   const tone = pathname.startsWith('/settings')
     ? styles.barSettings
-    : pathname === '/' || pathname.startsWith('/sessions/')
+    : pathname === '/' || pathname.startsWith('/sessions/') || pathname === '/docs'
       ? styles.barChat
       : styles.barPlain
 

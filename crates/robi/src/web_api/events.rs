@@ -227,9 +227,7 @@ fn event_stream(
         (subscription, filter, lease),
         |(mut subscription, filter, lease)| async move {
             loop {
-                let Some(envelope) = subscription.recv().await else {
-                    return None;
-                };
+                let envelope = subscription.recv().await?;
                 if !filter.matches(&envelope) {
                     continue;
                 }
@@ -269,7 +267,10 @@ mod tests {
             service::ChatSessionService,
         },
         error::ServiceError,
-        events::{EventBus, EventEnvelope, APP_ERROR, SESSION_CREATED, TURN_STARTED},
+        events::{
+            EventBus, EventEnvelope, APP_ERROR, MESSAGE_DELTA, SESSION_CREATED, TURN_FINISHED,
+            TURN_STARTED,
+        },
         settings::{memory::MemorySettingsStore, store::SettingsStore, SettingsService},
     };
     use crate::web_api::state::AppState;
@@ -504,7 +505,7 @@ mod tests {
         .await;
         assert!(response.status().is_success());
 
-        fanout.publish(sample(&other, TURN_STARTED));
+        fanout.publish(sample(&other, MESSAGE_DELTA));
         let kept = sample(&wanted, TURN_STARTED);
         fanout.publish(kept.clone());
 
@@ -542,6 +543,12 @@ mod tests {
             serde_json::from_str(field(&read_frame(&mut body).await, "data")).unwrap();
         assert_eq!(first, created);
         assert_eq!(second, error);
+
+        let finished = sample(&other, TURN_FINISHED);
+        bus.publish(finished.clone());
+        let third: EventEnvelope =
+            serde_json::from_str(field(&read_frame(&mut body).await, "data")).unwrap();
+        assert_eq!(third, finished);
     }
 
     #[tokio::test]

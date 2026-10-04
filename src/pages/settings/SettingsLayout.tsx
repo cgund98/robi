@@ -5,6 +5,7 @@ import styles from './Settings.module.css'
 const ITEMS = [
   { to: '/settings/providers', label: 'Model Providers' },
   { to: '/settings/mcp', label: 'MCP' },
+  { to: '/settings/permissions', label: 'Permissions' },
   { to: '/settings/general', label: 'General' }
 ] as const
 
@@ -13,7 +14,7 @@ export function SettingsLayout() {
     <div className={styles.page}>
       <nav className={styles.nav} aria-label="Settings">
         <NavLink className={styles.back} to="/">
-          ← Back to app
+          ← Back
         </NavLink>
         <div className={styles.sectionLabel}>Settings</div>
         {ITEMS.map((item) => (
@@ -27,7 +28,9 @@ export function SettingsLayout() {
         ))}
       </nav>
       <main className={styles.main}>
-        <Outlet />
+        <div className={styles.column}>
+          <Outlet />
+        </div>
       </main>
     </div>
   )

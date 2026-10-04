@@ -9,7 +9,7 @@
   gap: var(--space-3);
   width: calc(100% - 2 * var(--radius-lg));
   max-width: calc(var(--chat-column-width) - 2 * var(--radius-lg));
-  margin-left: var(--radius-lg);
+  margin-inline: auto;
   box-sizing: border-box;
   padding: 6px var(--space-2) 6px var(--space-3);
   background: var(--bg-canvas);

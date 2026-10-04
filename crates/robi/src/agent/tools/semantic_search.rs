@@ -302,6 +302,7 @@ mod tests {
             lsp: crate::agent::lsp::LspHub::new(),
             lsp_enabled: true,
             originals: None,
+            settings: None,
         });
         let tool = SemanticSearch::new(ctx);
         let all = tool

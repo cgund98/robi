@@ -495,8 +495,7 @@ export function exploreSummary(view: SubagentView): string {
   const files = new Set(
     view.steps
       .filter(
-        (step) =>
-          (step.name === 'read_file' || step.name === 'read_code') && step.target.length > 0
+        (step) => (step.name === 'read_file' || step.name === 'read_code') && step.target.length > 0
       )
       .map((step) => step.target)
   ).size

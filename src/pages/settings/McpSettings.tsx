@@ -14,10 +14,16 @@ export function McpSettings() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
+  const [requestedWorkspace, setRequestedWorkspace] = useState(workspaceId)
+  if (requestedWorkspace !== workspaceId) {
+    setRequestedWorkspace(workspaceId)
+    setConfig(null)
+    setError(null)
+    setLoading(Boolean(workspaceId))
+  }
+
   const refresh = useCallback(async () => {
     if (!workspaceId) {
-      setConfig(null)
-      setError(null)
       return
     }
     setLoading(true)
@@ -32,8 +38,31 @@ export function McpSettings() {
   }, [workspaceId])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    if (!workspaceId) {
+      return
+    }
+    let cancelled = false
+    void getMcpConfig(workspaceId)
+      .then((next) => {
+        if (!cancelled) {
+          setConfig(next)
+          setError(null)
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load MCP config')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
 
   return (
     <>

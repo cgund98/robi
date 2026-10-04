@@ -3,28 +3,29 @@ import { Link } from 'react-router-dom'
 
 import { listMcpServers, type McpServer } from '../../api/mcp'
 import { useWorkspaceStore } from '../../state/workspaceStore'
-import styles from './Sidebar.module.css'
+import styles from './McpTray.module.css'
 
 export function McpTray() {
   const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
-  const [servers, setServers] = useState<McpServer[]>([])
+  const [loaded, setLoaded] = useState<{ id: string; servers: McpServer[] } | null>(null)
+  const servers = loaded?.id === workspaceId ? loaded.servers : []
 
   useEffect(() => {
     if (!workspaceId) {
-      setServers([])
       return
     }
+    const id = workspaceId
     let cancelled = false
     const load = () => {
-      void listMcpServers(workspaceId)
+      void listMcpServers(id)
         .then((rows) => {
           if (!cancelled) {
-            setServers(rows)
+            setLoaded({ id, servers: rows })
           }
         })
         .catch(() => {
           if (!cancelled) {
-            setServers([])
+            setLoaded({ id, servers: [] })
           }
         })
     }
@@ -41,40 +42,37 @@ export function McpTray() {
   }
 
   return (
-    <section className={styles.mcpSection} aria-label="MCP servers">
-      <Link className={styles.mcpHeader} to="/settings/mcp">
-        MCP
-      </Link>
-      <div className={styles.mcpTray}>
-        {servers.map((server) => (
-          <span
-            key={server.id}
-            className={`${styles.mcpMark} ${markClass(server.status)}`}
-            title={markTitle(server)}
-          >
-            {server.icon ? (
-              <img src={server.icon} alt="" />
-            ) : (
-              <span aria-hidden>{server.id.slice(0, 1).toUpperCase()}</span>
-            )}
-          </span>
-        ))}
-      </div>
-    </section>
+    <div className={styles.tray} aria-label="MCP servers">
+      {servers.map((server) => (
+        <Link
+          key={server.id}
+          className={`${styles.mark} ${markClass(server.status)}`}
+          to="/settings/mcp"
+          title={markTitle(server)}
+          aria-label={markTitle(server)}
+        >
+          {server.icon ? (
+            <img src={server.icon} alt="" />
+          ) : (
+            <span aria-hidden>{server.id.slice(0, 1).toUpperCase()}</span>
+          )}
+        </Link>
+      ))}
+    </div>
   )
 }
 
 function markClass(status: string): string {
   if (status === 'connected') {
-    return styles.mcpConnected
+    return styles.connected
   }
   if (status === 'failed') {
-    return styles.mcpFailed
+    return styles.failed
   }
   if (status === 'starting') {
-    return styles.mcpStarting
+    return styles.starting
   }
-  return styles.mcpDisconnected
+  return styles.disconnected
 }
 
 function markTitle(server: McpServer): string {

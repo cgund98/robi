@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent::sandbox::{
-    apply_allow_read, apply_deny, command_env, launch, push_classified, toolchain_reads, EnvInput,
-    NetworkMode, Profile,
+    apply_allow_read, apply_allow_write, apply_deny, command_env, install_path_wrappers, launch,
+    push_classified, toolchain_reads, EnvInput, NetworkMode, Profile,
 };
 
 use super::context::ToolContext;
@@ -127,6 +127,7 @@ impl Tool for Shell {
         };
         let home = crate::agent::workspace::user_home()
             .map_err(|err| ToolError::Failed(err.to_string()))?;
+        let home = home.canonicalize().unwrap_or(home);
         let temp_dir = private_temp().map_err(|err| ToolError::Failed(err.to_string()))?;
         let temp_guard = TempDir(temp_dir.clone());
         let session = self
@@ -170,6 +171,18 @@ impl Tool for Shell {
                 apply_deny(pattern, &self.ctx.root, false, &mut profile)
                     .map_err(|err| ToolError::Failed(err.to_string()))?;
             }
+            let mut configured = session.path_rules.clone();
+            configured.allow_read.clear();
+            configured.allow_write.clear();
+            self.ctx.append_configured_allows(&mut configured).await;
+            for pattern in &configured.allow_read {
+                apply_allow_read(pattern, &self.ctx.root, &home, &mut profile)
+                    .map_err(|err| ToolError::Failed(err.to_string()))?;
+            }
+            for pattern in &configured.allow_write {
+                apply_allow_write(pattern, &self.ctx.root, &home, &mut profile)
+                    .map_err(|err| ToolError::Failed(err.to_string()))?;
+            }
             for path in &args.read_paths {
                 let resolved = self.ctx.resolve(path)?;
                 push_classified(resolved.absolute, &home, true, &mut profile);
@@ -179,18 +192,48 @@ impl Tool for Shell {
                 push_classified(resolved.absolute, &home, false, &mut profile);
             }
         }
+        let extra_path = self
+            .ctx
+            .setting_value(crate::domain::settings::keys::PATH_ENTRIES)
+            .await;
+        let path_bin = if profile.sandboxed {
+            install_path_wrappers(&temp_dir, &home, &extra_path)
+        } else {
+            None
+        };
+        let path_prefix = path_bin
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
         profile.env = command_env(&EnvInput {
             home: &home,
             workspace: &self.ctx.root,
             temp_dir: &temp_dir,
             sandboxed: profile.sandboxed,
             parent_path: &std::env::var("PATH").unwrap_or_default(),
+            extra_path: &extra_path,
+            path_prefix: &path_prefix,
             lang: std::env::var("LANG").ok().as_deref(),
             user: std::env::var("USER").ok().as_deref(),
         });
-        let output = launch(&profile, command, run.cancel)
-            .await
-            .map_err(ToolError::Failed)?;
+        let timeout_seconds = self
+            .ctx
+            .bounded_u32(
+                crate::domain::settings::keys::TOOL_TIMEOUT_SECONDS,
+                crate::domain::settings::keys::DEFAULT_TIMEOUT_SECONDS
+                    .parse()
+                    .unwrap_or(120),
+                crate::domain::settings::keys::TIMEOUT_LIMIT_SECONDS,
+            )
+            .await;
+        let output = launch(
+            &profile,
+            command,
+            run.cancel,
+            std::time::Duration::from_secs(u64::from(timeout_seconds)),
+        )
+        .await
+        .map_err(ToolError::Failed)?;
         drop(temp_guard);
         let mut payload = json!({
             "exit_code": output.exit_code,

@@ -215,7 +215,7 @@ is read from the runtime's in-memory slots. It is not a column.
 
 | Method | Path | Success | Failure |
 |---|---|---|---|
-| `POST` | `/chat_sessions/{id}/messages` | `202` `{ "status": "accepted" }` | `400` if `id` is not a UUID or `instruction` is empty or whitespace, `404` if the chat session is missing, `409` if the transcript is waiting on a tool approval |
+| `POST` | `/chat_sessions/{id}/messages` | `202` `{ "status": "accepted" }` | `400` if `id` is not a UUID or `instruction` is empty or whitespace, `404` if the chat session is missing |
 | `GET` | `/chat_sessions/{id}/messages` | `200` transcript, in order | `404` if the chat session is missing, `400` if `id` is not a UUID |
 | `GET` | `/chat_sessions/{id}/messages/{message_id}` | `200` one message | `404` if the chat session or the message is missing, `400` if either id is not a UUID |
 | `POST` | `/chat_sessions/{id}/tool_calls/{call_id}` | `202` `{ "status": "accepted" }` | `400` if an id is not a UUID or `decision` is not `approve` or `reject`, `404` if the chat session is missing, `409` if the actor is running |
@@ -273,6 +273,12 @@ that is not in this list is `400`.
 | `base_url` | no | None. Optional provider base URL |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
 | `lsp` | no | `on`, written on the first read when the key is absent. `off` leaves the language-server tools unregistered. See [lsp.md](../intelligence/lsp.md) |
+| `max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one primary-agent run, from 1 to 500. Read when the session actor starts |
+| `subagent_max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one explore or general child, from 1 to 500. Read when `delegate` starts that child |
+| `subagent_timeout_seconds` | no | `120`, written on the first read when the key is absent. Seconds before an explore or general child is stopped, from 1 to 3600 |
+| `tool_timeout_seconds` | no | `120`, written on the first read when the key is absent. Seconds before a `shell` command is killed, from 1 to 3600 |
+| `web_search_approval` | no | `on`, written on the first read when the key is absent. `off` lets `web_search` run without an approval card. See [web-tools.md](../tools/web-tools.md) |
+| `web_fetch_approval` | no | `on`, written on the first read when the key is absent. `off` lets `web_fetch` run without an approval card. See [web-tools.md](../tools/web-tools.md) |
 | `brave_search_api_key` | yes | None. `web_search` returns a tool error until this is set. See [web-tools.md](../tools/web-tools.md) |
 
 A read of an absent key that has a default calls the same write as `PUT`: the
@@ -393,8 +399,9 @@ rules are in [events-sse.md](../shell/events-sse.md).
   how adapter tests share one database across pooled connections.
 - The loop's `InMemoryStore` is what `robi-core` tests use. `robi-api` drives
   the loop through `SqliteMessageStore` on this database.
-- An instruction submitted while a tool call is waiting on approval is `409`.
-  The transcript is unchanged.
+- An instruction submitted while a tool call is waiting on approval is `202`.
+  Those calls are rejected, and the instruction is appended after the
+  rejections.
 - An empty or whitespace instruction is `400` and is not handed to the actor.
 
 ## Testing

@@ -17,6 +17,8 @@ pub fn child_env(workspace: &Path, overlay: &BTreeMap<String, String>) -> Vec<(S
         temp_dir: &temp,
         sandboxed: false,
         parent_path: &parent_path,
+        extra_path: "",
+        path_prefix: "",
         lang: std::env::var("LANG").ok().as_deref(),
         user: std::env::var("USER").ok().as_deref(),
     });

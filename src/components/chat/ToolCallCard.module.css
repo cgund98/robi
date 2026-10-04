@@ -392,6 +392,10 @@
   overflow-wrap: anywhere;
 }
 
+.shellBodyCompact {
+  max-height: calc(1.45em * 4 + var(--space-2) + var(--space-3));
+}
+
 .approval {
   display: flex;
   align-items: center;

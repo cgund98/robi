@@ -11,10 +11,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
-use robi_core::error::{StoreError, TurnOutcome};
+use robi_core::error::TurnOutcome;
 use robi_core::event::EventSink;
 use robi_core::ids::{SessionId, ToolCallId};
-use robi_core::message::{unresolved_turn, Message};
 use robi_core::model::Model;
 use robi_core::store::MessageStore;
 use robi_core::tool::ToolRegistry;
@@ -69,13 +68,19 @@ pub struct AgentFactory {
 }
 
 impl AgentFactory {
-    fn build(&self, session: SessionId, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) -> Agent {
+    fn build(
+        &self,
+        session: SessionId,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+        max_iterations: u32,
+    ) -> Agent {
         let agent = Agent::new(
             Arc::clone(&self.store),
             Arc::clone(&self.events),
             model,
             tools,
-            self.config,
+            self.config.with_max_iterations(max_iterations),
         );
         match &self.originals {
             Some(store) => agent.with_compressor(Arc::new(
@@ -139,18 +144,27 @@ impl AgentFactory {
                 .unwrap_or_else(crate::agent::lsp::LspHub::new),
             lsp_enabled,
             originals: self.originals.clone(),
+            settings: self.settings.clone(),
         });
         let models = Arc::new(crate::agent::tools::SessionChildModels {
             session_id: session,
             sessions: Arc::clone(sessions),
             models: Arc::clone(&self.models),
         });
+        let search_approval = self
+            .approval_required(crate::domain::settings::keys::WEB_SEARCH_APPROVAL)
+            .await?;
+        let fetch_approval = self
+            .approval_required(crate::domain::settings::keys::WEB_FETCH_APPROVAL)
+            .await?;
         crate::agent::tools::register_tools_for_mode(
             &registry,
             ctx,
             mode,
             models,
             Arc::clone(&self.search),
+            search_approval,
+            fetch_approval,
         )
         .map_err(|err| {
             tracing::error!(%session, %err, "failed to register tools");
@@ -184,6 +198,29 @@ impl AgentFactory {
         let stored = settings.get(crate::domain::settings::keys::LSP).await?;
         Ok(crate::domain::settings::keys::lsp_enabled(
             stored.as_ref().map(|setting| setting.value.as_str()),
+        ))
+    }
+
+    async fn approval_required(&self, key: &str) -> Result<bool, ServiceError> {
+        let Some(settings) = &self.settings else {
+            return Ok(true);
+        };
+        let stored = settings.get(key).await?;
+        Ok(crate::domain::settings::keys::approval_required(
+            stored.as_ref().map(|setting| setting.value.as_str()),
+        ))
+    }
+
+    async fn max_iterations(&self) -> Result<u32, ServiceError> {
+        let Some(settings) = &self.settings else {
+            return Ok(self.config.max_iterations);
+        };
+        let stored = settings
+            .get(crate::domain::settings::keys::MAX_ITERATIONS)
+            .await?;
+        Ok(crate::domain::settings::keys::parse_iterations(
+            stored.as_ref().map(|setting| setting.value.as_str()),
+            self.config.max_iterations,
         ))
     }
 }
@@ -228,8 +265,16 @@ impl SerializedChatRuntime {
         }
     }
 
-    fn spawn_actor(&self, session: SessionId, model: Arc<dyn Model>, tools: Arc<ToolRegistry>) {
-        let agent = self.factory.build(session, Arc::clone(&model), tools);
+    fn spawn_actor(
+        &self,
+        session: SessionId,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+        max_iterations: u32,
+    ) {
+        let agent = self
+            .factory
+            .build(session, Arc::clone(&model), tools, max_iterations);
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
@@ -257,7 +302,8 @@ impl SerializedChatRuntime {
         slot.generation += 1;
         slot.pending = Some(Work::Instruction(instruction));
         drop(slots);
-        self.spawn_actor(session, model, tools);
+        let max_iterations = self.factory.max_iterations().await?;
+        self.spawn_actor(session, model, tools, max_iterations);
         Ok(SubmitOutcome::Accepted)
     }
 
@@ -279,7 +325,8 @@ impl SerializedChatRuntime {
         slot.generation += 1;
         slot.pending = Some(Work::Decision { call, reject });
         drop(slots);
-        self.spawn_actor(session, model, tools);
+        let max_iterations = self.factory.max_iterations().await?;
+        self.spawn_actor(session, model, tools, max_iterations);
         Ok(())
     }
 
@@ -305,18 +352,10 @@ impl ChatRuntime for SerializedChatRuntime {
         }
 
         // Resolve before the slot is marked running, so a missing key does not
-        // leave an actor that will never start. The same registry decides
-        // whether an unfinished call is actually waiting on a person.
+        // leave an actor that will never start. A paused turn is settled inside
+        // `user_input`, which rejects the calls still waiting.
         let (tools, workspace, mode, choice, plan_path) =
             self.factory.session_registry(session).await?;
-
-        if awaiting_approval(&self.factory.store, session, &tools).await? {
-            if interrupt_if_running(&self.slots, session, &instruction).await {
-                return Ok(SubmitOutcome::Accepted);
-            }
-            tracing::info!(%session, "instruction refused while awaiting approval");
-            return Ok(SubmitOutcome::AwaitingApproval);
-        }
 
         if self.actor_running(session).await {
             let mut slots = self.slots.map.lock().await;
@@ -438,27 +477,6 @@ fn replace_pending(slot: &mut Slot, session: SessionId, instruction: String) {
     slot.pending = Some(Work::Instruction(instruction));
 }
 
-async fn awaiting_approval(
-    store: &Arc<dyn MessageStore>,
-    session: SessionId,
-    tools: &ToolRegistry,
-) -> Result<bool, ServiceError> {
-    let messages = store.messages(session).await.map_err(map_store)?;
-    Ok(transcript_awaits_approval(&messages, tools).await)
-}
-
-async fn transcript_awaits_approval(messages: &[Message], tools: &ToolRegistry) -> bool {
-    let Some(index) = unresolved_turn(messages) else {
-        return false;
-    };
-    for call in &messages[index].tool_calls {
-        if tools.awaits_user_decision(call).await {
-            return true;
-        }
-    }
-    false
-}
-
 async fn decide_then_resume(
     agent: &Agent,
     session: SessionId,
@@ -498,16 +516,6 @@ async fn skill_loads(
         .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
     let skills = crate::agent::skills::scan(home.as_deref(), Some(&root));
     crate::agent::skills::loads_for_text(instruction, &skills)
-}
-
-fn map_store(error: StoreError) -> ServiceError {
-    match error {
-        StoreError::SessionNotFound(id) => ServiceError::NotFound(id.to_string()),
-        StoreError::Backend(message) => {
-            tracing::error!(error = %message, "chat message store failed");
-            ServiceError::Unknown
-        }
-    }
 }
 
 async fn run_actor(
@@ -879,7 +887,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pending_approval_is_not_appended() {
+    async fn a_pending_approval_is_rejected_and_the_instruction_is_appended() {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         store
@@ -908,9 +916,37 @@ mod tests {
 
         assert_eq!(
             runtime.submit(session, "hello".into()).await.unwrap(),
-            SubmitOutcome::AwaitingApproval
+            SubmitOutcome::Accepted
         );
-        assert_eq!(store.messages(session).await.unwrap(), before);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let messages = store.messages(session).await.unwrap();
+                if messages.iter().any(|message| message.content == "hello") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the instruction was appended");
+        let messages = store.messages(session).await.unwrap();
+        assert!(messages.len() > before.len());
+        let call = &messages[0].tool_calls[0];
+        assert_eq!(
+            call.approval_status,
+            robi_core::message::ApprovalStatus::Rejected
+        );
+        assert!(call.execution_status.is_terminal());
+        let hello = messages
+            .iter()
+            .position(|message| message.content == "hello")
+            .unwrap();
+        assert!(
+            messages[..hello]
+                .iter()
+                .any(|message| message.role == robi_core::message::Role::Tool),
+            "the rejection is stored before the new message"
+        );
     }
 
     #[tokio::test]

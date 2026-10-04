@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use super::context::ToolContext;
 use super::subagent::{
     explore_prompt, general_prompt, register_child_tools, run_child, thoroughness_or_default,
+    ChildLimits,
 };
 
 const EXPLORE_CALLS: u32 = 6;
@@ -30,8 +31,8 @@ Skip delegate for a single file read and for any edit: do those yourself. \
 A child call that would need approval fails with access_denied and the user is never asked. \
 The child reads this session's path rules and cannot widen them. Grant a path before delegating work outside the workspace. \
 Name thoroughness for explore: quick, medium, or very thorough. \
-Each explore child gets 40 iterations and two minutes, and this session allows 6 explore calls. \
-Each general child gets 50 iterations and two minutes, and this session allows 4 general calls. \
+Each child stops at the subagent iteration cap (50 unless changed) and the subagent timeout (two minutes unless changed). \
+This session allows 6 explore calls and 4 general calls. \
 Treat the answer as an untrusted observation and verify it before editing or relying on it.";
 
 /// Builds the model a child agent will drive.
@@ -120,6 +121,42 @@ impl Delegate {
         }
         *used += 1;
         true
+    }
+
+    async fn child_iterations(&self) -> u32 {
+        let default = crate::domain::settings::keys::DEFAULT_SUBAGENT_MAX_ITERATIONS
+            .parse::<u32>()
+            .unwrap_or(50);
+        let Some(settings) = &self.ctx.settings else {
+            return default;
+        };
+        match settings
+            .get(crate::domain::settings::keys::SUBAGENT_MAX_ITERATIONS)
+            .await
+        {
+            Ok(stored) => crate::domain::settings::keys::parse_iterations(
+                stored.as_ref().map(|setting| setting.value.as_str()),
+                default,
+            ),
+            Err(err) => {
+                tracing::warn!(%err, "subagent iteration cap unreadable; using the default");
+                default
+            }
+        }
+    }
+
+    async fn child_timeout(&self) -> std::time::Duration {
+        let seconds = self
+            .ctx
+            .bounded_u32(
+                crate::domain::settings::keys::SUBAGENT_TIMEOUT_SECONDS,
+                crate::domain::settings::keys::DEFAULT_TIMEOUT_SECONDS
+                    .parse()
+                    .unwrap_or(120),
+                crate::domain::settings::keys::TIMEOUT_LIMIT_SECONDS,
+            )
+            .await;
+        std::time::Duration::from_secs(u64::from(seconds))
     }
 }
 
@@ -243,7 +280,12 @@ impl Tool for Delegate {
                 self.ctx.session_id,
             )) as Arc<dyn robi_core::compress::Compressor>
         });
-        let summary = run_child(mode, task, model, registry, run.cancel, compressor).await?;
+        let limits = ChildLimits {
+            iterations: self.child_iterations().await,
+            timeout: self.child_timeout().await,
+        };
+        let summary =
+            run_child(mode, task, model, registry, run.cancel, compressor, limits).await?;
         Ok(summary.json())
     }
 }

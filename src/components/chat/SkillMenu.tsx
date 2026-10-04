@@ -72,7 +72,12 @@ export function SkillMenu({ workspaceId, draft, caret, onInsert }: SkillMenuProp
       <Popover.Portal>
         <Popover.Content className={styles.menu} side="top" align="start" sideOffset={8}>
           {rows.map((skill) => (
-            <button key={skill.id} type="button" className={styles.row} onClick={() => choose(skill)}>
+            <button
+              key={skill.id}
+              type="button"
+              className={styles.row}
+              onClick={() => choose(skill)}
+            >
               <span className={styles.label}>
                 {skill.label === skill.id ? skill.id : skill.label}
                 {skill.model_invocable ? '' : ' · manual'}

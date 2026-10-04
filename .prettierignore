@@ -5,6 +5,7 @@ node_modules
 src-tauri
 target
 crates
+docs/book
 pnpm-lock.yaml
 
 # Markdown is owned by the docs, not Prettier.

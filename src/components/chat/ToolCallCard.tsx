@@ -440,7 +440,9 @@ function ApprovalActions({
 function EditDiff({ preview, actions }: { preview: EditPreview; actions?: ReactNode }) {
   const [open, setOpen] = useState(false)
   const canExpand = preview.lines.length > EDIT_VISIBLE_LINES || preview.hidden > 0
-  const visible = open ? preview.lines : preview.lines.slice(0, EDIT_VISIBLE_LINES)
+  const firstChange = preview.lines.findIndex((line) => line.kind !== 'context')
+  const from = firstChange < 0 ? 0 : firstChange
+  const visible = open ? preview.lines : preview.lines.slice(from, from + EDIT_VISIBLE_LINES)
   return (
     <div className={styles.edit}>
       <div className={styles.editHead}>
@@ -534,7 +536,7 @@ function ShellCard({
   return (
     <div className={styles.shell}>
       {header}
-      <ShellBody command={command} output={shown} />
+      <ShellBody command={command} output={shown} compact={!actions} />
     </div>
   )
 }
@@ -678,7 +680,10 @@ function RetrieveCard({
         {view.stderr ? (
           <>
             <p className={styles.retrieveStream}>stderr</p>
-            <LogLines text={view.stderr} startLine={view.stream === 'stderr' ? view.startLine : 1} />
+            <LogLines
+              text={view.stderr}
+              startLine={view.stream === 'stderr' ? view.startLine : 1}
+            />
           </>
         ) : null}
         {!view.stdout && !view.stderr ? <p className={styles.retrieveMeta}>Empty page</p> : null}
@@ -704,9 +709,17 @@ function LogLines({ text, startLine }: { text: string; startLine: number }) {
   )
 }
 
-function ShellBody({ command, output }: { command: string; output: string }) {
+function ShellBody({
+  command,
+  output,
+  compact = false
+}: {
+  command: string
+  output: string
+  compact?: boolean
+}) {
   return (
-    <pre className={styles.shellBody}>
+    <pre className={compact ? `${styles.shellBody} ${styles.shellBodyCompact}` : styles.shellBody}>
       <span className={styles.shellCommand}>
         <span className={styles.prompt}>$</span> {command}
       </span>

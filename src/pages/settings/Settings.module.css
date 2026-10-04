@@ -72,6 +72,12 @@
   padding: var(--space-6) var(--space-6) var(--space-6) var(--space-5);
 }
 
+.column {
+  width: 100%;
+  max-width: var(--chat-column-width);
+  margin-inline: auto;
+}
+
 .title {
   margin: 0 0 var(--space-5);
   font-size: 22px;
@@ -164,7 +170,6 @@
 }
 
 .card {
-  max-width: 46rem;
   margin-bottom: var(--space-4);
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
@@ -260,6 +265,35 @@
 }
 
 .input:focus {
+  border-color: var(--ink-faint);
+}
+
+.number {
+  width: 6rem;
+}
+
+.block {
+  padding: var(--space-4);
+  border-top: 1px solid var(--rule);
+}
+
+.area {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-3);
+  border: 1px solid var(--bg-surface-active);
+  background: var(--bg-surface-hover);
+  color: var(--ink);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.45;
+  outline: none;
+}
+
+.area:focus {
   border-color: var(--ink-faint);
 }
 

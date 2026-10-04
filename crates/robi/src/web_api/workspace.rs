@@ -25,7 +25,10 @@ pub fn router(state: AppState) -> Router {
             get(get_workspace).delete(delete_workspace),
         )
         .route("/api/v1/workspaces/{id}/skills", get(list_skills))
-        .route("/api/v1/workspaces/{id}/mcp", get(list_mcp_servers))
+        .route(
+            "/api/v1/workspaces/{id}/mcp",
+            get(list_mcp_servers).post(focus_mcp),
+        )
         .route("/api/v1/workspaces/{id}/mcp/config", get(get_mcp_config))
         .with_state(state)
 }
@@ -111,6 +114,9 @@ pub async fn delete_workspace(
     let id = parse_workspace_id(&id)?;
     state.workspace_service.delete_workspace(id).await?;
     state.index.remove_files(id);
+    if let Some(mcp) = &state.mcp {
+        mcp.close(id).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -159,6 +165,36 @@ fn to_response(workspace: DomainWorkspace) -> Workspace {
         root: workspace.root,
         created_at: rfc3339(workspace.created_at),
     }
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{id}/mcp",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses(
+        (status = 204, description = "This workspace's MCP servers are starting; other workspaces are closed")
+    )
+)]
+pub async fn focus_mcp(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let Some(mcp) = &state.mcp else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let root = std::path::PathBuf::from(&workspace.root);
+    let root = root.canonicalize().unwrap_or(root);
+    mcp.focus(
+        id,
+        &root,
+        workspace.mcp_project_sha256.as_deref(),
+        &crate::agent::mcp::RmcpOpener,
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[axum::debug_handler]

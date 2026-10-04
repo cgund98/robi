@@ -26,10 +26,6 @@ use super::memory_store::MemoryStore;
 use super::read_file::ReadFile;
 use super::shell::Shell;
 
-pub(crate) const EXPLORE_ITERATIONS: u32 = 40;
-pub(crate) const GENERAL_ITERATIONS: u32 = 50;
-pub(crate) const CHILD_TIMEOUT: Duration = Duration::from_secs(120);
-
 /// What the parent model is allowed to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChildSummary {
@@ -50,6 +46,12 @@ impl ChildSummary {
     }
 }
 
+/// Model-turn and wall-clock caps for one child.
+pub(crate) struct ChildLimits {
+    pub iterations: u32,
+    pub timeout: Duration,
+}
+
 /// Run the child and return only its summary.
 pub(crate) async fn run_child(
     mode: SubagentMode,
@@ -58,19 +60,20 @@ pub(crate) async fn run_child(
     registry: Arc<ToolRegistry>,
     cancel: tokio_util::sync::CancellationToken,
     compressor: Option<Arc<dyn robi_core::compress::Compressor>>,
+    limits: ChildLimits,
 ) -> Result<ChildSummary, ToolError> {
-    tracing::info!(mode = mode_name(mode), "subagent started");
+    tracing::info!(
+        mode = mode_name(mode),
+        iterations = limits.iterations,
+        "subagent started"
+    );
     let store = Arc::new(MemoryStore::default());
-    let iterations = match mode {
-        SubagentMode::Explore => EXPLORE_ITERATIONS,
-        SubagentMode::General => GENERAL_ITERATIONS,
-    };
     let mut agent = Agent::new(
         store.clone(),
         Arc::new(NopSink),
         model,
         registry,
-        LoopConfig::default().with_max_iterations(iterations),
+        LoopConfig::default().with_max_iterations(limits.iterations),
     );
     if let Some(compressor) = compressor {
         agent = agent.with_compressor(compressor);
@@ -84,7 +87,7 @@ pub(crate) async fn run_child(
             tracing::info!(mode = mode_name(mode), "subagent cancelled");
             return Err(ToolError::Cancelled);
         }
-        () = tokio::time::sleep(CHILD_TIMEOUT) => {
+        () = tokio::time::sleep(limits.timeout) => {
             child_cancel.cancel();
             tracing::warn!(mode = mode_name(mode), "subagent timed out");
             return Err(ToolError::TimedOut);

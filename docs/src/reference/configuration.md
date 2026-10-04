@@ -13,6 +13,21 @@ Both are plain TOML. The key is a string and the value is a string, for example:
 model = "glm-5.3"
 reasoning_effort = "medium"
 lsp = "on"
+max_iterations = "50"
+subagent_max_iterations = "50"
+subagent_timeout_seconds = "120"
+tool_timeout_seconds = "120"
+path_allow_read = """
+~/pnpm
+"""
+path_allow_write = """
+~/pnpm
+"""
+path_entries = """
+~/pnpm
+"""
+web_search_approval = "on"
+web_fetch_approval = "on"
 ```
 
 ```toml
@@ -45,6 +60,15 @@ files and later reads always agree.
 | `base_url` | no | none | Provider base URL. Unset uses the provider default. |
 | `system_prompt` | no | none | Extra system-prompt text. Unset adds no block. |
 | `lsp` | no | `on` | `on` registers the language-server tools; `off` leaves them out. |
+| `max_iterations` | no | `50` | Model turns in one primary-agent run. A whole number from 1 to 500. Read when the session actor starts. |
+| `subagent_max_iterations` | no | `50` | Model turns in one explore or general child. A whole number from 1 to 500. Read when `delegate` starts that child. |
+| `subagent_timeout_seconds` | no | `120` | Seconds before an explore or general child is stopped. A whole number from 1 to 3600. Read when `delegate` starts that child. |
+| `tool_timeout_seconds` | no | `120` | Seconds before a `shell` command is killed. A whole number from 1 to 3600. Read when that command starts. |
+| `path_allow_read` | no | none | Newline-separated paths appended to every session's read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
+| `path_allow_write` | no | none | Newline-separated paths appended to every session's write allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
+| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell builds its environment. |
+| `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
+| `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
 
 Any key not on this list is refused. MCP reads `~/.robi/secrets.toml` for a
 value named by a server's `{"secret": "<name>"}` field; that name is not part of

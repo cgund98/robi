@@ -73,107 +73,109 @@ export function WorkspacesPage() {
 
   return (
     <div className={styles.page}>
-      <header className={styles.top}>
-        <div className={styles.heading}>
-          {activeWorkspaceId ? (
-            <button type="button" className={styles.back} onClick={() => navigate('/')}>
-              ← Chat
+      <div className={styles.column}>
+        <header className={styles.top}>
+          <div className={styles.heading}>
+            {activeWorkspaceId ? (
+              <button type="button" className={styles.back} onClick={() => navigate('/')}>
+                ← Chat
+              </button>
+            ) : null}
+            <h1 className={styles.title}>Workspaces</h1>
+          </div>
+          <div className={styles.tools}>
+            <label className={styles.search}>
+              <SearchIcon />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search"
+                aria-label="Search workspaces"
+              />
+            </label>
+            <button
+              type="button"
+              className={styles.primary}
+              onClick={() => void handleNew()}
+              disabled={creating}
+            >
+              New workspace
             </button>
-          ) : null}
-          <h1 className={styles.title}>Workspaces</h1>
-        </div>
-        <div className={styles.tools}>
-          <label className={styles.search}>
-            <SearchIcon />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search"
-              aria-label="Search workspaces"
-            />
-          </label>
-          <button
-            type="button"
-            className={styles.primary}
-            onClick={() => void handleNew()}
-            disabled={creating}
-          >
-            New workspace
-          </button>
-        </div>
-      </header>
+          </div>
+        </header>
 
-      {error ? (
-        <div className={styles.banner} role="alert">
-          {error}
-        </div>
-      ) : null}
+        {error ? (
+          <div className={styles.banner} role="alert">
+            {error}
+          </div>
+        ) : null}
 
-      {!loaded ? (
-        <p className={styles.status}>Loading…</p>
-      ) : empty ? (
-        <div className={styles.empty}>
-          <FolderMark />
-          <h2 className={styles.emptyTitle}>Looking to start a workspace?</h2>
-          <p className={styles.emptyCopy}>
-            Open a directory. Sessions stay with that folder, and the agent works from its root.
-          </p>
-          <button
-            type="button"
-            className={styles.emptyAction}
-            onClick={() => void handleNew()}
-            disabled={creating}
-          >
-            New workspace
-          </button>
-        </div>
-      ) : (
-        <ul className={styles.list}>
-          {visible.length === 0 ? (
-            <li className={styles.noMatch}>No workspaces match “{query.trim()}”.</li>
-          ) : (
-            visible.map((workspace) => {
-              const current = workspace.id === activeWorkspaceId
-              return (
-                <li key={workspace.id}>
-                  <article className={styles.card}>
-                    <div className={styles.cardHead}>
-                      <button
-                        type="button"
-                        className={styles.cardName}
-                        onClick={() => openWorkspace(workspace.id)}
-                      >
-                        {workspace.name}
-                        {current ? <span className={styles.current}>Current</span> : null}
-                      </button>
-                      <div className={styles.actions}>
+        {!loaded ? (
+          <p className={styles.status}>Loading…</p>
+        ) : empty ? (
+          <div className={styles.empty}>
+            <FolderMark />
+            <h2 className={styles.emptyTitle}>Looking to start a workspace?</h2>
+            <p className={styles.emptyCopy}>
+              Open a directory. Sessions stay with that folder, and the agent works from its root.
+            </p>
+            <button
+              type="button"
+              className={styles.emptyAction}
+              onClick={() => void handleNew()}
+              disabled={creating}
+            >
+              New workspace
+            </button>
+          </div>
+        ) : (
+          <ul className={styles.list}>
+            {visible.length === 0 ? (
+              <li className={styles.noMatch}>No workspaces match “{query.trim()}”.</li>
+            ) : (
+              visible.map((workspace) => {
+                const current = workspace.id === activeWorkspaceId
+                return (
+                  <li key={workspace.id}>
+                    <article className={styles.card}>
+                      <div className={styles.cardHead}>
                         <button
                           type="button"
-                          className={styles.open}
+                          className={styles.cardName}
                           onClick={() => openWorkspace(workspace.id)}
                         >
-                          Open
+                          {workspace.name}
+                          {current ? <span className={styles.current}>Current</span> : null}
                         </button>
-                        <button
-                          type="button"
-                          className={styles.remove}
-                          aria-label={`Remove ${workspace.name}`}
-                          onClick={() => handleRemove(workspace.id, workspace.name)}
-                        >
-                          Remove
-                        </button>
+                        <div className={styles.actions}>
+                          <button
+                            type="button"
+                            className={styles.open}
+                            onClick={() => openWorkspace(workspace.id)}
+                          >
+                            Open
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.remove}
+                            aria-label={`Remove ${workspace.name}`}
+                            onClick={() => handleRemove(workspace.id, workspace.name)}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <div className={styles.cardRoot} title={workspace.root}>
-                      {workspace.root}
-                    </div>
-                  </article>
-                </li>
-              )
-            })
-          )}
-        </ul>
-      )}
+                      <div className={styles.cardRoot} title={workspace.root}>
+                        {workspace.root}
+                      </div>
+                    </article>
+                  </li>
+                )
+              })
+            )}
+          </ul>
+        )}
+      </div>
     </div>
   )
 }

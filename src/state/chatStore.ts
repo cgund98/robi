@@ -20,6 +20,7 @@ import {
   type ModelConfigBody
 } from '../api/sessions'
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
+import { claimComposerDraft, writeComposerDraft } from './composerDrafts'
 import { useWorkspaceStore } from './workspaceStore'
 
 export type AgentPhase = 'idle' | 'thinking' | 'responding'
@@ -44,6 +45,8 @@ type ChatState = {
   pendingEcho: PendingEcho | null
   error: string | null
   loading: boolean
+  /** True while the first fetch of the selected session's transcript is in flight. */
+  transcriptLoading: boolean
   busy: boolean
   /** Session whose stop request is in flight. Input stays locked until it returns. */
   stoppingSessionId: string | null
@@ -61,6 +64,8 @@ type ChatState = {
   /** Drop a session another window deleted. Does not call the API. */
   forgetSession: (id: string) => Promise<void>
   upsertMessage: (sessionId: string, message: ChatMessage) => void
+  /** Sidebar running mark for a session that is not on screen. No transcript fetch. */
+  noteRunning: (sessionId: string, running: boolean) => void
   setPhase: (sessionId: string, phase: AgentPhase) => void
   noteDelta: (sessionId: string, kind: string) => void
   finishTurn: (sessionId: string, failedMessage: string | null) => Promise<void>
@@ -111,7 +116,25 @@ function replaceSession(sessions: ChatSession[], session: ChatSession): ChatSess
   if (current.updated_at > session.updated_at) {
     return sessions
   }
+  if (sameSessionRow(current, session)) {
+    return sessions
+  }
   return sessions.map((item) => (item.id === session.id ? session : item))
+}
+
+/** Fields the sidebar and composer read. Timestamps alone do not refresh a row. */
+function sameSessionRow(current: ChatSession, next: ChatSession): boolean {
+  return (
+    current.title === next.title &&
+    current.mode === next.mode &&
+    current.has_pending_agent === next.has_pending_agent &&
+    JSON.stringify(current.model_config) === JSON.stringify(next.model_config) &&
+    JSON.stringify(current.allow_hosts) === JSON.stringify(next.allow_hosts) &&
+    JSON.stringify(current.path_allow_read) === JSON.stringify(next.path_allow_read) &&
+    JSON.stringify(current.path_allow_write) === JSON.stringify(next.path_allow_write) &&
+    JSON.stringify(current.path_deny_read) === JSON.stringify(next.path_deny_read) &&
+    JSON.stringify(current.path_deny_write) === JSON.stringify(next.path_deny_write)
+  )
 }
 
 function activeMode(state: ChatState): AgentMode {
@@ -270,6 +293,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingEcho: null,
   error: null,
   loading: true,
+  transcriptLoading: false,
   busy: false,
   stoppingSessionId: null,
   reviewTickBySession: {},
@@ -354,18 +378,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     const epoch = bumpHydrate()
-    set({ activeSessionId: id, draftSelected: false, error: null })
+    const firstOpen = get().messagesBySession[id] === undefined
+    set({
+      activeSessionId: id,
+      draftSelected: false,
+      error: null,
+      transcriptLoading: firstOpen
+    })
     try {
       const transcript = await readTranscript(id, epoch)
-      if (!transcript) {
+      if (epoch !== hydrateEpoch) {
         return
       }
-      applyTranscript(id, transcript.messages, transcript.session)
+      if (transcript) {
+        applyTranscript(id, transcript.messages, transcript.session)
+      }
+      set({ transcriptLoading: false })
     } catch (err) {
       if (epoch !== hydrateEpoch) {
         return
       }
-      set({ error: errorText(err, 'Failed to load chat session') })
+      set({
+        transcriptLoading: false,
+        error: errorText(err, 'Failed to load chat session')
+      })
     }
   },
 
@@ -378,6 +414,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       draftSelected: true,
       activeSessionId: null,
       error: null,
+      transcriptLoading: false,
       draftMode: 'agent',
       draftModel: null,
       draftEffort: null
@@ -433,6 +470,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return false
         }
         const created = await createSession(workspaceId, undefined, draftConfig(get()))
+        claimComposerDraft(created.id, instruction)
         const epoch = bumpHydrate()
         set((state) => ({
           sessions: [created, ...state.sessions.filter((session) => session.id !== created.id)],
@@ -461,6 +499,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           pendingEcho: { sessionId: created.id, text },
           phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' }
         }))
+        writeComposerDraft(created.id, '')
         return true
       }
 
@@ -470,6 +509,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         pendingEcho: { sessionId: activeSessionId, text },
         phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' }
       }))
+      writeComposerDraft(activeSessionId, '')
       return true
     } catch (err) {
       set({ busy: false, error: errorText(err, 'Failed to send message') })
@@ -606,6 +646,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
         pendingEcho: withoutEcho(state.pendingEcho, sessionId, current, messages)
+      }
+    })
+  },
+
+  noteRunning: (sessionId, running) => {
+    set((state) => {
+      const phase = state.phaseBySession[sessionId]
+      const nextPhase = running ? (phase === 'responding' ? 'responding' : 'thinking') : 'idle'
+      const phaseSame = running ? phase === nextPhase : phase === undefined || phase === 'idle'
+      const session = state.sessions.find((item) => item.id === sessionId)
+      const flagSame = session === undefined || session.has_pending_agent === running
+      if (phaseSame && flagSame) {
+        return state
+      }
+      return {
+        phaseBySession: phaseSame
+          ? state.phaseBySession
+          : { ...state.phaseBySession, [sessionId]: nextPhase },
+        sessions:
+          session && !flagSame
+            ? state.sessions.map((item) =>
+                item.id === sessionId ? { ...item, has_pending_agent: running } : item
+              )
+            : state.sessions
       }
     })
   },

@@ -19,16 +19,27 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         deny_subpath(&mut out, &path);
     }
     allow_read(&mut out, "/private/var/select");
+    allow_read(&mut out, "/var/select");
+    // `/var` and `/tmp` are symlinks. The subpath deny blocks reading the link
+    // itself, so a path such as `/var/select/developer_dir` never resolves.
+    allow_literal_read(&mut out, "/var");
+    allow_literal_read(&mut out, "/tmp");
     allow_read_write(&mut out, &profile.workspace);
     allow_read_write(&mut out, &profile.temp_dir);
+    allow_metadata_ancestors(&mut out, &profile.temp_dir);
+    allow_metadata_ancestors(&mut out, &profile.home);
+    allow_metadata_ancestors(&mut out, &profile.workspace);
     for path in &profile.toolchain_reads {
         allow_read(&mut out, path);
+        allow_metadata_ancestors(&mut out, path);
     }
     for path in &profile.wide_reads {
         allow_read(&mut out, path);
+        allow_metadata_ancestors(&mut out, path);
     }
     for path in &profile.wide_writes {
         allow_read_write(&mut out, path);
+        allow_metadata_ancestors(&mut out, path);
     }
     for path in credential_dirs(&profile.home) {
         deny_subpath(&mut out, &path);
@@ -56,8 +67,10 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         for pattern in floor_regexes() {
             deny_regex(&mut out, &pattern);
         }
-        for path in git_write_denies(&profile.workspace) {
-            deny_write_subpath(&mut out, &path);
+        if !is_git_path(path, &profile.workspace) {
+            for path in git_write_denies(&profile.workspace) {
+                deny_write_subpath(&mut out, &path);
+            }
         }
     }
     for path in &profile.protected_read_files {
@@ -110,13 +123,12 @@ fn credential_dirs(home: &Path) -> Vec<std::path::PathBuf> {
 }
 
 fn git_write_denies(workspace: &Path) -> Vec<std::path::PathBuf> {
-    [
-        workspace.join(".git/config"),
-        workspace.join(".git/hooks"),
-        workspace.join(".git/info/attributes"),
-    ]
-    .into_iter()
-    .collect()
+    vec![workspace.join(".git")]
+}
+
+fn is_git_path(path: &Path, workspace: &Path) -> bool {
+    let git = workspace.join(".git");
+    path == git || path.starts_with(&git)
 }
 
 fn floor_regexes() -> Vec<String> {
@@ -137,6 +149,30 @@ fn floor_regexes() -> Vec<String> {
 
 fn allow_read(out: &mut String, path: impl AsRef<Path>) {
     let _ = writeln!(out, "(allow file-read* (subpath {}))", quote(path.as_ref()));
+}
+
+fn allow_literal_read(out: &mut String, path: &str) {
+    let _ = writeln!(out, "(allow file-read* (literal \"{path}\"))");
+}
+
+/// `lstat` of each parent of a path the profile allows.
+///
+/// Denies of `/Users` and `/private` block `realpath` of a child even when
+/// that child is allowed. Metadata on the ancestors lets the walk finish. It
+/// does not allow reading the files beside the allowed path.
+fn allow_metadata_ancestors(out: &mut String, path: &Path) {
+    let mut ancestors: Vec<&Path> = path.ancestors().skip(1).collect();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor == Path::new("/") {
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "(allow file-read-metadata (literal {}))",
+            quote(ancestor)
+        );
+    }
 }
 
 fn allow_read_write(out: &mut String, path: impl AsRef<Path>) {
@@ -225,7 +261,34 @@ mod tests {
         assert!(workspace < env_deny);
         assert!(env_deny < file_grant);
         assert!(home_deny < outside);
-        assert!(policy.contains("(deny file-write* (subpath \"/work/app/.git/hooks\"))"));
+        assert!(policy.contains("(allow file-read-metadata (literal \"/private\"))"));
+        assert!(policy.contains("(allow file-read-metadata (literal \"/private/var\"))"));
+        assert!(policy.contains("(allow file-read-metadata (literal \"/private/var/folders\"))"));
+        let private_deny = policy
+            .find("(deny file-read* (subpath \"/private\"))")
+            .unwrap();
+        let private_meta = policy
+            .find("(allow file-read-metadata (literal \"/private\"))")
+            .unwrap();
+        assert!(private_deny < private_meta);
+        let users_deny = policy
+            .find("(deny file-read* (subpath \"/Users\"))")
+            .unwrap();
+        let users_meta = policy
+            .find("(allow file-read-metadata (literal \"/Users\"))")
+            .unwrap();
+        assert!(users_deny < users_meta);
+        assert!(policy.contains("(allow file-read* (subpath \"/var/select\"))"));
+        let var_deny = policy.find("(deny file-read* (subpath \"/var\"))").unwrap();
+        let var_select = policy
+            .find("(allow file-read* (subpath \"/var/select\"))")
+            .unwrap();
+        assert!(var_deny < var_select);
+        let var_link = policy
+            .find("(allow file-read* (literal \"/var\"))")
+            .unwrap();
+        assert!(var_deny < var_link);
+        assert!(policy.contains("(deny file-write* (subpath \"/work/app/.git\"))"));
         assert!(policy.contains("(deny network*)"));
         assert!(!policy.contains("(allow network*)"));
     }

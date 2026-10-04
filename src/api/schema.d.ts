@@ -228,6 +228,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/docs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_docs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{id}/docs/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{id}/index": {
         parameters: {
             query?: never;
@@ -253,7 +285,7 @@ export interface paths {
         };
         get: operations["list_mcp_servers"];
         put?: never;
-        post?: never;
+        post: operations["focus_mcp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -415,6 +447,17 @@ export interface components {
             decision: string;
             /** @description Shown to the model when `decision` is `reject`. Omitted uses a default. */
             reason?: string | null;
+        };
+        DocContent: {
+            content: string;
+            path: string;
+        };
+        DocEntry: {
+            /** @description Workspace-relative, `/` separated. */
+            path: string;
+        };
+        DocsListing: {
+            files: components["schemas"]["DocEntry"][];
         };
         IndexCommand: {
             /** @description `paused` or `running`. */
@@ -1187,6 +1230,68 @@ export interface operations {
             };
         };
     };
+    list_docs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Markdown files in this workspace, gitignore respected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocsListing"];
+                };
+            };
+        };
+    };
+    get_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+                /** @description Workspace-relative path to a markdown file */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file's text */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocContent"];
+                };
+            };
+            /** @description Not a markdown file, or not UTF-8 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such file, or a path outside the workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     get_index: {
         parameters: {
             query?: never;
@@ -1264,6 +1369,27 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["McpServer"][];
                 };
+            };
+        };
+    };
+    focus_mcp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description This workspace's MCP servers are starting; other workspaces are closed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

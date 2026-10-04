@@ -13,10 +13,10 @@ You do not call a subagent directly. The model does, through one tool — `deleg
 
 | Mode | What it can do | Model turns | Calls per session |
 |---|---|---|---|
-| `explore` | Read and search: `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, and the read-only language-server tools | 40 | 6 |
-| `general` | The explore set plus a sandboxed `shell` (and `retrieve`) | 50 | 4 |
+| `explore` | Read and search: `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, and the read-only language-server tools | `subagent_max_iterations`, default 50 | 6 |
+| `general` | The explore set plus a sandboxed `shell` (and `retrieve`) | the same setting | 4 |
 
-Both children share a wall-clock cap of **two minutes** per call; the parent turn
+Both children share `subagent_timeout_seconds` (default **two minutes**) per call; the parent turn
 cancelling cancels the child. When a call budget is spent, the tool returns
 `explore_limit` or `delegate_limit` and the parent continues on its own.
 

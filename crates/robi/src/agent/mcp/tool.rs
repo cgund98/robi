@@ -101,6 +101,13 @@ impl Tool for McpTool {
     }
 }
 
+/// The session, call gate, and allow list shared by every tool on one server.
+pub struct McpRuntime {
+    pub session: Arc<dyn McpSession>,
+    pub gate: Arc<Mutex<()>>,
+    pub allows: Arc<dyn AllowList>,
+}
+
 impl McpTool {
     pub fn new(
         name: impl Into<String>,
@@ -109,9 +116,7 @@ impl McpTool {
         server: impl Into<String>,
         remote: impl Into<String>,
         hints: Hints,
-        session: Arc<dyn McpSession>,
-        gate: Arc<Mutex<()>>,
-        allows: Arc<dyn AllowList>,
+        runtime: McpRuntime,
     ) -> Self {
         Self {
             name: name.into(),
@@ -120,9 +125,9 @@ impl McpTool {
             server: server.into(),
             remote: remote.into(),
             hints,
-            session,
-            gate,
-            allows,
+            session: runtime.session,
+            gate: runtime.gate,
+            allows: runtime.allows,
         }
     }
 

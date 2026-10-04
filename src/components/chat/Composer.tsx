@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import type { CatalogModel } from '../../api/models'
 import type { ChatMessage } from '../../api/messages'
@@ -6,6 +6,11 @@ import type { AgentMode } from '../../api/sessions'
 import { ChoiceMenu } from './ChoiceMenu'
 import { SkillMenu } from './SkillMenu'
 import { ContextMeter } from './ContextMeter'
+import {
+  readComposerDraft,
+  subscribeComposerDrafts,
+  writeComposerDraft
+} from '../../state/composerDrafts'
 import styles from './Composer.module.css'
 
 const MODES: { value: AgentMode; label: string; tone: AgentMode }[] = [
@@ -27,8 +32,11 @@ const EFFORTS = [
 ]
 
 type ComposerProps = {
+  /** Block send. The field stays editable. */
   disabled: boolean
-  /** The session actor is running. Send becomes stop and the field stays locked. */
+  /** The send request has not returned yet. */
+  pending?: boolean
+  /** The session actor is running. Send becomes stop. */
   running?: boolean
   /** Stop has been requested and the actor has not exited yet. */
   stopping?: boolean
@@ -47,6 +55,8 @@ type ComposerProps = {
   onModelChange: (model: string | null) => void
   onEffortChange: (effort: string | null) => void
   messages: ChatMessage[]
+  /** Session id, or `draft` for a chat that has no row yet. */
+  draftKey: string
   /** Instruction echoed in the transcript before the stored user row exists. */
   pendingText?: string | null
   workspaceId?: string | null
@@ -65,6 +75,7 @@ function effortLabel(value: string | null): string {
 
 export function Composer({
   disabled,
+  pending = false,
   running = false,
   stopping = false,
   onStop,
@@ -80,14 +91,37 @@ export function Composer({
   onModelChange,
   onEffortChange,
   messages,
+  draftKey,
   pendingText = null,
   workspaceId = null
 }: ComposerProps) {
-  const [draft, setDraft] = useState('')
+  const draft = useSyncExternalStore(
+    subscribeComposerDrafts,
+    () => readComposerDraft(draftKey),
+    () => ''
+  )
+  const [boundKey, setBoundKey] = useState(draftKey)
   const [caret, setCaret] = useState(0)
+  if (draftKey !== boundKey) {
+    setBoundKey(draftKey)
+    setCaret(0)
+  }
+
+  function updateDraft(next: string) {
+    writeComposerDraft(draftKey, next)
+  }
   const fieldRef = useRef<HTMLTextAreaElement>(null)
   const canSend = !disabled && draft.trim().length > 0
   const welcome = placement === 'welcome'
+
+  useLayoutEffect(() => {
+    const field = fieldRef.current
+    if (!field) {
+      return
+    }
+    field.style.height = 'auto'
+    field.style.height = `${field.scrollHeight}px`
+  }, [draft])
 
   async function submit() {
     if (!canSend) {
@@ -95,7 +129,7 @@ export function Composer({
     }
     const sent = await onSubmit(draft)
     if (sent) {
-      setDraft('')
+      updateDraft('')
     }
   }
 
@@ -158,9 +192,8 @@ export function Composer({
             rows={welcome ? 2 : 1}
             placeholder="Describe a task or ask a question"
             value={draft}
-            disabled={disabled}
             onChange={(event) => {
-              setDraft(event.target.value)
+              updateDraft(event.target.value)
               setCaret(event.target.selectionStart)
             }}
             onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
@@ -178,7 +211,7 @@ export function Composer({
             draft={draft}
             caret={caret}
             onInsert={(next, caretNext) => {
-              setDraft(next)
+              updateDraft(next)
               setCaret(caretNext)
               requestAnimationFrame(() => {
                 fieldRef.current?.focus()
@@ -191,6 +224,7 @@ export function Composer({
               {controls}
               <SendOrStop
                 canSend={canSend}
+                pending={pending}
                 running={running}
                 stopping={stopping}
                 onSend={() => void submit()}
@@ -200,6 +234,7 @@ export function Composer({
           ) : (
             <SendOrStop
               canSend={canSend}
+              pending={pending}
               running={running}
               stopping={stopping}
               onSend={() => void submit()}
@@ -216,17 +251,23 @@ export function Composer({
 
 function SendOrStop({
   canSend,
+  pending,
   running,
   stopping,
   onSend,
   onStop
 }: {
   canSend: boolean
+  pending: boolean
   running: boolean
   stopping: boolean
   onSend: () => void
   onStop?: () => void
 }) {
+  if (pending && !running) {
+    return <span className={styles.pending} role="status" aria-label="Sending" />
+  }
+
   if (running) {
     return (
       <button

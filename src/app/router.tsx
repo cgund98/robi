@@ -4,6 +4,7 @@ import { AppLayout } from '../components/layout/AppLayout'
 import { WindowFrame } from '../components/layout/WindowFrame'
 import { GeneralSettings } from '../pages/settings/GeneralSettings'
 import { McpSettings } from '../pages/settings/McpSettings'
+import { PermissionsSettings } from '../pages/settings/PermissionsSettings'
 import { ModelProvidersSettings } from '../pages/settings/ModelProvidersSettings'
 import { SettingsLayout } from '../pages/settings/SettingsLayout'
 import { WorkspacesPage } from '../pages/workspaces/WorkspacesPage'
@@ -15,7 +16,7 @@ export const appRouter = createHashRouter([
       {
         path: '/',
         element: <AppLayout />,
-        children: [{ index: true }, { path: 'sessions/:sessionId/review' }]
+        children: [{ index: true }, { path: 'sessions/:sessionId/review' }, { path: 'docs' }]
       },
       {
         path: '/workspaces',
@@ -28,6 +29,7 @@ export const appRouter = createHashRouter([
           { index: true, element: <Navigate to="providers" replace /> },
           { path: 'providers', element: <ModelProvidersSettings /> },
           { path: 'mcp', element: <McpSettings /> },
+          { path: 'permissions', element: <PermissionsSettings /> },
           { path: 'general', element: <GeneralSettings /> }
         ]
       }

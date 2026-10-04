@@ -60,10 +60,19 @@ export function useAgentEventsSSE(): void {
       return
     }
 
+    const viewing = () => {
+      const state = useChatStore.getState()
+      return !state.draftSelected && state.activeSessionId === sessionId
+    }
+
     switch (envelope.type) {
       case 'robi.agent.v1.turn_started':
         releaseApprovalPause(sessionId)
-        useChatStore.getState().setPhase(sessionId, 'thinking')
+        if (viewing()) {
+          useChatStore.getState().setPhase(sessionId, 'thinking')
+        } else {
+          useChatStore.getState().noteRunning(sessionId, true)
+        }
         return
       case 'robi.agent.v1.awaiting_approval':
         void postApprovalNotice(sessionId, data?.tool_call_id)
@@ -71,6 +80,9 @@ export function useAgentEventsSSE(): void {
       case 'robi.agent.v1.message_added':
       case 'robi.agent.v1.message_updated':
       case 'robi.agent.v1.tool_call_updated': {
+        if (!viewing()) {
+          return
+        }
         if (envelope.type === 'robi.agent.v1.tool_call_updated') {
           useChatStore.getState().bumpReview(sessionId)
         }
@@ -100,6 +112,9 @@ export function useAgentEventsSSE(): void {
         return
       }
       case 'robi.agent.v1.message_delta': {
+        if (!viewing()) {
+          return
+        }
         const kind = data?.delta?.kind
         if (kind) {
           useChatStore.getState().noteDelta(sessionId, kind)
@@ -107,6 +122,10 @@ export function useAgentEventsSSE(): void {
         return
       }
       case 'robi.agent.v1.turn_finished': {
+        if (!viewing()) {
+          useChatStore.getState().noteRunning(sessionId, false)
+          return
+        }
         useChatStore.getState().bumpReview(sessionId)
         const outcome = data?.outcome
         const failed = outcome?.kind === 'failed' ? (outcome.message ?? 'The turn failed') : null

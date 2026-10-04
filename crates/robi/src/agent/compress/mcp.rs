@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn a_body_that_saves_under_one_kib_returns_none() {
-        let input = format!("[{}]", r#"{"id":"only","title":"short"}"#.repeat(1));
+        let input = format!(r#"[{}]"#, r#"{"id":"only","title":"short"}"#);
         let padded = format!("{input}{}", " ".repeat(SMALL));
         // Leading spaces then one small object array still parses after trim,
         // and the rendered form is not 1 KiB smaller than the padded original

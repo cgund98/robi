@@ -88,7 +88,7 @@ Rejected alternatives:
 | Query | Rule |
 |---|---|
 | `event_types` | Repeated. Optional. When present, only envelopes whose `type` is in the list. When absent, every agent type. |
-| `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id, plus index progress for that session's workspace, session create/update/delete, and `robi.app.v1.error`. |
+| `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id, plus index progress for that session's workspace, session create/update/delete, `robi.app.v1.error`, and `turn_started` / `turn_finished` for any session. Message and tool frames for another session stay off this stream. |
 
 Response headers:
 
@@ -157,8 +157,10 @@ These are not core `Event`s. Build them with `EventEnvelope::from_payload`.
 | `robi.session.v1.deleted` | `robi/session` | session id | `{ "session_id" }` | After the session row is removed |
 | `robi.app.v1.error` | `robi/app` | `app` | `{ "message" }` | A failure the user should see. `message` is short text. The first publisher is an MCP server that failed to start |
 
-A `session_id` query still delivers these four types. They are the session list
-and process-wide failures, so a window filtered to one session must see them.
+A `session_id` query still delivers these four types, plus `turn_started` and
+`turn_finished` for every session. The four are the session list and
+process-wide failures. The turn pair updates a sidebar row that is not on
+screen. Message frames for another session stay filtered out.
 
 `outcome` is one of:
 
@@ -223,11 +225,11 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 
 | `type` | Shell |
 |---|---|
-| `robi.agent.v1.turn_started` | Phase `thinking` |
+| `robi.agent.v1.turn_started` | Phase `thinking` when that session is on screen. Otherwise the sidebar marks that row running, and does not fetch its transcript |
 | `robi.agent.v1.message_delta` | `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored |
 | `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. `tool_call_updated` also refreshes the review strip |
 | `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
-| `robi.agent.v1.turn_finished` | Phase `idle`, then refetch the session and the message list. A `failed` outcome shows its `message`. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared |
+| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome shows its `message`. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared. When another session is on screen: clear that row's running mark only. No transcript fetch |
 | `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
 | `robi.app.v1.error` | Show `message` on the shell error line |

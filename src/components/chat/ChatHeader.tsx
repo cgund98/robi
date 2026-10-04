@@ -1,3 +1,4 @@
+import { McpTray } from '../layout/McpTray'
 import styles from './ChatHeader.module.css'
 
 type ChatHeaderProps = {
@@ -7,7 +8,8 @@ type ChatHeaderProps = {
 export function ChatHeader({ sessionTitle }: ChatHeaderProps) {
   return (
     <header className={styles.header} data-tauri-drag-region="deep">
-      <span className={styles.title}>{sessionTitle}</span>
+      {sessionTitle ? <span className={styles.title}>{sessionTitle}</span> : null}
+      <McpTray />
     </header>
   )
 }

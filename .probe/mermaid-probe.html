@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+  </head>
+  <body>
+    <pre id="result">pending</pre>
+    <div id="host"></div>
+    <script type="module">
+      import mermaid from '/node_modules/.pnpm/mermaid@12.1.0/node_modules/mermaid/dist/mermaid.esm.min.mjs'
+      await mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base' })
+      const src = `flowchart TD
+A[Start] --> B[Process]
+B --> C{Decision}
+C --> D[End]
+D --> E((Round))`
+      const { svg } = await mermaid.render('probe', src)
+      const host = document.getElementById('host')
+      host.innerHTML = svg
+      const svgEl = host.querySelector('svg')
+      const nodes = [...svgEl.querySelectorAll('g.node')]
+      const parent = nodes[0] && nodes[0].parentElement
+      const info = {
+        svgLen: svg.length,
+        nodeCount: nodes.length,
+        parentTag: parent && parent.tagName,
+        parentClass: parent && parent.getAttribute('class'),
+        parentChildCount: parent && parent.children.length,
+        nodeParents: nodes.map((n) => n.parentElement.getAttribute('class')),
+        firstNodeHtml: nodes[0] ? nodes[0].outerHTML.slice(0, 400) : null,
+        edgesSibling: parent
+          ? [...parent.children].map((c) => c.tagName + '.' + c.getAttribute('class')).slice(0, 12)
+          : null
+      }
+      document.getElementById('result').textContent = 'PROBEJSON ' + JSON.stringify(info)
+    </script>
+  </body>
+</html>

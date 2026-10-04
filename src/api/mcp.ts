@@ -5,6 +5,19 @@ import type { components } from './schema'
 export type McpServer = components['schemas']['McpServer']
 export type McpConfig = components['schemas']['McpConfig']
 
+export async function focusMcp(workspaceId: string): Promise<void> {
+  const result = await api.POST('/api/v1/workspaces/{id}/mcp', {
+    params: { path: { id: workspaceId } }
+  })
+  if (result.response.ok) {
+    return
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to open MCP servers')
+  )
+}
+
 export async function listMcpServers(workspaceId: string): Promise<McpServer[]> {
   const result = await api.GET('/api/v1/workspaces/{id}/mcp', {
     params: { path: { id: workspaceId } }

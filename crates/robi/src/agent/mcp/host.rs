@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 use super::names::{description, registered_name, MAX_SCHEMA_BYTES, MAX_TOOLS};
 use super::session::{Listed, ListedTool, McpSession};
-use super::tool::{AllowList, Hints, McpTool};
+use super::tool::{AllowList, Hints, McpRuntime, McpTool};
 
 #[derive(Debug, Clone)]
 pub struct Registered {
@@ -59,9 +59,11 @@ pub fn register_list(
                 destructive: tool.destructive,
                 open_world: tool.open_world,
             },
-            Arc::clone(&session),
-            Arc::clone(&gate),
-            Arc::clone(&allows),
+            McpRuntime {
+                session: Arc::clone(&session),
+                gate: Arc::clone(&gate),
+                allows: Arc::clone(&allows),
+            },
         );
         match registry.register(Arc::new(mcp)) {
             Ok(()) => landed.push(entry),

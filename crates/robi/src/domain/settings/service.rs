@@ -76,8 +76,20 @@ impl SettingsService {
                 format!("{key} must not be stored as a secret")
             }));
         }
-        if key == keys::LSP && value != keys::LSP_ON && value != keys::LSP_OFF {
-            return Err(ServiceError::BadRequest("lsp must be on or off".into()));
+        if matches!(
+            key,
+            keys::LSP | keys::WEB_SEARCH_APPROVAL | keys::WEB_FETCH_APPROVAL
+        ) && value != keys::LSP_ON
+            && value != keys::LSP_OFF
+        {
+            return Err(ServiceError::BadRequest(format!("{key} must be on or off")));
+        }
+        if let Some(limit) = bounded_limit(key) {
+            if keys::parse_bounded(Some(&value), 0, limit) == 0 {
+                return Err(ServiceError::BadRequest(format!(
+                    "{key} must be a whole number from 1 to {limit}"
+                )));
+            }
         }
         self.store.set(key, value, secret).await
     }
@@ -94,6 +106,16 @@ impl SettingsService {
 
 fn require_known(key: &str) -> Result<crate::domain::settings::keys::KnownSetting, ServiceError> {
     known_setting(key).ok_or_else(|| ServiceError::BadRequest(format!("unknown setting: {key}")))
+}
+
+fn bounded_limit(key: &str) -> Option<u32> {
+    match key {
+        keys::MAX_ITERATIONS | keys::SUBAGENT_MAX_ITERATIONS => Some(keys::MAX_ITERATIONS_LIMIT),
+        keys::SUBAGENT_TIMEOUT_SECONDS | keys::TOOL_TIMEOUT_SECONDS => {
+            Some(keys::TIMEOUT_LIMIT_SECONDS)
+        }
+        _ => None,
+    }
 }
 
 fn validate_value(value: &str) -> Result<(), ServiceError> {
@@ -234,6 +256,41 @@ mod tests {
         assert_eq!(
             error,
             ServiceError::BadRequest("lsp must be on or off".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn web_approvals_default_to_on() {
+        let store = Arc::new(MemorySettingsStore::new());
+        let service = SettingsService {
+            store: Arc::clone(&store) as Arc<dyn SettingsStore>,
+        };
+
+        for key in [keys::WEB_SEARCH_APPROVAL, keys::WEB_FETCH_APPROVAL] {
+            let setting = service.get(key).await.unwrap();
+            assert_eq!(setting.value.as_deref(), Some(keys::APPROVAL_ON));
+            assert!(keys::approval_required(setting.value.as_deref()));
+        }
+    }
+
+    #[tokio::test]
+    async fn iteration_caps_default_and_reject_out_of_range() {
+        let service = service();
+        let primary = service.get(keys::MAX_ITERATIONS).await.unwrap();
+        assert_eq!(primary.value.as_deref(), Some(keys::DEFAULT_MAX_ITERATIONS));
+        let child = service.get(keys::SUBAGENT_MAX_ITERATIONS).await.unwrap();
+        assert_eq!(
+            child.value.as_deref(),
+            Some(keys::DEFAULT_SUBAGENT_MAX_ITERATIONS)
+        );
+
+        let error = service
+            .set(keys::MAX_ITERATIONS, "0".into(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("max_iterations must be a whole number from 1 to 500".into())
         );
     }
 }

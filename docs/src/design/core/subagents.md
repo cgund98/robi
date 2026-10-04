@@ -33,8 +33,8 @@ One tool, `delegate`, with two modes.
 | | `explore` | `general` |
 |---|---|---|
 | Tools | `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, and, when `lsp` is `on`, the read-only language-server tools | those, plus `shell` |
-| Model turns | 40 | 50 |
-| Wall clock | 2 minutes | 2 minutes |
+| Model turns | `subagent_max_iterations`, default 50 | the same setting |
+| Wall clock | `subagent_timeout_seconds`, default 120 | the same setting |
 | Calls per session | 6 | 4 |
 
 `explore` has no shell. Command output is `general`'s job, which is what makes
@@ -82,8 +82,8 @@ The parent grants a path first, then delegates.
 Hitting the session budget returns `explore_limit` or `delegate_limit` as the
 tool result. The parent continues and does the work itself.
 
-A cancelled parent turn cancels the child. The two-minute clock cancels the
-child and the tool returns timed out.
+A cancelled parent turn cancels the child. `subagent_timeout_seconds` (default
+two minutes) cancels the child and the tool returns timed out.
 
 ## Rejected
 

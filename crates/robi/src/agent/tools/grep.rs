@@ -87,8 +87,10 @@ impl Tool for Grep {
             .get_chat_session(self.ctx.session_id)
             .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
-        let filter = PathFilter::for_session(&session.path_rules, self.ctx.session_id)
-            .map_err(ToolError::Failed)?;
+        let mut rules = session.path_rules.clone();
+        self.ctx.append_configured_allows(&mut rules).await;
+        let filter =
+            PathFilter::for_session(&rules, self.ctx.session_id).map_err(ToolError::Failed)?;
         let resolved = self.ctx.resolve(args.path.as_deref().unwrap_or(""))?;
         if !filter.allows_read(&resolved.relative) {
             return Err(denied(&resolved));
@@ -100,7 +102,7 @@ impl Tool for Grep {
             no_ignore: args.no_ignore,
             relative: resolved.relative,
         };
-        let globs = directory_exclusion_globs(&session.path_rules);
+        let globs = directory_exclusion_globs(&rules);
         if let Some(rg) = find_rg() {
             match search_ripgrep(&rg, &self.ctx.root, &filter, &query, &globs, &run.cancel).await {
                 Ok(output) => return Ok(payload(output)),

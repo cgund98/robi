@@ -8,6 +8,16 @@
   color: var(--ink);
 }
 
+.column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  max-width: var(--chat-column-width);
+  min-height: 0;
+  margin-inline: auto;
+}
+
 .top {
   display: flex;
   align-items: flex-start;

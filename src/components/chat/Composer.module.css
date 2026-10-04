@@ -12,13 +12,14 @@
 .column {
   width: 100%;
   max-width: var(--chat-column-width);
+  margin-inline: auto;
   pointer-events: auto;
 }
 
 .field {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: var(--space-2);
   width: 100%;
   background: var(--bg-surface);
@@ -33,6 +34,7 @@
   max-height: 8rem;
   margin: 0;
   padding: 5px 0;
+  overflow-y: auto;
   resize: none;
   border: 0;
   outline: none;
@@ -63,8 +65,10 @@
 .cardInput {
   width: 100%;
   min-height: 48px;
+  max-height: 8rem;
   margin: 0;
   padding: 2px 4px;
+  overflow-y: auto;
   resize: none;
   border: 0;
   outline: none;
@@ -106,6 +110,29 @@
   display: block;
   width: 12px;
   height: 12px;
+}
+
+.pending {
+  width: 14px;
+  height: 14px;
+  margin: 9px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--ink-faint);
+  border-top-color: var(--ink);
+  animation: composerSpin 0.8s linear infinite;
+}
+
+@keyframes composerSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending {
+    animation: none;
+  }
 }
 
 .toolbar {

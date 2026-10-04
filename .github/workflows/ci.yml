@@ -1,0 +1,116 @@
+# Lint and test every layer of the stack on every pull request.
+#
+# The jobs mirror the Makefile so CI and local `make lint` / `make test` stay in
+# sync: rustfmt + clippy for Rust, ESLint + Prettier + tsc for the front end,
+# and the doc-link audit that `make lint` also runs.
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend lint, types, and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (ESLint + Prettier)
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test (vitest)
+        run: pnpm test
+
+  rust:
+    name: Rust lint and tests
+    # The workspace tests execute the OS sandbox (Seatbelt on macOS, bubblewrap
+    # on Linux) so the shell tools are exercised for real. macOS is the shipping
+    # target and needs no extra system packages, so the job runs there.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.90'
+          components: rustfmt, clippy
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `src-tauri` calls `tauri::generate_context!()`, which fails to compile
+      # when `frontendDist` (`../dist`) is missing. Build the front end so the
+      # workspace member in `cargo test --workspace` can be compiled.
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  docs:
+    name: Docs links and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check doc links
+        run: bash scripts/check-doc-links.sh
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: 'latest'
+
+      - name: Build docs
+        run: mdbook build docs

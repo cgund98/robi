@@ -176,6 +176,26 @@ pub fn apply_allow_read(
     home: &Path,
     profile: &mut Profile,
 ) -> Result<(), ProfileError> {
+    apply_allow(pattern, workspace, home, true, profile)
+}
+
+/// Same translation as [`apply_allow_read`], opening the path for write.
+pub fn apply_allow_write(
+    pattern: &str,
+    workspace: &Path,
+    home: &Path,
+    profile: &mut Profile,
+) -> Result<(), ProfileError> {
+    apply_allow(pattern, workspace, home, false, profile)
+}
+
+fn apply_allow(
+    pattern: &str,
+    workspace: &Path,
+    home: &Path,
+    read: bool,
+    profile: &mut Profile,
+) -> Result<(), ProfileError> {
     match parse_rule(pattern)? {
         ParsedRule::Workspace => Ok(()),
         ParsedRule::Prefix {
@@ -191,11 +211,11 @@ pub fn apply_allow_read(
                     classify_path(&path, home),
                     AccessClass::ProtectedFile | AccessClass::ProtectedDir
                 ) {
-                    push_classified(path, home, true, profile);
+                    push_classified(path, home, read, profile);
                 }
                 return Ok(());
             }
-            push_classified(path, home, true, profile);
+            push_classified(path, home, read, profile);
             Ok(())
         }
     }

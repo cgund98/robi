@@ -78,8 +78,9 @@ resolution. Standard denies include:
 - `credentials.json`, `secrets.json`.
 
 The shell profile adds `~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`, the keychain,
-and `~/.robi` to the denied set, and keeps the workspace's own `.git/config`,
-`.git/hooks`, and the Robi config directory write-denied.
+and `~/.robi` to the denied set, and keeps the workspace's `.git` directory
+write-denied. An approved `write_paths` entry for `.git` opens that path for
+one command.
 
 **Specificity decides a conflict.** The pattern whose match ends furthest into
 the path wins; at the same point, the one with more literal characters wins; a

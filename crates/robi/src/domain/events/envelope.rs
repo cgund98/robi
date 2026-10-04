@@ -32,9 +32,17 @@ pub const INDEX_PROGRESS: &str = "robi.index.v1.progress";
 pub const INDEX_SOURCE: &str = "robi/index";
 
 /// Types a `session_id` stream filter still delivers. They are not about the
-/// selected session: another window's list, or a process-wide failure.
-pub const SESSION_FILTER_EXCEPTIONS: &[&str] =
-    &[SESSION_CREATED, SESSION_UPDATED, SESSION_DELETED, APP_ERROR];
+/// selected session: another window's list, a process-wide failure, or the
+/// start and end of a turn in some other session. Message deltas stay filtered
+/// so a background turn does not rewrite the sidebar on every token.
+pub const SESSION_FILTER_EXCEPTIONS: &[&str] = &[
+    SESSION_CREATED,
+    SESSION_UPDATED,
+    SESSION_DELETED,
+    APP_ERROR,
+    TURN_STARTED,
+    TURN_FINISHED,
+];
 
 /// Every agent type the shell asks for. Order is the type map in the design.
 pub const AGENT_EVENT_TYPES: &[&str] = &[

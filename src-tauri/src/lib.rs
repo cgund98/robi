@@ -1,6 +1,6 @@
 mod notice;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use robi::bootstrap::{self, AppConfig, Listen};
 use tauri::{Manager, State};
@@ -86,6 +86,6 @@ fn database_url(app: &tauri::App) -> Result<String, String> {
     Ok(sqlite_url(&dir.join("robi.db")))
 }
 
-fn sqlite_url(path: &PathBuf) -> String {
+fn sqlite_url(path: &Path) -> String {
     format!("sqlite://{}?mode=rwc", path.display())
 }

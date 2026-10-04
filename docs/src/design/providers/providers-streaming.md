@@ -43,9 +43,10 @@ instance of it, OpenCode Go. Streaming deltas, tool calling, reasoning traces,
 retries, cancellation, a model catalog, an SSE decoder, and the tests for each.
 
 **Out of scope.** The Anthropic client, the OpenAI *Responses* API, embeddings,
-structured outputs, image inputs, per-session model selection in a UI, and the
+structured outputs, per-session model selection in a UI, and the
 settings and keychain layer. This milestone defines the seam that layer plugs
-into; it does not build it.
+into; it does not build it. Image inputs are remaining M1 work, tracked on the
+[roadmap](../../roadmap.md#what-remains): the adapter still sends text only.
 
 ## Provider facts
 

@@ -37,9 +37,12 @@ status of 400, 404, 409, or 500.
 | `DELETE` | `/api/v1/workspaces/{id}` | `204`. |
 | `GET` | `/api/v1/workspaces/{id}/skills` | The user-invocable skills for the workspace. |
 | `GET` | `/api/v1/workspaces/{id}/mcp` | Configured MCP servers and their status. |
+| `POST` | `/api/v1/workspaces/{id}/mcp` | Start this workspace's MCP servers and close every other workspace's. |
 | `GET` | `/api/v1/workspaces/{id}/mcp/config` | The user and project MCP config text. |
 | `GET` | `/api/v1/workspaces/{id}/index` | The semantic index status, with a cursor. |
 | `PUT` | `/api/v1/workspaces/{id}/index` | Pause or resume the index (`state`: `paused` / `running`). |
+| `GET` | `/api/v1/workspaces/{id}/docs` | The markdown files in the workspace, gitignore respected. |
+| `GET` | `/api/v1/workspaces/{id}/docs/{path}` | One markdown file's text. |
 
 ## Chat sessions
 
@@ -56,16 +59,16 @@ status of 400, 404, 409, or 500.
 | Method | Path | Returns |
 |---|---|---|
 | `GET` | `/api/v1/chat_sessions/{id}/messages` | The transcript, in order. |
-| `POST` | `/api/v1/chat_sessions/{id}/messages` | `202` `{"status":"accepted"}`; `409` when the session awaits approval. |
+| `POST` | `/api/v1/chat_sessions/{id}/messages` | `202` `{"status":"accepted"}`. A paused turn rejects the pending calls, then runs this instruction. |
 | `GET` | `/api/v1/chat_sessions/{id}/messages/{message_id}` | One message. |
 | `POST` | `/api/v1/chat_sessions/{id}/tool_calls/{call_id}` | `202`; settle one paused call. `409` when the actor is running. |
 | `POST` | `/api/v1/chat_sessions/{id}/stop` | `202` `{"status":"stopped"}`; cancel the running turn. |
 | `GET` | `/api/v1/chat_sessions/{id}/tool_originals/{original_id}` | A stored original (shell or MCP) of a compressed result. |
 
 Sending a message is asynchronous: the route accepts the turn and returns `202`,
-then the result arrives on the event stream. A `409` on the message route means
-the transcript ends with unresolved tool calls, which is the
-[approval invariant](../design/core/agent-loop.md) — settle them first.
+then the result arrives on the event stream. If the transcript is paused on
+approval, that same submit rejects the waiting calls and then runs the new
+instruction. See the [approval invariant](../design/core/agent-loop.md).
 
 ## Review
 

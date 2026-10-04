@@ -119,7 +119,7 @@ stays.
 
 ### Trust
 
-The user file starts when an agent-mode actor starts. The user wrote it.
+The user file starts when the workspace is focused. The user wrote it.
 
 The project file does not start until this workspace has stored the
 SHA-256 of that file. The hash lives on the workspace row, `mcp_project_sha256`,
@@ -138,10 +138,12 @@ as the rest of the shell.
 
 Stdio uses `rmcp`'s child-process transport. HTTP uses the streamable
 HTTP client. One connection per enabled server per workspace, shared by
-the sessions of that workspace. The first agent-mode actor for that
-workspace starts them. The last session of that workspace ending does not
-kill them; the API process owns the supervisor, and exit kills the
-children.
+the sessions of that workspace. The shell starts them when that workspace
+becomes the open one (`POST /api/v1/workspaces/{id}/mcp`). Switching to
+another workspace closes the previous servers. Deleting the workspace
+closes them too. An agent-mode turn reuses the open connections and
+registers their tools; if the shell has not focused a workspace yet, that
+turn starts them. Process exit kills any children still running.
 
 The child does not inherit the parent environment. The scrub is the one
 in [shell-tool.md](../tools/shell-tool.md): no `DYLD_*`, `LD_PRELOAD`,

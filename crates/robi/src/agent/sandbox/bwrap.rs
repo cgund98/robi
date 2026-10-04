@@ -57,6 +57,17 @@ pub fn command(profile: &Profile, shell: &[String]) -> Result<Vec<String>, Strin
     for path in git_write_locks(&profile.workspace) {
         readonly(&mut args, &path);
     }
+    let git = profile.workspace.join(".git");
+    for path in profile
+        .wide_writes
+        .iter()
+        .chain(&profile.protected_write_dirs)
+        .chain(&profile.protected_write_files)
+    {
+        if path == &git || path.starts_with(&git) {
+            bind(&mut args, path);
+        }
+    }
     for path in floor_files(profile)? {
         hide(&mut args, &path);
     }
@@ -114,10 +125,7 @@ fn hide_or_readonly(args: &mut Vec<String>, path: &Path) {
 }
 
 fn git_write_locks(workspace: &Path) -> Vec<std::path::PathBuf> {
-    [".git/config", ".git/hooks", ".git/info/attributes"]
-        .into_iter()
-        .map(|name| workspace.join(name))
-        .collect()
+    vec![workspace.join(".git")]
 }
 
 fn floor_files(profile: &Profile) -> Result<Vec<std::path::PathBuf>, String> {
