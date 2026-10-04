@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.3](https://github.com/cgund98/robi/compare/v0.1.2...v0.1.3) (2026-10-04)
+
+
+### Features
+
+* Implement documents viewer ([7979acf](https://github.com/cgund98/robi/commit/7979acf214670549a0995fd3750be0ad7dd0ce19))
+* support image inputs ([fe67246](https://github.com/cgund98/robi/commit/fe67246cdb454db6330c5f7716a3a767ec121960))
+
+
+### Bug Fixes
+
+* stream index updates via SSE ([62b7d9c](https://github.com/cgund98/robi/commit/62b7d9cce8852e2dc5c45d02ad51c5ef74828c5d))
+
 ## [0.1.2](https://github.com/cgund98/robi/compare/v0.1.1...v0.1.2) (2026-10-03)
 
 
