@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/cgund98/robi/compare/v0.1.3...v0.1.4) (2026-10-04)
+
+
+### Bug Fixes
+
+* support images from clipboard ([daf977c](https://github.com/cgund98/robi/commit/daf977c957a69aae21187dad26c0e8857ab0f3ef))
+
 ## [0.1.3](https://github.com/cgund98/robi/compare/v0.1.2...v0.1.3) (2026-10-04)
 
 
