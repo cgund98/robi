@@ -4,7 +4,7 @@ use std::sync::Arc;
 use robi_core::ids::{SessionId, WorkspaceId};
 
 use crate::agent::providers::catalog::ModelCatalog;
-use crate::agent::providers::config::{ModelId, ReasoningEffort};
+use crate::agent::providers::config::{ModelId, ReasoningEffort, OPENCODE_GO_PREFIX};
 use crate::domain::{
     chat_session::{
         model::{
@@ -121,7 +121,16 @@ impl ChatSessionService {
             ));
         }
         validate_title(&title)?;
-        self.repository.set_title_if_unset(id, title).await
+        if let Some(session) = self
+            .repository
+            .set_title_if_unset(id, title.clone())
+            .await?
+        {
+            self.publish(EventEnvelope::session_title_changed(id, title));
+            Ok(Some(session))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Remember the plan the next agent prompt should re-read.
@@ -238,11 +247,18 @@ fn normalize_model(model: Option<String>) -> Result<Option<String>, ServiceError
     if model.is_empty() {
         return Err(ServiceError::BadRequest("model must not be empty".into()));
     }
-    let catalog = ModelCatalog::opencode_go();
-    if catalog.get(&ModelId::new(model.as_str())).is_none() {
-        return Err(ServiceError::BadRequest(format!("unknown model: {model}")));
+    // A11: the union of both catalogs is the namespace. A bare legacy id is read
+    // as OpenCode Go and rewritten to its prefixed form, so a new write is always
+    // prefixed while an old session keeps working.
+    let catalog = ModelCatalog::all();
+    if catalog.get(&ModelId::new(model.as_str())).is_some() {
+        return Ok(Some(model));
     }
-    Ok(Some(model))
+    let prefixed = format!("{OPENCODE_GO_PREFIX}{model}");
+    if catalog.get(&ModelId::new(prefixed.as_str())).is_some() {
+        return Ok(Some(prefixed));
+    }
+    Err(ServiceError::BadRequest(format!("unknown model: {model}")))
 }
 
 fn normalize_effort(effort: Option<String>) -> Result<Option<String>, ServiceError> {
@@ -781,7 +797,7 @@ mod tests {
                 mode: AgentMode::Agent,
                 model_config: ModelConfig {
                     agent: ModeOverride {
-                        model: Some("glm-5.2".into()),
+                        model: Some("ocg_glm-5.2".into()),
                         reasoning_effort: Some("low".into()),
                     },
                     ..ModelConfig::default()
@@ -811,7 +827,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(updated.model_config.agent.model.as_deref(), Some("glm-5.2"));
+        assert_eq!(
+            updated.model_config.agent.model.as_deref(),
+            Some("ocg_glm-5.2")
+        );
         assert_eq!(
             updated.model_config.agent.reasoning_effort.as_deref(),
             Some("high")
@@ -945,6 +964,86 @@ mod tests {
         assert_eq!(
             error,
             ServiceError::BadRequest("unknown model: not-a-model".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_accepts_a_legacy_bare_id_and_stores_the_prefixed_form() {
+        // A11: an old session wrote a bare id; it reads as OpenCode Go and is
+        // rewritten to the prefixed form on the way in.
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+        let updated = service
+            .update_chat_session(UpdateChatSessionCommand {
+                id: session.id,
+                title: None,
+                allow_read: None,
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+                allow_hosts: None,
+                mcp_allows: None,
+                mode: None,
+                model_config: Some(ModelConfigUpdate {
+                    agent: Some(ModeOverrideUpdate {
+                        model: Some(Some("glm-5.3".into())),
+                        reasoning_effort: None,
+                    }),
+                    ..ModelConfigUpdate::default()
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.model_config.agent.model.as_deref(),
+            Some("ocg_glm-5.3")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_accepts_an_anthropic_model() {
+        let service = service();
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+        let updated = service
+            .update_chat_session(UpdateChatSessionCommand {
+                id: session.id,
+                title: None,
+                allow_read: None,
+                allow_write: None,
+                deny_read: None,
+                deny_write: None,
+                allow_hosts: None,
+                mcp_allows: None,
+                mode: None,
+                model_config: Some(ModelConfigUpdate {
+                    agent: Some(ModeOverrideUpdate {
+                        model: Some(Some("ant_claude-sonnet-4-6".into())),
+                        reasoning_effort: None,
+                    }),
+                    ..ModelConfigUpdate::default()
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.model_config.agent.model.as_deref(),
+            Some("ant_claude-sonnet-4-6")
         );
     }
 

@@ -64,7 +64,7 @@ graph LR
 - **`adapters/`** holds the pool, the migrations, `SqliteChatSessionRepository`,
   `SqliteWorkspaceRepository`, `SqliteMessageStore`, `SerializedChatRuntime`,
   and `TomlSettingsStore`.
-- **`web_api/`** holds Axum routes, DTOs, and OpenAPI. `AppState` carries the
+- **`web_api/`** holds Axum routes, DTOs, and OpenAPI. A response outside 2xx is logged with its method, path, and status. `AppState` carries the
   workspace service, the chat session service, the chat message service, and
   the settings service. Handlers do not see the pool or an `Agent`.
 - **`bootstrap`** (`crates/robi/src/bootstrap.rs`) is the composition root.
@@ -169,8 +169,9 @@ Primary key `(chat_session_id, path)`. A second change of the same path does not
 Every connection sets the pragmas a local file needs: `journal_mode=WAL`
 (skipped for in-memory databases, which refuse WAL), `synchronous=NORMAL`,
 `foreign_keys=ON`, `temp_store=MEMORY`, `cache_size=-20000`,
-`busy_timeout=30000`. `foreign_keys` is per connection; without it the cascade
-does not run.
+`busy_timeout=10000`. `foreign_keys` is per connection; without it the cascade
+does not run. A pool acquire timeout and a busy-lock timeout are logged on
+their own: `sqlite pool acquire timed out` and `sqlite database lock timed out`.
 
 Timestamps and ids are text. Queries use runtime `sqlx::query`, not the
 compile-time macros.
@@ -282,8 +283,9 @@ that is not in this list is `400`.
 
 | Key | Secret | Default |
 |---|---|---|
-| `opencode_go_api_key` | yes | None. A chat turn is `400` until this is set |
-| `model` | no | `glm-5.3`, written on the first read when the key is absent |
+| `opencode_go_api_key` | yes | None. A chat turn is `400` until this is set, when the model id carries the `ocg_` prefix |
+| `anthropic_api_key` | yes | None. A chat turn is `400` until this is set, when the model id carries the `ant_` prefix |
+| `model` | no | `ocg_glm-5.3`, written on the first read when the key is absent. The `ocg_`/`ant_` prefix selects the provider (see [providers-streaming.md](../providers/providers-streaming.md#a11--model-ids-carry-a-provider-prefix-the-prefix-resolves-the-provider)) |
 | `reasoning_effort` | no | None. Optional `low`, `medium`, or `high`. Fallback when a mode has no effort |
 | `model_ask`, `model_plan`, `model_agent` | no | None. Optional model id for that mode. Empty inherits `model` |
 | `reasoning_effort_ask`, `reasoning_effort_plan`, `reasoning_effort_agent` | no | None. Optional effort for that mode. Empty inherits `reasoning_effort` |
@@ -307,7 +309,8 @@ non-secret key so the next read inherits. A secret key cannot be removed.
 `SettingsModelSource` reads these keys when a session actor starts and passes
 the result to `build_model`. A turn that is already running keeps its model.
 The server starts without an API key: health and these routes work, and the
-first chat turn fails until `opencode_go_api_key` is set.
+first chat turn fails until the key the resolved provider needs is set
+(`opencode_go_api_key` for an `ocg_` model, `anthropic_api_key` for an `ant_` one).
 
 | Method | Path | Success | Failure |
 |---|---|---|---|
@@ -343,7 +346,8 @@ export-openapi` prints the same document.
 ### Frontend client
 
 The React shell talks to this API with **openapi-fetch** over types generated
-from `openapi/openapi.json`.
+from `openapi/openapi.json`. Every `fetch` aborts after 10 seconds. The event
+stream is an `EventSource` and stays open.
 
 | Piece | Location |
 |---|---|
@@ -464,7 +468,7 @@ rules are in [events-sse.md](../shell/events-sse.md).
 - Runtime and instruction-service tests are in [chat-runtime.md](../shell/chat-runtime.md).
 - Settings service tests reject a key outside the whitelist, an empty value,
   and a known key stored with the wrong secret flag. A read of an unset
-  `model` writes `glm-5.3` through the store. A read of an unset key with no
+  `model` writes `ocg_glm-5.3` through the store. A read of an unset key with no
   default returns an empty value and leaves the store unchanged. The TOML adapter tests round-trip both
   files, refuse a group-readable `secrets.toml`, and check that a failed write
   leaves the previous value in memory. `SettingsModelSource` tests check that

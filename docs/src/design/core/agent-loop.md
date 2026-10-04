@@ -217,6 +217,24 @@ them either way.
 provider-assigned call id, is provider-specific work and belongs in the adapter.
 The loop never sees an index.
 
+### Transcript fields the adapters set
+
+`Message` and `ToolCall` carry three additive, `#[serde(default)]` fields that an
+adapter populates and the loop never reads. Each arrived with a provider
+requirement and none changes the loop's algorithm:
+
+- `ToolCall.provider_call_id` — the id the provider issued, echoed on the next
+  request. The loop keys on `id`; a reused or absent provider id cannot confuse
+  approval or lookup (providers-streaming D3).
+- `Message.images` — a user message's attachment references, never bytes; the
+  adapter resolves them at request build (D10).
+- `Message.reasoning` — an optional `ReasoningTrace { text, signature }`. Anthropic
+  requires a tool continuation to echo the `thinking` block back, signature
+  included, so this is where an adapter keeps it. Absent for every other message
+  (A3). Old rows deserialize as `None`.
+
+---
+
 ### Tool
 
 ```rust

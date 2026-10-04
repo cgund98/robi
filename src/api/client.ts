@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import createClient from 'openapi-fetch'
 
+import { auditFailedRequests } from './auditRequests'
 import type { paths } from './schema'
 
 /**
@@ -46,9 +47,22 @@ class ApiRequest extends Request {
   }
 }
 
+/** Bound on every API fetch. The event stream is an EventSource and is not covered. */
+const API_TIMEOUT_MS = 10_000
+
+/**
+ * `fetch` with a 10-second abort. A caller signal still cancels the request;
+ * whichever fires first wins.
+ */
+export function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const timeout = AbortSignal.timeout(API_TIMEOUT_MS)
+  const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout
+  return fetch(input, { ...init, signal })
+}
+
 async function fetchWithBase(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   if (!apiBase) {
-    return fetch(input, init)
+    return fetchWithTimeout(input, init)
   }
   const request = input instanceof Request ? input : new ApiRequest(input, init)
   const url = new URL(request.url)
@@ -60,7 +74,7 @@ async function fetchWithBase(input: RequestInfo | URL, init?: RequestInit): Prom
   // upload. Fetching that Request object itself fails with "Load failed".
   // Send the URL and the body text instead.
   const body = method === 'GET' || method === 'HEAD' ? undefined : await request.text()
-  return fetch(url, {
+  return fetchWithTimeout(url, {
     method,
     headers: request.headers,
     body,
@@ -84,5 +98,7 @@ export const api = createClient<paths>({
   fetch: fetchWithBase,
   Request: ApiRequest
 })
+
+api.use(auditFailedRequests)
 
 export type { paths }

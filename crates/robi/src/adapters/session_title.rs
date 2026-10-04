@@ -8,10 +8,7 @@ use robi_core::model::{Delta, Model};
 use robi_core::store::MessageStore;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::{
-    chat_session::{normalize_generated_title, service::ChatSessionService},
-    events::{EventBus, EventEnvelope},
-};
+use crate::domain::chat_session::{normalize_generated_title, service::ChatSessionService};
 
 const EXCERPT_CHARS: usize = 1_500;
 
@@ -24,7 +21,6 @@ pub async fn title_completed_turn(
     model: Arc<dyn Model>,
     store: Arc<dyn MessageStore>,
     sessions: Arc<ChatSessionService>,
-    bus: Option<Arc<EventBus>>,
 ) {
     let current = match sessions.get_chat_session(session).await {
         Ok(session) => session,
@@ -52,9 +48,6 @@ pub async fn title_completed_turn(
     match sessions.set_title_if_unset(session, title.clone()).await {
         Ok(Some(_)) => {
             tracing::info!(%session, %title, "session title stored");
-            if let Some(bus) = bus {
-                bus.publish(EventEnvelope::session_updated(session));
-            }
         }
         Ok(None) => {}
         Err(error) => {

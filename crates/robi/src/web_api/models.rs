@@ -19,7 +19,9 @@ pub fn router(state: AppState) -> Router {
     )
 )]
 pub async fn list_models() -> Json<Vec<CatalogModel>> {
-    let catalog = ModelCatalog::opencode_go();
+    // A11: one flat list, both providers. The prefixed id names the provider, so
+    // the picker needs no grouping.
+    let catalog = ModelCatalog::all();
     Json(
         catalog
             .tool_capable()

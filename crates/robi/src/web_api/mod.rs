@@ -2,7 +2,13 @@
 //!
 //! Depends on `domain`. Does not depend on `adapters`.
 
-use axum::{routing::get, Router};
+use axum::{
+    extract::Request,
+    middleware::{from_fn, Next},
+    response::Response,
+    routing::get,
+    Router,
+};
 use utoipa::OpenApi;
 
 use crate::web_api::state::AppState;
@@ -32,6 +38,20 @@ pub fn router(state: AppState) -> Router {
         .merge(settings::router(state.clone()))
         .merge(models::router(state.clone()))
         .merge(events::router(state))
+        .layer(from_fn(log_failed_requests))
+}
+
+/// One warning for each response outside 2xx. The status is known once the
+/// handler returns headers, including a stream that later fails in the body.
+async fn log_failed_requests(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    let status = response.status();
+    if !status.is_success() {
+        tracing::warn!(%method, %path, %status, "request failed");
+    }
+    response
 }
 
 pub fn openapi() -> utoipa::openapi::OpenApi {

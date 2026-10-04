@@ -3,6 +3,7 @@ import { ApiError } from './sessions'
 
 export const SETTING_KEYS = {
   apiKey: 'opencode_go_api_key',
+  anthropicApiKey: 'anthropic_api_key',
   braveSearchApiKey: 'brave_search_api_key',
   model: 'model',
   baseUrl: 'base_url',

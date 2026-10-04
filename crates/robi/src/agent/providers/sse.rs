@@ -5,9 +5,10 @@
 //! holds bytes rather than lines so a multi-byte character split across two chunks
 //! is reassembled instead of corrupted.
 //!
-//! The spec allows more than OpenAI uses, and a proxy in front of many models
-//! emits it: multi-line `data:` fields join with a newline, both CRLF and LF end a
-//! line, and `:` comments (frequently keepalives) are ignored.
+//! The framing is provider-neutral and shared by the OpenAI and Anthropic
+//! adapters: multi-line `data:` fields join with a newline, both CRLF and LF end a
+//! line, and `:` comments (frequently keepalives) are ignored. What a payload
+//! *means* is each adapter's business.
 
 /// Accumulates chunks and yields the payload of each complete event.
 #[derive(Debug, Default)]
@@ -76,7 +77,8 @@ impl SseDecoder {
             return;
         };
 
-        // `event:`, `id:`, and `retry:` carry nothing this protocol uses.
+        // `event:`, `id:`, and `retry:` carry nothing this protocol uses; the
+        // Anthropic adapter reads the event type from the payload's own `type`.
         if field != "data" {
             return;
         }

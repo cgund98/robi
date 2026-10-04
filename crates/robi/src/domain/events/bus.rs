@@ -6,10 +6,22 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::Notify;
 
-use crate::domain::events::envelope::EventEnvelope;
+use crate::domain::events::envelope::{EventEnvelope, MESSAGE_DELTA};
 
-/// Frames retained per subscriber before the oldest is dropped.
+/// Frames retained per subscriber before a delta, or else the oldest frame, is dropped.
 pub const BUS_CAPACITY: usize = 1024;
+
+/// Prefer dropping a streamed delta so a stored-message frame survives a burst.
+fn make_room(queue: &mut VecDeque<EventEnvelope>) {
+    if let Some(index) = queue
+        .iter()
+        .position(|frame| frame.event_type == MESSAGE_DELTA)
+    {
+        queue.remove(index);
+    } else {
+        queue.pop_front();
+    }
+}
 
 struct Slot {
     queue: Mutex<VecDeque<EventEnvelope>>,
@@ -45,7 +57,8 @@ impl EventBus {
         }
     }
 
-    /// Clone the envelope into every subscriber. A full queue drops the oldest.
+    /// Clone the envelope into every subscriber. A full queue drops a
+    /// `message_delta` when one is queued, and otherwise drops the oldest.
     pub fn publish(&self, envelope: EventEnvelope) {
         let mut subscribers = self.subscribers.lock().expect("event bus subscribers");
         subscribers.retain(|weak| {
@@ -57,7 +70,7 @@ impl EventBus {
             }
             let mut queue = slot.queue.lock().expect("event queue");
             if queue.len() >= self.capacity {
-                queue.pop_front();
+                make_room(&mut queue);
             }
             queue.push_back(envelope.clone());
             drop(queue);
@@ -127,11 +140,15 @@ mod tests {
     use uuid::Uuid;
 
     fn envelope(n: u64) -> EventEnvelope {
+        typed(n, "robi.agent.v1.turn_started")
+    }
+
+    fn typed(n: u64, event_type: &str) -> EventEnvelope {
         EventEnvelope {
             specversion: "1.0".to_owned(),
             id: Uuid::from_u128(n as u128),
             source: "robi/agent".to_owned(),
-            event_type: "robi.agent.v1.turn_started".to_owned(),
+            event_type: event_type.to_owned(),
             time: "2026-01-01T00:00:00.000Z".to_owned(),
             subject: "session".to_owned(),
             data: json!({ "n": n }),
@@ -174,6 +191,23 @@ mod tests {
 
         assert_eq!(n_of(&subscription.recv().await.unwrap()), 2);
         assert_eq!(n_of(&subscription.recv().await.unwrap()), 3);
+    }
+
+    #[tokio::test]
+    async fn full_queue_drops_a_delta_before_a_stored_message_frame() {
+        let bus = EventBus::with_capacity(2);
+        let mut subscription = bus.subscribe();
+
+        bus.publish(typed(1, "robi.agent.v1.message_added"));
+        bus.publish(typed(2, MESSAGE_DELTA));
+        bus.publish(typed(3, MESSAGE_DELTA));
+
+        let first = subscription.recv().await.unwrap();
+        let second = subscription.recv().await.unwrap();
+        assert_eq!(first.event_type, "robi.agent.v1.message_added");
+        assert_eq!(n_of(&first), 1);
+        assert_eq!(second.event_type, MESSAGE_DELTA);
+        assert_eq!(n_of(&second), 3);
     }
 
     #[tokio::test]

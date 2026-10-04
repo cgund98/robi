@@ -5,6 +5,7 @@
 //! context meter. Regenerate [`opencode_go`] from a models.dev snapshot instead of
 //! hand-editing it.
 
+mod anthropic;
 mod opencode_go;
 
 use super::config::ModelId;
@@ -23,6 +24,13 @@ pub struct ModelInfo {
     pub max_output: u64,
     pub supports_tools: bool,
     pub supports_reasoning: bool,
+    /// Whether the model accepts an effort setting (Anthropic's `output_config`).
+    ///
+    /// Anthropic's Haiku 4.5 rejects it outright ("Extra inputs are not
+    /// permitted"), so the flag is `false` there and the adapter never sends it
+    /// (A2). Harmless and unused on a chat-completions model, where effort rides
+    /// on `reasoning_effort` and is never gated.
+    pub supports_effort: bool,
     /// Whether the model accepts image input. Permissive by default: a model
     /// whose snapshot does not state the flag is assumed capable, so a missing
     /// flag never blocks a working model — the provider's 400 is the fallback.
@@ -43,6 +51,23 @@ impl ModelCatalog {
         Self {
             models: opencode_go::models(),
         }
+    }
+
+    /// The models Anthropic serves.
+    pub fn anthropic() -> Self {
+        Self {
+            models: anthropic::models(),
+        }
+    }
+
+    /// Both catalogs in one flat list, OpenCode Go first then Anthropic.
+    ///
+    /// The dropdown renders this (A11). Ids are prefixed and disjoint, so one
+    /// list is unambiguous.
+    pub fn all() -> Self {
+        let mut models = opencode_go::models();
+        models.extend(anthropic::models());
+        Self { models }
     }
 
     pub fn from_models(models: Vec<ModelInfo>) -> Self {
@@ -74,31 +99,100 @@ impl ModelCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::providers::config::{ANTHROPIC_PREFIX, OPENCODE_GO_PREFIX};
 
     #[test]
     fn the_catalog_holds_the_opencode_go_table() {
         let catalog = ModelCatalog::opencode_go();
         assert_eq!(catalog.len(), 33, "the vendored snapshot has 33 models");
-        assert!(catalog.get(&ModelId::new("glm-5.3")).is_some());
+        assert!(catalog.get(&ModelId::new("ocg_glm-5.3")).is_some());
         assert!(catalog.get(&ModelId::new("not-a-model")).is_none());
+    }
+
+    #[test]
+    fn the_catalog_holds_the_anthropic_table() {
+        let catalog = ModelCatalog::anthropic();
+        for id in [
+            "ant_claude-sonnet-4-6",
+            "ant_claude-opus-4-6",
+            "ant_claude-opus-4-5",
+            "ant_claude-haiku-4-5",
+        ] {
+            assert!(catalog.get(&ModelId::new(id)).is_some(), "missing {id}");
+        }
+        assert!(catalog.get(&ModelId::new("not-a-model")).is_none());
+    }
+
+    #[test]
+    fn every_id_carries_its_providers_prefix() {
+        // A11: the prefix is the dispatch, so every row must carry the right one.
+        for info in ModelCatalog::opencode_go().models() {
+            assert!(
+                info.id.as_str().starts_with(OPENCODE_GO_PREFIX),
+                "{} is missing the {OPENCODE_GO_PREFIX} prefix",
+                info.id
+            );
+        }
+        for info in ModelCatalog::anthropic().models() {
+            assert!(
+                info.id.as_str().starts_with(ANTHROPIC_PREFIX),
+                "{} is missing the {ANTHROPIC_PREFIX} prefix",
+                info.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_catalogs_are_disjoint() {
+        // A11: the union is the namespace, so an id in both would be ambiguous.
+        let opencode_ids = ModelCatalog::opencode_go();
+        let opencode: std::collections::HashSet<&str> = opencode_ids
+            .models()
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        for info in ModelCatalog::anthropic().models() {
+            assert!(
+                !opencode.contains(info.id.as_str()),
+                "{} appears in both catalogs",
+                info.id
+            );
+        }
+    }
+
+    #[test]
+    fn haiku_does_not_support_effort() {
+        // A2: the user's constraint. Sending `output_config.effort` to Haiku is a
+        // 400, so the flag must be false and the four M1 models must be explicit.
+        let catalog = ModelCatalog::anthropic();
+        for (id, supports) in [
+            ("ant_claude-sonnet-4-6", true),
+            ("ant_claude-opus-4-6", true),
+            ("ant_claude-opus-4-5", true),
+            ("ant_claude-haiku-4-5", false),
+        ] {
+            let info = catalog.get(&ModelId::new(id)).expect("listed");
+            assert_eq!(info.supports_effort, supports, "{id}");
+        }
     }
 
     #[test]
     fn every_listed_model_can_call_tools() {
         // D9: a model that cannot call tools cannot drive the loop, so listing one
         // would only invite a session that fails.
-        let catalog = ModelCatalog::opencode_go();
-        let tool_less: Vec<&str> = catalog
-            .models()
-            .iter()
-            .filter(|info| !info.supports_tools)
-            .map(|info| info.id.as_str())
-            .collect();
-        assert!(
-            tool_less.is_empty(),
-            "the catalog lists models without tool support: {tool_less:?}"
-        );
-        assert_eq!(catalog.tool_capable().count(), catalog.len());
+        for catalog in [ModelCatalog::opencode_go(), ModelCatalog::anthropic()] {
+            let tool_less: Vec<&str> = catalog
+                .models()
+                .iter()
+                .filter(|info| !info.supports_tools)
+                .map(|info| info.id.as_str())
+                .collect();
+            assert!(
+                tool_less.is_empty(),
+                "the catalog lists models without tool support: {tool_less:?}"
+            );
+            assert_eq!(catalog.tool_capable().count(), catalog.len());
+        }
     }
 
     #[test]
@@ -106,9 +200,7 @@ mod tests {
         // D13: vision is a real capability, and gating happens in the adapter at
         // request build. The generator fills `supports_vision` on every row, so a
         // row that somehow lost the flag would be a generator bug a regeneration
-        // would have to make deliberately. Pin the count so the permissive default
-        // cannot change by accident: if a regeneration flips a row, the reviewer
-        // sees the count and the table move together.
+        // would have to make deliberately.
         let catalog = ModelCatalog::opencode_go();
         assert_eq!(catalog.len(), 33);
         assert_eq!(
@@ -126,20 +218,26 @@ mod tests {
     fn a_models_output_budget_never_exceeds_its_window() {
         // Equality is legitimate: `kimi-k2.7-code` advertises a 262,144 output
         // budget against a 262,144 window. Larger would mean the table is wrong.
-        for info in ModelCatalog::opencode_go().models() {
-            assert!(
-                info.max_output <= info.context_window,
-                "{} reports a {} output budget for a {} window",
-                info.id,
-                info.max_output,
-                info.context_window
-            );
+        for catalog in [
+            ModelCatalog::opencode_go(),
+            ModelCatalog::anthropic(),
+            ModelCatalog::all(),
+        ] {
+            for info in catalog.models() {
+                assert!(
+                    info.max_output <= info.context_window,
+                    "{} reports a {} output budget for a {} window",
+                    info.id,
+                    info.max_output,
+                    info.context_window
+                );
+            }
         }
     }
 
     #[test]
     fn model_ids_are_unique() {
-        let catalog = ModelCatalog::opencode_go();
+        let catalog = ModelCatalog::all();
         let mut ids: Vec<&str> = catalog.models().iter().map(|m| m.id.as_str()).collect();
         ids.sort_unstable();
         let before = ids.len();

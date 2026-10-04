@@ -1,12 +1,9 @@
-//! The OpenAI-compatible chat-completions adapter.
+//! The Anthropic Messages adapter.
 //!
-//! One client for every endpoint that speaks this wire format: OpenCode Go today,
-//! and Kimi, DeepSeek, or OpenRouter when they are configured, since each is the
-//! same request shape with a different base URL, credential, and model table.
-//!
-//! `wire` builds the request, `sse` frames the response, `stream` turns chunks into
-//! the delta vocabulary `robi-core` fixed, and this module owns the transport:
-//! timeouts, the retry boundary, and cancellation.
+//! `wire` builds the request, `stream` turns typed SSE events into the delta
+//! vocabulary `robi-core` fixed, and this module owns the transport: timeouts, the
+//! retry boundary (D7), and cancellation. The SSE framing is shared with the
+//! OpenAI adapter (`providers::sse`); only the payload handling differs (A1).
 
 pub mod stream;
 pub mod wire;
@@ -24,16 +21,16 @@ use robi_core::tool::ToolRegistry;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::catalog::ModelCatalog;
-use super::config::ProviderSettings;
-use super::error::{truncate_body, ProviderError};
-use super::images::ImageSource;
-use super::retry::{classify, Retry};
+use crate::agent::providers::catalog::ModelCatalog;
+use crate::agent::providers::config::ProviderSettings;
+use crate::agent::providers::error::{truncate_body, ProviderError};
+use crate::agent::providers::images::ImageSource;
+use crate::agent::providers::retry::{classify, Retry};
 use crate::agent::providers::sse::SseDecoder;
 use stream::Assembler;
 
-/// A model served over the OpenAI chat-completions wire format.
-pub struct OpenAiCompatibleModel {
+/// A model served over Anthropic's Messages wire format.
+pub struct AnthropicModel {
     client: reqwest::Client,
     settings: ProviderSettings,
     catalog: Arc<ModelCatalog>,
@@ -44,11 +41,9 @@ pub struct OpenAiCompatibleModel {
     images: Arc<dyn ImageSource>,
 }
 
-impl OpenAiCompatibleModel {
-    /// Build an adapter, refusing a model that cannot drive the loop.
-    ///
-    /// The check is here rather than at the first turn so a misconfiguration is a
-    /// startup error that names the model, not a failed conversation.
+impl AnthropicModel {
+    /// Build an adapter, refusing a model that cannot drive the loop, one that
+    /// cannot call tools, and a configured effort the model rejects (A2).
     pub fn new(
         settings: ProviderSettings,
         catalog: Arc<ModelCatalog>,
@@ -60,6 +55,13 @@ impl OpenAiCompatibleModel {
             .ok_or_else(|| ProviderError::UnknownModel(settings.model.to_string()))?;
         if !info.supports_tools {
             return Err(ProviderError::ToolLessModel(settings.model.to_string()));
+        }
+        // A2: Haiku 4.5 returns a 400 for `output_config`. Refuse the
+        // configuration here rather than discover it on the first turn.
+        if settings.reasoning_effort.is_some() && !info.supports_effort {
+            return Err(ProviderError::UnsupportedEffort {
+                model: settings.model.to_string(),
+            });
         }
 
         let client = reqwest::Client::builder()
@@ -84,38 +86,50 @@ impl OpenAiCompatibleModel {
         &self.catalog
     }
 
-    /// The key that identifies the conversation to the provider.
-    ///
-    /// The loop's `SessionId` is minted once per session and persisted, so it is
-    /// stable across every turn and across a restart — which is what a prompt cache
-    /// needs.
-    fn session_key(&self, session: SessionId) -> String {
-        self.settings
-            .session_key_override
-            .clone()
-            .unwrap_or_else(|| session.to_string())
+    /// Whether the configured model accepts `output_config.effort` (A2).
+    fn supports_effort(&self) -> bool {
+        self.catalog
+            .get(&self.settings.model)
+            .map(|info| info.supports_effort)
+            .unwrap_or(false)
+    }
+
+    /// The beta header Opus 4.5 needs before it accepts `output_config.effort`.
+    fn effort_beta(&self) -> Option<&'static str> {
+        if self.settings.reasoning_effort.is_some()
+            && self.settings.model.wire_id() == "claude-opus-4-5"
+        {
+            Some(ProviderSettings::ANTHROPIC_EFFORT_BETA)
+        } else {
+            None
+        }
     }
 }
 
 #[async_trait]
-impl Model for OpenAiCompatibleModel {
+impl Model for AnthropicModel {
     async fn generate(
         &self,
-        session: SessionId,
+        _session: SessionId,
         transcript: &[Message],
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         let tools = self.tools.tools();
         let images = self.resolve_images(transcript).await?;
-        let request = wire::build_request(&self.settings, &tools, transcript, &images)
-            .map_err(|error| ProviderError::from(error).into_model_error())?;
+        let request = wire::build_request(
+            &self.settings,
+            &tools,
+            transcript,
+            &images,
+            self.supports_effort(),
+        )
+        .map_err(|error| ProviderError::from(error).into_model_error())?;
         let body = serde_json::to_vec(&request)
             .map_err(|error| ProviderError::Malformed(error.to_string()).into_model_error())?;
-        let session_key = self.session_key(session);
 
         // Retrying is confined to this call: nothing has been emitted yet.
         let response = self
-            .send_with_retry(&body, &session_key, &cancel)
+            .send_with_retry(&body, &cancel)
             .await
             .map_err(ProviderError::into_model_error)?;
 
@@ -129,12 +143,11 @@ impl Model for OpenAiCompatibleModel {
     }
 }
 
-impl OpenAiCompatibleModel {
+impl AnthropicModel {
     /// Resolve every attachment id the transcript references to its stored bytes.
     ///
     /// Rejects the turn when the model does not accept images (D13) or when a row
-    /// is missing (D11): a missing image is a corrupt store, never a silently
-    /// dropped part.
+    /// is missing (D11).
     async fn resolve_images(
         &self,
         transcript: &[Message],
@@ -176,22 +189,18 @@ impl OpenAiCompatibleModel {
     }
 
     /// Send until a response arrives, a retry is refused, or the attempts run out.
-    ///
-    /// Only a failure *before* any delta reaches the caller is retried, which is
-    /// what keeps a retry from rendering a duplicated partial message.
     async fn send_with_retry(
         &self,
         body: &[u8],
-        session_key: &str,
         cancel: &CancellationToken,
     ) -> Result<reqwest::Response, ProviderError> {
-        let url = self.settings.chat_completions_url();
+        let url = self.settings.messages_url();
         let mut attempt = 0u32;
 
         loop {
             attempt += 1;
 
-            match self.send_once(&url, body, session_key).await {
+            match self.send_once(&url, body).await {
                 Ok(response) => return Ok(response),
                 Err((error, retry)) => {
                     let Retry::Yes { after } = retry else {
@@ -214,24 +223,23 @@ impl OpenAiCompatibleModel {
         }
     }
 
-    /// One attempt. A response that is not a success becomes an error plus the
-    /// retry decision, so the caller does not have to re-inspect a consumed body.
+    /// One attempt.
     async fn send_once(
         &self,
         url: &str,
         body: &[u8],
-        session_key: &str,
     ) -> Result<reqwest::Response, (ProviderError, Retry)> {
         let mut request = self
             .client
             .post(url)
-            .bearer_auth(self.settings.api_key.expose())
+            .header("x-api-key", self.settings.api_key.expose())
+            .header("anthropic-version", ProviderSettings::ANTHROPIC_VERSION)
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(http::header::ACCEPT, "text/event-stream")
             .body(body.to_vec());
 
-        if let Some(header) = &self.settings.session_header {
-            request = request.header(header, session_key);
+        if let Some(beta) = self.effort_beta() {
+            request = request.header("anthropic-beta", beta);
         }
 
         // A timeout on the request as a whole would also bound the stream, so the
@@ -300,12 +308,8 @@ async fn pump(
     loop {
         let chunk = tokio::select! {
             biased;
-            // A cancelled turn sends nothing further. The loop already owns the
-            // cancelled outcome, so a failed delta here would be noise.
             () = cancel.cancelled() => return,
             next = tokio::time::timeout(chunk_timeout, body.next()) => match next {
-                // A gap longer than the timeout cannot be resumed in place, and
-                // it is not retryable: a retry would duplicate what streamed.
                 Err(_elapsed) => {
                     let error = ProviderError::Transport(format!(
                         "no chunk arrived within {chunk_timeout:?}"
@@ -315,14 +319,12 @@ async fn pump(
                     return;
                 }
                 Ok(None) => {
-                    // A last line may have arrived without a terminating blank
-                    // line, so flush the decoder before deciding the stream ended.
                     if absorb(&tx, &mut assembler, decoder.finish()).await {
                         return;
                     }
                     let outcome = match assembler.on_eof() {
                         Ok(deltas) => {
-                            note_truncation(&assembler);
+                            note_stop_reason(&assembler);
                             send_all(&tx, deltas).await
                         }
                         Err(error) => {
@@ -368,7 +370,7 @@ async fn absorb(
                     return true;
                 }
                 if finished {
-                    note_truncation(assembler);
+                    note_stop_reason(assembler);
                     tracing::info!("provider stream finished");
                     return true;
                 }
@@ -383,10 +385,10 @@ async fn absorb(
     false
 }
 
-/// A `length` finish still settles the message, so the turn reads as complete.
+/// A `max_tokens` stop still settles the message, so the turn reads as complete.
 /// Log it; otherwise a truncated reply is indistinguishable from a finished one.
-fn note_truncation(assembler: &Assembler) {
-    if assembler.finish_reason() == Some("length") {
+fn note_stop_reason(assembler: &Assembler) {
+    if assembler.stop_reason() == Some("max_tokens") {
         tracing::warn!("provider truncated the message at the output limit");
     }
 }
@@ -405,42 +407,49 @@ async fn send_all(tx: &mpsc::Sender<Delta>, deltas: Vec<Delta>) -> bool {
 mod tests {
     use super::*;
     use crate::agent::providers::catalog::ModelInfo;
-    use crate::agent::providers::config::{ApiKey, ModelId};
-    use crate::agent::providers::{ImageSource, ProviderError};
+    use crate::agent::providers::config::{ApiKey, ModelId, ReasoningEffort};
+    use crate::agent::providers::ProviderError;
     use robi_core::message::ImageAttachment;
 
     fn settings_for(model: &str) -> ProviderSettings {
-        ProviderSettings::opencode_go(ApiKey::new("k"), ModelId::new(model))
-            .with_system_prompt("You are Robi.")
+        ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new(model))
     }
 
-    /// A catalog for these tests: `vision` accepts images, `visionless` does not.
     fn catalog() -> ModelCatalog {
         ModelCatalog::from_models(vec![
             ModelInfo {
-                id: ModelId::new("vision"),
+                id: ModelId::new("ant_vision"),
                 display_name: "Vision".into(),
-                context_window: 1_000_000,
-                max_output: 131_072,
+                context_window: 200_000,
+                max_output: 64_000,
                 supports_tools: true,
                 supports_reasoning: true,
-                supports_vision: true,
                 supports_effort: true,
+                supports_vision: true,
             },
             ModelInfo {
-                id: ModelId::new("visionless"),
+                id: ModelId::new("ant_visionless"),
                 display_name: "Visionless".into(),
-                context_window: 1_000_000,
-                max_output: 131_072,
+                context_window: 200_000,
+                max_output: 64_000,
                 supports_tools: true,
                 supports_reasoning: true,
-                supports_vision: false,
                 supports_effort: true,
+                supports_vision: false,
+            },
+            ModelInfo {
+                id: ModelId::new("ant_no_effort"),
+                display_name: "No Effort".into(),
+                context_window: 200_000,
+                max_output: 64_000,
+                supports_tools: true,
+                supports_reasoning: true,
+                supports_effort: false,
+                supports_vision: true,
             },
         ])
     }
 
-    /// An image source with a fixed map from id to bytes.
     struct MapSource(std::collections::HashMap<String, (String, Vec<u8>)>);
 
     #[async_trait]
@@ -458,12 +467,8 @@ mod tests {
         ))
     }
 
-    fn model(
-        model: &str,
-        catalog: ModelCatalog,
-        images: Arc<dyn ImageSource>,
-    ) -> OpenAiCompatibleModel {
-        OpenAiCompatibleModel::new(
+    fn model(model: &str, catalog: ModelCatalog, images: Arc<dyn ImageSource>) -> AnthropicModel {
+        AnthropicModel::new(
             settings_for(model),
             Arc::new(catalog),
             Arc::new(ToolRegistry::new()),
@@ -482,11 +487,28 @@ mod tests {
         )
     }
 
+    #[test]
+    fn a_model_that_rejects_effort_is_refused_naming_itself() {
+        let settings = settings_for("ant_no_effort").with_reasoning_effort(ReasoningEffort::High);
+        let error = match AnthropicModel::new(
+            settings,
+            Arc::new(catalog()),
+            Arc::new(ToolRegistry::new()),
+            source(&[]),
+        ) {
+            Ok(_) => panic!("the model rejects effort"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, ProviderError::UnsupportedEffort { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("ant_no_effort"));
+    }
+
     #[tokio::test]
     async fn a_non_vision_model_rejects_the_turn_naming_itself() {
-        // D13: gating happens at request build. The user attached an image, and the
-        // configured model cannot see it — fail loudly, never silently drop it.
-        let m = model("visionless", catalog(), source(&[]));
+        let m = model("ant_visionless", catalog(), source(&[]));
         let error = m
             .resolve_images(&[image_message()])
             .await
@@ -494,23 +516,20 @@ mod tests {
         let ModelError::Provider(text) = error else {
             panic!("a vision refusal is a provider error");
         };
-        assert!(
-            text.contains("visionless"),
-            "the error names the model: {text}"
-        );
+        assert!(text.contains("ant_visionless"), "{text}");
     }
 
     #[tokio::test]
     async fn a_vision_model_resolves_the_attachment_bytes() {
         let m = model(
-            "vision",
+            "ant_vision",
             catalog(),
             source(&[("img", "image/png", b"\x89PNG\r\n")]),
         );
         let resolved = m
             .resolve_images(&[image_message()])
             .await
-            .expect("the vision model resolves the image");
+            .expect("resolves");
         assert_eq!(
             resolved.get("img"),
             Some(&("image/png".to_owned(), b"\x89PNG\r\n".to_vec()))
@@ -519,9 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_row_fails_the_turn() {
-        // D11: a transcript that references an id the store does not have is a
-        // corrupt store, never a silently dropped part.
-        let m = model("vision", catalog(), source(&[]));
+        let m = model("ant_vision", catalog(), source(&[]));
         let error = m
             .resolve_images(&[image_message()])
             .await
@@ -529,17 +546,44 @@ mod tests {
         let ModelError::Provider(text) = error else {
             panic!("a missing image is a provider error");
         };
-        assert!(text.contains("img"), "the error names the id: {text}");
+        assert!(text.contains("img"), "{text}");
     }
 
     #[tokio::test]
     async fn a_transcript_without_images_skips_the_store_and_vision_check() {
-        // A text-only turn never touches the image source or the vision flag.
-        let m = model("visionless", catalog(), source(&[]));
+        let m = model("ant_visionless", catalog(), source(&[]));
         let resolved = m
             .resolve_images(&[Message::user("plain")])
             .await
             .expect("text-only turns resolve to an empty map");
         assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn the_effort_beta_header_is_sent_only_for_opus_4_5() {
+        let opus = model("ant_vision", catalog(), source(&[]));
+        // The test catalog model is not opus, so no beta header.
+        assert!(opus.effort_beta().is_none());
+
+        let opus = AnthropicModel::new(
+            settings_for("ant_claude-opus-4-5").with_reasoning_effort(ReasoningEffort::High),
+            Arc::new(ModelCatalog::anthropic()),
+            Arc::new(ToolRegistry::new()),
+            source(&[]),
+        )
+        .expect("builds");
+        assert_eq!(opus.effort_beta(), Some("effort-2025-11-24"));
+
+        let sonnet = AnthropicModel::new(
+            settings_for("ant_claude-sonnet-4-6").with_reasoning_effort(ReasoningEffort::High),
+            Arc::new(ModelCatalog::anthropic()),
+            Arc::new(ToolRegistry::new()),
+            source(&[]),
+        )
+        .expect("builds");
+        assert!(
+            sonnet.effort_beta().is_none(),
+            "4.6 models need no beta header"
+        );
     }
 }

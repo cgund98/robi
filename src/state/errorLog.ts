@@ -14,6 +14,8 @@ export type ErrorEntry = {
 type ErrorLogState = {
   entries: ErrorEntry[]
   report: (message: string, sessionId?: string | null) => void
+  /** Audit log only. Does not open a shell notice. */
+  record: (message: string) => void
   acknowledge: (id: string) => void
 }
 
@@ -28,6 +30,16 @@ export const useErrorLog = create<ErrorLogState>((set) => ({
       sessionId: sessionId ?? null,
       at: Date.now(),
       open: true
+    }
+    set((state) => ({ entries: [entry, ...state.entries] }))
+  },
+  record: (message) => {
+    const entry: ErrorEntry = {
+      id: `error-${++nextId}`,
+      message,
+      sessionId: null,
+      at: Date.now(),
+      open: false
     }
     set((state) => ({ entries: [entry, ...state.entries] }))
   },

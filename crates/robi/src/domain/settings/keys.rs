@@ -7,6 +7,9 @@
 /// OpenCode Go bearer credential. Always a secret. No default.
 pub const OPENCODE_GO_API_KEY: &str = "opencode_go_api_key";
 
+/// Anthropic credential (`x-api-key`). Always a secret. No default.
+pub const ANTHROPIC_API_KEY: &str = "anthropic_api_key";
+
 /// Model id passed to the provider. Not a secret.
 pub const MODEL: &str = "model";
 
@@ -147,7 +150,7 @@ pub fn approval_required(value: Option<&str>) -> bool {
 }
 
 /// Used when [`MODEL`] has not been stored yet.
-pub const DEFAULT_MODEL: &str = "glm-5.3";
+pub const DEFAULT_MODEL: &str = "ocg_glm-5.3";
 
 /// One key the API is allowed to read and write.
 pub struct KnownSetting {
@@ -159,7 +162,7 @@ pub struct KnownSetting {
 /// The whitelist entry for `key`, or `None` when the API must refuse it.
 pub fn known_setting(key: &str) -> Option<KnownSetting> {
     match key {
-        OPENCODE_GO_API_KEY | BRAVE_SEARCH_API_KEY => Some(KnownSetting {
+        OPENCODE_GO_API_KEY | ANTHROPIC_API_KEY | BRAVE_SEARCH_API_KEY => Some(KnownSetting {
             secret: true,
             default_value: None,
         }),

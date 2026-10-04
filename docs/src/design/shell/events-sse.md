@@ -77,7 +77,8 @@ Rejected alternatives:
 4. **Replay of `message_delta` on reconnect.** Rejected. Deltas are ephemeral.
    Reconnect refetches the transcript over HTTP, then follows the live stream.
 5. **An unbounded subscriber queue.** Rejected. A slow tab must not stall the
-   loop or grow without bound. Drop the oldest frame.
+   loop or grow without bound. When the queue is full, drop a `message_delta`
+   if one is queued. Otherwise drop the oldest frame.
 
 ## Wire contract
 
@@ -153,7 +154,7 @@ These are not core `Event`s. Build them with `EventEnvelope::from_payload`.
 | `type` | `source` | `subject` | `data` | When |
 |---|---|---|---|---|
 | `robi.session.v1.created` | `robi/session` | session id | `{ "session_id" }` | After a session row is stored |
-| `robi.session.v1.updated` | `robi/session` | session id | `{ "session_id" }` | After any stored field changes, including a generated title |
+| `robi.session.v1.updated` | `robi/session` | session id | `{ "session_id", "title"? }` | After any stored field changes, including a generated title. `title` is set when the change is a rename |
 | `robi.session.v1.deleted` | `robi/session` | session id | `{ "session_id" }` | After the session row is removed |
 | `robi.app.v1.error` | `robi/app` | `app` | `{ "message" }` | A failure the user should see. `message` is short text. The first publisher is an MCP server that failed to start |
 
@@ -200,9 +201,11 @@ A frame published before the socket existed is recovered from the store.
 **1024**) and a drop handle that unsubscribes. `publish` clones the envelope
 into every queue.
 
-When a queue is full, **drop the oldest** frame and keep the newest. The loop's
-`emit` must not wait on a slow client. A dropped `message_delta` is recovered
-by the next successful hydrate, not by blocking the agent.
+When a queue is full, drop a `message_delta` if one is queued, and otherwise
+drop the oldest frame. The loop's `emit` must not wait on a slow client. A
+dropped delta is recovered by the next stored message, not by blocking the
+agent. A stored-message frame is what the shell refetches, so it stays ahead
+of a token burst.
 
 `BusEventSink::emit` maps `Event` to `EventEnvelope` and publishes. A
 subscriber that has disconnected is removed; that is not an error for the loop.
@@ -227,10 +230,10 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 |---|---|
 | `robi.agent.v1.turn_started` | Phase `thinking` when that session is on screen. Otherwise the sidebar marks that row running, and does not fetch its transcript |
 | `robi.agent.v1.message_delta` | `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored |
-| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. `tool_call_updated` also refreshes the review strip |
+| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. One GET is in flight per message; a newer frame schedules one trailing GET. A full transcript reload merges with any row upserted after that reload started. `tool_call_updated` refreshes the review strip immediately, then once more after a burst goes quiet |
 | `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
-| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome is recorded and shown at the bottom of that transcript until dismissed. `has_pending_agent` restores `thinking` when the actor is still running. The shell reads the session once more and returns to `idle` when that flag has cleared. When another session is on screen: clear that row's running mark. A `failed` outcome is still recorded and shown at the top of the shell until dismissed. No transcript fetch |
-| `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. The phase is unchanged |
+| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome is recorded and shown at the bottom of that transcript until dismissed. The refetch does not put the phase back on `thinking` when `has_pending_agent` is still set: the actor clears that flag after this event. A `turn_started` that arrives during the refetch, including the next piece of work, sets `thinking` and the refetch leaves it. When another session is on screen: clear that row's running mark. A `failed` outcome is still recorded and shown at the top of the shell until dismissed. No transcript fetch |
+| `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. A title carried on the frame is applied immediately. A fetch that started before that title, or before a local insert, does not wipe them. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
 | `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
 | `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. The stream publishes once when it opens, then again as the index changes |
@@ -238,15 +241,20 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 Do not open a second `EventSource` per feature.
 
 On every successful `open`, refetch the session list and the active
-transcript. When the selected session changes, close the stream and open a
+transcript. Selecting a session and that open share one in-flight transcript
+read. The list merge keeps a row inserted locally after the fetch started.
+When the selected session changes, close the stream and open a
 new URL with the new `session_id`. A draft has no session id, so the shell
-does not connect.
+does not connect. A frame for another session does not reset the 2-second
+catch-up wait for the session on screen.
 
 ## Failure modes
 
-- **Slow subscriber.** Oldest frames drop. The agent keeps running. While the
-  phase is `thinking` or `responding` and no frame has arrived for 2 seconds,
-  the shell refetches the session and the message list. A frame resets that wait.
+- **Slow subscriber.** A queued `message_delta` drops first. Otherwise the
+  oldest frame drops. The agent keeps running. While the phase is `thinking`
+  or `responding` and no frame for the session on screen has arrived for 2
+  seconds, the shell refetches the session and the message list. A frame for
+  that session resets the wait. A frame for another session does not.
 - **Malformed `data`.** The client ignores that frame and stays connected.
 - **Filter mismatch.** A client that asks for `event_types` it does not handle
   still receives them; unknown `type` values are ignored.
@@ -262,7 +270,8 @@ does not connect.
 
 - `domain/events`: `from_core_event` covers every `Event` variant; `from_payload`
   fills the envelope; the bus delivers to two subscribers; a full queue drops
-  the oldest and keeps the newest; unsubscribe stops delivery.
+  a `message_delta` before a stored-message frame, and otherwise drops the
+  oldest and keeps the newest; unsubscribe stops delivery.
 - `web_api`: an Axum test publishes one envelope and reads one SSE frame with
   the `id`, `event`, and JSON `data` lines. A `session_id` query drops a
   different subject.

@@ -109,12 +109,17 @@ impl Fake {
     }
 }
 
-async fn handle(State(fake): State<Fake>, headers: HeaderMap, body: Bytes) -> Response {
+async fn handle(
+    State(fake): State<Fake>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     fake.requests
         .lock()
         .expect("the log is not poisoned")
         .push(Recorded {
-            path: "/chat/completions".to_owned(),
+            path: uri.path().to_owned(),
             headers: headers.clone(),
             body: serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         });
@@ -175,6 +180,7 @@ async fn handle(State(fake): State<Fake>, headers: HeaderMap, body: Bytes) -> Re
 async fn spawn(fake: Fake) -> String {
     let app = Router::new()
         .route("/chat/completions", post(handle))
+        .route("/messages", post(handle))
         .with_state(fake);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -192,7 +198,7 @@ async fn spawn(fake: Fake) -> String {
 
 fn settings(base_url: String) -> ProviderSettings {
     let mut settings =
-        ProviderSettings::opencode_go(ApiKey::new("test-key"), ModelId::new("glm-5.3"));
+        ProviderSettings::opencode_go(ApiKey::new("test-key"), ModelId::new("ocg_glm-5.3"));
     settings.base_url = base_url;
     // Keep the retry tests fast; the policy shape is what matters here.
     settings.retry = RetryPolicy {
@@ -203,8 +209,25 @@ fn settings(base_url: String) -> ProviderSettings {
     settings
 }
 
+/// Anthropic settings pointed at the fake server.
+fn anthropic_settings(base_url: String, model: &str) -> ProviderSettings {
+    let mut settings = ProviderSettings::anthropic(ApiKey::new("test-key"), ModelId::new(model));
+    settings.base_url = base_url;
+    settings.max_tokens = Some(64_000);
+    settings.retry = RetryPolicy {
+        max_attempts: 3,
+        base: Duration::from_millis(10),
+        cap: Duration::from_millis(50),
+    };
+    settings
+}
+
 fn build(base_url: String, tools: Arc<ToolRegistry>) -> Arc<dyn Model> {
     build_model(settings(base_url), tools, no_images()).expect("the model builds")
+}
+
+fn build_anthropic(base_url: String, model: &str, tools: Arc<ToolRegistry>) -> Arc<dyn Model> {
+    build_model(anthropic_settings(base_url, model), tools, no_images()).expect("the model builds")
 }
 
 /// No image is resolved by these fake-provider tests.
@@ -952,6 +975,312 @@ async fn a_cancel_after_the_headers_still_reports_cancelled() {
             .all(|message| message.role != Role::Assistant),
         "a cancelled turn must not leave a partial assistant message: {transcript:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic Messages
+// ---------------------------------------------------------------------------
+
+/// An Anthropic SSE stream is a sequence of typed `data:` events. This wraps each
+/// payload in the `data: ...\n\n` framing the shared decoder consumes.
+fn anthropic_stream(payloads: Vec<String>, gap: Duration) -> Reply {
+    Reply::Sse {
+        payloads,
+        gap,
+        headers_delay: Duration::ZERO,
+    }
+}
+
+fn anthropic_text_stream(text: &str) -> Reply {
+    anthropic_stream(
+        vec![
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}"#
+                .to_owned(),
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#
+                .to_owned(),
+            format!(
+                r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{text}"}}}}"#
+            ),
+            r#"{"type":"content_block_stop","index":0}"#.to_owned(),
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}"#
+                .to_owned(),
+            r#"{"type":"message_stop"}"#.to_owned(),
+        ],
+        Duration::ZERO,
+    )
+}
+
+#[tokio::test]
+async fn an_anthropic_turn_streams_text_and_finishes() {
+    let fake = Fake::scripted(vec![anthropic_text_stream("Hello")]);
+    let base = spawn(fake.clone()).await;
+    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the request is accepted");
+    let (deltas, finished) = drain(stream).await;
+
+    assert!(deltas.contains(&Delta::Text("Hello".to_owned())));
+    let message = finished.expect("a finished message");
+    assert_eq!(message.content, "Hello");
+    assert_eq!(message.usage.expect("usage").output, 15);
+}
+
+#[tokio::test]
+async fn the_anthropic_request_carries_the_key_version_and_bare_model_id() {
+    let fake = Fake::scripted(vec![anthropic_text_stream("ok")]);
+    let base = spawn(fake.clone()).await;
+    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the request is accepted");
+    drain(stream).await;
+
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 1);
+    let recorded = &requests[0];
+    assert_eq!(recorded.path, "/messages", "the Messages path");
+    assert_eq!(
+        recorded.headers.get("x-api-key").expect("x-api-key"),
+        "test-key"
+    );
+    assert_eq!(
+        recorded
+            .headers
+            .get("anthropic-version")
+            .expect("anthropic-version"),
+        "2023-06-01"
+    );
+    assert_eq!(
+        recorded.body["model"], "claude-sonnet-4-6",
+        "the ant_ prefix is stripped on the wire"
+    );
+    // The Messages API requires max_tokens.
+    assert_eq!(recorded.body["max_tokens"], 64_000);
+    assert_eq!(recorded.body["stream"], true);
+    assert!(
+        recorded.headers.get("x-opencode-session").is_none(),
+        "there is no session header for Anthropic"
+    );
+}
+
+#[tokio::test]
+async fn an_anthropic_thinking_trace_round_trips_on_the_next_request() {
+    // A3: a tool continuation requires the thinking block back, with its
+    // signature. Turn one produces it; turn two must echo it.
+    let tool_turn = anthropic_stream(
+        vec![
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#
+                .to_owned(),
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me read"}}"#
+                .to_owned(),
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}"#
+                .to_owned(),
+            r#"{"type":"content_block_stop","index":0}"#.to_owned(),
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}"#
+                .to_owned(),
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.rs\"}"}}"#
+                .to_owned(),
+            r#"{"type":"content_block_stop","index":1}"#.to_owned(),
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}"#
+                .to_owned(),
+            r#"{"type":"message_stop"}"#.to_owned(),
+        ],
+        Duration::ZERO,
+    );
+    let fake = Fake::scripted(vec![tool_turn, anthropic_text_stream("done")]);
+    let base = spawn(fake.clone()).await;
+    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("read a.rs")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the request is accepted");
+    let (_, finished) = drain(stream).await;
+    let assistant = finished.expect("a message");
+    let call = assistant.tool_calls.first().expect("a call").clone();
+    assert_eq!(call.provider_call_id.as_deref(), Some("toolu_1"));
+    let trace = assistant.reasoning.clone().expect("a reasoning trace");
+    assert_eq!(trace.text, "let me read");
+    assert_eq!(trace.signature.as_deref(), Some("sig-1"));
+
+    // Turn two: the tool result goes back, and the thinking block must accompany
+    // the assistant turn.
+    let transcript = vec![
+        Message::user("read a.rs"),
+        assistant,
+        Message::tool_result(call.id, "contents"),
+    ];
+    let stream = model
+        .generate(SessionId::new(), &transcript, CancellationToken::new())
+        .await
+        .expect("the request is accepted");
+    drain(stream).await;
+
+    let requests = fake.requests();
+    let second = requests[1].body["messages"].as_array().expect("messages");
+    let assistant_entry = second
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("the assistant turn");
+    let blocks = assistant_entry["content"]
+        .as_array()
+        .expect("content blocks");
+    let thinking = blocks
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .expect("the thinking block is echoed");
+    assert_eq!(thinking["thinking"], "let me read");
+    assert_eq!(thinking["signature"], "sig-1");
+
+    let tool_result = second
+        .iter()
+        .find(|m| m["content"][0]["type"] == "tool_result")
+        .expect("the tool result");
+    assert_eq!(tool_result["content"][0]["tool_use_id"], "toolu_1");
+}
+
+#[tokio::test]
+async fn the_haiku_effort_gate_omits_output_config() {
+    // A2: Haiku rejects output_config. Build with no effort first (allowed), then
+    // confirm an effort on Haiku is refused at construction.
+    let fake = Fake::scripted(vec![anthropic_text_stream("ok")]);
+    let base = spawn(fake.clone()).await;
+    let model = build_anthropic(
+        base.clone(),
+        "ant_claude-haiku-4-5",
+        Arc::new(ToolRegistry::new()),
+    );
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("a Haiku turn with no effort is accepted");
+    drain(stream).await;
+    assert!(
+        fake.requests()[0].body.get("output_config").is_none(),
+        "no effort means no output_config"
+    );
+
+    // An effort on Haiku fails at build time.
+    let mut settings = anthropic_settings(base, "ant_claude-haiku-4-5");
+    settings.reasoning_effort = Some(robi::agent::providers::ReasoningEffort::High);
+    let error = build_model(settings, Arc::new(ToolRegistry::new()), no_images())
+        .err()
+        .expect("Haiku rejects an effort");
+    assert!(error.to_string().contains("effort"), "{error}");
+}
+
+#[tokio::test]
+async fn an_anthropic_error_event_inside_a_200_stream_becomes_a_failure() {
+    let fake = Fake::scripted(vec![anthropic_stream(
+        vec![
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}"#
+                .to_owned(),
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#
+                .to_owned(),
+        ],
+        Duration::ZERO,
+    )]);
+    let base = spawn(fake).await;
+    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the request is accepted");
+    let (deltas, finished) = drain(stream).await;
+
+    let failed = deltas.iter().any(|delta| match delta {
+        Delta::Failed(error) => error.to_string().contains("Overloaded"),
+        _ => false,
+    });
+    assert!(failed, "the error event is reported: {deltas:?}");
+    assert!(finished.is_none());
+}
+
+#[tokio::test]
+async fn an_anthropic_500_is_retried_and_then_succeeds() {
+    let fake = Fake::scripted(vec![
+        Reply::Error {
+            status: 500,
+            body: r#"{"type":"error","error":{"type":"api_error","message":"upstream"}}"#
+                .to_owned(),
+            headers: Vec::new(),
+        },
+        anthropic_text_stream("recovered"),
+    ]);
+    let base = spawn(fake.clone()).await;
+    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the retry succeeds");
+    let (deltas, finished) = drain(stream).await;
+
+    assert_eq!(fake.request_count(), 2, "one retry");
+    assert_eq!(finished.expect("a message").content, "recovered");
+    assert_eq!(
+        deltas
+            .iter()
+            .filter(|delta| matches!(delta, Delta::Finished(_)))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn an_anthropic_turn_drives_the_agent_end_to_end() {
+    let fake = Fake::scripted(vec![anthropic_text_stream("the file defines a struct")]);
+    let base = spawn(fake.clone()).await;
+
+    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let store = Arc::new(MemoryStore::default());
+    let agent = Agent::new(
+        store.clone(),
+        Arc::new(NopSink),
+        model,
+        Arc::new(ToolRegistry::new()),
+        LoopConfig::default(),
+    );
+    let session = agent.new_chat(WorkspaceId::new());
+
+    let outcome = agent
+        .user_input(session, "what is in a.rs?", CancellationToken::new())
+        .await;
+
+    assert_eq!(outcome, TurnOutcome::Complete);
+    let transcript = store.messages(session).await.expect("the transcript loads");
+    assert_eq!(transcript.len(), 2);
+    assert_eq!(transcript[1].content, "the file defines a struct");
 }
 
 // ---------------------------------------------------------------------------

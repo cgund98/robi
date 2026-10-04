@@ -20,7 +20,10 @@ use crate::domain::{
 
 const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, plan_path, created_at, updated_at, last_used_at";
 
-fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
+fn log_unknown(context: &'static str, err: impl std::fmt::Debug + 'static) -> ServiceError {
+    if let Some(sql) = (&err as &dyn std::any::Any).downcast_ref::<sqlx::Error>() {
+        crate::adapters::sqlite::log_connection_timeout(context, sql);
+    }
     error!(?err, %context, "sqlite chat session repository error");
     ServiceError::Unknown
 }

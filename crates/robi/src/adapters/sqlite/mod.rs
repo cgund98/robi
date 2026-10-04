@@ -27,7 +27,7 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool, InitError> {
         .create_if_missing(true)
         .foreign_keys(true)
         .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(30));
+        .busy_timeout(Duration::from_secs(10));
 
     if !is_memory(database_url) {
         options = options.journal_mode(SqliteJournalMode::Wal);
@@ -55,4 +55,32 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool, InitError> {
 
 fn is_memory(database_url: &str) -> bool {
     database_url.contains("mode=memory") || database_url.contains(":memory:")
+}
+
+/// Log a pool acquire timeout or a SQLite busy-lock timeout on its own line.
+///
+/// Other database errors stay with the caller. These two are the waits that
+/// stall the API, and a generic repository log does not name them.
+pub(crate) fn log_connection_timeout(context: &'static str, err: &sqlx::Error) {
+    match err {
+        sqlx::Error::PoolTimedOut => {
+            tracing::error!(%context, "sqlite pool acquire timed out");
+        }
+        sqlx::Error::Database(db) if sqlite_busy(db.as_ref()) => {
+            tracing::error!(
+                %context,
+                code = db.code().as_deref().unwrap_or(""),
+                message = %db.message(),
+                "sqlite database lock timed out"
+            );
+        }
+        _ => {}
+    }
+}
+
+fn sqlite_busy(db: &dyn sqlx::error::DatabaseError) -> bool {
+    // `busy_timeout` gives up as `SQLITE_BUSY` (code 5).
+    db.code().as_deref() == Some("5")
+        || db.message().contains("database is locked")
+        || db.message().contains("SQLITE_BUSY")
 }

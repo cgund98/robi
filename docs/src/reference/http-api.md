@@ -131,9 +131,10 @@ A `session_id` filter still delivers session lifecycle events and `app.error`,
 plus index progress for that session's workspace. A turn outcome in `data` is one
 of `complete`, `paused`, `cancelled`, or `failed`.
 
-The bus fans out per subscriber with a bounded queue of 1024; on overflow the
-oldest event is dropped, so a slow reader loses deltas rather than stalling the
-server. The front end reconnects with exponential backoff.
+The bus fans out per subscriber with a bounded queue of 1024. On overflow a
+queued `message_delta` is dropped first, and otherwise the oldest event, so a
+slow reader loses deltas rather than stalling the server. The front end
+reconnects with exponential backoff.
 
 ## Where this is specified
 

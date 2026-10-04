@@ -60,6 +60,8 @@ export function ModelProvidersSettings() {
   })
   const [apiKey, setApiKey] = useState('')
   const [keyConfigured, setKeyConfigured] = useState(false)
+  const [anthropicKey, setAnthropicKey] = useState('')
+  const [anthropicKeyConfigured, setAnthropicKeyConfigured] = useState(false)
   const [searchKey, setSearchKey] = useState('')
   const [searchKeyConfigured, setSearchKeyConfigured] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
@@ -74,6 +76,7 @@ export function ModelProvidersSettings() {
           baseSetting,
           effortSetting,
           keySetting,
+          anthropicKeySetting,
           searchSetting,
           catalog,
           ...modeSettings
@@ -82,6 +85,7 @@ export function ModelProvidersSettings() {
           getSetting(SETTING_KEYS.baseUrl),
           getSetting(SETTING_KEYS.reasoningEffort),
           getSetting(SETTING_KEYS.apiKey),
+          getSetting(SETTING_KEYS.anthropicApiKey),
           getSetting(SETTING_KEYS.braveSearchApiKey),
           listModels(),
           ...MODES.flatMap((item) => [getSetting(item.modelKey), getSetting(item.effortKey)])
@@ -94,6 +98,7 @@ export function ModelProvidersSettings() {
         setBaseUrl(baseSetting.value ?? '')
         setEffort(effortSetting.value ?? '')
         setKeyConfigured(keySetting.configured)
+        setAnthropicKeyConfigured(anthropicKeySetting.configured)
         setSearchKeyConfigured(searchSetting.configured)
         const nextModels = { ask: '', plan: '', agent: '' }
         const nextEfforts = { ask: '', plan: '', agent: '' }
@@ -128,6 +133,10 @@ export function ModelProvidersSettings() {
         setApiKey('')
         setKeyConfigured(true)
       }
+      if (key === SETTING_KEYS.anthropicApiKey) {
+        setAnthropicKey('')
+        setAnthropicKeyConfigured(true)
+      }
       if (key === SETTING_KEYS.braveSearchApiKey) {
         setSearchKey('')
         setSearchKeyConfigured(true)
@@ -149,7 +158,7 @@ export function ModelProvidersSettings() {
   }
 
   const globalModelLabel =
-    models.find((item) => item.id === model)?.displayName ?? (model || 'glm-5.3')
+    models.find((item) => item.id === model)?.displayName ?? (model || 'ocg_glm-5.3')
 
   return (
     <>
@@ -246,11 +255,16 @@ export function ModelProvidersSettings() {
       </section>
 
       <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>OpenCode</h2>
+        <h2 className={styles.sectionTitle}>Model providers</h2>
+        <p className={styles.sectionHint}>
+          One credential per provider. The model id&apos;s prefix picks which one a turn uses: a
+          model beginning with <code>ocg_</code> uses the OpenCode key, one beginning with{' '}
+          <code>ant_</code> uses the Anthropic key.
+        </p>
         <div className={styles.card}>
           <div className={styles.row}>
             <div className={styles.copy}>
-              <div className={styles.label}>API key</div>
+              <div className={styles.label}>OpenCode API key</div>
               <div className={styles.hint}>
                 {keyConfigured
                   ? 'A key is saved. Enter a new value to replace it.'
@@ -266,6 +280,26 @@ export function ModelProvidersSettings() {
               onChange={(event) => setApiKey(event.target.value)}
               onBlur={() => void save(SETTING_KEYS.apiKey, apiKey, true)}
               aria-label="OpenCode API key"
+            />
+          </div>
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Anthropic API key</div>
+              <div className={styles.hint}>
+                {anthropicKeyConfigured
+                  ? 'A key is saved. Enter a new value to replace it.'
+                  : 'Stored as a secret. Turns on a Claude model fail until this is set.'}
+              </div>
+            </div>
+            <input
+              className={`${styles.input} ${styles.control}`}
+              type="password"
+              autoComplete="off"
+              placeholder={anthropicKeyConfigured ? '••••••••' : 'API key'}
+              value={anthropicKey}
+              onChange={(event) => setAnthropicKey(event.target.value)}
+              onBlur={() => void save(SETTING_KEYS.anthropicApiKey, anthropicKey, true)}
+              aria-label="Anthropic API key"
             />
           </div>
           <div className={styles.row}>

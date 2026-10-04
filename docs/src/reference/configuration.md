@@ -10,7 +10,7 @@ Both are plain TOML. The key is a string and the value is a string, for example:
 
 ```toml
 # ~/.robi/config.toml
-model = "glm-5.3"
+model = "ocg_glm-5.3"
 reasoning_effort = "medium"
 lsp = "on"
 max_iterations = "50"
@@ -33,6 +33,7 @@ web_fetch_approval = "on"
 ```toml
 # ~/.robi/secrets.toml
 opencode_go_api_key = "sk-..."
+anthropic_api_key = "sk-ant-..."
 brave_search_api_key = "..."
 ```
 
@@ -47,9 +48,10 @@ files and later reads always agree.
 
 | Key | Secret | Default | Notes |
 |---|---|---|---|
-| `opencode_go_api_key` | yes | none | Bearer credential for the provider. |
+| `opencode_go_api_key` | yes | none | Bearer credential for OpenCode Go models (`ocg_` prefix). |
+| `anthropic_api_key` | yes | none | `x-api-key` credential for Anthropic models (`ant_` prefix). |
 | `brave_search_api_key` | yes | none | Brave Search token for `web_search`. |
-| `model` | no | `glm-5.3` | Default model id. |
+| `model` | no | `ocg_glm-5.3` | Default model id. The `ocg_`/`ant_` prefix selects the provider. |
 | `model_ask` | no | none | Model for ask mode. Empty inherits `model`. |
 | `model_plan` | no | none | Model for plan mode. Empty inherits `model`. |
 | `model_agent` | no | none | Model for agent mode. Empty inherits `model`. |

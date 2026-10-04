@@ -5,12 +5,13 @@
 //! that every entry supports tool calling, and that the windows are coherent.
 //!
 //! The endpoint is a proxy in front of models from several labs. Context windows
-//! and output budgets below are the models' own advertised figures.
+//! and output budgets below are the models' own advertised figures. The `MODELS`
+//! list holds the vendor's bare ids; [`models`] prefixes each with `ocg_` (A11).
 
 use super::ModelInfo;
-use crate::agent::providers::config::ModelId;
+use crate::agent::providers::config::{ModelId, OPENCODE_GO_PREFIX};
 
-/// `(id, display name, context window, max output)`.
+/// `(id, display name, context window, max output)`, with the vendor's bare id.
 const MODELS: &[(&str, &str, u64, u64)] = &[
     ("glm-5.3", "GLM-5.3", 1_000_000, 131_072),
     ("glm-5.3-flash", "GLM-5.3-Flash", 1_000_000, 131_072),
@@ -76,13 +77,16 @@ pub(super) fn models() -> Vec<ModelInfo> {
     MODELS
         .iter()
         .map(|(id, display_name, context_window, max_output)| ModelInfo {
-            id: ModelId::new(*id),
+            id: ModelId::new(format!("{OPENCODE_GO_PREFIX}{id}")),
             display_name: (*display_name).to_owned(),
             context_window: *context_window,
             max_output: *max_output,
             // Every model this endpoint serves reports tool calling and reasoning.
             supports_tools: true,
             supports_reasoning: true,
+            // OpenCode Go's effort rides on `reasoning_effort`, which the adapter
+            // never gates. The flag is Anthropic-only (A2).
+            supports_effort: true,
             // Vision acceptance is permissive: every row states it explicitly, and
             // a capability we cannot confirm is assumed present rather than guessed
             // absent (D13). The provider's own 400 is the honest fallback for a

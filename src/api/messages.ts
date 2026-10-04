@@ -1,5 +1,5 @@
 import { ApiError, errorMessage, statusOf } from './sessions'
-import { api, apiBaseUrl } from './client'
+import { api, apiBaseUrl, fetchWithTimeout } from './client'
 import type { components } from './schema'
 
 export type ChatMessage = components['schemas']['ChatMessage']
@@ -95,10 +95,13 @@ export async function submitInstruction(
     for (const image of images!) {
       form.append('images', image, image.name)
     }
-    response = await fetch(`${apiBaseUrl()}/api/v1/chat_sessions/${sessionId}/messages`, {
-      method: 'POST',
-      body: form
-    })
+    response = await fetchWithTimeout(
+      `${apiBaseUrl()}/api/v1/chat_sessions/${sessionId}/messages`,
+      {
+        method: 'POST',
+        body: form
+      }
+    )
   } else {
     const result = await api.POST('/api/v1/chat_sessions/{id}/messages', {
       params: { path: { id: sessionId } },

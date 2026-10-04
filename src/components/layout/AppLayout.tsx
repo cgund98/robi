@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMatch, useNavigate } from 'react-router-dom'
+import { useShallow } from 'zustand/react/shallow'
 
 import { listModels, type CatalogModel } from '../../api/models'
 import { sessionDisplayTitle, type AgentMode, type ChatSession } from '../../api/sessions'
@@ -37,26 +38,29 @@ async function buildPlan(path: string) {
   await next.sendInstruction(planBuildInstruction(path))
 }
 
-function runningSessionIds(
-  sessions: ChatSession[],
-  phaseBySession: Record<string, AgentPhase>
-): ReadonlySet<string> {
-  const running = new Set<string>()
-  for (const session of sessions) {
-    const phase = phaseBySession[session.id]
-    if (session.has_pending_agent || (phase !== undefined && phase !== 'idle')) {
-      running.add(session.id)
-    }
-  }
-  return running
-}
-
 export function AppLayout() {
   const sessions = useChatStore((state) => state.sessions)
   const activeSessionId = useChatStore((state) => state.activeSessionId)
   const draftSelected = useChatStore((state) => state.draftSelected)
   const messagesBySession = useChatStore((state) => state.messagesBySession)
-  const phaseBySession = useChatStore((state) => state.phaseBySession)
+  const runningIds = useChatStore(
+    useShallow((state) => {
+      const ids: string[] = []
+      for (const session of state.sessions) {
+        const sessionPhase = state.phaseBySession[session.id]
+        if (session.has_pending_agent || (sessionPhase !== undefined && sessionPhase !== 'idle')) {
+          ids.push(session.id)
+        }
+      }
+      return ids
+    })
+  )
+  const phase = useChatStore((state): AgentPhase => {
+    if (state.draftSelected || !state.activeSessionId) {
+      return 'idle'
+    }
+    return state.phaseBySession[state.activeSessionId] ?? 'idle'
+  })
   const pendingEcho = useChatStore((state) => state.pendingEcho)
   const loading = useChatStore((state) => state.loading)
   const transcriptLoading = useChatStore((state) => state.transcriptLoading)
@@ -133,8 +137,6 @@ export function AppLayout() {
     !draftSelected && activeSessionId
       ? (sessions.find((session) => session.id === activeSessionId) ?? null)
       : null
-  const phase: AgentPhase =
-    activeSessionId && !draftSelected ? (phaseBySession[activeSessionId] ?? 'idle') : 'idle'
   const messages =
     activeSessionId && !draftSelected ? (messagesBySession[activeSessionId] ?? []) : []
   const echo =
@@ -175,9 +177,7 @@ export function AppLayout() {
   const deleteTarget = deleteId
     ? (sessions.find((session) => session.id === deleteId) ?? null)
     : null
-  const deleteTargetRunning = deleteTarget
-    ? deleteTarget.has_pending_agent || (phaseBySession[deleteTarget.id] ?? 'idle') !== 'idle'
-    : false
+  const deleteTargetRunning = deleteTarget ? runningIds.includes(deleteTarget.id) : false
 
   async function handleSaveTitle(title: string) {
     if (!renameId) {
@@ -246,7 +246,7 @@ export function AppLayout() {
         draftSelected={draftSelected}
         docsSelected={docsOpen}
         disabled={loading}
-        runningSessionIds={runningSessionIds(sessions, phaseBySession)}
+        runningSessionIds={new Set(runningIds)}
         onSelectSession={openSession}
         onNewSession={openDraft}
         onRenameSession={askRename}

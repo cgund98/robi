@@ -84,7 +84,7 @@ section that owns it.
 
 | Milestone | Piece | State |
 |---|---|---|
-| M1 | Anthropic's own wire format | Open. The client speaks OpenAI-compatible endpoints. |
+| M1 | Anthropic's own wire format | **Built.** The Anthropic Messages adapter ships alongside the OpenAI-compatible client; both are listed in one picker. The model id's `ocg_`/`ant_` prefix selects the provider. |
 | M2 | Process placement (D3): in-process loop vs sidecar | Desktop hosts the API in-process. `robi-api` remains for headless and `pnpm dev`. |
 | M2 | Tool-card expand default, and whether it persists per session | Open in `docs/src/design/shell/visual-style.md`. |
 | M3 | Auto-compaction and a manual trigger (F3.4) | Not built. Specified in [context-management.md](design/workspace/context-management.md). |
@@ -399,19 +399,23 @@ that a trait is only "fixed" once a real implementation has exercised it.
 - **First provider: OpenCode Go**, over the OpenAI-compatible chat-completions
   wire format. One client serves every endpoint that speaks it: Kimi, DeepSeek,
   and OpenRouter are the same request shape with a different base URL,
-  credential, and model table. Anthropic's own format is still open work.
-  Image ingestion is still open work too: the adapter sends text only, and a
-  later change should attach user images as chat-completions image parts on
-  models that accept them.
-- What the endpoint requires, now that it is built and tested:
+  credential, and model table.
+- **Second provider: Anthropic**, over its native Messages API. It is a separate
+  adapter (`providers/anthropic/`), because the request shape (top-level `system`,
+  required `max_tokens`, `input_schema` tools, content blocks) and the typed SSE
+  event stream differ from chat-completions. The design is A1–A12 in
+  [providers-streaming.md](design/providers/providers-streaming.md). The two
+  constraints that shape it: Haiku 4.5 rejects the effort parameter, and the user
+  never picks a provider — the model id's `ocg_`/`ant_` prefix does.
+- What the OpenCode Go endpoint requires, now that it is built and tested:
   - `POST {base}/chat/completions` with `stream: true` and
     `stream_options.include_usage`. Base URL
     `https://opencode.ai/zen/go/v1`.
   - `Authorization: Bearer <key>`, and `x-opencode-session: <SessionId>`. The
     header is what the provider keys routing and prompt caching on, so it must be
     the conversation's id, stable across turns and restarts (D4).
-  - The model id on the wire is the bare id (`glm-5.3`), not the
-    `opencode-go/glm-5.3` form that configuration writes.
+  - The model id on the wire is the bare id (`glm-5.3`), never the `ocg_glm-5.3`
+    form the catalog and configuration store (A11).
   - A client that names itself in `User-Agent`; the vendor asks for this rather
     than a library default.
 - Port gopi's model catalog of context windows. They are not decoration: M3's
@@ -475,15 +479,17 @@ surviving a rate limit, and cancelling mid-stream without corrupting the
 transcript.
 
 **Where M1 stands.** F1.1 through F1.3 are built and tested against a fake
-provider that speaks the real wire format: streaming, tool-call assembly with the
-provider's ids, the retry policy, timeouts, cancellation, and an `Agent` turn
-end-to-end. `cargo run -p robi --example simple` drives the same stack by hand
-against a real endpoint, with one tool that needs no approval and one that does.
-Two things remain before M1 is done:
+provider that speaks the real wire format — both OpenAI chat-completions and
+Anthropic Messages: streaming, tool-call assembly with the provider's ids, the
+Anthropic thinking-block round trip, the retry policy, timeouts, cancellation, and
+an `Agent` turn end-to-end. `cargo run -p robi --example simple` drives the same
+stack by hand against a real endpoint, with one tool that needs no approval and
+one that does, and picks the provider from `ROBI_MODEL`'s prefix. Two things
+remain before M1 is done:
 
 - **No live turn has been run.** Every test uses a scripted loopback server, so
-  the vendor's exact framing is still an assumption. The example is how to check
-  it; run it once with a real key.
+  each vendor's exact framing is still an assumption. The example is how to check
+  it; run it once per provider with a real key.
 - **F1.4 is in the chat shell.** Settings hold the default model and effort.
   A session stores an override, and the next actor reads it. See
   [persistence.md](design/persistence/persistence.md) and [chat-ui.md](design/shell/chat-ui.md).

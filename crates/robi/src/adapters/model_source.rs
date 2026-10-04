@@ -11,7 +11,8 @@ use robi_core::model::Model;
 use robi_core::tool::ToolRegistry;
 
 use crate::agent::providers::{
-    build_model, ApiKey, ImageSource, ModelId, ProviderSettings, ReasoningEffort,
+    build_model, ApiKey, ImageSource, ModelCatalog, ModelId, ProviderKind, ProviderSettings,
+    ReasoningEffort,
 };
 use crate::domain::{
     chat_session::model::{AgentMode, ModeOverride},
@@ -100,14 +101,6 @@ impl SettingsModelSource {
         mode: AgentMode,
         choice: &ModeOverride,
     ) -> Result<ProviderSettings, ServiceError> {
-        let api_key = match self.settings.get(keys::OPENCODE_GO_API_KEY).await? {
-            Some(setting) if !setting.value.trim().is_empty() => setting.value,
-            _ => {
-                return Err(ServiceError::BadRequest(
-                    "opencode_go_api_key is not set".into(),
-                ));
-            }
-        };
         let model = match choice.model.as_deref().filter(|model| !model.is_empty()) {
             Some(model) => model.to_owned(),
             None => match self.stored(keys::model_key(mode)).await? {
@@ -118,8 +111,35 @@ impl SettingsModelSource {
                 },
             },
         };
-        let mut settings =
-            ProviderSettings::opencode_go(ApiKey::new(api_key), ModelId::new(model.as_str()));
+
+        // A11: the prefix names the provider. An id with neither known prefix is a
+        // legacy OpenCode Go id, read-compatible forever; new writes are prefixed.
+        let kind = ProviderKind::of(&model);
+        let (key_name, key_value) = match kind {
+            ProviderKind::OpenCodeGo => (keys::OPENCODE_GO_API_KEY, keys::OPENCODE_GO_API_KEY),
+            ProviderKind::Anthropic => (keys::ANTHROPIC_API_KEY, keys::ANTHROPIC_API_KEY),
+        };
+        let api_key = match self.settings.get(key_value).await? {
+            Some(setting) if !setting.value.trim().is_empty() => setting.value,
+            _ => {
+                return Err(ServiceError::BadRequest(format!("{key_name} is not set")));
+            }
+        };
+
+        let mut settings = match kind {
+            ProviderKind::OpenCodeGo => {
+                ProviderSettings::opencode_go(ApiKey::new(api_key), ModelId::new(model.as_str()))
+            }
+            ProviderKind::Anthropic => {
+                let mut settings =
+                    ProviderSettings::anthropic(ApiKey::new(api_key), ModelId::new(model.as_str()));
+                // A5: the Messages API requires max_tokens. Take it from the catalog.
+                if let Some(info) = ModelCatalog::anthropic().get(&settings.model) {
+                    settings.max_tokens = Some(info.max_output);
+                }
+                settings
+            }
+        };
         if let Some(base_url) = self.settings.get(keys::BASE_URL).await? {
             if !base_url.value.is_empty() {
                 settings.base_url = base_url.value;
@@ -424,5 +444,102 @@ mod tests {
             .unwrap();
         assert_eq!(overridden.model.as_str(), "glm-5.1");
         assert_eq!(overridden.reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[tokio::test]
+    async fn an_ant_prefix_resolves_anthropic_and_requires_the_anthropic_key() {
+        // A11: the prefix names the provider and the key follows it.
+        let store = Arc::new(MemorySettingsStore::new());
+        store
+            .set(keys::MODEL, "ant_claude-sonnet-4-6".into(), false)
+            .await
+            .unwrap();
+        let source = SettingsModelSource::new(store.clone(), no_images());
+
+        // No Anthropic key yet: refuse, naming the Anthropic key.
+        let error = source
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("anthropic_api_key is not set".into())
+        );
+
+        store
+            .set(keys::ANTHROPIC_API_KEY, "sk-ant".into(), true)
+            .await
+            .unwrap();
+        let settings = source
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
+            .await
+            .unwrap();
+        assert_eq!(settings.id.as_str(), "anthropic");
+        assert_eq!(settings.api_key.expose(), "sk-ant");
+        // A5: max_tokens comes from the catalog for the Anthropic provider.
+        assert_eq!(settings.max_tokens, Some(64_000));
+    }
+
+    #[tokio::test]
+    async fn a_legacy_bare_id_still_resolves_opencode_go() {
+        // A11: a settings row written before the prefix existed holds a bare id.
+        // It reads as OpenCode Go and keeps working.
+        let store = Arc::new(MemorySettingsStore::new());
+        store
+            .set(keys::OPENCODE_GO_API_KEY, "sk-one".into(), true)
+            .await
+            .unwrap();
+        store
+            .set(keys::MODEL, "glm-5.3".into(), false)
+            .await
+            .unwrap();
+        let source = SettingsModelSource::new(store, no_images());
+
+        let settings = source
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
+            .await
+            .unwrap();
+        assert_eq!(settings.id.as_str(), "opencode-go");
+        // build_model migrates the bare id to the prefixed form.
+        source
+            .model(
+                Arc::new(ToolRegistry::new()),
+                None,
+                AgentMode::Agent,
+                ModeOverride::default(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_model_id_fails_to_build() {
+        let store = Arc::new(MemorySettingsStore::new());
+        store
+            .set(keys::OPENCODE_GO_API_KEY, "sk-one".into(), true)
+            .await
+            .unwrap();
+        let source = SettingsModelSource::new(store, no_images());
+        let error = match source
+            .model(
+                Arc::new(ToolRegistry::new()),
+                None,
+                AgentMode::Agent,
+                ModeOverride {
+                    model: Some("ocg_not-a-model".into()),
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+        {
+            Ok(_) => panic!("an unknown model must not build a model"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("not-a-model"),
+            "the error names the model: {error}"
+        );
     }
 }

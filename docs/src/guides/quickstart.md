@@ -8,8 +8,11 @@ process you run for a browser-only UI, and for headless use.
 
 - Rust (a recent stable toolchain) and Cargo.
 - Node.js and [pnpm](https://pnpm.io/).
-- A provider credential. Robi speaks the OpenAI-compatible chat-completions wire
-  format; the default endpoint is OpenCode Go, so set `opencode_go_api_key`.
+- A provider credential. Robi speaks Anthropic's Messages API and the
+  OpenAI-compatible chat-completions format; the default endpoint is OpenCode Go,
+  so set `opencode_go_api_key`. To use a Claude model, set `anthropic_api_key`
+  and pick an `ant_`-prefixed model. See
+  [providers-streaming.md](../design/providers/providers-streaming.md#a11--model-ids-carry-a-provider-prefix-the-prefix-resolves-the-provider).
 
 ## 1. Open the app
 
@@ -45,6 +48,8 @@ Put the provider key in `~/.robi/secrets.toml`:
 
 ```toml
 opencode_go_api_key = "sk-..."
+# and/or, for an ant_-prefixed model:
+anthropic_api_key = "sk-ant-..."
 ```
 
 The file must be mode `0600`. The app reads it at startup; see

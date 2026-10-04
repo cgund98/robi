@@ -49,7 +49,8 @@ The process stores an `AgentFactory`: the message store, the event sink, a
 the agent receives the model and effort that are current then. Each field
 resolves on its own: the active mode's session override, then that mode's
 setting, then the fallback setting (`model`, `reasoning_effort`), then the
-built-in default (`glm-5.3`, and no effort). The agent is moved into
+built-in default (`ocg_glm-5.3`, and no effort). The model id's `ocg_`/`ant_`
+prefix selects the provider. The agent is moved into
 the actor task and dropped when the actor goes idle. The next instruction for
 that session builds another actor and another agent from the same factory. One
 agent serves every instruction that actor drains before it goes idle.
@@ -253,7 +254,7 @@ rename return the same field from the same snapshot.
 | `tools` | `Arc<ToolRegistry>`. Used when `sessions` is absent. A session actor builds its own registry for the stored mode |
 | `config` | `LoopConfig`, copied into each agent |
 | `sessions` | `Option<Arc<ChatSessionService>>`. The title task reads and writes the row. Absent in tests that do not name sessions |
-| `bus` | `Option<Arc<EventBus>>`. Publishes `robi.session.v1.updated` after a title is stored |
+| `bus` | `Option<Arc<EventBus>>`. Publishes core agent events; the session service publishes `robi.session.v1.updated` with the new `title` after a rename is stored |
 
 `submit` builds the session tool registry for the stored mode and reads that
 mode's override, then asks `models` for a model with that registry, mode, and

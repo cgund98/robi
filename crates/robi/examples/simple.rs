@@ -21,6 +21,13 @@
 //! cargo run -p robi --example simple
 //! cargo run -p robi --example simple -- "Add 40 and 2"
 //! ```
+//!
+//! For Anthropic, set `ANTHROPIC_API_KEY` and pick a prefixed Claude model:
+//!
+//! ```sh
+//! export ANTHROPIC_API_KEY=...
+//! ROBI_MODEL=ant_claude-sonnet-4-6 cargo run -p robi --example simple
+//! ```
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -28,7 +35,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use robi::agent::providers::{
-    build_model, ApiKey, ImageSource, ModelId, ProviderSettings, ReasoningEffort,
+    build_model, ApiKey, ImageSource, ModelCatalog, ModelId, ProviderKind, ProviderSettings,
+    ReasoningEffort,
 };
 use robi_core::agent::Agent;
 use robi_core::config::LoopConfig;
@@ -224,17 +232,37 @@ fn print_transcript(messages: &[Message]) {
 /// this function is the layer that does, and it is deliberately the entrypoint's
 /// job rather than the model's.
 fn settings_from_env() -> Result<ProviderSettings, Box<dyn Error>> {
-    let key = std::env::var("OPENCODE_GO_API_KEY").map_err(|_| {
-        "set OPENCODE_GO_API_KEY to an OpenCode Go key (and optionally ROBI_MODEL, \
-         ROBI_BASE_URL, ROBI_EFFORT)"
+    let model = std::env::var("ROBI_MODEL").unwrap_or_else(|_| "ocg_glm-5.3".to_owned());
+
+    // A11: the prefix names the provider. A legacy bare id reads as OpenCode Go.
+    let kind = ProviderKind::of(&model);
+    let (key_var, key_label) = match kind {
+        ProviderKind::OpenCodeGo => ("OPENCODE_GO_API_KEY", "an OpenCode Go"),
+        ProviderKind::Anthropic => ("ANTHROPIC_API_KEY", "an Anthropic"),
+    };
+    let key = std::env::var(key_var).map_err(|_| {
+        format!(
+            "set {key_var} to {key_label} key (and optionally ROBI_MODEL, ROBI_BASE_URL, \
+             ROBI_EFFORT)"
+        )
     })?;
     if key.trim().is_empty() {
-        return Err("OPENCODE_GO_API_KEY is empty".into());
+        return Err(format!("{key_var} is empty").into());
     }
 
-    let model = std::env::var("ROBI_MODEL").unwrap_or_else(|_| "glm-5.3".to_owned());
-    let mut settings =
-        ProviderSettings::opencode_go(ApiKey::new(key), ModelId::new(model.as_str()));
+    let mut settings = match kind {
+        ProviderKind::OpenCodeGo => {
+            ProviderSettings::opencode_go(ApiKey::new(key), ModelId::new(model.as_str()))
+        }
+        ProviderKind::Anthropic => {
+            let mut settings =
+                ProviderSettings::anthropic(ApiKey::new(key), ModelId::new(model.as_str()));
+            if let Some(info) = ModelCatalog::anthropic().get(&settings.model) {
+                settings.max_tokens = Some(info.max_output);
+            }
+            settings
+        }
+    };
     settings.system_prompt = SYSTEM_PROMPT.to_owned();
 
     if let Ok(base_url) = std::env::var("ROBI_BASE_URL") {
@@ -255,7 +283,7 @@ fn settings_from_env() -> Result<ProviderSettings, Box<dyn Error>> {
     }
 
     println!("model: {}", settings.model);
-    println!("endpoint: {}", settings.chat_completions_url());
+    println!("endpoint: {}", settings.messages_or_chat_url());
     Ok(settings)
 }
 

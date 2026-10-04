@@ -403,7 +403,7 @@ pub async fn evacuate_sqlite(pool: &sqlx::SqlitePool, blobs: &SessionBlobs) -> R
         )
         .fetch_all(pool)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| sql_timeout("evacuate tool_originals", err))?;
         for (id, session, tool_call_id, sha256, body, created_at) in rows {
             let session = parse_session(&session)?;
             let blobs = blobs.clone();
@@ -424,7 +424,7 @@ pub async fn evacuate_sqlite(pool: &sqlx::SqlitePool, blobs: &SessionBlobs) -> R
         )
         .fetch_all(pool)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| sql_timeout("evacuate chat_images", err))?;
         for (id, session, media_type, bytes) in rows {
             let session = parse_session(&session)?;
             let blobs = blobs.clone();
@@ -442,7 +442,7 @@ pub async fn evacuate_sqlite(pool: &sqlx::SqlitePool, blobs: &SessionBlobs) -> R
     )
     .fetch_all(pool)
     .await
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| sql_timeout("evacuate chat_messages", err))?;
     for (id, session_id, body) in messages {
         let mut message: Message = match serde_json::from_str(&body) {
             Ok(message) => message,
@@ -471,20 +471,20 @@ pub async fn evacuate_sqlite(pool: &sqlx::SqlitePool, blobs: &SessionBlobs) -> R
         .bind(session_id)
         .execute(pool)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| sql_timeout("evacuate update chat_messages", err))?;
     }
 
     if originals {
         sqlx::query("DROP TABLE tool_originals")
             .execute(pool)
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| sql_timeout("evacuate drop tool_originals", err))?;
     }
     if images {
         sqlx::query("DROP TABLE chat_images")
             .execute(pool)
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| sql_timeout("evacuate drop chat_images", err))?;
     }
     Ok(())
 }
@@ -495,8 +495,13 @@ async fn table_exists(pool: &sqlx::SqlitePool, name: &str) -> Result<bool, Strin
             .bind(name)
             .fetch_optional(pool)
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| sql_timeout("table_exists", err))?;
     Ok(found.is_some())
+}
+
+fn sql_timeout(context: &'static str, err: sqlx::Error) -> String {
+    crate::adapters::sqlite::log_connection_timeout(context, &err);
+    err.to_string()
 }
 
 fn parse_session(id: &str) -> Result<SessionId, String> {

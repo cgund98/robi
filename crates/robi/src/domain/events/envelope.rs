@@ -160,6 +160,12 @@ impl EventEnvelope {
         session_ref(SESSION_UPDATED, session)
     }
 
+    /// A chat session was titled or renamed. `title` is the new value, so the
+    /// shell updates the list without a refetch.
+    pub fn session_title_changed(session: SessionId, title: String) -> Self {
+        session_ref_with_title(SESSION_UPDATED, session, Some(title))
+    }
+
     /// A chat session row was removed.
     pub fn session_deleted(session: SessionId) -> Self {
         session_ref(SESSION_DELETED, session)
@@ -184,13 +190,20 @@ impl EventEnvelope {
 }
 
 fn session_ref(event_type: &str, session: SessionId) -> EventEnvelope {
-    EventEnvelope::from_payload(
-        SESSION_SOURCE,
-        event_type,
-        session.to_string(),
-        json!({ "session_id": session.to_string() }),
-    )
-    .expect("session payload")
+    session_ref_with_title(event_type, session, Option::<String>::None)
+}
+
+fn session_ref_with_title(
+    event_type: &str,
+    session: SessionId,
+    title: impl Into<Option<String>>,
+) -> EventEnvelope {
+    let mut data = json!({ "session_id": session.to_string() });
+    if let Some(title) = Into::<Option<String>>::into(title) {
+        data["title"] = json!(title);
+    }
+    EventEnvelope::from_payload(SESSION_SOURCE, event_type, session.to_string(), data)
+        .expect("session payload")
 }
 
 fn message_ref(session: SessionId, message: MessageId) -> Value {

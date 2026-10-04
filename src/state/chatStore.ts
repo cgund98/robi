@@ -78,6 +78,8 @@ type ChatState = {
   /** Reload the transcript while a turn looks busy, so a missed frame cannot hide it. */
   catchUpTranscript: (sessionId: string) => Promise<void>
   refreshSession: (sessionId: string) => Promise<void>
+  /** Apply a title delivered on an SSE frame without a refetch. */
+  renameSessionLocal: (sessionId: string, title: string) => void
   hydrateFromStream: () => Promise<void>
   /** Bumped when a tool call or turn finishes, so the review strip refetches. */
   reviewTickBySession: Record<string, number>
@@ -86,21 +88,51 @@ type ChatState = {
 
 let hydrateEpoch = 0
 let stopTick = 0
-const listTokenBySession = new Map<string, number>()
+let localRevision = 0
+
+/** Per-message stamp. A list fetch keeps a row stamped after the fetch started. */
+const messageRevision = new Map<string, number>()
+/** Session rows inserted locally after a list fetch started stay in the list. */
+const sessionInsertedAt = new Map<string, number>()
+/** Title applied locally. A fetch that started earlier keeps this title. */
+const titleRevision = new Map<string, number>()
+/** `has_pending_agent` written by a turn frame. A fetch that started earlier keeps it. */
+const pendingRevision = new Map<string, number>()
+
+const transcriptFlight = new Map<string, Promise<TranscriptRead | null>>()
 
 function bumpHydrate(): number {
   hydrateEpoch += 1
   return hydrateEpoch
 }
 
-function beginList(sessionId: string): number {
-  const next = (listTokenBySession.get(sessionId) ?? 0) + 1
-  listTokenBySession.set(sessionId, next)
-  return next
+function bumpRevision(): number {
+  localRevision += 1
+  return localRevision
 }
 
-function listIsCurrent(sessionId: string, token: number): boolean {
-  return listTokenBySession.get(sessionId) === token
+function revisionNow(): number {
+  return localRevision
+}
+
+function messageStampKey(sessionId: string, messageId: string): string {
+  return `${sessionId}:${messageId}`
+}
+
+function stampMessage(sessionId: string, messageId: string): void {
+  messageRevision.set(messageStampKey(sessionId, messageId), bumpRevision())
+}
+
+function stampSessionInserted(sessionId: string): void {
+  sessionInsertedAt.set(sessionId, bumpRevision())
+}
+
+function stampTitle(sessionId: string): void {
+  titleRevision.set(sessionId, bumpRevision())
+}
+
+function stampPending(sessionId: string): void {
+  pendingRevision.set(sessionId, bumpRevision())
 }
 
 function errorText(err: unknown, fallback: string): string {
@@ -113,19 +145,54 @@ function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string
   return next
 }
 
-function replaceSession(sessions: ChatSession[], session: ChatSession): ChatSession[] {
+function replaceSession(
+  sessions: ChatSession[],
+  session: ChatSession,
+  seenAt: number
+): ChatSession[] {
   const index = sessions.findIndex((item) => item.id === session.id)
   if (index < 0) {
     return [session, ...sessions]
   }
   const current = sessions[index]
-  if (current.updated_at > session.updated_at) {
+  let next = session
+  if ((titleRevision.get(session.id) ?? 0) > seenAt) {
+    next = { ...next, title: current.title }
+  }
+  if ((pendingRevision.get(session.id) ?? 0) > seenAt) {
+    next = { ...next, has_pending_agent: current.has_pending_agent }
+  }
+  if (current.updated_at > next.updated_at) {
     return sessions
   }
-  if (sameSessionRow(current, session)) {
+  if (sameSessionRow(current, next)) {
     return sessions
   }
-  return sessions.map((item) => (item.id === session.id ? session : item))
+  return sessions.map((item) => (item.id === session.id ? next : item))
+}
+
+/** Server order, plus a local insert the response could not have contained. */
+function mergeSessionList(
+  local: ChatSession[],
+  fetched: ChatSession[],
+  seenAt: number
+): ChatSession[] {
+  let sessions = local
+  for (const session of fetched) {
+    sessions = replaceSession(sessions, session, seenAt)
+  }
+  const fetchedIds = new Set(fetched.map((session) => session.id))
+  const extras = sessions.filter(
+    (session) => !fetchedIds.has(session.id) && (sessionInsertedAt.get(session.id) ?? 0) > seenAt
+  )
+  const ordered = [...extras]
+  for (const session of fetched) {
+    const row = sessions.find((item) => item.id === session.id)
+    if (row) {
+      ordered.push(row)
+    }
+  }
+  return ordered
 }
 
 /** Fields the sidebar and composer read. Timestamps alone do not refresh a row. */
@@ -187,11 +254,12 @@ async function setChoice(
   }
   const mode = activeMode(state)
   try {
+    const seenAt = revisionNow()
     const updated = await patchSession(activeSessionId, {
       model_config: { [mode]: { [key]: value } }
     })
     set((state) => ({
-      sessions: replaceSession(state.sessions, updated),
+      sessions: replaceSession(state.sessions, updated, seenAt),
       error: null
     }))
   } catch (err) {
@@ -231,58 +299,105 @@ function sessionsListKey(workspaceId: string): string {
   return `sessions:${workspaceId}`
 }
 
-async function readTranscript(
-  sessionId: string,
-  epoch: number
-): Promise<{ messages: ChatMessage[] | null; session: ChatSession | null } | null> {
-  const token = beginList(sessionId)
+type TranscriptRead = {
+  messages: ChatMessage[] | null
+  session: ChatSession | null
+  seenAt: number
+}
+
+type ApplyPhase = 'session' | 'preserve'
+
+async function fetchTranscript(sessionId: string): Promise<TranscriptRead | null> {
+  const seenAt = revisionNow()
   const sessionGeneration = startFetch(sessionKey(sessionId))
   const [messagesResult, sessionResult] = await Promise.allSettled([
     listMessages(sessionId),
     getSession(sessionId)
   ])
-  if (epoch !== hydrateEpoch) {
-    return null
-  }
-  const listCurrent = listIsCurrent(sessionId, token)
   const sessionCurrent = fetchStillCurrent(sessionKey(sessionId), sessionGeneration)
-  const failure = [messagesResult, sessionResult].find(
-    (result, index) => result.status === 'rejected' && (index === 0 ? listCurrent : sessionCurrent)
-  )
-  if (failure?.status === 'rejected') {
-    throw failure.reason
+  if (messagesResult.status === 'rejected') {
+    throw messagesResult.reason
   }
-  const currentMessages =
-    listCurrent && messagesResult.status === 'fulfilled' ? messagesResult.value : null
+  if (sessionResult.status === 'rejected' && sessionCurrent) {
+    throw sessionResult.reason
+  }
+  const currentMessages = messagesResult.status === 'fulfilled' ? messagesResult.value : null
   const currentSession =
     sessionCurrent && sessionResult.status === 'fulfilled' ? sessionResult.value : null
   if (!currentMessages && !currentSession) {
     return null
   }
-  return { messages: currentMessages, session: currentSession }
+  return { messages: currentMessages, session: currentSession, seenAt }
+}
+
+/** One list-and-session read per session while a read is already in flight. */
+function readTranscript(sessionId: string): Promise<TranscriptRead | null> {
+  const existing = transcriptFlight.get(sessionId)
+  if (existing) {
+    return existing
+  }
+  const flight = fetchTranscript(sessionId).finally(() => {
+    if (transcriptFlight.get(sessionId) === flight) {
+      transcriptFlight.delete(sessionId)
+    }
+  })
+  transcriptFlight.set(sessionId, flight)
+  return flight
+}
+
+function mergeMessages(
+  sessionId: string,
+  fetched: ChatMessage[],
+  current: ChatMessage[],
+  seenAt: number
+): ChatMessage[] {
+  const fetchedIds = new Set(fetched.map((message) => message.id))
+  const merged = fetched.map((message) => {
+    const revision = messageRevision.get(messageStampKey(sessionId, message.id)) ?? 0
+    if (revision > seenAt) {
+      const local = current.find((item) => item.id === message.id)
+      if (local) {
+        return local
+      }
+    }
+    return message
+  })
+  for (const message of current) {
+    if (fetchedIds.has(message.id)) {
+      continue
+    }
+    if ((messageRevision.get(messageStampKey(sessionId, message.id)) ?? 0) > seenAt) {
+      merged.push(message)
+    }
+  }
+  return merged
 }
 
 function applyTranscript(
   sessionId: string,
   messages: ChatMessage[] | null,
-  session: ChatSession | null
+  session: ChatSession | null,
+  seenAt: number,
+  phaseMode: ApplyPhase = 'session'
 ): void {
   useChatStore.setState((state) => {
     const previous = state.messagesBySession[sessionId] ?? []
+    const nextMessages = messages ? mergeMessages(sessionId, messages, previous, seenAt) : null
     return {
-      sessions: session ? replaceSession(state.sessions, session) : state.sessions,
-      messagesBySession: messages
-        ? { ...state.messagesBySession, [sessionId]: messages }
+      sessions: session ? replaceSession(state.sessions, session, seenAt) : state.sessions,
+      messagesBySession: nextMessages
+        ? { ...state.messagesBySession, [sessionId]: nextMessages }
         : state.messagesBySession,
-      pendingEcho: messages
-        ? withoutEcho(state.pendingEcho, sessionId, previous, messages)
+      pendingEcho: nextMessages
+        ? withoutEcho(state.pendingEcho, sessionId, previous, nextMessages)
         : state.pendingEcho,
-      phaseBySession: session
-        ? {
-            ...state.phaseBySession,
-            [sessionId]: nextPhase(state.phaseBySession[sessionId], session.has_pending_agent)
-          }
-        : state.phaseBySession
+      phaseBySession:
+        phaseMode === 'session' && session
+          ? {
+              ...state.phaseBySession,
+              [sessionId]: nextPhase(state.phaseBySession[sessionId], session.has_pending_agent)
+            }
+          : state.phaseBySession
     }
   })
 }
@@ -346,10 +461,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const keep = currentId !== null && next.some((session) => session.id === currentId)
       set({ sessions: next, loading: false, busy: false })
       if (keep && currentId) {
-        const transcript = await readTranscript(currentId, epoch)
-        if (transcript) {
-          applyTranscript(currentId, transcript.messages, transcript.session)
+        const transcript = await readTranscript(currentId)
+        if (epoch !== hydrateEpoch || !transcript) {
+          return
         }
+        applyTranscript(currentId, transcript.messages, transcript.session, transcript.seenAt)
         return
       }
       const fallback = next[0]
@@ -358,10 +474,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return
       }
       set({ activeSessionId: fallback.id, draftSelected: false })
-      const transcript = await readTranscript(fallback.id, epoch)
-      if (transcript) {
-        applyTranscript(fallback.id, transcript.messages, transcript.session)
+      const transcript = await readTranscript(fallback.id)
+      if (epoch !== hydrateEpoch || !transcript) {
+        return
       }
+      applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
     } catch (err) {
       if (epoch !== hydrateEpoch) {
         return
@@ -392,12 +509,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       transcriptLoading: firstOpen
     })
     try {
-      const transcript = await readTranscript(id, epoch)
+      const transcript = await readTranscript(id)
       if (epoch !== hydrateEpoch) {
         return
       }
       if (transcript) {
-        applyTranscript(id, transcript.messages, transcript.session)
+        applyTranscript(id, transcript.messages, transcript.session, transcript.seenAt)
       }
       set({ transcriptLoading: false })
     } catch (err) {
@@ -433,10 +550,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ draftMode: mode })
       return
     }
+    const seenAt = revisionNow()
     try {
       const updated = await patchSession(activeSessionId, { mode })
       set((state) => ({
-        sessions: replaceSession(state.sessions, updated),
+        sessions: replaceSession(state.sessions, updated, seenAt),
         error: null
       }))
     } catch (err) {
@@ -478,6 +596,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         const created = await createSession(workspaceId, undefined, draftConfig(get()))
         claimComposerDraft(created.id, instruction)
+        stampSessionInserted(created.id)
         const epoch = bumpHydrate()
         set((state) => ({
           sessions: [created, ...state.sessions.filter((session) => session.id !== created.id)],
@@ -550,12 +669,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
         phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
       }))
-      const transcript = await readTranscript(sessionId, epoch)
+      const transcript = await readTranscript(sessionId)
       if (tick !== stopTick || epoch !== hydrateEpoch) {
         return
       }
       if (transcript) {
-        applyTranscript(sessionId, transcript.messages, transcript.session)
+        applyTranscript(
+          sessionId,
+          transcript.messages,
+          transcript.session,
+          transcript.seenAt,
+          'preserve'
+        )
         get().bumpReview(sessionId)
       }
       set((state) => ({
@@ -591,6 +716,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ busy: true, error: null })
     try {
       const updated = await updateSession(id, title)
+      stampTitle(id)
       set((state) => ({
         busy: false,
         sessions: state.sessions.map((session) => (session.id === id ? updated : session))
@@ -635,9 +761,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     set({ activeSessionId: fallback.id, draftSelected: false })
     try {
-      const transcript = await readTranscript(fallback.id, epoch)
+      const transcript = await readTranscript(fallback.id)
+      if (epoch !== hydrateEpoch) {
+        return
+      }
       if (transcript) {
-        applyTranscript(fallback.id, transcript.messages, transcript.session)
+        applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
       }
     } catch (err) {
       if (epoch !== hydrateEpoch) {
@@ -648,7 +777,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   upsertMessage: (sessionId, message) => {
-    beginList(sessionId)
+    stampMessage(sessionId, message.id)
     set((state) => {
       const current = state.messagesBySession[sessionId] ?? []
       const index = current.findIndex((item) => item.id === message.id)
@@ -672,6 +801,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const flagSame = session === undefined || session.has_pending_agent === running
       if (phaseSame && flagSame) {
         return state
+      }
+      if (session && !flagSame) {
+        stampPending(sessionId)
       }
       return {
         phaseBySession: phaseSame
@@ -729,41 +861,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ error: failedMessage })
     }
     try {
-      const transcript = await readTranscript(sessionId, epoch)
+      const transcript = await readTranscript(sessionId)
       if (tick !== stopTick || epoch !== hydrateEpoch || !transcript) {
         return
       }
-      applyTranscript(sessionId, transcript.messages, transcript.session)
-      // The review fetch on the event can lose to a request that started
-      // before the writes landed. Check again once this turn is stored.
+      // The actor clears `running` after it emits `turn_finished`, so this
+      // session can still report `has_pending_agent`. Leave the phase idle.
+      // A `turn_started` during the refetch sets Thinking and is kept.
+      applyTranscript(
+        sessionId,
+        transcript.messages,
+        transcript.session,
+        transcript.seenAt,
+        'preserve'
+      )
       get().bumpReview(sessionId)
       if (failedMessage) {
         set({ error: failedMessage })
-      }
-      // turn_finished is emitted before the actor clears `running`, so this
-      // refetch can still see has_pending_agent and put the phase back on
-      // Thinking after the turn is stored. Read the session once more.
-      if (
-        transcript.session?.has_pending_agent &&
-        get().stoppingSessionId !== sessionId &&
-        get().phaseBySession[sessionId] !== 'idle'
-      ) {
-        const againGeneration = startFetch(sessionKey(sessionId))
-        const again = await getSession(sessionId)
-        if (
-          tick !== stopTick ||
-          epoch !== hydrateEpoch ||
-          get().stoppingSessionId === sessionId ||
-          !fetchStillCurrent(sessionKey(sessionId), againGeneration)
-        ) {
-          return
-        }
-        if (!again.has_pending_agent) {
-          set((state) => ({
-            sessions: replaceSession(state.sessions, again),
-            phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
-          }))
-        }
       }
     } catch (err) {
       if (epoch !== hydrateEpoch) {
@@ -783,7 +897,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     try {
-      const transcript = await readTranscript(sessionId, epoch)
+      const transcript = await readTranscript(sessionId)
       if (!transcript || epoch !== hydrateEpoch || get().stoppingSessionId === sessionId) {
         return
       }
@@ -791,7 +905,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (current !== 'thinking' && current !== 'responding') {
         return
       }
-      applyTranscript(sessionId, transcript.messages, transcript.session)
+      applyTranscript(sessionId, transcript.messages, transcript.session, transcript.seenAt)
       get().bumpReview(sessionId)
     } catch (err) {
       if (epoch !== hydrateEpoch) {
@@ -805,6 +919,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   refreshSession: async (sessionId) => {
     const epoch = hydrateEpoch
+    const seenAt = revisionNow()
     const generation = startFetch(sessionKey(sessionId))
     try {
       const session = await getSession(sessionId)
@@ -812,7 +927,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return
       }
       set((state) => ({
-        sessions: replaceSession(state.sessions, session)
+        sessions: replaceSession(state.sessions, session, seenAt)
       }))
     } catch (err) {
       if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
@@ -825,6 +940,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  renameSessionLocal: (sessionId, title) => {
+    stampTitle(sessionId)
+    set((state) => ({
+      sessions: state.sessions.map((item) => (item.id === sessionId ? { ...item, title } : item))
+    }))
+  },
+
   hydrateFromStream: async () => {
     const epoch = hydrateEpoch
     const { draftSelected, activeSessionId } = get()
@@ -832,6 +954,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!workspaceId) {
       return
     }
+    const seenAt = revisionNow()
     const listGeneration = startFetch(sessionsListKey(workspaceId))
     try {
       const next = await listSessions(workspaceId)
@@ -841,29 +964,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ) {
         return
       }
-      set({ sessions: next })
+      set((state) => ({ sessions: mergeSessionList(state.sessions, next, seenAt) }))
       if (draftSelected || !activeSessionId) {
         return
       }
-      if (!next.some((session) => session.id === activeSessionId)) {
+      if (!get().sessions.some((session) => session.id === activeSessionId)) {
         const fallback = next[0]
         if (!fallback) {
           set({ draftSelected: true, activeSessionId: null })
           return
         }
         set({ activeSessionId: fallback.id, draftSelected: false })
-        const transcript = await readTranscript(fallback.id, epoch)
-        if (transcript) {
-          applyTranscript(fallback.id, transcript.messages, transcript.session)
-          get().bumpReview(fallback.id)
+        const transcript = await readTranscript(fallback.id)
+        if (epoch !== hydrateEpoch || !transcript) {
+          return
         }
+        applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
+        get().bumpReview(fallback.id)
         return
       }
-      const transcript = await readTranscript(activeSessionId, epoch)
-      if (transcript) {
-        applyTranscript(activeSessionId, transcript.messages, transcript.session)
-        get().bumpReview(activeSessionId)
+      const transcript = await readTranscript(activeSessionId)
+      if (epoch !== hydrateEpoch || !transcript) {
+        return
       }
+      applyTranscript(activeSessionId, transcript.messages, transcript.session, transcript.seenAt)
+      get().bumpReview(activeSessionId)
     } catch (err) {
       if (
         epoch !== hydrateEpoch ||

@@ -220,6 +220,21 @@ pub struct ImageAttachment {
     pub media_type: String,
 }
 
+/// The provider's reasoning trace for one assistant turn.
+///
+/// Most providers drop their reasoning and the loop never sees it again. Anthropic
+/// is the exception: a tool continuation must echo the `thinking` block back,
+/// unmodified, with its signature. The adapter sets this on the `Finished` message
+/// when the provider requires it, and the request builder echoes it for the turn
+/// whose tool results are still pending. Absent for every other message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningTrace {
+    pub text: String,
+    /// The integrity signature Anthropic returns with a thinking block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
 /// A skill the host loaded because the user wrote `@id`.
 ///
 /// The typed text stays in [`Message::content`]. The provider appends one
@@ -253,6 +268,12 @@ pub struct Message {
     pub tool_call_id: Option<ToolCallId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// The provider's reasoning trace, when a later turn must echo it.
+    ///
+    /// Set on an assistant message the Anthropic adapter assembled. Old rows
+    /// have no field and deserialize as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningTrace>,
 }
 
 impl Message {
@@ -266,6 +287,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
+            reasoning: None,
         }
     }
 
@@ -291,6 +313,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
+            reasoning: None,
         }
     }
 
@@ -314,11 +337,18 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id),
             usage: None,
+            reasoning: None,
         }
     }
 
     pub fn with_usage(mut self, usage: Usage) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// Attach the provider's reasoning trace, so a tool continuation echoes it.
+    pub fn with_reasoning(mut self, reasoning: ReasoningTrace) -> Self {
+        self.reasoning = Some(reasoning);
         self
     }
 

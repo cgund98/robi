@@ -16,6 +16,8 @@ type DeltaData = {
   message_id?: string
   tool_call_id?: string
   message?: string
+  /** New session title on a `robi.session.v1.updated` frame. */
+  title?: string
   delta?: { kind?: string }
   outcome?: { kind?: string; message?: string }
 }
@@ -25,6 +27,69 @@ function eventData(data: unknown): DeltaData | null {
     return null
   }
   return data as DeltaData
+}
+
+const messageFetchInflight = new Set<string>()
+const messageFetchDirty = new Set<string>()
+
+/** One message GET in flight, plus one trailing GET if a newer frame arrived. */
+function requestMessage(sessionId: string, messageId: string): void {
+  const key = `message:${sessionId}:${messageId}`
+  if (messageFetchInflight.has(key)) {
+    messageFetchDirty.add(key)
+    return
+  }
+  messageFetchInflight.add(key)
+  const generation = startFetch(key)
+  void getMessage(sessionId, messageId)
+    .then((message) => {
+      if (!fetchStillCurrent(key, generation)) {
+        return
+      }
+      useChatStore.getState().upsertMessage(sessionId, message)
+    })
+    .catch((err: unknown) => {
+      if (!fetchStillCurrent(key, generation)) {
+        return
+      }
+      if (err instanceof ApiError && err.status === 404) {
+        return
+      }
+      const message = err instanceof Error ? err.message : 'Failed to load message'
+      useErrorLog.getState().report(message, sessionId)
+      useChatStore.setState({ error: message })
+    })
+    .finally(() => {
+      messageFetchInflight.delete(key)
+      if (messageFetchDirty.delete(key)) {
+        requestMessage(sessionId, messageId)
+      }
+    })
+}
+
+const reviewArm = new Map<string, number>()
+
+/** Leading review refresh, then one more once a burst of tool frames goes quiet. */
+function bumpReviewSoon(sessionId: string): void {
+  const armed = reviewArm.get(sessionId)
+  if (armed === undefined) {
+    useChatStore.getState().bumpReview(sessionId)
+    reviewArm.set(
+      sessionId,
+      window.setTimeout(() => {
+        reviewArm.delete(sessionId)
+      }, 300)
+    )
+    return
+  }
+  window.clearTimeout(armed)
+  reviewArm.set(
+    sessionId,
+    window.setTimeout(() => {
+      reviewArm.delete(sessionId)
+      useChatStore.getState().bumpReview(sessionId)
+    }, 300)
+  )
 }
 
 /**
@@ -54,7 +119,6 @@ export function useAgentEventsSSE(): void {
       }
       return
     }
-    heardAt.current = Date.now()
     const data = eventData(envelope.data)
     const sessionId = envelope.subject || data?.session_id
     if (!sessionId) {
@@ -64,6 +128,9 @@ export function useAgentEventsSSE(): void {
     const viewing = () => {
       const state = useChatStore.getState()
       return !state.draftSelected && state.activeSessionId === sessionId
+    }
+    if (viewing()) {
+      heardAt.current = Date.now()
     }
 
     switch (envelope.type) {
@@ -85,32 +152,13 @@ export function useAgentEventsSSE(): void {
           return
         }
         if (envelope.type === 'robi.agent.v1.tool_call_updated') {
-          useChatStore.getState().bumpReview(sessionId)
+          bumpReviewSoon(sessionId)
         }
         const messageId = data?.message_id
         if (!messageId) {
           return
         }
-        const key = `message:${sessionId}:${messageId}`
-        const generation = startFetch(key)
-        void getMessage(sessionId, messageId)
-          .then((message) => {
-            if (!fetchStillCurrent(key, generation)) {
-              return
-            }
-            useChatStore.getState().upsertMessage(sessionId, message)
-          })
-          .catch((err: unknown) => {
-            if (!fetchStillCurrent(key, generation)) {
-              return
-            }
-            if (err instanceof ApiError && err.status === 404) {
-              return
-            }
-            const message = err instanceof Error ? err.message : 'Failed to load message'
-            useErrorLog.getState().report(message, sessionId)
-            useChatStore.setState({ error: message })
-          })
+        requestMessage(sessionId, messageId)
         return
       }
       case 'robi.agent.v1.message_delta': {
@@ -141,7 +189,14 @@ export function useAgentEventsSSE(): void {
       case 'robi.session.v1.created':
       case 'robi.session.v1.updated': {
         const id = typeof data?.session_id === 'string' ? data.session_id : sessionId
-        void useChatStore.getState().refreshSession(id)
+        // An auto-generated or manual title arrives in the frame; apply it
+        // without a refetch, which can race with an in-flight session read.
+        const title = typeof data?.title === 'string' && data.title.length > 0 ? data.title : null
+        if (title) {
+          useChatStore.getState().renameSessionLocal(id, title)
+        } else {
+          void useChatStore.getState().refreshSession(id)
+        }
         return
       }
       case 'robi.session.v1.deleted': {

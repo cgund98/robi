@@ -290,7 +290,7 @@ pub fn build_request(
         .collect();
 
     Ok(ChatRequest {
-        model: settings.model.as_str().to_owned(),
+        model: settings.model.wire_id().to_owned(),
         messages,
         stream: true,
         stream_options: StreamOptions {
@@ -310,7 +310,7 @@ mod tests {
     use robi_core::message::ImageAttachment;
 
     fn settings() -> ProviderSettings {
-        ProviderSettings::opencode_go(ApiKey::new("k"), ModelId::new("glm-5.3"))
+        ProviderSettings::opencode_go(ApiKey::new("k"), ModelId::new("ocg_glm-5.3"))
             .with_system_prompt("You are Robi.")
     }
 

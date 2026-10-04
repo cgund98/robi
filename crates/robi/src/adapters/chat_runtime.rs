@@ -281,10 +281,9 @@ impl SerializedChatRuntime {
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
-        let bus = self.factory.bus.clone();
         tracing::info!(%session, "session actor started");
         tokio::spawn(async move {
-            run_actor(agent, model, store, sessions, bus, slots, session).await;
+            run_actor(agent, model, store, sessions, slots, session).await;
         });
     }
 
@@ -545,7 +544,6 @@ async fn run_actor(
     model: Arc<dyn Model>,
     store: Arc<dyn MessageStore>,
     sessions: Option<Arc<ChatSessionService>>,
-    bus: Option<Arc<EventBus>>,
     slots: Arc<Slots>,
     session: SessionId,
 ) {
@@ -614,9 +612,8 @@ async fn run_actor(
         if let Some(sessions) = title_sessions {
             let model = Arc::clone(&model);
             let store = Arc::clone(&store);
-            let bus = bus.clone();
             tokio::spawn(async move {
-                title_completed_turn(session, model, store, sessions, bus).await;
+                title_completed_turn(session, model, store, sessions).await;
             });
         }
     }
@@ -1435,13 +1432,13 @@ mod tests {
     async fn a_completed_turn_stores_a_title_when_the_session_is_unnamed() {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
+        let bus = Arc::new(EventBus::new());
         let sessions = Arc::new(ChatSessionService {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
-            events: None,
+            events: Some(Arc::clone(&bus)),
             plan_cleaner: None,
         });
-        let bus = Arc::new(EventBus::new());
         let mut subscription = bus.subscribe();
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1485,6 +1482,7 @@ mod tests {
         assert_eq!(envelope.event_type, SESSION_UPDATED);
         assert_eq!(envelope.subject, session.to_string());
         assert_eq!(envelope.data["session_id"], session.to_string());
+        assert_eq!(envelope.data["title"], "Parser cleanup");
 
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

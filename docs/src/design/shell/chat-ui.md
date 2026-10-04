@@ -70,26 +70,27 @@ The transcript is HTTP, not the event stream.
 
 | Trigger | Request |
 |---|---|
-| Select a session, or the event stream opens | `GET /chat_sessions` and `GET /chat_sessions/{id}/messages` |
-| `message_added`, `message_updated` | `GET /chat_sessions/{id}/messages/{message_id}`, then upsert that row |
+| Select a session, or the event stream opens | `GET /chat_sessions` and `GET /chat_sessions/{id}/messages`. The two transcript reads share one request while one is in flight |
+| `message_added`, `message_updated`, `tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}`, then upsert that row. One GET is in flight per message, and a newer frame schedules one more. A list reload keeps a row upserted after the list started |
 | `turn_finished` | The session and the message list again |
-| `robi.session.v1.created`, `robi.session.v1.updated` | That session again. The message list is left as it is |
+| `robi.session.v1.created`, `robi.session.v1.updated` | That session again, unless the frame already carried the new title. A fetch that started earlier keeps a local title and a session inserted after it started. The message list is left as it is |
 | `robi.session.v1.deleted` | Drop that session from the list |
 | `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
-| Phase is `thinking` or `responding`, and no frame has arrived for 2 seconds | The session and the message list again |
+| Phase is `thinking` or `responding`, and no frame for that session has arrived for 2 seconds | The session and the message list again |
 
 `message_delta` does not change message text. `kind: "reasoning"` sets
 **Thinking**. `kind: "text"` sets **Responding**. Other delta kinds are
 ignored. `turn_started` sets **Thinking**. `turn_finished` sets `idle`, then
-the session refetch restores **Thinking** when `has_pending_agent` is still
-true. That flag is still set while the actor emits `turn_finished`, so the
-shell reads the session once more and returns to `idle` when the actor has
-exited. A failed turn, and every other shell error, is kept in memory and listed
-under Settings → Audit log until Robi restarts. Several can be open at once.
+refetches the session and the message list without taking the phase from
+`has_pending_agent`. The actor clears that flag after the event. A
+`turn_started` during the refetch stays **Thinking**. A reload while a turn
+is already running still restores the phase from `has_pending_agent`. A failed turn, and every other shell error, is kept in memory and listed
+under Settings → Audit log until Robi restarts. An API response outside 2xx,
+and a request that throws, is written there too, without a second notice. Several can be open at once.
 One for the chat on screen sits at the bottom of that transcript. One for
 another chat, or for the app, sits at the top of the shell and names that chat
 when it has one. Dismiss hides it. The audit log keeps it. The 2-second refetch is what paints a stored turn when the frame that
-would have loaded it was dropped. A frame resets that wait.
+would have loaded it was dropped. A frame for the session on screen resets that wait. A frame for another session does not.
 
 Opening the stream refetches even on the first connect. A frame published
 before the socket existed is recovered from the store. Reconnect does not
@@ -164,7 +165,9 @@ count. A spinner sits on a child step that is still running. A denied or failed 
 uses `--danger`. The answer the parent model received is behind an **Answer**
 control inside that panel and stays closed until that click. Closing the row
 hides the panel. The rows update when `tool_call_updated` refetches the
-assistant message.
+assistant message. Those refetches collapse to one in flight and one trailing
+GET. The review strip refreshes on the first of a burst, then once more when
+the burst goes quiet. `turn_finished` refreshes it immediately.
 
 A call that is still `pending` approval and `not_started`, while the session
 phase is idle, is the approval bar. It shows the same verb and target, then

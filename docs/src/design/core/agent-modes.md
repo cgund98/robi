@@ -121,7 +121,7 @@ Resolution for the mode that is about to run:
 
 1. That mode's session override, when the key is present.
 2. That mode's settings key, when it is non-empty.
-3. The fallback setting (`model`, `reasoning_effort`), then `glm-5.3` for the
+3. The fallback setting (`model`, `reasoning_effort`), then `ocg_glm-5.3` for the
    model. Effort stays unset when nothing is stored.
 
 The mode settings keys are `model_ask`, `model_plan`, `model_agent`,
@@ -129,10 +129,12 @@ The mode settings keys are `model_ask`, `model_plan`, `model_agent`,
 `reasoning_effort_agent`. An absent key inherits the fallback. `DELETE` on
 the settings route removes a non-secret key.
 
-`model_config` stores one override object per mode:
+`model_config` stores one override object per mode. A model id carries its
+provider prefix (`ocg_` for OpenCode Go, `ant_` for Anthropic); the prefix
+selects the provider, and the setting is stored verbatim:
 
 ```json
-{ "agent": { "model": "glm-5.3", "reasoning_effort": "high" }, "ask": {}, "plan": {} }
+{ "agent": { "model": "ocg_glm-5.3", "reasoning_effort": "high" }, "ask": {}, "plan": {} }
 ```
 
 The composer model and effort menus edit only the active mode. Choosing the

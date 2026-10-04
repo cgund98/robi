@@ -486,6 +486,163 @@ UI's message bubbles.
 for images attached but never sent, and it splits one user action across two
 requests that can fail between them.
 
+## Anthropic (A1–A12)
+
+M1 also adds Anthropic's native Messages API as a second provider family. The
+constraints that shape it: **Haiku 4.5 does not accept the effort parameter**, the
+**user never picks a provider** (one flat model list), and **every model id carries
+a provider prefix** (`ocg_` for OpenCode Go, `ant_` for Anthropic).
+
+### A1 — A second hand-written adapter, not a shared abstraction
+
+`providers/anthropic/` has its own `wire.rs`, `stream.rs`, and `mod.rs`. Anthropic's
+request shape (top-level `system`, required `max_tokens`, `input_schema` tools,
+content blocks) and its typed SSE event stream are different enough from
+chat-completions that a shared abstraction would be the lowest common denominator.
+The only piece promoted to a shared module is the SSE *framing*
+(`providers/sse.rs`): blank-line dispatch, CRLF, multi-line `data:`, and `:`
+comments are protocol-level, and each adapter decodes a payload its own way.
+D1's revisit clause stands: the retry/pump/cancel skeleton is near-duplicated, and
+a `providers/transport.rs` extraction is the follow-up if it proves noisy.
+
+### A2 — Per-model effort gating lives in the catalog
+
+`ModelInfo` gains `supports_effort: bool`. The Anthropic table sets it `true` for
+`ant_claude-sonnet-4-6`, `ant_claude-opus-4-6`, and `ant_claude-opus-4-5`, and
+`false` for `ant_claude-haiku-4-5`. Haiku rejects `output_config` with a 400
+("Extra inputs are not permitted"), so `AnthropicModel::new` refuses a configured
+effort on a model whose flag is `false`, naming the model — a startup error, like
+the tool-less and no-vision precedents, not a mid-turn failure. OpenCode Go rides
+effort on `reasoning_effort` and is never gated, so its rows carry `true`.
+
+### A3 — Reasoning without an effort field is thinking, and the trace round-trips
+
+Anthropic's `thinking` blocks arrive as `thinking_delta` events and map to
+`Delta::Reasoning`. A tool continuation **must echo the thinking block back,
+unmodified, with its signature**, so `Message` gains an additive
+`reasoning: Option<ReasoningTrace>` (`text` + `signature`), set by the adapter at
+`Finished` and echoed in `wire.rs` for the assistant turn whose tool results are
+still pending. A trace with no signature is not echoed: the API rejects one. Old
+rows deserialize as `None`.
+
+### A4 — `provider_call_id` is the `tool_use_id`
+
+Anthropic issues `toolu_…` ids in `tool_use` blocks; `ToolCall.provider_call_id`
+stores them, and the `tool_result` block is keyed by that same id. D3's pattern,
+unchanged — no new core field.
+
+### A5 — `max_tokens` comes from the catalog's `max_output`
+
+The Messages API requires `max_tokens`. The adapter sends the configured model's
+catalog `max_output`; no new setting, no per-request arithmetic.
+
+### A6 — No session header for Anthropic
+
+There is no `x-opencode-session` equivalent. `Model::generate` still receives the
+loop's `SessionId` (D4's trait is unchanged); the Anthropic adapter simply does not
+send a session header. The `x-api-key` and `anthropic-version: 2023-06-01` headers
+replace the bearer/session pair.
+
+### A7 — Stop reason mapping
+
+`message_delta.stop_reason`: `end_turn`/`stop_sequence` → settled `Finished`;
+`tool_use` → settled with assembled tool calls; `max_tokens` → settled but logged
+at warn (the same known-gap treatment as `finish_reason: "length"`); `refusal` →
+`Failed`.
+
+### A8 — Cumulative usage
+
+`message_delta.usage` is **cumulative**: it supersedes `message_start`'s counts.
+The assembler replaces rather than adds, so the final `Usage` delta is correct.
+
+### A9 — Error events mid-stream
+
+An `event: error` inside a 200 stream becomes `Delta::Failed`, the same as the
+OpenAI `{"error": …}` object. `overloaded_error` is terminal once deltas have
+streamed — the retry boundary stays "before the first delta" (D7). 429/5xx and
+`Retry-After` classification is the shared `retry.rs`, unchanged.
+
+### A10 — Images
+
+A `Role::User` message with images becomes `image` content blocks
+(`source: { type: "base64", media_type, data }`). The adapter reuses
+`resolve_images` (D11) unchanged, so vision gating (D13) and the missing-row
+failure are identical to OpenCode Go.
+
+### A11 — Model ids carry a provider prefix; the prefix resolves the provider
+
+**There is no provider setting and no provider picker.** The dropdown is one flat
+list; the id itself names the provider.
+
+- **Prefixed ids everywhere.** OpenCode Go rows are `ocg_glm-5.3`, …; Anthropic
+  rows are `ant_claude-sonnet-4-6`, …. The prefix is part of the id in the settings
+  store, the session's `model_config`, the `/api/v1/models` response, the dropdown,
+  and the catalog keys.
+- **The prefix is the dispatch.** `SettingsModelSource` runs the existing
+  resolution chain (session override → mode setting → `MODEL` → default), then
+  reads the prefix: `ant_` builds `ProviderSettings::anthropic(...)` and requires
+  `anthropic_api_key`; `ocg_` builds `ProviderSettings::opencode_go(...)` and
+  requires `opencode_go_api_key`. `build_model` dispatches the same way.
+- **The wire gets the bare id.** Both providers want their own id
+  (`claude-sonnet-4-6`, `glm-5.3`), never the prefix. `ModelId::wire_id` strips it,
+  golden-tested.
+- **`DEFAULT_MODEL` is `ocg_glm-5.3`.**
+- **Legacy bare ids read as OpenCode Go.** A settings or session row written
+  before the prefix existed holds a bare id; `ProviderKind::of` treats an unknown
+  prefix as OpenCode Go, `build_model` normalizes it to the prefixed form, and
+  `normalize_model` rewrites it on store. No stored session breaks.
+- **`normalize_model` validates the union** of both catalogs.
+- **`GET /api/v1/models` lists both catalogs** in one flat list. The frontend
+  picker is otherwise unchanged.
+- **The key follows the provider.** Switching a session to a Claude model makes the
+  next actor read `anthropic_api_key`; a missing key is the existing "… is not set"
+  refusal naming the key.
+- **Catalog tests assert** every id carries its provider's prefix, the two tables
+  are disjoint, and the free-text ids are unique across the union.
+
+### A12 — Effort on Anthropic maps to `output_config`, not `budget_tokens`
+
+On 4.6 models `output_config: { effort }` is a stable API field and controls all
+token spend, thinking included. Opus 4.5 needs the `effort-2025-11-24` beta header,
+which the adapter sends only for that model id. Haiku rejects the field outright
+(A2). `budget_tokens` is not used: it is deprecated on 4.6 and rejected on later
+models. An unset effort sends no `output_config` and no beta header.
+
+## Anthropic request mapping
+
+| Transcript | Messages request |
+|---|---|
+| `settings.system_prompt` | top-level `system` (A1), omitted when empty |
+| `Role::User` | `{ "role": "user", "content": msg.content }` |
+| `Role::User` with images | `content: [{type:"text",…}, {type:"image",source:{type:"base64",…}}…]` (A10) |
+| `Role::Assistant` | plain text when it made no tool call and has no thinking |
+| `Role::Assistant` with a tool call | `content: [{type:"thinking",…}?, {type:"text",…}?, {type:"tool_use",id,name,input}…]` (A3) |
+| `Role::Tool` | a `user` message with one `{type:"tool_result",tool_use_id,content}` block (A4) |
+| `ToolRegistry::tools()` | `tools: [{name, description, input_schema}]`, no `function` wrapper |
+| `settings.reasoning_effort` | `output_config: {effort}`, only when `supports_effort` (A2/A12) |
+| — | `max_tokens`: the catalog's `max_output` (A5), `stream: true` |
+| — | headers: `x-api-key`, `anthropic-version`, `User-Agent`, `Content-Type`, and `anthropic-beta` for Opus 4.5 |
+
+## Anthropic response mapping
+
+| SSE payload `type` | `Delta` |
+|---|---|
+| `message_start` | seeds `Usage` from `message.usage` |
+| `content_block_start` (text/thinking) | nothing; the deltas carry the content |
+| `content_block_start` (tool_use) | `ToolCallStart { index, id: <minted>, name }` |
+| `content_block_delta` `text_delta` | `Text` |
+| `content_block_delta` `thinking_delta` | `Reasoning` |
+| `content_block_delta` `input_json_delta` | `ToolCallArgs` |
+| `content_block_delta` `signature_delta` | recorded, not emitted |
+| `content_block_stop` | `ToolCallEnd` for the open tool-use block |
+| `message_delta` | `Usage` (cumulative, A8) and `stop_reason` |
+| `message_stop` | `Finished(<assembled Message>)` |
+| `error` inside a 200 stream | `Failed` |
+| an unknown `type` | skipped (versioning) |
+
+The assembled assistant message carries the thinking trace as `Message.reasoning`
+(A3) and each call's `provider_call_id`, which the next request echoes.
+
 ## Modules
 
 `AGENTS.md` puts providers in a module of `crates/robi`, not a crate of its own.
@@ -493,25 +650,28 @@ requests that can fail between them.
 ```
 crates/robi-core/src/model.rs     # Model::generate takes the session id (D4)
 crates/robi-core/src/agent.rs     # model_turn passes the id it already holds (D4)
-crates/robi-core/src/message.rs   # + ToolCall.provider_call_id (D3), + Message.images (D10)
+crates/robi-core/src/message.rs   # + ToolCall.provider_call_id (D3), + Message.images (D10), + Message.reasoning (A3)
 crates/robi/src/agent/providers/
-  mod.rs          # re-exports, ProviderId, ModelId
-  config.rs       # ProviderSettings, redacting ApiKey
-  factory.rs      # build_model(settings, tools, images). The session choice is resolved earlier, in adapters::model_source (D8)
+  mod.rs          # re-exports, ProviderId, ProviderKind, ModelId, the prefixes
+  config.rs       # ProviderSettings, redacting ApiKey, ModelId::wire_id, ProviderSettings::anthropic (A1)
+  factory.rs      # build_model(settings, tools, images), dispatch on the model prefix (A11)
   error.rs        # ProviderError, and its mapping into ModelError
   images.rs       # ImageSource (read) and ImageStore (read + write) ports (D11)
   retry.rs        # RetryPolicy, backoff, classify
-  catalog/        # mod.rs, opencode_go.rs — vendored, generated; + supports_vision (D13)
-  openai/         # mod.rs (impl Model), wire.rs (WireContent, D12), sse.rs, stream.rs
+  sse.rs          # the shared SSE framing (A1)
+  catalog/        # mod.rs, opencode_go.rs (ocg_*), anthropic.rs (ant_*); supports_effort (A2), all() (A11)
+  openai/         # mod.rs (impl Model), wire.rs (WireContent, D12), stream.rs
+  anthropic/      # mod.rs (impl Model), wire.rs, stream.rs (A1–A12)
 crates/robi/src/adapters/chat_image_store.rs  # BlobImageStore (D11), MemoryImageStore (tests)
 crates/robi/src/adapters/session_blobs.rs     # per-session redb file
 crates/robi/src/web_api/chat_message.rs       # multipart ingestion + GET image route (D14)
-crates/robi/tests/provider.rs  # the fake SSE server and its cases
+crates/robi/tests/provider.rs  # the fake SSE server and its cases, both providers
 
 M1 makes these edits to `robi-core`: the additive `provider_call_id` field (D3),
 the `user_input_with_skills`/`Model::generate` signatures (D4), the new
-cancellation point at the call site, and the additive `Message.images` field with
-`Message::user_with_images` (D10). All are recorded in
+cancellation point at the call site, the additive `Message.images` field with
+`Message::user_with_images` (D10), and the additive `Message.reasoning` field with
+`ReasoningTrace` (A3). All are recorded in
 [agent-loop.md](../core/agent-loop.md), which owns the transcript types and the
 `Model` trait. Everything else in the core stays as M0 left it: the turn state
 machine, the approval path, the delta vocabulary, and the other three traits.
@@ -702,6 +862,9 @@ Quirks to handle, each with a test:
 | Inter-chunk gap over `chunk_timeout` | Terminal; a stalled stream is not recoverable in place | No |
 | Failure after the first delta | `Delta::Failed(StreamClosed)` | No |
 | Stream ends with no `[DONE]` and no `finish_reason` | `StreamClosed`; the message is not settled | No |
+| Anthropic stream ends with no `message_stop` and no `stop_reason` | `StreamClosed`; the message is not settled | No |
+| Anthropic `event: error` in a 200 stream | `Delta::Failed` (A9) | No |
+| Configuring an effort on a model with `supports_effort: false` | `ProviderError::UnsupportedEffort` naming the model, at `build_model` (A2) | No |
 | Malformed SSE line | Skip, log at debug | — |
 | Tool arguments that do not parse | `ToolCall.args_error`, never `{}` (agent-loop Deviation 3) | — |
 | A provider that omits a tool-call id | `provider_call_id` stays `None`; fall back to the UUID string | — |
@@ -787,9 +950,14 @@ Recorded rather than papered over:
   by a different model. A stateless endpoint only needs internal consistency, so
   this is normally fine; decide when the router lands whether to send the stored id
   anyway or fall back to the local UUID, since M1 has one provider.
-- **One provider is wired.** The adapter generalizes to any OpenAI-compatible
-  endpoint, but Kimi, DeepSeek, and OpenRouter need their own base URL, auth, and
-  catalog entries before they work.
+- **One provider family had been wired.** The OpenAI-compatible adapter generalizes
+  to any chat-completions endpoint, but Kimi, DeepSeek, and OpenRouter need their
+  own base URL, auth, and catalog entries. Anthropic now ships alongside it (A1–A12).
+- **Anthropic's framing is unverified too.** The `input_schema` tool shape, the
+  `output_config` gating, and the thinking-block round trip come from vendor
+  documentation, not a live response; the fake server in `tests/provider.rs`
+  encodes the same assumptions. Run the example with a real `ANTHROPIC_API_KEY`
+  to confirm.
 
 ## Where this landed
 
@@ -798,16 +966,21 @@ Built, in the order the plan called for:
 1. **`robi-core` first**, because everything compiles against it: the
    `ToolCall.provider_call_id` field (D3), the `session` parameter on
    `Model::generate` (D4), the cancellation select at the `model_turn` call site,
-   and the `StubModel` update in `testkit.rs`. `robi-core` gained no dependency.
-2. **`crates/robi`**, with `providers` as its first module — `config`, `error`,
-   `retry`, `catalog`, `factory`, and the `openai` adapter (`wire`, `sse`,
-   `stream`, and the `Model` impl). Dependencies stay off the core: `reqwest` with
-   `rustls-tls` and no default features, plus `futures-util`, `bytes`, `http`, and
-   `tracing`.
-3. **Tests** — 51 in `robi` (unit) and 17 in `crates/robi/tests/provider.rs`
-   against a scripted `axum` SSE server. `cargo test --workspace` runs offline.
+   the additive `Message.images` field (D10), the additive `Message.reasoning`
+   field with `ReasoningTrace` (A3), and the `StubModel` update in `testkit.rs`.
+   `robi-core` gained no dependency.
+2. **`crates/robi`,** with `providers` as its first module — `config`, `error`,
+   `retry`, `sse`, `catalog` (`opencode_go` and `anthropic`), `factory`, and the
+   `openai` adapter (`wire`, `stream`, and the `Model` impl). Dependencies stay off
+   the core: `reqwest` with `rustls-tls` and no default features, plus
+   `futures-util`, `bytes`, `http`, and `tracing`. Anthropic's adapter added
+   `anthropic/` (`wire`, `stream`, and the `Model` impl) beside it (A1–A12).
+3. **Tests** — unit tests across `robi` (including `agent::providers::anthropic`)
+   and 24 in `crates/robi/tests/provider.rs` against a scripted `axum` SSE server,
+   covering both wire formats. `cargo test --workspace` runs offline.
 4. **An entrypoint** — `crates/robi/examples/simple.rs`, which drives the whole
-   stack by hand. See [Trying it by hand](#trying-it-by-hand).
+   stack by hand and picks the provider from `ROBI_MODEL`'s prefix. See
+   [Trying it by hand](#trying-it-by-hand).
 
 To run the full check:
 
@@ -816,9 +989,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Next, in order: run one real turn against OpenCode Go with the entrypoint below,
-then Anthropic's own wire format under F1.1. F1.4's selection is the actor-start
-chain in D8.
+Next, in order: run one real turn against each provider with the entrypoint below.
+F1.4's selection is the actor-start chain in D8.
 
 ## Trying it by hand
 
@@ -831,14 +1003,19 @@ the quickest way to check a change against a real endpoint.
 export OPENCODE_GO_API_KEY=...
 cargo run -p robi --example simple                  # the scripted two turns
 cargo run -p robi --example simple -- "Add 40 and 2" # one prompt instead
+
+# Anthropic: the prefix on ROBI_MODEL selects the provider and the key.
+export ANTHROPIC_API_KEY=...
+ROBI_MODEL=ant_claude-sonnet-4-6 cargo run -p robi --example simple
 ```
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `OPENCODE_GO_API_KEY` | yes | — | The bearer credential |
-| `ROBI_MODEL` | no | `glm-5.3` | Model id, in the provider's own spelling |
+| `OPENCODE_GO_API_KEY` | for an `ocg_` model | — | The OpenCode Go bearer credential |
+| `ANTHROPIC_API_KEY` | for an `ant_` model | — | The Anthropic `x-api-key` credential |
+| `ROBI_MODEL` | no | `ocg_glm-5.3` | Prefixed model id; the prefix picks the provider (A11) |
 | `ROBI_BASE_URL` | no | the vendor's | Point at another endpoint, including a local fake |
-| `ROBI_EFFORT` | no | unset | `low`, `medium`, or `high` |
+| `ROBI_EFFORT` | no | unset | `low`, `medium`, or `high`; refused on Haiku (A2) |
 
 The system prompt is fixed in the file rather than read from the environment, and
 it forbids mental arithmetic on purpose. A model that answers from memory produces

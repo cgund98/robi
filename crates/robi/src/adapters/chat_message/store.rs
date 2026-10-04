@@ -61,6 +61,7 @@ impl MessageStore for SqliteMessageStore {
         let id = SessionId::new();
         let pool = Arc::clone(&self.pool);
         if let Err(error) = block_on(insert_session(pool, id, workspace)) {
+            crate::adapters::sqlite::log_connection_timeout("create_session", &error);
             tracing::error!(%error, %id, "failed to create chat session");
         }
         id
@@ -71,6 +72,7 @@ impl MessageStore for SqliteMessageStore {
         match block_on(session_exists(pool, session)) {
             Ok(exists) => exists,
             Err(error) => {
+                crate::adapters::sqlite::log_connection_timeout("has_session", &error);
                 tracing::error!(%error, %session, "failed to look up chat session");
                 false
             }
@@ -281,6 +283,7 @@ async fn session_exists(pool: Arc<SqlitePool>, session: SessionId) -> Result<boo
 }
 
 fn backend(error: sqlx::Error) -> StoreError {
+    crate::adapters::sqlite::log_connection_timeout("chat message store", &error);
     StoreError::Backend(error.to_string())
 }
 

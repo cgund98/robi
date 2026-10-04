@@ -20,7 +20,10 @@ impl SqliteFileChangeRepository {
     }
 }
 
-fn log_unknown(context: &'static str, err: impl std::fmt::Debug) -> ServiceError {
+fn log_unknown(context: &'static str, err: impl std::fmt::Debug + 'static) -> ServiceError {
+    if let Some(sql) = (&err as &dyn std::any::Any).downcast_ref::<sqlx::Error>() {
+        crate::adapters::sqlite::log_connection_timeout(context, sql);
+    }
     error!(?err, %context, "sqlite file baseline repository error");
     ServiceError::Unknown
 }
