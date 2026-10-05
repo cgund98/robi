@@ -203,13 +203,14 @@ impl AgentFactory {
                     session,
                 });
                 tracing::info!(%session, "waiting on mcp");
+                let opener = mcp.opener();
                 mcp.attach(
                     workspace.id,
                     &root,
                     workspace.mcp_project_sha256.as_deref(),
                     &registry,
                     allows,
-                    &crate::agent::mcp::RmcpOpener,
+                    &opener,
                 )
                 .await;
                 tracing::info!(%session, "mcp ready");

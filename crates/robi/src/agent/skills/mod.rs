@@ -2,8 +2,8 @@
 //!
 //! A skill is a directory with `SKILL.md`. Home roots are scanned first, then
 //! each directory from the git root down to the workspace. A later root
-//! replaces the same id. The bundled `create-skill` is first, so a file of
-//! that id replaces it.
+//! replaces the same id. The bundled skills are first, so a file of that id
+//! replaces them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ const BODY_MAX_BYTES: usize = 32 * 1024;
 const FILE_LIMIT: usize = 10;
 
 const CREATE_SKILL: &str = include_str!("create-skill/SKILL.md");
+const CONFIGURE_MCP: &str = include_str!("configure-mcp/SKILL.md");
 
 /// Where a skill was found. The menu uses this to say home or this workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +76,9 @@ impl Skill {
 pub fn scan(home: Option<&Path>, workspace: Option<&Path>) -> Vec<Skill> {
     let mut rank = 0;
     let mut chosen: Vec<Skill> = Vec::new();
-    push_skill(&mut chosen, bundled(&mut rank));
+    for skill in bundled(&mut rank) {
+        push_skill(&mut chosen, skill);
+    }
     if let Some(home) = home {
         if home.is_dir() {
             for root in home_roots(home) {
@@ -190,17 +193,19 @@ fn render_catalog(lines: &[String], omitted: usize) -> String {
     format!("<skills>\n{body}\n</skills>")
 }
 
-fn bundled(rank: &mut u32) -> Skill {
-    *rank += 1;
-    parse_skill(
-        "create-skill",
-        PathBuf::new(),
-        CREATE_SKILL,
-        SkillScope::User,
-        *rank,
-        0,
-    )
-    .expect("bundled create-skill is valid")
+fn bundled(rank: &mut u32) -> Vec<Skill> {
+    let mut skills = Vec::new();
+    for (id, text) in [
+        ("create-skill", CREATE_SKILL),
+        ("configure-mcp", CONFIGURE_MCP),
+    ] {
+        *rank += 1;
+        skills.push(
+            parse_skill(id, PathBuf::new(), text, SkillScope::User, *rank, 0)
+                .expect("bundled skill is valid"),
+        );
+    }
+    skills
 }
 
 fn home_roots(home: &Path) -> Vec<PathBuf> {

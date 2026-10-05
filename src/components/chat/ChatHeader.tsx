@@ -1,4 +1,5 @@
 import { ApiStatus } from '../layout/ApiStatus'
+import { HistoryNav } from '../layout/HistoryNav'
 import { IndexStatusLine } from '../layout/IndexStatusLine'
 import { McpTray } from '../layout/McpTray'
 import styles from './ChatHeader.module.css'
@@ -11,6 +12,7 @@ export function ChatHeader({ sessionTitle }: ChatHeaderProps) {
   return (
     <header className={styles.header} data-tauri-drag-region="deep">
       <div className={styles.leading}>
+        <HistoryNav />
         <IndexStatusLine />
       </div>
       {sessionTitle ? <span className={styles.title}>{sessionTitle}</span> : null}

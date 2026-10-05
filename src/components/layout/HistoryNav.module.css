@@ -1,0 +1,41 @@
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg-surface-hover);
+}
+
+.button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.button svg {
+  width: 16px;
+  height: 16px;
+}

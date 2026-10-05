@@ -86,9 +86,10 @@ waits for a click. Choosing another session, or **New chat**, leaves the
 viewer for the chat.
 
 **Each open page is a history entry.** Selecting a file, a search hit, or a
-document link sets `file` on `#/docs` and pushes a history entry. The side
-mouse buttons walk that history: button 3 goes back, button 4 goes forward,
-through pages and then through the routes that led here. The page remembered
+document link sets `file` on `#/docs` and pushes a history entry. The back
+and forward buttons in the window bar walk that history, and so do the side
+mouse buttons: button 3 goes back, button 4 goes forward, through pages and
+then through the routes that led here. The page remembered
 from the last visit is written with replace, so returning to the viewer does
 not add an extra step. Backing up to an entry with no `file` shows the empty
 prompt again.
@@ -176,6 +177,75 @@ status and the counts move on when the cache expires.
 `paused` and `failed` wait for **Resume** instead: it calls
 `PUT /api/v1/workspaces/{id}/index` with `running`, and the next poll picks
 the scan up. `ready` draws no notice and stops the poll.
+
+## Find in the document
+
+The header's **Search documentation…** field searches across files. A second,
+separate search finds text inside the document that is open on the right. It is
+opened with **Cmd+F** on macOS and **Ctrl+F** elsewhere — the platform is read
+from `navigator.platform`, falling back to the user agent — and closes on
+**Escape** or the bar's close button.
+
+**Scope is the open document.** The search walks the text nodes under the
+viewer element only: the tree, the cross-file results pane, and the header are
+not searched. The shortcut is intercepted only while a document is rendered
+(`selected` and `content` both set), so Cmd+F keeps its default behaviour
+everywhere else in the app.
+
+**The bar.** A text field (a literal substring, not a pattern), a match count,
+previous and next buttons, a **Match case** toggle (`aria-pressed`), and a
+close button. The count reads `N of M` one-based, says **No results** for a
+query with no matches, and shows nothing for an empty field. Enter steps
+forward and Shift+Enter steps back while the field has focus. The step buttons
+wrap: next from the last match goes to the first, and previous from the first
+goes to the last. They are disabled when there are no matches. Every match is
+painted; the active one is scrolled to the middle of the pane.
+
+**Matching is per text node.** A query is matched against each text node in
+turn, so a phrase broken by an inline element — a word wrapped in emphasis, say
+— is two text nodes and does not match as one hit. Case-insensitive by default;
+the toggle makes it case-sensitive. The offsets are kept in original-string
+coordinates by escaping the query and walking a `gi`/`gu` regular expression, so
+case folding never shifts a match.
+
+**Highlighting does not touch the DOM.** Matches are held as `Range` objects and
+registered with the **CSS Custom Highlight API** (`CSS.highlights`), styled by
+`::highlight(robi-doc-find)` and `::highlight(robi-doc-find-current)` in the
+screen's stylesheet. The React-managed document is never mutated, so a re-render
+of `AssistantMarkdown` — which happens on every screen render, because
+`onDocLink` is a new function each time — cannot corrupt the search state. The
+active-match registry entry is set after the all-matches one, so it paints on
+top.
+
+The API is feature-detected (`typeof Highlight === 'function'` and
+`'highlights' in CSS`). It ships in Chrome/Edge 105+, Safari 17.2+ (the macOS
+WKWebView tracks Safari), and Firefox 140+. Where it is missing — a pre-17.2
+WKWebView, or the `happy-dom` test environment — the bar still counts, steps,
+and scrolls; only the color highlight is absent.
+
+**Skipped regions.** The walk ignores `script`, `style`, `svg`, and
+`[aria-hidden="true"]` subtrees, plus `[data-find-ignore]`. Diagram SVG text is
+therefore out, and `MermaidDiagram` marks its visually-hidden copy of the source
+with `data-find-ignore` so that copy is out too; the visible fence before a
+diagram resolves stays searchable.
+
+**Late DOM changes re-run the search.** A `mermaid` fence that resolves into an
+SVG changes the text under the viewer after the first pass. While the bar is
+open, a `MutationObserver` on the viewer (child list, subtree, and character
+data) re-runs the search, debounced to one pass per animation frame, so the
+ranges and the count stay correct.
+
+### Rejected alternatives
+
+- **Wrapping matches in `<mark>`.** Injecting nodes fights React's
+  reconciliation: `AssistantMarkdown` re-renders on every parent render, so the
+  injected nodes would be clobbered or would break the tree.
+- **A rehype plugin that rewrites the tree before render.** It cannot report a
+  total count and a current index back to the bar cleanly, and it still cannot
+  match across inline nodes.
+- **A search box that also filters the tree.** The tree is a different scope.
+  Keeping find to the open document matches the reader's mental model and the
+  browser's own Cmd+F.
 
 ## Rejected alternatives
 

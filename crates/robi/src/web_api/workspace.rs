@@ -186,13 +186,9 @@ pub async fn focus_mcp(
     };
     let root = std::path::PathBuf::from(&workspace.root);
     let root = root.canonicalize().unwrap_or(root);
-    mcp.focus(
-        id,
-        &root,
-        workspace.mcp_project_sha256.as_deref(),
-        &crate::agent::mcp::RmcpOpener,
-    )
-    .await;
+    let opener = mcp.opener();
+    mcp.focus(id, &root, workspace.mcp_project_sha256.as_deref(), &opener)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

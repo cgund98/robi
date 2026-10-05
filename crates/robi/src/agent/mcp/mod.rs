@@ -5,6 +5,7 @@ mod connect;
 mod content;
 mod env;
 mod host;
+pub(crate) mod logs;
 mod names;
 mod session;
 mod tool;
@@ -117,6 +118,14 @@ impl McpHub {
             home,
             bus,
         }
+    }
+
+    /// The connection opener this hub uses.
+    ///
+    /// Carries the hub's home and settings, so a server's log lands under
+    /// `~/.robi/logs/mcp/<id>/` and its child `PATH` includes `path_entries`.
+    pub fn opener(&self) -> RmcpOpener {
+        RmcpOpener::new(self.home.clone(), Arc::clone(&self.settings))
     }
 
     /// Start this workspace's servers and close every other workspace's.

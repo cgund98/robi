@@ -79,7 +79,7 @@ files and later reads always agree.
 | `tool_timeout_seconds` | no | `120` | Seconds before a `shell` command is killed. A whole number from 1 to 3600. Read when that command starts. |
 | `path_allow_read` | no | none | Newline-separated paths appended to every session's read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_allow_write` | no | none | Newline-separated paths appended to every session's write allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
-| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell builds its environment. |
+| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH` and to an MCP stdio child's `PATH`. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment. |
 | `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
 | `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
 
@@ -112,6 +112,18 @@ deletes the rest when a file is older than 7 days or when more than 8 files
 would remain. The newest older log is kept either way, so the previous run is
 still on disk after one reopen. A later start is what drops it. Secret values
 are not written to these files.
+
+MCP servers log separately, one file per connection under
+`~/.robi/logs/mcp/<server_id>/` and mode `0600`. Each line is a JSON-RPC message
+in either direction, one line of the child's stderr, or a lifecycle note. The
+same seven-day and eight-file policy applies, and a server taken out of the
+config has its directory pruned on the next start. Header and env values are
+never written. See [MCP](../concepts/mcp.md).
+
+An MCP stdio child resolves its `command` on the user's login-shell `PATH`
+(`$SHELL -ilc`, falling back to this process's `PATH`) with `path_entries`
+appended. That is what lets `uvx` and `npm` resolve when Robi is launched from
+Finder, where the process `PATH` is the minimal system one.
 
 The standalone example (`cargo run -p robi --example simple`) reads `ROBI_MODEL`,
 `ROBI_BASE_URL`, `ROBI_EFFORT`, and `OPENCODE_GO_API_KEY`; those are example-only

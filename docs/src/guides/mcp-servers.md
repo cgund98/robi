@@ -11,6 +11,12 @@ tool sets, and subagents never receive MCP tools.
 This guide is the walkthrough. For how the host behaves under the hood, see
 [MCP](../concepts/mcp.md).
 
+If you would rather be walked through it, load the bundled `configure-mcp`
+skill (`@configure-mcp`, or just ask to add an MCP server). It asks where the
+config belongs — global or this workspace — which tool you want to connect, the
+transport and its settings, and any secret references, then writes the entry
+and tells you to restart the app.
+
 ## 1. Choose an entry point to edit
 
 Two JSON files share one shape:
@@ -18,9 +24,11 @@ Two JSON files share one shape:
 - `~/.robi/mcp.json` — your servers, available in every workspace.
 - `<workspace>/.robi/mcp.json` — servers for one project.
 
-Either edit the file directly, or open **Settings → MCP**, which shows both files
-as stored and has a **Refresh** button to reread them. A missing file is an empty
-server list.
+Either edit the file directly, or open **Settings → MCP**. That page lists the
+servers Robi knows about and their connection state (the same list as the tray
+in the top bar), shows both files as stored, and points at where the server logs
+live. It has a **Refresh** button to reread the files and the list. A missing
+file is an empty server list.
 
 The config is read when the workspace becomes the open one, and again on an
 agent-mode turn for a server that is not already connected. An edit therefore
@@ -122,6 +130,8 @@ name, status, and (when connected) its tool count, and clicking it opens
 or `CREDENTIAL` — with the workspace root as the working directory. They are
 **not** run inside the shell sandbox: connecting to a server is itself the trust
 decision, and it needs the network and the credentials its config names.
+`command` resolves on your login shell's `PATH` (plus the `path_entries`
+setting), so `uvx` and `npm` work even when Robi is launched from Finder.
 
 **HTTP** redirects are followed only while the next host still matches the `url`
 rule. There is no OAuth flow; a `401` fails the server. Static headers
@@ -143,6 +153,14 @@ the server's labels and never change the decision.
 The remembered list lives on the chat session and does not outlive it. A server's
 `readOnlyHint` and `destructiveHint` are stored for the bar but never skip
 approval.
+
+## Logs
+
+Each server writes its own log under `~/.robi/logs/mcp/<server_id>/`, one file
+per connection. It captures the MCP messages in both directions and the server's
+own stderr, so this is where to look when a server connects but a tool
+misbehaves. Header and env values are never written. Older files are pruned on
+the same seven-day schedule as the process logs.
 
 ## Limits
 

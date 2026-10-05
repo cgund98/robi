@@ -197,12 +197,13 @@ Headless input is the same string. There is no menu. `@id` still loads.
 
 ### Creating a skill
 
-Robi ships one bundled skill, `create-skill`. It is in the catalog and in the
-`@` menu on every session, ahead of the home roots, so a file with the same
-id in `~/.robi/skills` or the workspace replaces it. The body is compiled
-into the binary. Nothing is written until the user agrees to a draft.
+Robi ships two bundled skills, `create-skill` and `configure-mcp`. Both are in
+the catalog and in the `@` menu on every session, ahead of the home roots, so a
+file with the same id in `~/.robi/skills` or the workspace replaces one. Their
+bodies are compiled into the binary. Nothing is written until the user agrees to
+a draft.
 
-The user starts it with `@create-skill`, or by asking for a skill. The
+The user starts `create-skill` with `@create-skill`, or by asking for a skill. The
 description tells the model to load it when the user wants to create or
 update one. The procedure is:
 
@@ -230,6 +231,31 @@ for the current turn already ran.
 
 Updating a skill is the same procedure. The model reads the existing
 `SKILL.md`, applies the change, and writes it back after the user confirms.
+
+#### configure-mcp
+
+`configure-mcp` is the second bundled skill. The description tells the model
+to load it when the user wants to add, configure, or set up an MCP server. It
+is an interview with the same write rule as `create-skill`: the entry is shown
+and confirmed before anything is written. The procedure is:
+
+1. Ask which tool or service to connect. This names the server id and settles
+   the transport: `command` (stdio) for a local server, `url` (HTTP) for a
+   hosted one.
+2. Ask where the config goes: global `~/.robi/mcp.json`, or this workspace
+   `<workspace>/.robi/mcp.json`. Both share the `"mcpServers"` shape, and a
+   project id replaces the same id in the user file.
+3. Ask for the transport fields: stdio `command`, `args`, and `env`; HTTP
+   `url` and `headers`.
+4. Ask about secrets, and write a token or key as `{ "secret": "<name>" }`
+   against an entry in `~/.robi/secrets.toml` rather than inline.
+5. Ask whether to set `timeout_seconds` or `enabled: false`. Show the JSON and
+   the path, then write the entry into the existing `"mcpServers"` object.
+6. Tell the user to restart the app for the change to take effect.
+
+The body notes the id rule, the project trust hash and its not-yet-wired
+control, and links the MCP servers guide. Details are in
+[MCP](./mcp.md).
 
 ## Rejected alternatives
 

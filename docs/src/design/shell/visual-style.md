@@ -125,6 +125,8 @@ Do not sprinkle raw hex in components.
 | `--mode-plan` | `#e39a3c` | Plan mode, and the plan Build and View Plan buttons |
 | `--diff-add` | `#5db27b` | `+N` line counts in edit summaries |
 | `--diff-del` | `#c46b6b` | `-N` line counts in edit summaries |
+| `--find-hit` | `#6b5416` | Find-in-document match background |
+| `--find-hit-current` | `#e39a3c` | Active find-in-document match |
 | `--bg-row` | `#303030` | File rows inside the edit-summary widget |
 
 `color-scheme: dark` on the document. Form controls follow the dark scheme.
@@ -266,7 +268,7 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. While the workspace index is not ready, a small pill sits at the left of that bar, before the title: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
+The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. At the left of that bar are back and forward buttons. They walk the same history as the side mouse buttons: routes, and each document opened in the docs viewer. A button is quiet when that direction has no entry. While the workspace index is not ready, a small pill sits just to their right: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
 
 The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.

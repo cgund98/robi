@@ -32,6 +32,9 @@
   --diff-add: #5db27b;
   --diff-del: #c46b6b;
 
+  --find-hit: #6b5416;
+  --find-hit-current: #e39a3c;
+
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;

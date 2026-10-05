@@ -75,6 +75,33 @@ The **Text** control runs a literal, case-insensitive scan of markdown via
 lists. It does not start the index and returns immediately. Each file appears
 once, at its first matching line, ordered by match count.
 
+## Find in the open document
+
+The header field searches across files. To search the document already open on
+the right, press **Cmd+F** (macOS) or **Ctrl+F** (Windows and Linux). A small bar
+appears over the top-right of the document:
+
+- **The field** matches the text you type literally, not as a pattern. Matching
+  ignores letter case.
+- **The count** shows your position — `1 of 4` — or **No results** when nothing
+  matches. An empty field shows nothing.
+- **The up and down arrows** step to the previous and next match. They wrap
+  around: down from the last match goes to the first. Inside the field, Enter
+  steps forward and Shift+Enter steps back. The arrows are greyed out when there
+  is nothing to step through.
+- **The `Aa` button** turns on **match case**, so `Rust` stops matching `rust`.
+- **The `×`**, or **Escape**, closes the bar.
+
+Every match is tinted, and the one you are on is tinted brighter and scrolled
+to the middle of the pane. The search reads the text as rendered, so a phrase
+split by formatting — say, a word in **bold** in the middle — is not found as
+one hit; search for a piece that stays together. Diagram pictures are skipped:
+search finds the `mermaid` source while the fence is on screen, not the drawing
+it becomes.
+
+Find searches only the open document. To search every file at once, use the
+header field described above.
+
 ## Limits
 
 - A scanned file that cannot be read is skipped, not the whole request.

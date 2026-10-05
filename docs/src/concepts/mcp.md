@@ -40,7 +40,13 @@ Details that are enforced:
 The config is read when the workspace becomes the open one, and again on an
 agent-mode turn for a server that is not already connected. An edit applies
 the next time that workspace is focused, or on the next message if the
-server is not up yet.
+server is not up yet. Restart the app if you want the change picked up right
+away.
+
+The bundled `configure-mcp` skill walks you through adding an entry — ask to add
+an MCP server, or type `@configure-mcp`. It asks which tool you want to connect,
+whether the config is global or for this workspace, the transport and its
+settings, and any secret references.
 
 ## Trust
 
@@ -59,8 +65,10 @@ backend path.
 - **stdio** — Robi spawns the server as a child process. The child gets a
   scrubbed environment (no `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, or any name
   containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL`) and the
-  workspace root as its working directory. It is **not** run inside the shell
-  sandbox; connecting to a server is itself a trust decision.
+  workspace root as its working directory. `command` resolves on your login
+  shell's `PATH` (plus the `path_entries` setting), so `uvx` and `npm` work even
+  when Robi is started from Finder. It is **not** run inside the shell sandbox;
+  connecting to a server is itself a trust decision.
 - **streamable HTTP** — Robi connects to the URL. Redirects are followed only
   while the next host still matches the URL rule. There is no OAuth flow; a 401
   fails the server. Static headers authenticate.
@@ -83,6 +91,15 @@ it; a later call with the same server and tool runs without asking. The list of
 approved pairs lives on the chat session and does not outlive it. A server's
 `readOnlyHint` and `destructiveHint` are stored for the approval bar but never
 change the decision.
+
+## Logs
+
+Each server writes its own log under `~/.robi/logs/mcp/<server_id>/`, one file
+per connection. A line is an MCP message in either direction, one line of the
+server's stderr, or a lifecycle note; header and env values are never written.
+The file is mode `0600`, and the same seven-day prune as the process logs
+applies. This is where to look when a server connects but misbehaves. The
+**Settings → MCP** page lists each server and the exact directory for its log.
 
 ## Status
 

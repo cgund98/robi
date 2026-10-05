@@ -148,8 +148,12 @@ turn starts them. Process exit kills any children still running.
 The child does not inherit the parent environment. The scrub is the one
 in [shell-tool.md](../tools/shell-tool.md): no `DYLD_*`, `LD_PRELOAD`,
 `LD_LIBRARY_PATH`, or any name containing `KEY`, `TOKEN`, `SECRET`,
-`PASSWORD`, or `CREDENTIAL`. `PATH` is the shell tool's constructed path.
-`HOME`, `USER`, `LOGNAME`, and `LANG` are set. The config `env` map is
+`PASSWORD`, or `CREDENTIAL`. `PATH` is the user's login-shell `PATH`,
+read once with `$SHELL -ilc 'printf %s "$PATH"'` and falling back to
+this process's `PATH`, with the `path_entries` setting appended. That is
+what lets a `uvx` or `npm` server resolve when Robi is launched from
+Finder, where the process `PATH` is the minimal system one. `HOME`,
+`USER`, `LOGNAME`, and `LANG` are set. The config `env` map is
 applied after that scrub, so a token the user named is present and a
 token they did not name is not. The working directory is the workspace
 root. There is no `cwd` field.
@@ -158,7 +162,8 @@ The child is not put in the shell sandbox. An MCP server is an
 integration the user enabled, and it needs the network and the
 credentials its config names. The sandbox that wraps `npm test` would
 make that server fail closed on the first call. Enabling the server is
-the consent. stderr is logged, capped, and kept out of the transcript.
+the consent. stderr goes to that server's log, and stays out of the
+transcript.
 
 `command` is resolved on that constructed `PATH`. An absolute path is
 used as written. A name that does not resolve skips the server.
@@ -176,6 +181,33 @@ A crashing server does not respawn forever.
 The actor waits up to that initialize budget, in parallel, before its
 first model call. A server that is still down is omitted from that call.
 Tools that arrive later are registered before the next model call.
+
+### Logging
+
+Every connection writes a log under `~/.robi/logs/mcp/<server_id>/`, one
+file per connection named `mcp-<timestamp>.log`. The directory is the
+server id from the config, so two servers never share a file. The file is
+mode `0600`: its protocol lines can carry tool arguments and results.
+
+Each line is the JSON-RPC message in one direction (`->` sent, `<-`
+received), one line of the child's stderr, or a lifecycle note. Both
+transports pass through the same point, so the streamable HTTP client and
+the stdio child log `initialize`, `tools/list`, `tools/call`, the
+notifications, and the errors the same way. The first line of a
+connection names the target: the resolved command and args for stdio, the
+URL and whether an authorization header is present for HTTP. Header and
+env values never reach the file, so a token stays out.
+
+The policy matches the rest of `~/.robi/logs/`: the newest prior file is
+kept, a file older than seven days is deleted, and a directory keeps at
+most eight. It runs when a server opens and once at process start, which
+sweeps every server directory and removes one left empty after its server
+was taken out of the config. No line exceeds 32 KiB; a longer protocol
+message is cut with a note.
+
+The process log still carries the summary — `mcp server starting`, `mcp
+server connected`, `mcp server failed`, and the config errors — so the
+per-server file is where one server is debugged.
 
 ### Tools in the registry
 
@@ -278,8 +310,11 @@ server shows no line. The line is not a transcript row.
 
 The sidebar, above Recents, shows every configured server for the open
 workspace. The MCP heading opens the MCP tab under Settings. That tab
-shows `~/.robi/mcp.json` and `<workspace>/.robi/mcp.json` as stored.
-Refresh rereads the files. Secret objects stay unresolved. `GET
+shows the configured servers and the connection state Robi has for each
+(the same `GET /api/v1/workspaces/{id}/mcp` list the top bar draws), then
+`~/.robi/mcp.json` and `<workspace>/.robi/mcp.json` as stored, then the
+log location for troubleshooting. Refresh rereads the files and the
+server list. Secret objects stay unresolved. `GET
 /api/v1/workspaces/{id}/mcp/config` returns the paths, the file text,
 and whether the project file's bytes match the stored hash. `GET /api/v1/workspaces/{id}/mcp` returns `{ id, status, title,
 icon, tool_count }`. `status` is `disconnected` until an agent-mode actor
@@ -393,8 +428,12 @@ flowchart TD
   names one gets an unknown tool.
 - Redirects off the allowed URL, and HTTP to a non-loopback host, fail
   the connection. No request is sent to the other host.
-- stderr and secret values do not enter the transcript, the approval
-  bar, or the log line.
+- stderr goes to the server's own log, never the transcript, the approval
+  bar, or the process log line. Header and env values reach no log.
+- A server whose log file cannot be opened still starts; logging is
+  disabled for that connection.
+- A line longer than 32 KiB is cut in the log with a note. The tool result
+  the model sees is unaffected.
 
 ## Testing
 

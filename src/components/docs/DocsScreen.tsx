@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { getIndexStatus, type IndexStatus } from '../../api/codeIndex'
@@ -17,7 +17,14 @@ import {
 import { useWorkspaceDocs } from '../../app/useWorkspaceDocs'
 import { AssistantMarkdown } from '../chat/AssistantMarkdown'
 import { buildFileTree } from '../review/tree'
+import { DocFindBar } from './DocFindBar'
 import { DocTree } from './DocTree'
+import {
+  applyHighlights,
+  clearHighlights,
+  collectMatches,
+  scrollRangeIntoView
+} from './findInDocument'
 import styles from './DocsScreen.module.css'
 
 type DocsScreenProps = {
@@ -77,6 +84,30 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
   )
   const viewerRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef(0)
+
+  // Find in the open document. The rendered DOM is never mutated: matches are
+  // held as ranges and painted with the CSS Custom Highlight API.
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [caseSensitive, setCaseSensitive] = useState(false)
+  const [matchCount, setMatchCount] = useState(0)
+  const [matchIndex, setMatchIndex] = useState(-1)
+  // Bumped whenever the ranges are rebuilt. The paint effect keys on it so a new
+  // document with the same match count still repaints.
+  const [rangeEpoch, setRangeEpoch] = useState(0)
+  const findInputRef = useRef<HTMLInputElement>(null)
+  const rangesRef = useRef<Range[]>([])
+  // The key of the search the current index belongs to. When it changes (a new
+  // document, query, or case flag) the index resets to the first match.
+  const findKeyRef = useRef('')
+  // The query and case are read from inside the rAF-debounced observer, so
+  // they are mirrored into refs that always hold the latest values.
+  const findQueryRef = useRef(findQuery)
+  const caseRef = useRef(caseSensitive)
+  useEffect(() => {
+    findQueryRef.current = findQuery
+    caseRef.current = caseSensitive
+  }, [findQuery, caseSensitive])
 
   // Search. The draft drives the field, the committed query drives the
   // request, and results replace the tree while a query is active.
@@ -266,6 +297,134 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
     }
   }, [workspaceId, selected])
 
+  // Open the find bar, and put the caret in it. Cmd+F on macOS, Ctrl+F
+  // elsewhere; the modifier is checked by the window listener below.
+  const openFind = useCallback(() => {
+    setFindOpen(true)
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus()
+      findInputRef.current?.select()
+    })
+  }, [])
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false)
+    setFindQuery('')
+  }, [])
+
+  const nextMatch = useCallback(() => {
+    setMatchIndex((index) => {
+      const total = rangesRef.current.length
+      return total === 0 ? -1 : ((index < 0 ? 0 : index) + 1) % total
+    })
+  }, [])
+
+  const previousMatch = useCallback(() => {
+    setMatchIndex((index) => {
+      const total = rangesRef.current.length
+      return total === 0 ? -1 : ((index < 0 ? 0 : index) - 1 + total) % total
+    })
+  }, [])
+
+  // Find recompute. The ranges come from the rendered document, so this runs
+  // after a layout — on the query, the case flag, or the document changing. The
+  // index restarts at the first match for a new search and is clamped otherwise.
+  useLayoutEffect(() => {
+    const viewer = viewerRef.current
+    if (!findOpen || !viewer || content === null) {
+      rangesRef.current = []
+      clearHighlights()
+      setMatchCount(0)
+      setMatchIndex(-1)
+      return
+    }
+    const ranges = findQuery ? collectMatches(viewer, findQuery, caseSensitive) : []
+    rangesRef.current = ranges
+    setMatchCount(ranges.length)
+    setRangeEpoch((epoch) => epoch + 1)
+    const key = `${selected ?? ''}\u0000${caseSensitive ? 'S' : 'i'}\u0000${findQuery}`
+    if (findKeyRef.current !== key) {
+      findKeyRef.current = key
+      setMatchIndex(ranges.length > 0 ? 0 : -1)
+    } else {
+      setMatchIndex((index) =>
+        ranges.length === 0 ? -1 : Math.min(Math.max(index, 0), ranges.length - 1)
+      )
+    }
+  }, [findOpen, findQuery, caseSensitive, content, selected])
+
+  // Paint every match, then scroll the active one to the middle of the pane.
+  useLayoutEffect(() => {
+    const viewer = viewerRef.current
+    if (!findOpen || !viewer || matchCount === 0) {
+      clearHighlights()
+      return
+    }
+    applyHighlights(rangesRef.current, matchIndex)
+    const active = rangesRef.current[matchIndex]
+    if (active) {
+      scrollRangeIntoView(viewer, active)
+    }
+  }, [findOpen, matchIndex, matchCount, rangeEpoch])
+
+  // The shortcut and Escape live on the window. The shortcut is intercepted
+  // only while a document is rendered so it does not swallow Cmd+F elsewhere.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const isMac = /mac/i.test(navigator.platform || navigator.userAgent)
+      const mod = isMac ? event.metaKey : event.ctrlKey
+      if (event.key === 'f' || event.key === 'F') {
+        if (mod && !event.altKey && selected !== null && content !== null) {
+          event.preventDefault()
+          openFind()
+        }
+        return
+      }
+      if (event.key === 'Escape' && findOpen) {
+        event.preventDefault()
+        closeFind()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [openFind, closeFind, findOpen, selected, content])
+
+  // A fence that resolves into a diagram is a late DOM change; re-run the search
+  // so the ranges are not stale. Debounced with a frame so a burst is one pass.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!findOpen || !viewer) {
+      return
+    }
+    let frame: number | null = null
+    const observer = new MutationObserver(() => {
+      if (frame !== null) {
+        return
+      }
+      frame = requestAnimationFrame(() => {
+        frame = null
+        const query = findQueryRef.current
+        const ranges = query ? collectMatches(viewer, query, caseRef.current) : []
+        rangesRef.current = ranges
+        setMatchCount(ranges.length)
+        setRangeEpoch((epoch) => epoch + 1)
+        setMatchIndex((index) =>
+          ranges.length === 0 ? -1 : Math.min(Math.max(index, 0), ranges.length - 1)
+        )
+      })
+    })
+    observer.observe(viewer, { childList: true, subtree: true, characterData: true })
+    return () => {
+      observer.disconnect()
+      if (frame !== null) {
+        cancelAnimationFrame(frame)
+      }
+    }
+  }, [findOpen])
+
+  // Leave no highlights behind when the screen unmounts.
+  useEffect(() => clearHighlights, [])
+
   // The index frames on the event stream follow the session's stream, which a
   // docs visit does not open, so poll the status while the index is still
   // being built. When the state moves on, re-run the search: the hits are
@@ -450,23 +609,39 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
               onToggle={toggle}
             />
           )}
-          <div className={styles.viewer} ref={viewerRef}>
-            {selectedError ? (
-              <p className={styles.message} role="alert">
-                {selectedError}
-              </p>
-            ) : selected === null || content === null ? (
-              <div className={styles.placeholder}>Select a document to open it.</div>
-            ) : (
-              <div className={styles.sheet}>
-                <AssistantMarkdown
-                  text={content}
-                  document
-                  docPath={selected}
-                  onDocLink={openDocument}
-                />
-              </div>
-            )}
+          <div className={styles.viewerWrap}>
+            {findOpen && !selectedError && selected !== null && content !== null ? (
+              <DocFindBar
+                query={findQuery}
+                onQuery={setFindQuery}
+                count={matchCount}
+                current={matchIndex}
+                caseSensitive={caseSensitive}
+                onCaseSensitive={setCaseSensitive}
+                onNext={nextMatch}
+                onPrevious={previousMatch}
+                onClose={closeFind}
+                inputRef={findInputRef}
+              />
+            ) : null}
+            <div className={styles.viewer} ref={viewerRef}>
+              {selectedError ? (
+                <p className={styles.message} role="alert">
+                  {selectedError}
+                </p>
+              ) : selected === null || content === null ? (
+                <div className={styles.placeholder}>Select a document to open it.</div>
+              ) : (
+                <div className={styles.sheet}>
+                  <AssistantMarkdown
+                    text={content}
+                    document
+                    docPath={selected}
+                    onDocLink={openDocument}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

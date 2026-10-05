@@ -47,7 +47,9 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: { source:
         aria-label="Diagram"
         dangerouslySetInnerHTML={{ __html: svg }}
       />
-      <span className={styles.srOnly}>{source}</span>
+      <span className={styles.srOnly} data-find-ignore>
+        {source}
+      </span>
     </div>
   )
 })

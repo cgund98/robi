@@ -1,13 +1,17 @@
 //! Outbound MCP connections. This process does not listen for MCP clients.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rmcp::model::{
     CallToolRequestParam, CallToolResult, CancelledNotificationParam, ClientCapabilities,
     ClientInfo, Implementation, ListRootsResult, Root,
 };
-use rmcp::service::{RoleClient, RunningService, ServiceExt};
+use rmcp::service::{RoleClient, RunningService, RxJsonRpcMessage, ServiceExt, TxJsonRpcMessage};
+use rmcp::transport::Transport as RmcpTransport;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::{ClientHandler, ServiceError};
 use serde_json::Value;
@@ -15,8 +19,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{ChildStderr, Command};
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::settings::store::SettingsStore;
+
 use super::config::{redirect_allowed, Transport};
-use super::env::{child_env, resolve_command};
+use super::env::{child_env, login_path, resolve_command};
+use super::logs::ServerLog;
 use super::session::{Listed, ListedTool, McpSession, OpenSpec, SessionOpener};
 
 struct Handler {
@@ -175,19 +182,59 @@ fn call_error(err: ServiceError) -> String {
     }
 }
 
-pub struct RmcpOpener;
+/// Opens one configured server over `rmcp`.
+pub struct RmcpOpener {
+    home: PathBuf,
+    settings: Arc<dyn SettingsStore>,
+}
+
+impl RmcpOpener {
+    pub fn new(home: PathBuf, settings: Arc<dyn SettingsStore>) -> Self {
+        Self { home, settings }
+    }
+
+    /// The `path_entries` setting, appended to the child `PATH`.
+    async fn path_entries(&self) -> String {
+        self.settings
+            .get(crate::domain::settings::keys::PATH_ENTRIES)
+            .await
+            .ok()
+            .flatten()
+            .map(|setting| setting.value)
+            .unwrap_or_default()
+    }
+}
 
 #[async_trait]
 impl SessionOpener for RmcpOpener {
     async fn open(&self, spec: OpenSpec) -> Result<Box<dyn McpSession>, String> {
+        let home = self.home.clone();
+        let server_id = spec.server_id.clone();
+        let log = crate::agent::blocking::call(move || ServerLog::open(&home, &server_id))
+            .await
+            .unwrap_or_else(|_| ServerLog::disabled());
         let handler = Handler {
             root: spec.workspace_root.display().to_string(),
         };
         let service = match spec.transport {
             Transport::Stdio { command, args, env } => {
-                open_stdio(handler, &spec.workspace_root, &command, &args, &env).await?
+                let base_path = crate::agent::blocking::call(login_path)
+                    .await
+                    .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
+                let extra_path = self.path_entries().await;
+                open_stdio(
+                    handler,
+                    &spec.workspace_root,
+                    &command,
+                    &args,
+                    &env,
+                    &base_path,
+                    &extra_path,
+                    &log,
+                )
+                .await?
             }
-            Transport::Http { url, headers } => open_http(handler, &url, &headers).await?,
+            Transport::Http { url, headers } => open_http(handler, &url, &headers, &log).await?,
         };
         let peer = service.peer().clone();
         Ok(Box::new(RmcpSession {
@@ -197,16 +244,70 @@ impl SessionOpener for RmcpOpener {
     }
 }
 
+/// Wraps a transport so every JSON-RPC message is written to the server log.
+///
+/// `send` and `receive` are the one point both stdio and streamable HTTP pass
+/// through, so the log captures `initialize`, `tools/list`, `tools/call`, the
+/// notifications, and the errors identically for both.
+struct LoggingTransport<T> {
+    inner: T,
+    log: ServerLog,
+}
+
+impl<T> RmcpTransport<RoleClient> for LoggingTransport<T>
+where
+    T: RmcpTransport<RoleClient>,
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.log.protocol_out(&item);
+        self.inner.send(item)
+    }
+
+    fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleClient>>> + Send {
+        let log = self.log.clone();
+        let fut = self.inner.receive();
+        async move {
+            let message = fut.await;
+            if let Some(message) = &message {
+                log.protocol_in(message);
+            }
+            message
+        }
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn open_stdio(
     handler: Handler,
     root: &std::path::Path,
     command: &str,
     args: &[String],
     env: &BTreeMap<String, String>,
+    base_path: &str,
+    extra_path: &str,
+    log: &ServerLog,
 ) -> Result<RunningService<RoleClient, Handler>, String> {
-    let child_env = child_env(root, env);
+    let child_env = child_env(root, env, base_path, extra_path);
     let resolved = resolve_command(command, &child_env)
         .ok_or_else(|| format!("{command} is not on the constructed PATH"))?;
+    log.line(
+        "INFO",
+        &format!(
+            "stdio command={} args={} cwd={}",
+            resolved.display(),
+            args.join(" "),
+            root.display()
+        ),
+    );
     tracing::info!(
         command = %resolved.display(),
         args = %args.join(" "),
@@ -224,26 +325,24 @@ async fn open_stdio(
         .spawn()
         .map_err(|err| format!("spawn {}: {err}", resolved.display()))?;
     if let Some(stderr) = stderr {
-        log_stderr(resolved.display().to_string(), stderr);
+        log_stderr(log.clone(), resolved.display().to_string(), stderr);
     }
     handler
-        .serve(transport)
+        .serve(LoggingTransport {
+            inner: transport,
+            log: log.clone(),
+        })
         .await
         .map_err(|err| format!("initialize {}: {err}", resolved.display()))
 }
 
-fn log_stderr(command: String, stderr: ChildStderr) {
+/// Copy the child's stderr into the per-server log. The per-line bound on the
+/// log, and the weekly prune, keep the file from growing without limit.
+fn log_stderr(log: ServerLog, command: String, stderr: ChildStderr) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
-        let mut logged = 0usize;
-        const CAP: usize = 8 * 1024;
         while let Ok(Some(line)) = lines.next_line().await {
-            if logged >= CAP {
-                tracing::warn!(%command, "mcp stderr truncated");
-                break;
-            }
-            logged += line.len();
-            tracing::warn!(%command, stderr = %line, "mcp stderr");
+            log.stderr(&command, &line);
         }
     });
 }
@@ -252,6 +351,7 @@ async fn open_http(
     handler: Handler,
     url: &str,
     headers: &BTreeMap<String, String>,
+    log: &ServerLog,
 ) -> Result<RunningService<RoleClient, Handler>, String> {
     let mut config =
         rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url);
@@ -288,20 +388,93 @@ async fn open_http(
         .build()
         .map_err(|err| format!("http client: {err}"))?;
     let transport = StreamableHttpClientTransport::with_client(client, config);
+    // The target and whether auth is present, never the header values.
+    log.line(
+        "INFO",
+        &format!("http url={url} authorization={authorization}"),
+    );
     tracing::info!(%url, authorization, "mcp http connect");
     handler
-        .serve(transport)
+        .serve(LoggingTransport {
+            inner: transport,
+            log: log.clone(),
+        })
         .await
         .map_err(|err| format!("initialize {url}: {err}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::bearer_token;
+    use super::*;
+    use rmcp::model::{ClientRequest, JsonRpcMessage, PingRequest, RequestId, ServerRequest};
 
     #[test]
     fn a_bearer_prefix_is_not_sent_twice() {
         assert_eq!(bearer_token("Bearer lin_api_x"), "lin_api_x");
         assert_eq!(bearer_token("lin_api_x"), "lin_api_x");
+    }
+
+    /// A transport that records what it sent and yields one queued inbound
+    /// message, so the logging wrapper can be checked without a server.
+    struct FakeTransport {
+        inbound: Option<RxJsonRpcMessage<RoleClient>>,
+        sent: Vec<TxJsonRpcMessage<RoleClient>>,
+    }
+
+    impl RmcpTransport<RoleClient> for FakeTransport {
+        type Error = std::io::Error;
+
+        fn send(
+            &mut self,
+            item: TxJsonRpcMessage<RoleClient>,
+        ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+            self.sent.push(item);
+            async { Ok(()) }
+        }
+
+        fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleClient>>> + Send {
+            let message = self.inbound.take();
+            async move { message }
+        }
+
+        async fn close(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_logging_transport_writes_both_directions() {
+        let home = std::env::temp_dir().join(format!("robi-mcp-transport-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let path = home.join("mcp-now.log");
+        let log = ServerLog::to_file(std::fs::File::create(&path).unwrap());
+
+        let inbound: RxJsonRpcMessage<RoleClient> = JsonRpcMessage::request(
+            ServerRequest::PingRequest(PingRequest::default()),
+            RequestId::Number(2),
+        );
+        let mut transport = LoggingTransport {
+            inner: FakeTransport {
+                inbound: Some(inbound),
+                sent: Vec::new(),
+            },
+            log,
+        };
+        transport
+            .send(JsonRpcMessage::request(
+                ClientRequest::PingRequest(PingRequest::default()),
+                RequestId::Number(1),
+            ))
+            .await
+            .unwrap();
+        let received = transport.receive().await;
+        assert!(received.is_some());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("-> "), "{text}");
+        assert!(text.contains("<- "), "{text}");
+        assert_eq!(transport.inner.sent.len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

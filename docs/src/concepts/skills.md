@@ -59,16 +59,27 @@ capped at 8 KiB (overflow ends with `[N skills omitted]`). A skill marked
 `disable-model-invocation` is left out of this block. The catalog text is
 untrusted, like any loaded content.
 
-## Creating one
+## Bundled skills
 
-The bundled `create-skill` skill writes a new skill for you: it asks whether the
-model may load it, where to put it (default `~/.robi/skills/<id>/SKILL.md`, or
-the workspace's `.robi/skills/`), and confirms the id, description, and body
-before writing. In ask or plan mode it shows the draft and tells you to switch to
-agent mode, because those modes cannot write.
+Two skills ship in the binary and appear in the catalog and the `@` menu on
+every session, ahead of the home roots, so a file with the same id replaces
+them.
+
+- **`create-skill`** writes a new skill for you: it asks whether the model may
+  load it, where to put it (default `~/.robi/skills/<id>/SKILL.md`, or the
+  workspace's `.robi/skills/`), and confirms the id, description, and body before
+  writing.
+- **`configure-mcp`** walks you through adding an MCP server: it asks which tool
+  you want to connect, whether the config is global (`~/.robi/mcp.json`) or for
+  this workspace (`<workspace>/.robi/mcp.json`), the transport and its settings,
+  and any secret references, then writes the entry and tells you to restart the
+  app. See [MCP](../concepts/mcp.md).
+
+In ask or plan mode both show the draft and tell you to switch to agent mode,
+because those modes cannot write.
 
 ## Where this is specified
 
-Discovery roots, the catalog, the load path, and `create-skill` are in
+Discovery roots, the catalog, the load path, and the bundled skills are in
 [Skills](../design/reach/skills.md). The reference scan is in
 [Skills discovery](../discovery/skills.md).
