@@ -27,9 +27,13 @@ bytes on disk. A path with zero additions and zero deletions is left out. A
 file this session created that is already gone is left out, the same way
 `hunks_for_session` omits it.
 
-The response is `{ files }`. Each file has `path`, `status` (`added`,
-`deleted`, or `modified`), `additions`, `deletions`, `baseline`, `current`,
-and `lines`. A line is `context`, `delete`, `insert`, or `gap`. `old_line`
+The response is `{ files }`. Each file is a summary: `path`, `status`
+(`added`, `deleted`, or `modified`), `additions`, and `deletions`. Bodies
+and lines stay off this response so the list stays small.
+
+`GET /api/v1/chat_sessions/{id}/review/file?path=` returns one file:
+`baseline`, `current`, `lines`, and `hunks`. A path with nothing left to
+review is `404`. A line is `context`, `delete`, `insert`, or `gap`. `old_line`
 and `new_line` are 1-based, and both are null on a gap. Context is three
 lines. A gap is the unchanged stretch between two hunks that did not merge.
 `baseline` and `current` are the full texts, so the client can highlight
@@ -48,7 +52,8 @@ Choosing another session, or New chat, leaves the review.
 
 The left pane is a tree of the changed paths. At each level, directories
 come first, then files. Each group is alphabetical, without regard to case.
-A click scrolls the right pane to that file.
+A click loads that file in the right pane. Only the selected file is fetched
+and painted. Switching files leaves the others unloaded.
 
 The file header shows the path, then `+N` and `-N`. **Reject** and **Approve**
 sit on the right. A click on the path opens that file in a dialog. The dialog has
@@ -61,7 +66,8 @@ markdown file renders the baseline. An added file on **Previous**, or a
 deleted file on **Current**, shows `File added` or `File deleted`. **Approve** keeps the file as it is and folds that text
 into the baseline, so the path leaves the review. The path leaves the list
 as soon as **Approve** is clicked. If that request fails, the file comes
-back and the error is shown. **Reject** writes the
+back and the error is shown. A hunk decision reloads that file only.
+**Reject** writes the
 baseline back. A file this session created, fully rejected, is removed.
 
 Each block between gaps is a hunk. Hovering it shows **Reject** and
@@ -70,8 +76,7 @@ created: that file only has the buttons on its header. **Approve** folds that hu
 current lines into the baseline. **Reject** puts that hunk's baseline lines
 back on disk. A hunk that no longer matches the file is `409`.
 
-The right pane lists every file in that tree order. Each file is its own
-panel, with space between panels. The default is the
+The right pane shows the selected file. The default is the
 unified diff: context, deletions, and insertions. **Current** hides
 deletions. **Previous** hides insertions. An added file on Previous, or a
 deleted file on Current, shows one line — `File added` or `File deleted` —

@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { decideReview } from '../../api/review'
+import { decideReview, getReviewFile, type ReviewFile } from '../../api/review'
 import { sessionDisplayTitle } from '../../api/sessions'
 import { useSessionReview } from '../../app/useSessionReview'
 import { useChatStore } from '../../state/chatStore'
@@ -41,7 +41,7 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   const sessions = useChatStore((state) => state.sessions)
   const session = sessions.find((item) => item.id === sessionId) ?? null
   const { files: loaded, error, loading } = useSessionReview(sessionId)
-  const bumpReview = useChatStore((state) => state.bumpReview)
+  const reviewTick = useChatStore((state) => state.reviewTickBySession[sessionId] ?? 0)
   const [view, setView] = useState<ReviewView>('diff')
   const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [decideError, setDecideError] = useState<string | null>(null)
@@ -56,28 +56,48 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
     () => loaded.filter((file) => !hiddenPaths.includes(file.path)),
     [loaded, hiddenPaths]
   )
-  const anchors = useRef(new Map<string, HTMLElement>())
+  const [bodies, setBodies] = useState<Record<string, ReviewFile>>({})
+  const [bodyError, setBodyError] = useState<string | null>(null)
+  const [bodyErrorFor, setBodyErrorFor] = useState<string | null>(null)
+  const errorKey = active ? `${sessionId}:${active}:${reviewTick}` : null
+  if (bodyErrorFor !== errorKey) {
+    setBodyErrorFor(errorKey)
+    setBodyError(null)
+  }
   const orderedPaths = useMemo(() => filesInTreeOrder(files.map((file) => file.path)), [files])
-  const orderedFiles = useMemo(() => {
-    const byPath = new Map(files.map((file) => [file.path, file]))
-    return orderedPaths.flatMap((path) => {
-      const file = byPath.get(path)
-      return file ? [file] : []
-    })
-  }, [files, orderedPaths])
   const tree = useMemo(() => buildFileTree(orderedPaths), [orderedPaths])
   const active = selected && orderedPaths.includes(selected) ? selected : (orderedPaths[0] ?? null)
+  const openBody = active ? (bodies[active] ?? null) : null
+  const shown = useMemo(() => (openBody ? [openBody] : []), [openBody])
 
-  function register(path: string, node: HTMLElement | null) {
-    if (node) {
-      anchors.current.set(path, node)
-    } else {
-      anchors.current.delete(path)
+  useEffect(() => {
+    if (!active) {
+      return
     }
-  }
+    let cancelled = false
+    void getReviewFile(sessionId, active)
+      .then((file) => {
+        if (cancelled) {
+          return
+        }
+        if (!file) {
+          setHiddenPaths((current) => (current.includes(active) ? current : [...current, active]))
+          return
+        }
+        setBodies((current) => ({ ...current, [file.path]: file }))
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setBodyError(err instanceof Error ? err.message : 'Failed to load file')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, active, reviewTick])
 
   async function decide(path: string, decision: 'approve' | 'reject', hunkIds?: string[]) {
-    const file = files.find((item) => item.path === path)
+    const file = bodies[path]
     const ordered = orderHunks(file?.hunks ?? [], hunkIds, decision)
     if (decision === 'approve' && ordered.length === 0) {
       await approveFile(path)
@@ -93,7 +113,17 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
           await decideReview(sessionId, path, decision, id)
         }
       }
-      bumpReview(sessionId)
+      const next = await getReviewFile(sessionId, path)
+      if (!next) {
+        setHiddenPaths((current) => (current.includes(path) ? current : [...current, path]))
+        setBodies((current) => {
+          const copy = { ...current }
+          delete copy[path]
+          return copy
+        })
+      } else {
+        setBodies((current) => ({ ...current, [path]: next }))
+      }
     } catch (err: unknown) {
       setDecideError(err instanceof Error ? err.message : 'Failed to update review')
     } finally {
@@ -106,7 +136,11 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
     setDecideError(null)
     try {
       await decideReview(sessionId, path, 'approve')
-      bumpReview(sessionId)
+      setBodies((current) => {
+        const copy = { ...current }
+        delete copy[path]
+        return copy
+      })
     } catch (err: unknown) {
       setHiddenPaths((current) => current.filter((item) => item !== path))
       setDecideError(err instanceof Error ? err.message : 'Failed to update review')
@@ -115,7 +149,6 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
 
   function selectFile(path: string) {
     setSelected(path)
-    anchors.current.get(path)?.scrollIntoView({ block: 'start' })
   }
 
   return (
@@ -145,9 +178,9 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
         </p>
       ) : loading && files.length === 0 ? (
         <p className={styles.message}>Loading review…</p>
-      ) : decideError ? (
+      ) : decideError || bodyError ? (
         <p className={styles.message} role="alert">
-          {decideError}
+          {decideError ?? bodyError}
         </p>
       ) : null}
       {error ? null : loading && files.length === 0 ? null : files.length === 0 ? (
@@ -156,15 +189,18 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
         <div className={styles.body}>
           <FileTree nodes={tree} selected={active} onSelect={selectFile} />
           <div className={styles.diffs}>
-            <DiffList
-              files={orderedFiles}
-              view={view}
-              pendingKey={pendingKey}
-              register={register}
-              onDecide={(path, decision, hunkIds) => {
-                void decide(path, decision, hunkIds)
-              }}
-            />
+            {!openBody && !bodyError ? (
+              <p className={styles.message}>Loading file…</p>
+            ) : openBody ? (
+              <DiffList
+                files={shown}
+                view={view}
+                pendingKey={pendingKey}
+                onDecide={(path, decision, hunkIds) => {
+                  void decide(path, decision, hunkIds)
+                }}
+              />
+            ) : null}
           </div>
         </div>
       )}

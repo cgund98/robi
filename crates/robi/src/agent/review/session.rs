@@ -26,6 +26,71 @@ pub struct ReviewFile {
     pub hunks: Vec<Hunk>,
 }
 
+/// One changed path, without the texts the review screen loads on demand.
+pub struct ReviewSummary {
+    pub path: String,
+    pub status: FileStatus,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// Changed paths for this session, without file bodies or diff lines.
+///
+/// A baseline that matches the file on disk is omitted, as is a file this
+/// session created that is already gone.
+pub async fn review_summaries(
+    repo: &dyn FileChangeRepository,
+    root: &Path,
+    session_id: SessionId,
+) -> Result<Vec<ReviewSummary>, ServiceError> {
+    let baselines = repo.list_baselines(session_id).await?;
+    let root = root.to_path_buf();
+    crate::agent::blocking::call(move || {
+        let mut files = Vec::with_capacity(baselines.len());
+        for baseline in baselines {
+            if let Some(file_diff) = diff_baseline(&root, &baseline)? {
+                if file_diff.additions == 0 && file_diff.deletions == 0 {
+                    continue;
+                }
+                files.push(ReviewSummary {
+                    path: file_diff.path,
+                    status: file_diff.status,
+                    additions: file_diff.additions,
+                    deletions: file_diff.deletions,
+                });
+            }
+        }
+        Ok(files)
+    })
+    .await
+    .map_err(ServiceError::BadRequest)?
+}
+
+/// One changed path, including bodies and lines. `None` when it no longer differs.
+pub async fn review_file(
+    repo: &dyn FileChangeRepository,
+    root: &Path,
+    session_id: SessionId,
+    path: &str,
+) -> Result<Option<ReviewFile>, ServiceError> {
+    let Some(baseline) = repo.get_baseline(session_id, path).await? else {
+        return Ok(None);
+    };
+    let root = root.to_path_buf();
+    let path = path.to_owned();
+    crate::agent::blocking::call(move || {
+        let Some(file) = review_baseline(&root, &baseline)? else {
+            return Ok(None);
+        };
+        if file.path != path {
+            return Ok(None);
+        }
+        Ok(Some(file))
+    })
+    .await
+    .map_err(ServiceError::BadRequest)?
+}
+
 /// Changed paths for this session. A baseline that matches the file on disk
 /// is omitted, as is a file this session created that is already gone.
 pub async fn review_for_session(

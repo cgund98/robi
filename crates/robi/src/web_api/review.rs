@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use axum::{
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     routing::get,
     Json, Router,
@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::review::{
-        decide_review, review_for_session, FileStatus, Hunk, ReviewDecision, ReviewFile,
-        ReviewLine, ReviewLineKind,
+        decide_review, review_file, review_summaries, FileStatus, Hunk, ReviewDecision, ReviewFile,
+        ReviewLine, ReviewLineKind, ReviewSummary,
     },
     domain::error::ServiceError,
     web_api::{chat_session::parse_chat_session_id, state::AppState},
@@ -27,6 +27,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chat_sessions/{id}/review",
             get(get_session_review).post(decide_session_review),
         )
+        .route(
+            "/api/v1/chat_sessions/{id}/review/file",
+            get(get_review_file),
+        )
         .with_state(state)
 }
 
@@ -36,7 +40,7 @@ pub fn router(state: AppState) -> Router {
     path = "/api/v1/chat_sessions/{id}/review",
     params(("id" = String, Path, description = "Chat session id")),
     responses(
-        (status = 200, description = "Files this session has changed", body = SessionReview)
+        (status = 200, description = "Paths this session has changed, without file bodies", body = SessionReview)
     )
 )]
 pub async fn get_session_review(
@@ -50,10 +54,53 @@ pub async fn get_session_review(
         .get_workspace(session.workspace_id)
         .await?;
     let files =
-        review_for_session(state.file_changes.as_ref(), Path::new(&workspace.root), id).await?;
+        review_summaries(state.file_changes.as_ref(), Path::new(&workspace.root), id).await?;
     Ok(Json(SessionReview {
-        files: files.into_iter().map(ReviewFileBody::from).collect(),
+        files: files.into_iter().map(ReviewFileSummary::from).collect(),
     }))
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ReviewFileQuery {
+    /// Workspace-relative path.
+    pub path: String,
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/chat_sessions/{id}/review/file",
+    params(
+        ("id" = String, Path, description = "Chat session id"),
+        ReviewFileQuery
+    ),
+    responses(
+        (status = 200, description = "One changed file, with its diff", body = ReviewFileBody),
+        (status = 404, description = "That path has no remaining changes")
+    )
+)]
+pub async fn get_review_file(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<ReviewFileQuery>,
+) -> Result<Json<ReviewFileBody>, ServiceError> {
+    let id = parse_chat_session_id(&id)?;
+    let session = state.chat_session_service.get_chat_session(id).await?;
+    let workspace = state
+        .workspace_service
+        .get_workspace(session.workspace_id)
+        .await?;
+    let file = review_file(
+        state.file_changes.as_ref(),
+        Path::new(&workspace.root),
+        id,
+        &query.path,
+    )
+    .await?;
+    let Some(file) = file else {
+        return Err(ServiceError::NotFound(query.path));
+    };
+    Ok(Json(ReviewFileBody::from(file)))
 }
 
 #[utoipa::path(
@@ -107,7 +154,16 @@ pub struct DecideReview {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct SessionReview {
-    pub files: Vec<ReviewFileBody>,
+    pub files: Vec<ReviewFileSummary>,
+}
+
+/// A changed path. Bodies and lines load from `GET .../review/file`.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ReviewFileSummary {
+    pub path: String,
+    pub status: ReviewStatus,
+    pub additions: u32,
+    pub deletions: u32,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -158,6 +214,17 @@ pub enum ReviewLineStatus {
     Delete,
     Insert,
     Gap,
+}
+
+impl From<ReviewSummary> for ReviewFileSummary {
+    fn from(file: ReviewSummary) -> Self {
+        Self {
+            path: file.path,
+            status: ReviewStatus::from(file.status),
+            additions: file.additions,
+            deletions: file.deletions,
+        }
+    }
 }
 
 impl From<ReviewFile> for ReviewFileBody {
@@ -255,7 +322,9 @@ mod tests {
         web_api::state::AppState,
     };
 
-    use super::{get_session_review, ReviewLineStatus, ReviewStatus};
+    use axum::extract::Query;
+
+    use super::{get_review_file, get_session_review, ReviewLineStatus, ReviewStatus};
 
     struct Idle;
 
@@ -401,16 +470,26 @@ mod tests {
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
         };
 
-        let body = get_session_review(State(state), Path(session.id.to_string()))
+        let body = get_session_review(State(state.clone()), Path(session.id.to_string()))
             .await
             .unwrap()
             .0;
         assert_eq!(body.files.len(), 1);
-        let file = &body.files[0];
-        assert_eq!(file.path, "a.txt");
-        assert!(matches!(file.status, ReviewStatus::Modified));
-        assert_eq!(file.additions, 1);
-        assert_eq!(file.deletions, 1);
+        let summary = &body.files[0];
+        assert_eq!(summary.path, "a.txt");
+        assert!(matches!(summary.status, ReviewStatus::Modified));
+        assert_eq!(summary.additions, 1);
+        assert_eq!(summary.deletions, 1);
+        let file = get_review_file(
+            State(state),
+            Path(session.id.to_string()),
+            Query(super::ReviewFileQuery {
+                path: "a.txt".to_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
         assert_eq!(file.baseline, "one\ntwo\n");
         assert_eq!(file.current, "one\nthree\n");
         assert!(file

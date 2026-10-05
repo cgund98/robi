@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
 
-import { getSessionReview, type ReviewFile } from '../api/review'
+import { getSessionReview, type ReviewFileSummary } from '../api/review'
 import { useChatStore } from '../state/chatStore'
 
 export function useSessionReview(sessionId: string): {
-  files: ReviewFile[]
+  files: ReviewFileSummary[]
   error: string | null
   loading: boolean
 } {
   const tick = useChatStore((state) => state.reviewTickBySession[sessionId] ?? 0)
-  const [files, setFiles] = useState<ReviewFile[]>([])
+  const [files, setFiles] = useState<ReviewFileSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 

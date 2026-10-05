@@ -77,7 +77,8 @@ instruction. See the [approval invariant](../design/core/agent-loop.md).
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/api/v1/chat_sessions/{id}/review` | The session review: baseline plus hunks. |
+| `GET` | `/api/v1/chat_sessions/{id}/review` | Changed paths for the session: path, status, and line counts. |
+| `GET` | `/api/v1/chat_sessions/{id}/review/file?path=` | One file's baseline, current text, lines, and hunks. `404` when that path has no remaining changes. |
 | `POST` | `/api/v1/chat_sessions/{id}/review` | `204`; approve or reject a file or one hunk. |
 
 ## Settings and models

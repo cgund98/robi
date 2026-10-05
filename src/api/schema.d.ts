@@ -84,6 +84,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat_sessions/{id}/review/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_review_file"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat_sessions/{id}/review": {
         parameters: {
             query?: never;
@@ -618,6 +634,14 @@ export interface components {
             ask?: null | components["schemas"]["ModeOverridePatch"];
             plan?: null | components["schemas"]["ModeOverridePatch"];
         };
+        ReviewFileSummary: {
+            /** Format: int32 */
+            additions: number;
+            /** Format: int32 */
+            deletions: number;
+            path: string;
+            status: components["schemas"]["ReviewStatus"];
+        };
         ReviewFileBody: {
             /** Format: int32 */
             additions: number;
@@ -662,7 +686,7 @@ export interface components {
         /** @enum {string} */
         ReviewStatus: "added" | "deleted" | "modified";
         SessionReview: {
-            files: components["schemas"]["ReviewFileBody"][];
+            files: components["schemas"]["ReviewFileSummary"][];
         };
         SetSetting: {
             /**
@@ -987,7 +1011,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Files this session has changed */
+            /** @description Paths this session has changed, without file bodies */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -995,6 +1019,39 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SessionReview"];
                 };
+            };
+        };
+    };
+    get_review_file: {
+        parameters: {
+            query: {
+                /** @description Workspace-relative path. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One changed file, with its diff */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewFileBody"];
+                };
+            };
+            /** @description That path has no remaining changes */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

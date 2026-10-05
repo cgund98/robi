@@ -12,5 +12,6 @@ pub use diff::{
 };
 pub use lock::lock_path;
 pub use session::{
-    decide_review, hunks_for_session, review_for_session, ReviewDecision, ReviewFile,
+    decide_review, hunks_for_session, review_file, review_for_session, review_summaries,
+    ReviewDecision, ReviewFile, ReviewSummary,
 };

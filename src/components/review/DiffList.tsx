@@ -16,11 +16,10 @@ type DiffListProps = {
   files: ReviewFile[]
   view: ReviewView
   pendingKey: string | null
-  register: (path: string, node: HTMLElement | null) => void
   onDecide: (path: string, decision: 'approve' | 'reject', hunkIds?: string[]) => void
 }
 
-export function DiffList({ files, view, pendingKey, register, onDecide }: DiffListProps) {
+export function DiffList({ files, view, pendingKey, onDecide }: DiffListProps) {
   const [paint, setPaint] = useState<Record<string, Sides>>({})
   const [openPath, setOpenPath] = useState<string | null>(null)
   const [hoverChunk, setHoverChunk] = useState<string | null>(null)
@@ -58,11 +57,7 @@ export function DiffList({ files, view, pendingKey, register, onDecide }: DiffLi
         const chunks = chunksFor(visible, file.hunks)
         const filePending = pendingKey === file.path
         return (
-          <section
-            key={file.path}
-            className={styles.file}
-            ref={(node) => register(file.path, node)}
-          >
+          <section key={file.path} className={styles.file}>
             <header className={styles.header}>
               <span className={styles.identity}>
                 <button

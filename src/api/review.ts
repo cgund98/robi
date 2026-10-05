@@ -3,6 +3,7 @@ import { ApiError, errorMessage, statusOf } from './sessions'
 import type { components } from './schema'
 
 export type SessionReview = components['schemas']['SessionReview']
+export type ReviewFileSummary = components['schemas']['ReviewFileSummary']
 export type ReviewFile = components['schemas']['ReviewFileBody']
 export type ReviewLine = components['schemas']['ReviewLineBody']
 
@@ -24,6 +25,22 @@ export async function decideReview(
   throw new ApiError(
     statusOf(result.response as { status: number } | undefined),
     errorMessage(result.error, 'Failed to update review')
+  )
+}
+
+export async function getReviewFile(sessionId: string, path: string): Promise<ReviewFile | null> {
+  const result = await api.GET('/api/v1/chat_sessions/{id}/review/file', {
+    params: { path: { id: sessionId }, query: { path } }
+  })
+  if (result.data) {
+    return result.data
+  }
+  if (statusOf(result.response as { status: number } | undefined) === 404) {
+    return null
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to load review file')
   )
 }
 

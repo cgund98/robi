@@ -36,10 +36,12 @@ lines. Line starts are 0-based. The id is the first 8 bytes of SHA-256 over
 the baseline start and both line lists, hex encoded. A missing file is
 status `deleted`: one hunk whose new lines are empty. `reject` puts that
 hunk's old lines back and fails when the current lines no longer match.
-`GET /api/v1/chat_sessions/{id}/review` calls `review_for_session`, which
+`GET /api/v1/chat_sessions/{id}/review` calls `review_summaries`, which
 uses the same baseline read and drops a path whose additions and deletions
-are both zero. The response lines are a separate list: three lines of
-context around each change, and a gap where unchanged lines were skipped.
+are both zero. That response is counts only.
+`GET /api/v1/chat_sessions/{id}/review/file` loads one path. Its lines are a
+separate list: three lines of context around each change, and a gap where
+unchanged lines were skipped.
 `POST /api/v1/chat_sessions/{id}/review` calls it. `decision` is `approve`
 or `reject`. `hunk_id` limits that to one hunk; omitted, it covers the file.
 Approve folds the current lines into the baseline and leaves the file.
