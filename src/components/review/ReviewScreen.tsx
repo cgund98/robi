@@ -59,14 +59,14 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   const [bodies, setBodies] = useState<Record<string, ReviewFile>>({})
   const [bodyError, setBodyError] = useState<string | null>(null)
   const [bodyErrorFor, setBodyErrorFor] = useState<string | null>(null)
+  const orderedPaths = useMemo(() => filesInTreeOrder(files.map((file) => file.path)), [files])
+  const tree = useMemo(() => buildFileTree(orderedPaths), [orderedPaths])
+  const active = selected && orderedPaths.includes(selected) ? selected : (orderedPaths[0] ?? null)
   const errorKey = active ? `${sessionId}:${active}:${reviewTick}` : null
   if (bodyErrorFor !== errorKey) {
     setBodyErrorFor(errorKey)
     setBodyError(null)
   }
-  const orderedPaths = useMemo(() => filesInTreeOrder(files.map((file) => file.path)), [files])
-  const tree = useMemo(() => buildFileTree(orderedPaths), [orderedPaths])
-  const active = selected && orderedPaths.includes(selected) ? selected : (orderedPaths[0] ?? null)
   const openBody = active ? (bodies[active] ?? null) : null
   const shown = useMemo(() => (openBody ? [openBody] : []), [openBody])
 
