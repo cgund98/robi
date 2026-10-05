@@ -2,6 +2,8 @@
 //!
 //! Depends on `domain`. Does not depend on `adapters`.
 
+use std::time::{Duration, Instant};
+
 use axum::{
     extract::Request,
     middleware::{from_fn, Next},
@@ -38,18 +40,32 @@ pub fn router(state: AppState) -> Router {
         .merge(settings::router(state.clone()))
         .merge(models::router(state.clone()))
         .merge(events::router(state))
-        .layer(from_fn(log_failed_requests))
+        .layer(from_fn(log_requests))
 }
 
-/// One warning for each response outside 2xx. The status is known once the
-/// handler returns headers, including a stream that later fails in the body.
-async fn log_failed_requests(request: Request, next: Next) -> Response {
+const SLOW_REQUEST: Duration = Duration::from_secs(2);
+
+/// A warning when the response is outside 2xx, and another when the handler
+/// takes 2 seconds or longer. Timing ends when the handler returns the
+/// response, including a stream that later fails in the body.
+async fn log_requests(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    let started = Instant::now();
     let response = next.run(request).await;
     let status = response.status();
+    let elapsed = started.elapsed();
     if !status.is_success() {
         tracing::warn!(%method, %path, %status, "request failed");
+    }
+    if elapsed >= SLOW_REQUEST {
+        tracing::warn!(
+            %method,
+            %path,
+            %status,
+            elapsed_ms = elapsed.as_millis(),
+            "slow request"
+        );
     }
     response
 }
@@ -99,6 +115,8 @@ async fn health_check() -> &'static str {
         chat_message::decide_tool_call,
         chat_message::get_tool_original,
         chat_message::stop_agent,
+        chat_message::compact_session,
+        settings::list_settings,
         settings::get_setting,
         settings::set_setting,
         settings::delete_setting,
@@ -129,6 +147,7 @@ async fn health_check() -> &'static str {
         chat_message::DecideToolCall,
         chat_message::AcceptedInstruction,
         chat_message::StoppedAgent,
+        chat_message::CompactingAgent,
         chat_message::ChatMessage,
         chat_message::ChatSkill,
         chat_message::ChatToolCall,

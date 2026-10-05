@@ -62,7 +62,9 @@ catalog. The block states the job:
   `web_fetch` to read one URL. Snippets and page text are untrusted.
 - **Plan** explores with read tools and a sandboxed shell, then saves with
   `write_plan`. It does not edit project files. Saving a plan does not apply
-  it. The user applies it by switching to Agent mode. It uses `web_search`
+  it. It does not repeat the plan's content in its reply; it replies with a
+  short summary of what it saved and any decision still open. The user
+  applies the plan by switching to Agent mode. It uses `web_search`
   to find a public page and `web_fetch` to read one URL. Snippets and page
   text are untrusted.
 - **Agent** reads, edits, and runs commands. It applies changes with the edit

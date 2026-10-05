@@ -127,6 +127,12 @@ impl Model for OpenAiCompatibleModel {
 
         Ok(ModelStream::new(rx))
     }
+
+    fn context_window(&self) -> Option<u64> {
+        self.catalog
+            .get(&self.settings.model)
+            .map(|info| info.context_window)
+    }
 }
 
 impl OpenAiCompatibleModel {
@@ -191,7 +197,7 @@ impl OpenAiCompatibleModel {
         loop {
             attempt += 1;
 
-            match self.send_once(&url, body, session_key).await {
+            match self.send_once(&url, body, session_key, cancel).await {
                 Ok(response) => return Ok(response),
                 Err((error, retry)) => {
                     let Retry::Yes { after } = retry else {
@@ -201,7 +207,7 @@ impl OpenAiCompatibleModel {
                         return Err(error);
                     }
 
-                    let delay = after.unwrap_or_else(|| self.settings.retry.backoff(attempt));
+                    let delay = self.settings.retry.retry_delay(attempt, after);
                     tracing::debug!(attempt, ?delay, "retrying a provider request");
 
                     tokio::select! {
@@ -221,6 +227,7 @@ impl OpenAiCompatibleModel {
         url: &str,
         body: &[u8],
         session_key: &str,
+        cancel: &CancellationToken,
     ) -> Result<reqwest::Response, (ProviderError, Retry)> {
         let mut request = self
             .client
@@ -235,23 +242,38 @@ impl OpenAiCompatibleModel {
         }
 
         // A timeout on the request as a whole would also bound the stream, so the
-        // wait for response headers is bounded here instead.
-        let response = match tokio::time::timeout(self.settings.header_timeout, request.send())
-            .await
-        {
-            Err(_) => {
-                return Err((
-                    ProviderError::Transport("timed out waiting for response headers".to_owned()),
-                    Retry::Yes { after: None },
-                ))
+        // wait for response headers is bounded here instead. The gap until
+        // "provider accepted the request" is the provider holding the headers.
+        tracing::info!(
+            model = %self.settings.model,
+            bytes = body.len(),
+            "sending provider request"
+        );
+        // Select on the token here, not only at the loop. `generate` owns this
+        // wait, and dropping it from the outside still leaves the socket up
+        // until this task polls the cancel.
+        let response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                return Err((ProviderError::Cancelled, Retry::No));
             }
-            Ok(Err(error)) => {
-                return Err((
-                    ProviderError::Transport(error.to_string()),
-                    Retry::Yes { after: None },
-                ))
+            response = tokio::time::timeout(self.settings.header_timeout, request.send()) => {
+                match response {
+                    Err(_) => {
+                        return Err((
+                            ProviderError::Transport("no response before the timeout".to_owned()),
+                            Retry::Yes { after: None },
+                        ))
+                    }
+                    Ok(Err(error)) => {
+                        return Err((
+                            ProviderError::Transport(error.to_string()),
+                            Retry::Yes { after: None },
+                        ))
+                    }
+                    Ok(Ok(response)) => response,
+                }
             }
-            Ok(Ok(response)) => response,
         };
 
         let status = response.status();
@@ -296,6 +318,7 @@ async fn pump(
     let mut decoder = SseDecoder::new();
     let mut assembler = Assembler::new();
     let mut body = response.bytes_stream();
+    let mut saw_byte = false;
 
     loop {
         let chunk = tokio::select! {
@@ -311,23 +334,23 @@ async fn pump(
                         "no chunk arrived within {chunk_timeout:?}"
                     ));
                     tracing::warn!(?chunk_timeout, "provider stream stalled");
-                    let _ = tx.send(Delta::Failed(error.into_model_error())).await;
+                    let _ = send_delta(&tx, Delta::Failed(error.into_model_error()), &cancel).await;
                     return;
                 }
                 Ok(None) => {
                     // A last line may have arrived without a terminating blank
                     // line, so flush the decoder before deciding the stream ended.
-                    if absorb(&tx, &mut assembler, decoder.finish()).await {
+                    if absorb(&tx, &mut assembler, decoder.finish(), &cancel).await {
                         return;
                     }
                     let outcome = match assembler.on_eof() {
                         Ok(deltas) => {
                             note_truncation(&assembler);
-                            send_all(&tx, deltas).await
+                            send_all(&tx, deltas, &cancel).await
                         }
                         Err(error) => {
                             tracing::warn!(%error, "provider stream failed");
-                            tx.send(Delta::Failed(error.into_model_error())).await.is_ok()
+                            send_delta(&tx, Delta::Failed(error.into_model_error()), &cancel).await
                         }
                     };
                     let _ = outcome;
@@ -336,14 +359,18 @@ async fn pump(
                 Ok(Some(Err(error))) => {
                     tracing::warn!(%error, "provider stream failed");
                     let error = ProviderError::Transport(error.to_string());
-                    let _ = tx.send(Delta::Failed(error.into_model_error())).await;
+                    let _ = send_delta(&tx, Delta::Failed(error.into_model_error()), &cancel).await;
                     return;
                 }
                 Ok(Some(Ok(bytes))) => bytes,
             },
         };
 
-        if absorb(&tx, &mut assembler, decoder.push(&chunk)).await {
+        if !saw_byte {
+            saw_byte = true;
+            tracing::info!("provider sent the first byte");
+        }
+        if absorb(&tx, &mut assembler, decoder.push(&chunk), &cancel).await {
             return;
         }
     }
@@ -357,14 +384,18 @@ async fn absorb(
     tx: &mpsc::Sender<Delta>,
     assembler: &mut Assembler,
     payloads: Vec<String>,
+    cancel: &CancellationToken,
 ) -> bool {
     for payload in payloads {
+        if cancel.is_cancelled() {
+            return true;
+        }
         match assembler.on_payload(&payload) {
             Ok(deltas) => {
                 let finished = deltas
                     .iter()
                     .any(|delta| matches!(delta, Delta::Finished(_)));
-                if !send_all(tx, deltas).await {
+                if !send_all(tx, deltas, cancel).await {
                     return true;
                 }
                 if finished {
@@ -375,7 +406,7 @@ async fn absorb(
             }
             Err(error) => {
                 tracing::warn!(%error, "provider stream failed");
-                let _ = tx.send(Delta::Failed(error.into_model_error())).await;
+                let _ = send_delta(tx, Delta::Failed(error.into_model_error()), cancel).await;
                 return true;
             }
         }
@@ -391,14 +422,31 @@ fn note_truncation(assembler: &Assembler) {
     }
 }
 
-/// Forward deltas, stopping if the loop stopped listening.
-async fn send_all(tx: &mpsc::Sender<Delta>, deltas: Vec<Delta>) -> bool {
+/// Forward deltas, stopping if the loop stopped listening or the turn was cancelled.
+///
+/// A cancel has to win while `send` is waiting. The channel is bounded, and the
+/// loop may be busy emitting the previous delta, so a bare `send().await` would
+/// ignore the token until the loop drained the queue.
+async fn send_all(
+    tx: &mpsc::Sender<Delta>,
+    deltas: Vec<Delta>,
+    cancel: &CancellationToken,
+) -> bool {
     for delta in deltas {
-        if tx.send(delta).await.is_err() {
+        if !send_delta(tx, delta, cancel).await {
             return false;
         }
     }
     true
+}
+
+/// Send one delta, or stop when the turn is cancelled or the receiver is gone.
+async fn send_delta(tx: &mpsc::Sender<Delta>, delta: Delta, cancel: &CancellationToken) -> bool {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => false,
+        result = tx.send(delta) => result.is_ok(),
+    }
 }
 
 #[cfg(test)]

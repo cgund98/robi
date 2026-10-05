@@ -77,13 +77,19 @@ impl Tool for WriteFile {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        if std::fs::metadata(&resolved.absolute)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
+        let absolute = resolved.absolute.clone();
+        let (is_dir, existing) = crate::agent::blocking::call(move || {
+            let is_dir = std::fs::metadata(&absolute)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false);
+            let existing = read_text(&absolute)?;
+            Ok::<_, ToolError>((is_dir, existing))
+        })
+        .await
+        .map_err(ToolError::Failed)??;
+        if is_dir {
             return Err(ToolError::Failed("path is a directory".into()));
         }
-        let existing = read_text(&resolved.absolute)?;
         let existed = existing.is_some();
         let before = existing.unwrap_or_default();
         let relative = display_path(&resolved);
@@ -95,8 +101,14 @@ impl Tool for WriteFile {
             !existed,
         )
         .await?;
-        ensure_parent(&resolved.absolute)?;
-        atomic_write(&resolved.absolute, &args.content)?;
+        let absolute = resolved.absolute.clone();
+        let content = args.content.clone();
+        crate::agent::blocking::call(move || {
+            ensure_parent(&absolute)?;
+            atomic_write(&absolute, &content)
+        })
+        .await
+        .map_err(ToolError::Failed)??;
         self.ctx.note_lsp(&resolved.absolute, false).await;
         Ok(diff_json(&change_diff(
             &relative,

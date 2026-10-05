@@ -151,6 +151,15 @@ function TurnFooter({ worked, text }: { worked: string | null; text: string | un
   )
 }
 
+/** The transcript divider a compaction summary renders as. */
+function ContextCompactedDivider() {
+  return (
+    <li className={styles.compacted} role="separator">
+      <span className={styles.compactedLabel}>Context compacted</span>
+    </li>
+  )
+}
+
 function activityLabel(phase: AgentPhase): string | null {
   if (phase === 'thinking') {
     return 'Thinking'
@@ -231,6 +240,9 @@ const TurnView = memo(function TurnView({
   const open = turnStillOpen(group, last, phase)
   const worked = !open && start && end && end.id !== start.id ? workedLabel(start.id, end.id) : null
   const assistant = group.filter((message) => message.role === 'assistant')
+  if (start?.compaction) {
+    return <ContextCompactedDivider />
+  }
   return (
     <Fragment>
       {start ? (
@@ -452,9 +464,7 @@ export function Transcript({
     onViewPlanRef.current?.(plan)
   }, [])
   const turns = groupTurns(messages)
-  const anchorId = echo
-    ? undefined
-    : [...messages].reverse().find((message) => message.role === 'user')?.id
+  const anchorId = echo ? undefined : messages[messages.length - 1]?.id
   useFollowTail(scrollerRef, messages[0]?.id ?? '', messages, echo, phase)
 
   return (

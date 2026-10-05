@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { deleteSetting, getSetting, putSetting, SETTING_KEYS } from '../../api/settings'
+import { deleteSetting, getSettings, putSetting, SETTING_KEYS } from '../../api/settings'
 import { useWorkspaceStore } from '../../state/workspaceStore'
+import { ModelDefaults } from './ModelDefaults'
 import styles from './Settings.module.css'
 
 export function GeneralSettings() {
@@ -46,15 +47,15 @@ export function GeneralSettings() {
           subagent,
           subagentTimeoutSetting,
           toolTimeoutSetting
-        ] = await Promise.all([
-          getSetting(SETTING_KEYS.lsp),
-          getSetting(SETTING_KEYS.pathAllowRead),
-          getSetting(SETTING_KEYS.pathAllowWrite),
-          getSetting(SETTING_KEYS.pathEntries),
-          getSetting(SETTING_KEYS.maxIterations),
-          getSetting(SETTING_KEYS.subagentMaxIterations),
-          getSetting(SETTING_KEYS.subagentTimeoutSeconds),
-          getSetting(SETTING_KEYS.toolTimeoutSeconds)
+        ] = await getSettings([
+          SETTING_KEYS.lsp,
+          SETTING_KEYS.pathAllowRead,
+          SETTING_KEYS.pathAllowWrite,
+          SETTING_KEYS.pathEntries,
+          SETTING_KEYS.maxIterations,
+          SETTING_KEYS.subagentMaxIterations,
+          SETTING_KEYS.subagentTimeoutSeconds,
+          SETTING_KEYS.toolTimeoutSeconds
         ])
         if (!cancelled) {
           setLsp(lspSetting.value !== 'off')
@@ -132,208 +133,225 @@ export function GeneralSettings() {
   return (
     <>
       <h1 className={styles.title}>General</h1>
-      <div className={styles.card}>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Workspace</div>
-            <div className={styles.hint}>
-              {active ? active.root : 'No workspace selected. Open one from Workspaces.'}
+      <ModelDefaults />
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Workspace</h2>
+        <div className={styles.card}>
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Active workspace</div>
+              <div className={styles.hint}>
+                {active ? active.root : 'No workspace selected. Open one from Workspaces.'}
+              </div>
             </div>
+            <input
+              className={`${styles.input} ${styles.control}`}
+              value={active?.name ?? ''}
+              readOnly
+              aria-label="Workspace"
+            />
           </div>
-          <input
-            className={`${styles.input} ${styles.control}`}
-            value={active?.name ?? ''}
-            readOnly
-            aria-label="Workspace"
-          />
         </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Language server</div>
-            <div className={styles.hint}>
-              Diagnostics, definition, references, hover, and workspace symbols. The next turn uses
-              this.
+      </section>
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Agent</h2>
+        <p className={styles.sectionHint}>
+          Language tools and the turn budget for the main conversation.
+        </p>
+        <div className={styles.card}>
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Language server</div>
+              <div className={styles.hint}>
+                Diagnostics, definition, references, hover, and workspace symbols. The next turn
+                uses this.
+              </div>
             </div>
+            <button
+              type="button"
+              className={styles.switch}
+              role="switch"
+              aria-checked={lsp}
+              aria-label="Language server"
+              onClick={() => {
+                void toggleLsp()
+              }}
+            >
+              <span className={styles.knob} />
+            </button>
           </div>
-          <button
-            type="button"
-            className={styles.switch}
-            role="switch"
-            aria-checked={lsp}
-            aria-label="Language server"
-            onClick={() => {
-              void toggleLsp()
-            }}
-          >
-            <span className={styles.knob} />
-          </button>
-        </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Max iterations</div>
-            <div className={styles.hint}>
-              Model turns in one reply. Tool calls inside a turn do not count. The next turn uses
-              this. From 1 to 500.
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Max iterations</div>
+              <div className={styles.hint}>
+                Model turns in one reply. Tool calls inside a turn do not count. The next turn uses
+                this. From 1 to 500.
+              </div>
             </div>
+            <input
+              className={`${styles.input} ${styles.control} ${styles.number}`}
+              inputMode="numeric"
+              aria-label="Max iterations"
+              value={maxIterations}
+              onChange={(event) => setMaxIterations(event.target.value)}
+              onBlur={() => {
+                if (maxIterations.trim().length === 0) {
+                  setMaxIterations(savedIterations.current)
+                  return
+                }
+                void savePaths(
+                  SETTING_KEYS.maxIterations,
+                  maxIterations,
+                  savedIterations,
+                  setMaxIterations
+                )
+              }}
+            />
           </div>
-          <input
-            className={`${styles.input} ${styles.control} ${styles.number}`}
-            inputMode="numeric"
-            aria-label="Max iterations"
-            value={maxIterations}
-            onChange={(event) => setMaxIterations(event.target.value)}
-            onBlur={() => {
-              if (maxIterations.trim().length === 0) {
-                setMaxIterations(savedIterations.current)
-                return
-              }
-              void savePaths(
-                SETTING_KEYS.maxIterations,
-                maxIterations,
-                savedIterations,
-                setMaxIterations
-              )
-            }}
-          />
-        </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Subagent max iterations</div>
-            <div className={styles.hint}>
-              Model turns for one explore or general child. The next delegated task uses this. From
-              1 to 500.
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Tool timeout</div>
+              <div className={styles.hint}>
+                Seconds before a shell command is killed. The next command uses this. From 1 to
+                3600.
+              </div>
             </div>
+            <input
+              className={`${styles.input} ${styles.control} ${styles.number}`}
+              inputMode="numeric"
+              aria-label="Tool timeout"
+              value={toolTimeout}
+              onChange={(event) => setToolTimeout(event.target.value)}
+              onBlur={() => {
+                if (toolTimeout.trim().length === 0) {
+                  setToolTimeout(savedToolTimeout.current)
+                  return
+                }
+                void savePaths(
+                  SETTING_KEYS.toolTimeoutSeconds,
+                  toolTimeout,
+                  savedToolTimeout,
+                  setToolTimeout
+                )
+              }}
+            />
           </div>
-          <input
-            className={`${styles.input} ${styles.control} ${styles.number}`}
-            inputMode="numeric"
-            aria-label="Subagent max iterations"
-            value={subagentIterations}
-            onChange={(event) => setSubagentIterations(event.target.value)}
-            onBlur={() => {
-              if (subagentIterations.trim().length === 0) {
-                setSubagentIterations(savedSubagentIterations.current)
-                return
-              }
-              void savePaths(
-                SETTING_KEYS.subagentMaxIterations,
-                subagentIterations,
-                savedSubagentIterations,
-                setSubagentIterations
-              )
-            }}
-          />
         </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Subagent timeout</div>
-            <div className={styles.hint}>
-              Seconds before an explore or general child is stopped. The next delegated task uses
-              this. From 1 to 3600.
+      </section>
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Subagents</h2>
+        <p className={styles.sectionHint}>
+          Limits for one explore or general child. The next delegated task uses these.
+        </p>
+        <div className={styles.card}>
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Max iterations</div>
+              <div className={styles.hint}>Model turns for one child. From 1 to 500.</div>
             </div>
+            <input
+              className={`${styles.input} ${styles.control} ${styles.number}`}
+              inputMode="numeric"
+              aria-label="Subagent max iterations"
+              value={subagentIterations}
+              onChange={(event) => setSubagentIterations(event.target.value)}
+              onBlur={() => {
+                if (subagentIterations.trim().length === 0) {
+                  setSubagentIterations(savedSubagentIterations.current)
+                  return
+                }
+                void savePaths(
+                  SETTING_KEYS.subagentMaxIterations,
+                  subagentIterations,
+                  savedSubagentIterations,
+                  setSubagentIterations
+                )
+              }}
+            />
           </div>
-          <input
-            className={`${styles.input} ${styles.control} ${styles.number}`}
-            inputMode="numeric"
-            aria-label="Subagent timeout"
-            value={subagentTimeout}
-            onChange={(event) => setSubagentTimeout(event.target.value)}
-            onBlur={() => {
-              if (subagentTimeout.trim().length === 0) {
-                setSubagentTimeout(savedSubagentTimeout.current)
-                return
-              }
-              void savePaths(
-                SETTING_KEYS.subagentTimeoutSeconds,
-                subagentTimeout,
-                savedSubagentTimeout,
-                setSubagentTimeout
-              )
-            }}
-          />
-        </div>
-        <div className={styles.row}>
-          <div className={styles.copy}>
-            <div className={styles.label}>Tool timeout</div>
-            <div className={styles.hint}>
-              Seconds before a shell command is killed. The next command uses this. From 1 to 3600.
+          <div className={styles.row}>
+            <div className={styles.copy}>
+              <div className={styles.label}>Timeout</div>
+              <div className={styles.hint}>
+                Seconds before the child is stopped. From 1 to 3600.
+              </div>
             </div>
+            <input
+              className={`${styles.input} ${styles.control} ${styles.number}`}
+              inputMode="numeric"
+              aria-label="Subagent timeout"
+              value={subagentTimeout}
+              onChange={(event) => setSubagentTimeout(event.target.value)}
+              onBlur={() => {
+                if (subagentTimeout.trim().length === 0) {
+                  setSubagentTimeout(savedSubagentTimeout.current)
+                  return
+                }
+                void savePaths(
+                  SETTING_KEYS.subagentTimeoutSeconds,
+                  subagentTimeout,
+                  savedSubagentTimeout,
+                  setSubagentTimeout
+                )
+              }}
+            />
           </div>
-          <input
-            className={`${styles.input} ${styles.control} ${styles.number}`}
-            inputMode="numeric"
-            aria-label="Tool timeout"
-            value={toolTimeout}
-            onChange={(event) => setToolTimeout(event.target.value)}
-            onBlur={() => {
-              if (toolTimeout.trim().length === 0) {
-                setToolTimeout(savedToolTimeout.current)
-                return
-              }
-              void savePaths(
-                SETTING_KEYS.toolTimeoutSeconds,
-                toolTimeout,
-                savedToolTimeout,
-                setToolTimeout
-              )
-            }}
-          />
         </div>
-        <div className={styles.block}>
-          <div className={styles.label}>Sandbox read paths</div>
-          <div className={styles.hint}>
-            One path per line. A path starting with ~/ is your home directory. The next turn adds
-            these to the read allow list.
+      </section>
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Sandbox</h2>
+        <p className={styles.sectionHint}>
+          Extra paths the next turn adds to the sandbox. One path per line. A path starting with ~/
+          is your home directory.
+        </p>
+        <div className={styles.card}>
+          <div className={styles.block}>
+            <div className={styles.label}>Read paths</div>
+            <div className={styles.hint}>Added to the read allow list.</div>
+            <textarea
+              className={styles.area}
+              rows={4}
+              spellCheck={false}
+              aria-label="Sandbox read paths"
+              value={readPaths}
+              onChange={(event) => setReadPaths(event.target.value)}
+              onBlur={() => {
+                void savePaths(SETTING_KEYS.pathAllowRead, readPaths, savedRead, setReadPaths)
+              }}
+            />
           </div>
-          <textarea
-            className={styles.area}
-            rows={4}
-            spellCheck={false}
-            aria-label="Sandbox read paths"
-            value={readPaths}
-            onChange={(event) => setReadPaths(event.target.value)}
-            onBlur={() => {
-              void savePaths(SETTING_KEYS.pathAllowRead, readPaths, savedRead, setReadPaths)
-            }}
-          />
-        </div>
-        <div className={styles.block}>
-          <div className={styles.label}>Sandbox write paths</div>
-          <div className={styles.hint}>
-            One path per line. A path starting with ~/ is your home directory. The next turn adds
-            these to the write allow list.
+          <div className={styles.block}>
+            <div className={styles.label}>Write paths</div>
+            <div className={styles.hint}>Added to the write allow list.</div>
+            <textarea
+              className={styles.area}
+              rows={4}
+              spellCheck={false}
+              aria-label="Sandbox write paths"
+              value={writePaths}
+              onChange={(event) => setWritePaths(event.target.value)}
+              onBlur={() => {
+                void savePaths(SETTING_KEYS.pathAllowWrite, writePaths, savedWrite, setWritePaths)
+              }}
+            />
           </div>
-          <textarea
-            className={styles.area}
-            rows={4}
-            spellCheck={false}
-            aria-label="Sandbox write paths"
-            value={writePaths}
-            onChange={(event) => setWritePaths(event.target.value)}
-            onBlur={() => {
-              void savePaths(SETTING_KEYS.pathAllowWrite, writePaths, savedWrite, setWritePaths)
-            }}
-          />
-        </div>
-        <div className={styles.block}>
-          <div className={styles.label}>PATH entries</div>
-          <div className={styles.hint}>
-            One directory per line. A path starting with ~/ is your home directory. These are added
-            to the sandbox PATH and to the read allow list.
+          <div className={styles.block}>
+            <div className={styles.label}>PATH entries</div>
+            <div className={styles.hint}>Added to the sandbox PATH and to the read allow list.</div>
+            <textarea
+              className={styles.area}
+              rows={4}
+              spellCheck={false}
+              aria-label="PATH entries"
+              value={pathEntries}
+              onChange={(event) => setPathEntries(event.target.value)}
+              onBlur={() => {
+                void savePaths(SETTING_KEYS.pathEntries, pathEntries, savedEntries, setPathEntries)
+              }}
+            />
           </div>
-          <textarea
-            className={styles.area}
-            rows={4}
-            spellCheck={false}
-            aria-label="PATH entries"
-            value={pathEntries}
-            onChange={(event) => setPathEntries(event.target.value)}
-            onBlur={() => {
-              void savePaths(SETTING_KEYS.pathEntries, pathEntries, savedEntries, setPathEntries)
-            }}
-          />
         </div>
-      </div>
+      </section>
       {error ? <p className={`${styles.status} ${styles.statusError}`}>{error}</p> : null}
     </>
   )

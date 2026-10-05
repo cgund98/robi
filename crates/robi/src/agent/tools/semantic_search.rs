@@ -126,8 +126,10 @@ impl Tool for SemanticSearch {
             .embed_query(&args.query)
             .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
-        let hits = index
-            .search(&query_vec, &args.query, SEARCH_K)
+        let query = args.query.clone();
+        let hits = crate::agent::blocking::call(move || index.search(&query_vec, &query, SEARCH_K))
+            .await
+            .map_err(ToolError::Failed)?
             .map_err(|err| ToolError::Failed(err.to_string()))?;
         let filter = self.ctx.filter().await?;
         let mut kept = Vec::new();

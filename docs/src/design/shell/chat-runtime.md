@@ -242,7 +242,13 @@ to the database.
 loads that id through `MessageStore::message`.
 Chat session responses copy `running_session_ids` into `has_pending_agent` on
 each returned session. Get and list are the reads the window uses; create and
-rename return the same field from the same snapshot.
+rename return the same field from the same snapshot. The same responses carry
+`turn_display`. Accepting a message or a tool decision stores `pending` and
+publishes `robi.session.v1.updated` with that value. When the actor goes idle,
+`Complete` and `Cancelled` store `idle`, `Paused` stores `awaiting_approval`,
+and `Failed` stores `failed`. That write happens after the actor clears its
+running slot, and it publishes the same event. The
+loop does not read the column.
 
 `AgentFactory` (`crates/robi/src/adapters/chat_runtime.rs`) holds:
 

@@ -169,6 +169,10 @@ builds the mdBook, the same steps as the Pages workflow. Keep the jobs and the
   `crates/robi`.
 - **Keep I/O out of the loop.** When the loop needs a file or a socket, it needs
   a trait instead.
+- **Do not block an async worker.** Filesystem, SQLite, and tree walks in
+  `robi-api` go through `spawn_blocking` (`agent::blocking::call`). A blocking
+  call on the async runtime stalls the API. See
+  [persistence.md](docs/src/design/persistence/persistence.md).
 - **Keep dependencies one-way.** `robi-core` never depends on `crates/robi`, and
   nothing depends on `src-tauri`.
 - **Documentation is part of the change.** A change to behavior, a default, a

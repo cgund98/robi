@@ -170,8 +170,9 @@ an error.
 **While a notice is up, the screen polls.** The event stream's index frames
 follow the session's event stream, which a docs visit does not open, so the
 screen `GET`s `/api/v1/workspaces/{id}/index` every 2 seconds while the state
-is not `ready` and re-runs the search when the state changes. That keeps the
-counts ticking and swaps in fuller results the moment the scan finishes.
+is not `ready` and re-runs the search when the state changes. That GET shares
+the shell's 10-second cache, so a tick inside that window returns the last
+status and the counts move on when the cache expires.
 `paused` and `failed` wait for **Resume** instead: it calls
 `PUT /api/v1/workspaces/{id}/index` with `running`, and the next poll picks
 the scan up. `ready` draws no notice and stops the poll.

@@ -84,10 +84,6 @@ section that owns it.
 
 | Milestone | Piece | State |
 |---|---|---|
-| M1 | Anthropic's own wire format | **Built.** The Anthropic Messages adapter ships alongside the OpenAI-compatible client; both are listed in one picker. The model id's `ocg_`/`ant_` prefix selects the provider. |
-| M2 | Process placement (D3): in-process loop vs sidecar | Desktop hosts the API in-process. `robi-api` remains for headless and `pnpm dev`. |
-| M2 | Tool-card expand default, and whether it persists per session | Open in `docs/src/design/shell/visual-style.md`. |
-| M3 | Auto-compaction and a manual trigger (F3.4) | Not built. Specified in [context-management.md](design/workspace/context-management.md). |
 | M3 | Permission and grant design page | Behavior exists in code. `docs/src/design/workspace/permissions.md` is still needed. |
 | M3 | Price display | Deferred. Secrets stay in `~/.robi/secrets.toml`. |
 | M6 | Inline comments, and sending one to the assistant | Later, in `docs/src/design/review/code-review.md`. |
@@ -460,7 +456,7 @@ that a trait is only "fixed" once a real implementation has exercised it.
 - **Settled** — a retry is confined to the window before the first delta reaches
   the loop, which is what keeps it from duplicating a partially-rendered message:
   the adapter retries the request, never a stream in progress. 429 (honouring
-  `Retry-After`), 5xx, and connect timeouts are retried; a cancellation and every
+  `Retry-After`, capped at 8 s), 5xx, and connect timeouts are retried; a cancellation and every
   other 4xx are not. Three attempts, exponential backoff with full jitter (D7).
 
 ### F1.4 Model and effort selection
@@ -618,12 +614,14 @@ gopi uses three independent gates. Keep all three; they compose well.
 Do this in M3, not later. A session that reads files fills the window quickly,
 and every feature after this one adds context pressure.
 
-- Token accounting per message; a visible context meter.
+- Token accounting per message; a visible context meter. **Shipped.**
 - Auto-compaction when the window fills, plus a manual trigger. gopi ships
   manual-only `/compact`; a GUI should do it automatically and say when it did.
   Settled in [context-management.md](design/workspace/context-management.md):
   a lossy summary of the older prefix, the current turn kept whole, the
-  system prompt left alone because it is not a message.
+  system prompt left alone because it is not a message. **Shipped:** auto at
+  80% of the window, **Compact** in the meter popover, the summary marked
+  `compaction: true`, and the `transcript_compacted` event.
 - Compaction rewrites older turns once the window fills. Shrinking one result
   as the tool returns it, and keeping the original retrievable, is M9. The two
   compose: compression keeps a turn inside the window longer, and compaction

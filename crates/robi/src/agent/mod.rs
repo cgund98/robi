@@ -8,6 +8,8 @@
 //! output. `web` fetches and searches pages. `skills` and `mcp` load extra
 //! instructions and remote tools. `lsp` and `index` answer code questions.
 
+pub mod blocking;
+pub mod compact;
 pub mod compress;
 pub mod index;
 pub mod lsp;

@@ -22,7 +22,10 @@ use crate::store::{self, ChunkHit};
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 const EMBED_BATCH: usize = 16;
-const DEBOUNCE: Duration = Duration::from_millis(500);
+/// Wait after the last event for a path before hashing it. Editors write the
+/// same file many times in a row; each event resets this, so the file is
+/// indexed once the burst has been quiet.
+const DEBOUNCE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +66,7 @@ struct Shared {
     stop: CancellationToken,
     embedder: Arc<dyn Embedder>,
     on_status: Arc<dyn Fn(IndexStatus) + Send + Sync>,
+    debounce: Duration,
 }
 
 pub struct Index {
@@ -77,6 +81,17 @@ impl Index {
         embedder: Arc<dyn Embedder>,
         on_status: Arc<dyn Fn(IndexStatus) + Send + Sync>,
     ) -> Arc<Self> {
+        Self::start_with(workspace_id, root, db_path, embedder, on_status, DEBOUNCE)
+    }
+
+    fn start_with(
+        workspace_id: WorkspaceId,
+        root: PathBuf,
+        db_path: PathBuf,
+        embedder: Arc<dyn Embedder>,
+        on_status: Arc<dyn Fn(IndexStatus) + Send + Sync>,
+        debounce: Duration,
+    ) -> Arc<Self> {
         let root = root.canonicalize().unwrap_or(root);
         let shared = Arc::new(Shared {
             workspace_id: workspace_id.to_string(),
@@ -88,6 +103,7 @@ impl Index {
             stop: CancellationToken::new(),
             embedder,
             on_status,
+            debounce,
         });
         let task = Arc::clone(&shared);
         tokio::spawn(async move {
@@ -407,7 +423,7 @@ async fn watch_loop(
             }
             event = rx.recv() => {
                 let Some(event) = event else { return Ok(()) };
-                let deadline = Instant::now() + DEBOUNCE;
+                let deadline = Instant::now() + shared.debounce;
                 for path in event.paths {
                     pending.insert(path, deadline);
                 }
@@ -583,12 +599,13 @@ mod tests {
         drop(index);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let second = Index::start(
+        let second = Index::start_with(
             workspace_id,
             root.clone(),
             db,
             Arc::clone(&fake) as Arc<dyn Embedder>,
             Arc::new(|_| {}),
+            Duration::from_millis(200),
         );
         wait_ready(&second).await;
         assert_eq!(fake.document_calls(), first);

@@ -269,6 +269,9 @@ impl Assembler {
             .or(delta.reasoning.as_deref());
         if let Some(reasoning) = reasoning {
             if !reasoning.is_empty() {
+                if self.reasoning.is_empty() {
+                    tracing::info!("model started reasoning");
+                }
                 self.reasoning.push_str(reasoning);
                 deltas.push(Delta::Reasoning(reasoning.to_owned()));
             }

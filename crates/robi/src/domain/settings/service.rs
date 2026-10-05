@@ -66,6 +66,24 @@ impl SettingsService {
         })
     }
 
+    /// Reads each key in order. Every key is checked against the whitelist
+    /// before any default is written.
+    pub async fn get_many(&self, keys: &[String]) -> Result<Vec<ReadSetting>, ServiceError> {
+        if keys.is_empty() {
+            return Err(ServiceError::BadRequest(
+                "at least one setting key is required".to_owned(),
+            ));
+        }
+        for key in keys {
+            require_known(key)?;
+        }
+        let mut settings = Vec::with_capacity(keys.len());
+        for key in keys {
+            settings.push(self.get(key).await?);
+        }
+        Ok(settings)
+    }
+
     pub async fn set(&self, key: &str, value: String, secret: bool) -> Result<(), ServiceError> {
         let known = require_known(key)?;
         validate_value(&value)?;
@@ -78,7 +96,12 @@ impl SettingsService {
         }
         if matches!(
             key,
-            keys::LSP | keys::WEB_SEARCH_APPROVAL | keys::WEB_FETCH_APPROVAL
+            keys::LSP
+                | keys::WEB_SEARCH_APPROVAL
+                | keys::WEB_FETCH_APPROVAL
+                | keys::PROVIDER_OPENCODE_GO
+                | keys::PROVIDER_ANTHROPIC
+                | keys::PROVIDER_DEEPSEEK
         ) && value != keys::LSP_ON
             && value != keys::LSP_OFF
         {
@@ -157,6 +180,37 @@ mod tests {
             read,
             ServiceError::BadRequest("unknown setting: custom_token".into())
         );
+    }
+
+    #[tokio::test]
+    async fn get_many_rejects_an_unknown_key_before_writing_defaults() {
+        let store = Arc::new(MemorySettingsStore::new());
+        let service = SettingsService {
+            store: store.clone(),
+        };
+        let error = service
+            .get_many(&[MODEL.to_owned(), "custom_token".to_owned()])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("unknown setting: custom_token".into())
+        );
+        assert!(store.get(MODEL).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_many_returns_keys_in_request_order() {
+        let service = service();
+        let settings = service
+            .get_many(&[BASE_URL.to_owned(), OPENCODE_GO_API_KEY.to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(settings.len(), 2);
+        assert!(!settings[0].secret);
+        assert!(settings[0].value.is_none());
+        assert!(settings[1].secret);
+        assert!(settings[1].value.is_none());
     }
 
     #[tokio::test]

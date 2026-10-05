@@ -11,14 +11,14 @@ use crate::domain::{
     chat_session::{
         model::{
             apply_session_update, AgentMode, ChatSession, CreateChatSessionCommand, McpAllow,
-            ModelConfig, PathRules, UpdateChatSessionCommand,
+            ModelConfig, PathRules, TurnDisplay, UpdateChatSessionCommand,
         },
         repo::ChatSessionRepository,
     },
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, plan_path, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, plan_path, turn_display, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug + 'static) -> ServiceError {
     if let Some(sql) = (&err as &dyn std::any::Any).downcast_ref::<sqlx::Error>() {
@@ -60,6 +60,8 @@ fn chat_session_from_row(
     let plan_path: Option<String> = row
         .try_get("plan_path")
         .map_err(|err| log_unknown(context, err))?;
+    let turn_display = TurnDisplay::parse(&row_text(context, &row, "turn_display")?)
+        .map_err(|err| log_unknown(context, err))?;
     let created_at: String = row
         .try_get("created_at")
         .map_err(|err| log_unknown(context, err))?;
@@ -80,6 +82,7 @@ fn chat_session_from_row(
         mode,
         model_config,
         plan_path,
+        turn_display,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
         last_used_at: parse_timestamp(context, &last_used_at)?,
@@ -198,6 +201,7 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             mode: command.mode,
             model_config: command.model_config,
             plan_path: None,
+            turn_display: TurnDisplay::Idle,
             created_at: now,
             updated_at: now,
             last_used_at: now,
@@ -346,6 +350,29 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         .execute(self.pool.as_ref())
         .await
         .map_err(|err| log_unknown("set_plan_path: update", err))?;
+        if result.rows_affected() == 0 {
+            return Err(ServiceError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn set_turn_display(
+        &self,
+        id: SessionId,
+        display: TurnDisplay,
+    ) -> Result<(), ServiceError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE chat_sessions
+            SET turn_display = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind(display.as_str())
+        .bind(id.to_string())
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|err| log_unknown("set_turn_display: update", err))?;
         if result.rows_affected() == 0 {
             return Err(ServiceError::NotFound(id.to_string()));
         }

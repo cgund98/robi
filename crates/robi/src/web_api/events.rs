@@ -58,9 +58,16 @@ pub async fn stream_events(
     let lease = open_index(&state, &mut filter).await;
     if let Some(workspace_id) = filter.workspace_id.as_deref() {
         if let Ok(id) = Uuid::parse_str(workspace_id) {
-            state
-                .index
-                .publish_status(robi_core::ids::WorkspaceId::from_uuid(id));
+            let id = robi_core::ids::WorkspaceId::from_uuid(id);
+            state.index.publish_status(id);
+            if state.mcp.is_some() {
+                // The tray paints from a refetch of this cue.
+                state
+                    .event_bus
+                    .publish(crate::domain::events::EventEnvelope::mcp_status(
+                        &id.to_string(),
+                    ));
+            }
         }
     }
     let stream = event_stream(subscription, filter, lease);
@@ -83,6 +90,10 @@ pub struct EventsStreamQuery {
     pub event_types: Vec<String>,
     /// When set, only envelopes whose subject is this session.
     pub session_id: Option<String>,
+    /// When set without `session_id`, every session frame is delivered. Index
+    /// and MCP frames are limited to this workspace. A `session_id` query
+    /// still derives the workspace from the session row.
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -108,10 +119,18 @@ impl StreamFilter {
                     .to_string(),
             ),
         };
+        let workspace_id = match query.workspace_id.as_deref() {
+            None | Some("") => None,
+            Some(value) => Some(
+                Uuid::parse_str(value)
+                    .map_err(|_| ServiceError::BadRequest("workspace_id must be a UUID".into()))?
+                    .to_string(),
+            ),
+        };
         Ok(Self {
             event_types,
             session_id,
-            workspace_id: None,
+            workspace_id,
         })
     }
 
@@ -119,13 +138,23 @@ impl StreamFilter {
         if let Some(session_id) = &self.session_id {
             let same_session = envelope.subject == *session_id;
             let same_workspace = self.workspace_id.as_ref().is_some_and(|workspace| {
-                envelope.event_type == crate::domain::events::INDEX_PROGRESS
+                crate::domain::events::WORKSPACE_EVENT_TYPES.contains(&envelope.event_type.as_str())
                     && envelope.subject == *workspace
             });
             let list_or_app = crate::domain::events::SESSION_FILTER_EXCEPTIONS
                 .contains(&envelope.event_type.as_str());
             if !same_session && !same_workspace && !list_or_app {
                 return false;
+            }
+        }
+        if self.session_id.is_none() {
+            if let Some(workspace_id) = &self.workspace_id {
+                let other_workspace = crate::domain::events::WORKSPACE_EVENT_TYPES
+                    .contains(&envelope.event_type.as_str())
+                    && envelope.subject != *workspace_id;
+                if other_workspace {
+                    return false;
+                }
             }
         }
         if let Some(event_types) = &self.event_types {
@@ -141,6 +170,7 @@ fn parse_query(raw: Option<&str>) -> EventsStreamQuery {
     let mut query = EventsStreamQuery {
         event_types: Vec::new(),
         session_id: None,
+        workspace_id: None,
     };
     let Some(raw) = raw.filter(|value| !value.is_empty()) else {
         return query;
@@ -158,6 +188,7 @@ fn parse_query(raw: Option<&str>) -> EventsStreamQuery {
                 }
             }
             "session_id" => query.session_id = Some(decode_query_component(value)),
+            "workspace_id" => query.workspace_id = Some(decode_query_component(value)),
             _ => {}
         }
     }
@@ -199,23 +230,28 @@ async fn open_index(
     state: &AppState,
     filter: &mut StreamFilter,
 ) -> Option<crate::agent::index::IndexLease> {
-    let session_id = filter.session_id.as_deref()?;
-    let uuid = Uuid::parse_str(session_id).ok()?;
-    let session = state
-        .chat_session_service
-        .get_chat_session(robi_core::ids::SessionId::from_uuid(uuid))
-        .await
-        .ok()?;
-    filter.workspace_id = Some(session.workspace_id.to_string());
+    if let Some(session_id) = filter.session_id.as_deref() {
+        let uuid = Uuid::parse_str(session_id).ok()?;
+        let session = state
+            .chat_session_service
+            .get_chat_session(robi_core::ids::SessionId::from_uuid(uuid))
+            .await
+            .ok()?;
+        filter.workspace_id = Some(session.workspace_id.to_string());
+    }
+    let workspace_id = filter.workspace_id.as_deref()?;
+    let uuid = Uuid::parse_str(workspace_id).ok()?;
+    let workspace_id = robi_core::ids::WorkspaceId::from_uuid(uuid);
     let workspace = state
         .workspace_service
-        .get_workspace(session.workspace_id)
+        .get_workspace(workspace_id)
         .await
         .ok()?;
-    Some(state.index.acquire(
-        session.workspace_id,
-        std::path::PathBuf::from(workspace.root),
-    ))
+    Some(
+        state
+            .index
+            .acquire(workspace_id, std::path::PathBuf::from(workspace.root)),
+    )
 }
 
 fn event_stream(
@@ -315,6 +351,14 @@ mod tests {
             unreachable!("events stream does not touch chat sessions")
         }
 
+        async fn set_turn_display(
+            &self,
+            _id: SessionId,
+            _display: crate::domain::chat_session::model::TurnDisplay,
+        ) -> Result<(), ServiceError> {
+            Ok(())
+        }
+
         async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
             unreachable!("events stream does not touch chat sessions")
         }
@@ -351,6 +395,10 @@ mod tests {
         async fn stop(&self, _session: SessionId) -> Result<(), ServiceError> {
             unreachable!("events stream does not stop a turn")
         }
+
+        async fn compact(&self, _session: SessionId) -> Result<(), ServiceError> {
+            unreachable!("events stream does not compact")
+        }
     }
 
     #[async_trait]
@@ -380,6 +428,15 @@ mod tests {
         }
 
         async fn update(&self, _session: SessionId, _message: Message) -> Result<(), StoreError> {
+            unreachable!("events stream does not touch the transcript")
+        }
+
+        async fn replace_prefix(
+            &self,
+            _session: SessionId,
+            _delete: &[MessageId],
+            _summary: Message,
+        ) -> Result<(), StoreError> {
             unreachable!("events stream does not touch the transcript")
         }
     }

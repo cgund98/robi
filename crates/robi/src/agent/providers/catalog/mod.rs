@@ -6,6 +6,7 @@
 //! hand-editing it.
 
 mod anthropic;
+mod deepseek;
 mod opencode_go;
 
 use super::config::ModelId;
@@ -60,6 +61,13 @@ impl ModelCatalog {
         }
     }
 
+    /// The models DeepSeek serves.
+    pub fn deepseek() -> Self {
+        Self {
+            models: deepseek::models(),
+        }
+    }
+
     /// Both catalogs in one flat list, OpenCode Go first then Anthropic.
     ///
     /// The dropdown renders this (A11). Ids are prefixed and disjoint, so one
@@ -67,6 +75,7 @@ impl ModelCatalog {
     pub fn all() -> Self {
         let mut models = opencode_go::models();
         models.extend(anthropic::models());
+        models.extend(deepseek::models());
         Self { models }
     }
 
@@ -99,7 +108,7 @@ impl ModelCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::providers::config::{ANTHROPIC_PREFIX, OPENCODE_GO_PREFIX};
+    use crate::agent::providers::config::{ANTHROPIC_PREFIX, DEEPSEEK_PREFIX, OPENCODE_GO_PREFIX};
 
     #[test]
     fn the_catalog_holds_the_opencode_go_table() {
@@ -113,9 +122,9 @@ mod tests {
     fn the_catalog_holds_the_anthropic_table() {
         let catalog = ModelCatalog::anthropic();
         for id in [
-            "ant_claude-sonnet-4-6",
-            "ant_claude-opus-4-6",
-            "ant_claude-opus-4-5",
+            "ant_claude-fable-5-1",
+            "ant_claude-opus-5-5",
+            "ant_claude-sonnet-5-5",
             "ant_claude-haiku-4-5",
         ] {
             assert!(catalog.get(&ModelId::new(id)).is_some(), "missing {id}");
@@ -137,6 +146,13 @@ mod tests {
             assert!(
                 info.id.as_str().starts_with(ANTHROPIC_PREFIX),
                 "{} is missing the {ANTHROPIC_PREFIX} prefix",
+                info.id
+            );
+        }
+        for info in ModelCatalog::deepseek().models() {
+            assert!(
+                info.id.as_str().starts_with(DEEPSEEK_PREFIX),
+                "{} is missing the {DEEPSEEK_PREFIX} prefix",
                 info.id
             );
         }
@@ -163,12 +179,12 @@ mod tests {
     #[test]
     fn haiku_does_not_support_effort() {
         // A2: the user's constraint. Sending `output_config.effort` to Haiku is a
-        // 400, so the flag must be false and the four M1 models must be explicit.
+        // 400, so the flag must be false and every listed model must be explicit.
         let catalog = ModelCatalog::anthropic();
         for (id, supports) in [
-            ("ant_claude-sonnet-4-6", true),
-            ("ant_claude-opus-4-6", true),
-            ("ant_claude-opus-4-5", true),
+            ("ant_claude-fable-5-1", true),
+            ("ant_claude-opus-5-5", true),
+            ("ant_claude-sonnet-5-5", true),
             ("ant_claude-haiku-4-5", false),
         ] {
             let info = catalog.get(&ModelId::new(id)).expect("listed");
@@ -180,7 +196,11 @@ mod tests {
     fn every_listed_model_can_call_tools() {
         // D9: a model that cannot call tools cannot drive the loop, so listing one
         // would only invite a session that fails.
-        for catalog in [ModelCatalog::opencode_go(), ModelCatalog::anthropic()] {
+        for catalog in [
+            ModelCatalog::opencode_go(),
+            ModelCatalog::anthropic(),
+            ModelCatalog::deepseek(),
+        ] {
             let tool_less: Vec<&str> = catalog
                 .models()
                 .iter()

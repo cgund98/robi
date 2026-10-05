@@ -44,7 +44,9 @@ pub async fn launch(
     cancel: CancellationToken,
     timeout: Duration,
 ) -> Result<CommandOutput, String> {
-    let argv = launch_argv(profile, command)?;
+    let owned = profile.clone();
+    let command = command.to_owned();
+    let argv = crate::agent::blocking::call(move || launch_argv(&owned, &command)).await??;
     run_command(launch::Request {
         argv,
         cwd: profile.cwd.clone(),

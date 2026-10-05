@@ -107,14 +107,22 @@ impl Tool for Grep {
             match search_ripgrep(&rg, &self.ctx.root, &filter, &query, &globs, &run.cancel).await {
                 Ok(output) => return Ok(payload(output)),
                 Err(RipgrepError::Launch(reason)) => {
-                    let mut output = search_builtin(&self.ctx.root, &filter, &query, &run.cancel)?;
+                    let mut output = search_off_runtime(
+                        self.ctx.root.clone(),
+                        filter.clone(),
+                        query.clone(),
+                        run.cancel.clone(),
+                    )
+                    .await?;
                     output.fallback_reason = Some(reason);
                     return Ok(payload(output));
                 }
                 Err(RipgrepError::Tool(err)) => return Err(err),
             }
         }
-        search_builtin(&self.ctx.root, &filter, &query, &run.cancel).map(payload)
+        search_off_runtime(self.ctx.root.clone(), filter, query, run.cancel.clone())
+            .await
+            .map(payload)
     }
 }
 
@@ -335,6 +343,17 @@ struct RgText {
 #[derive(Debug, Deserialize)]
 struct RgSubmatch {
     start: Option<usize>,
+}
+
+async fn search_off_runtime(
+    root: std::path::PathBuf,
+    filter: PathFilter,
+    query: GrepQuery,
+    cancel: CancellationToken,
+) -> Result<GrepOutput, ToolError> {
+    crate::agent::blocking::call(move || search_builtin(&root, &filter, &query, &cancel))
+        .await
+        .map_err(ToolError::Failed)?
 }
 
 fn search_builtin(

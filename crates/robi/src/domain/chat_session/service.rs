@@ -9,7 +9,7 @@ use crate::domain::{
     chat_session::{
         model::{
             ChatSession, CreateChatSessionCommand, ModeOverride, ModeOverrideUpdate, ModelConfig,
-            UpdateChatSessionCommand,
+            TurnDisplay, UpdateChatSessionCommand,
         },
         plans::SessionPlanCleaner,
         repo::ChatSessionRepository,
@@ -18,6 +18,27 @@ use crate::domain::{
     events::{EventBus, EventEnvelope},
     workspace::repo::WorkspaceRepository,
 };
+
+/// The display value a restart should store.
+///
+/// A waiting call wins. Otherwise a stored failure stays, and a `pending`
+/// left by a crash becomes `idle`.
+pub fn reconciled_turn_display(
+    stored: TurnDisplay,
+    messages: &[robi_core::message::Message],
+) -> TurnDisplay {
+    let waiting = messages
+        .iter()
+        .flat_map(|message| message.tool_calls.iter())
+        .any(|call| call.is_pending_approval() && call.needs_execution());
+    if waiting {
+        TurnDisplay::AwaitingApproval
+    } else if stored == TurnDisplay::Failed {
+        TurnDisplay::Failed
+    } else {
+        TurnDisplay::Idle
+    }
+}
 
 /// A chat session title longer than this is rejected before it is written.
 pub const CHAT_SESSION_TITLE_MAX_CHARS: usize = 200;
@@ -143,6 +164,40 @@ impl ChatSessionService {
         }
         self.repository.set_plan_path(id, path.to_owned()).await?;
         self.publish(EventEnvelope::session_updated(id));
+        Ok(())
+    }
+
+    /// Store the display summary and publish it on `robi.session.v1.updated`.
+    pub async fn set_turn_display(
+        &self,
+        id: SessionId,
+        display: TurnDisplay,
+    ) -> Result<(), ServiceError> {
+        self.repository.set_turn_display(id, display).await?;
+        self.publish(EventEnvelope::session_turn_display(id, display));
+        Ok(())
+    }
+
+    /// Repair `turn_display` from the transcript after a process restart.
+    ///
+    /// A waiting tool call forces `awaiting_approval`. A stored `failed` stays
+    /// when nothing is waiting. Anything else, including a leftover `pending`,
+    /// becomes `idle`. No event is published.
+    pub async fn reconcile_turn_displays(
+        &self,
+        store: &dyn robi_core::store::MessageStore,
+    ) -> Result<(), ServiceError> {
+        let sessions = self.repository.list_chat_sessions(None).await?;
+        for session in sessions {
+            let messages = store.messages(session.id).await.map_err(|error| {
+                tracing::error!(%error, "failed to read messages for turn display");
+                ServiceError::Unknown
+            })?;
+            let next = reconciled_turn_display(session.turn_display, &messages);
+            if next != session.turn_display {
+                self.repository.set_turn_display(session.id, next).await?;
+            }
+        }
         Ok(())
     }
 
@@ -298,7 +353,7 @@ mod tests {
     use crate::domain::{
         chat_session::model::{
             apply_session_update, AgentMode, ModeOverride, ModeOverrideUpdate, ModelConfigUpdate,
-            PathRules, UpdateChatSessionCommand,
+            PathRules, TurnDisplay, UpdateChatSessionCommand,
         },
         workspace::repo::AnyWorkspace,
     };
@@ -340,6 +395,7 @@ mod tests {
                 mode: command.mode,
                 model_config: command.model_config,
                 plan_path: None,
+                turn_display: TurnDisplay::Idle,
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,
@@ -414,6 +470,19 @@ mod tests {
                 .get_mut(&id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
             session.plan_path = Some(path);
+            Ok(())
+        }
+
+        async fn set_turn_display(
+            &self,
+            id: SessionId,
+            display: TurnDisplay,
+        ) -> Result<(), ServiceError> {
+            let mut sessions = self.lock();
+            let session = sessions
+                .get_mut(&id)
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            session.turn_display = display;
             Ok(())
         }
 
@@ -880,10 +949,34 @@ mod tests {
             mode: AgentMode::Agent,
             model_config: ModelConfig::default(),
             plan_path: None,
+            turn_display: TurnDisplay::Idle,
             created_at: last_used_at,
             updated_at: last_used_at,
             last_used_at,
         }
+    }
+
+    #[test]
+    fn reconcile_clears_a_leftover_pending_and_keeps_a_failure() {
+        assert_eq!(
+            reconciled_turn_display(TurnDisplay::Pending, &[]),
+            TurnDisplay::Idle
+        );
+        assert_eq!(
+            reconciled_turn_display(TurnDisplay::Failed, &[]),
+            TurnDisplay::Failed
+        );
+        let waiting = robi_core::message::Message::assistant_with_tool_calls(
+            "",
+            vec![robi_core::message::ToolCall::new(
+                "shell",
+                serde_json::json!({}),
+            )],
+        );
+        assert_eq!(
+            reconciled_turn_display(TurnDisplay::Idle, &[waiting]),
+            TurnDisplay::AwaitingApproval
+        );
     }
 
     #[tokio::test]
@@ -1033,7 +1126,7 @@ mod tests {
                 mode: None,
                 model_config: Some(ModelConfigUpdate {
                     agent: Some(ModeOverrideUpdate {
-                        model: Some(Some("ant_claude-sonnet-4-6".into())),
+                        model: Some(Some("ant_claude-sonnet-5-5".into())),
                         reasoning_effort: None,
                     }),
                     ..ModelConfigUpdate::default()
@@ -1043,7 +1136,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             updated.model_config.agent.model.as_deref(),
-            Some("ant_claude-sonnet-4-6")
+            Some("ant_claude-sonnet-5-5")
         );
     }
 

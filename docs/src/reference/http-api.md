@@ -19,13 +19,14 @@ Responses include CORS for `http://localhost:1430`, `http://127.0.0.1:1430`,
 All routes live under `/api/v1`. The request and response bodies are described by
 the OpenAPI document at `openapi/openapi.json`, which is served alongside a
 Swagger UI at `/docs`. Every error has one shape: `{"error": "..."}`, with a
-status of 400, 404, 409, or 500.
+status of 400, 404, 409, or 500. A response outside 2xx is logged at warning. A
+handler that takes 2 seconds or longer is logged at warning with its duration.
 
 ## Health
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/api/v1/health` | `200 "Ok"` |
+| `GET` | `/api/v1/health` | `200 "Ok"`. The shell polls this every 5 seconds and treats a non-200 or a wait past 3 seconds as unreachable. |
 
 ## Workspaces
 
@@ -51,7 +52,7 @@ status of 400, 404, 409, or 500.
 |---|---|---|
 | `POST` | `/api/v1/chat_sessions` | `201` and the new session. |
 | `GET` | `/api/v1/chat_sessions` | Sessions, optionally filtered by `workspace_id`. |
-| `GET` | `/api/v1/chat_sessions/{id}` | One session. Includes `has_pending_agent`. |
+| `GET` | `/api/v1/chat_sessions/{id}` | One session. Includes `has_pending_agent` and `turn_display`. |
 | `PATCH` | `/api/v1/chat_sessions/{id}` | Update title, mode, model config, or grants. |
 | `DELETE` | `/api/v1/chat_sessions/{id}` | `204`. Cascades to the session's messages. |
 
@@ -64,6 +65,7 @@ status of 400, 404, 409, or 500.
 | `GET` | `/api/v1/chat_sessions/{id}/messages/{message_id}` | One message. |
 | `POST` | `/api/v1/chat_sessions/{id}/tool_calls/{call_id}` | `202`; settle one paused call. `409` when the actor is running. |
 | `POST` | `/api/v1/chat_sessions/{id}/stop` | `202` `{"status":"stopped"}`; cancel the running turn. |
+| `POST` | `/api/v1/chat_sessions/{id}/compact` | `202` `{"status":"compacting"}`; summarize the older prefix. `409` when the actor is running, the turn is awaiting approval, or nothing is compactable. |
 | `GET` | `/api/v1/chat_sessions/{id}/tool_originals/{original_id}` | A stored original (shell or MCP) of a compressed result. |
 
 Sending a message is asynchronous: the route accepts the turn and returns `202`,
@@ -82,6 +84,7 @@ instruction. See the [approval invariant](../design/core/agent-loop.md).
 
 | Method | Path | Returns |
 |---|---|---|
+| `GET` | `/api/v1/settings?key=` | `200` array, one entry per repeated `key`, in request order. Secret values are omitted. |
 | `GET` | `/api/v1/settings/{key}` | `200`; secret values are omitted. |
 | `PUT` | `/api/v1/settings/{key}` | `204`. |
 | `DELETE` | `/api/v1/settings/{key}` | `204`. |
@@ -95,7 +98,8 @@ the shell holds one connection and updates from it.
 
 **Query parameters.** Both optional:
 
-- `session_id` — a UUID; limit the stream to one session.
+- `session_id` — a UUID; limit the stream to one session. The shell does not send this.
+- `workspace_id` — a UUID. Every session frame is delivered. Index and MCP frames are limited to this workspace. The shell sends the open workspace.
 - `event_types` — repeat the parameter to select event types.
 
 **Frame shape.** Each frame is:
@@ -125,10 +129,11 @@ and `data` is the payload. A keep-alive comment is sent every 15 seconds.
 | `robi.session.v1.updated` | A session's metadata changed. |
 | `robi.session.v1.deleted` | A session was deleted. |
 | `robi.app.v1.error` | A process-level error. |
-| `robi.index.v1.progress` | Semantic index progress for a workspace. The shell refetches `GET /workspaces/{id}/index`. The stream publishes once when it opens, then again as the index changes. |
+| `robi.index.v1.progress` | Semantic index progress for a workspace. The shell refetches `GET /workspaces/{id}/index`, reusing a successful response for 10 seconds. The stream publishes once when it opens, then again as the index changes. |
 
 A `session_id` filter still delivers session lifecycle events and `app.error`,
-plus index progress for that session's workspace. A turn outcome in `data` is one
+plus index progress for that session's workspace. The shell subscribes with
+`workspace_id` and leaves transcript fetches to the session on screen. A turn outcome in `data` is one
 of `complete`, `paused`, `cancelled`, or `failed`.
 
 The bus fans out per subscriber with a bounded queue of 1024. On overflow a

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Paperclip } from 'lucide-react'
 
-import type { CatalogModel } from '../../api/models'
+import { modelDisplayName, type CatalogModel } from '../../api/models'
 import type { ChatMessage } from '../../api/messages'
 import type { AgentMode } from '../../api/sessions'
 import { ChoiceMenu } from './ChoiceMenu'
@@ -71,6 +71,10 @@ type ComposerProps = {
   /** Instruction echoed in the transcript before the stored user row exists. */
   pendingText?: string | null
   workspaceId?: string | null
+  /** Summarize the older prefix. Omitted where there is no session to compact. */
+  onCompact?: () => void
+  /** A compact request is in flight. */
+  compacting?: boolean
 }
 
 function hasFiles(data: DataTransfer): boolean {
@@ -81,7 +85,7 @@ function modelLabel(models: CatalogModel[], id: string | null, fallback: string)
   if (!id) {
     return fallback
   }
-  return models.find((model) => model.id === id)?.displayName ?? id
+  return models.find((model) => model.id === id)?.displayName ?? modelDisplayName(id)
 }
 
 function effortLabel(value: string | null): string {
@@ -108,7 +112,9 @@ export function Composer({
   messages,
   draftKey,
   pendingText = null,
-  workspaceId = null
+  workspaceId = null,
+  onCompact,
+  compacting = false
 }: ComposerProps) {
   const draft = useSyncExternalStore(
     subscribeComposerDrafts,
@@ -204,7 +210,7 @@ export function Composer({
   const contextWindow = models.find((model) => model.id === resolvedModel)?.contextWindow ?? null
   const modelOptions = models.map((model) => ({ value: model.id, label: model.displayName }))
   if (resolvedModel && !modelOptions.some((option) => option.value === resolvedModel)) {
-    modelOptions.unshift({ value: resolvedModel, label: resolvedModel })
+    modelOptions.unshift({ value: resolvedModel, label: modelDisplayName(resolvedModel) })
   }
 
   const attach = (
@@ -253,6 +259,9 @@ export function Composer({
           draft={draft}
           pendingText={pendingText ?? ''}
           contextWindow={contextWindow}
+          onCompact={onCompact}
+          compacting={compacting}
+          compactDisabled={running || disabled}
         />
       )}
     </div>

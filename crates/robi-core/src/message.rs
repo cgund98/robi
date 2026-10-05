@@ -274,6 +274,18 @@ pub struct Message {
     /// have no field and deserialize as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningTrace>,
+    /// This message is a compaction summary, not something a person typed.
+    ///
+    /// The transcript paints a **Context compacted** divider on it. A later
+    /// compact may include it in a new prefix; the flag does not protect it.
+    /// Old rows have no field and deserialize as `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compaction: bool,
+}
+
+/// Serde helper: omit `compaction` when it is `false`.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Message {
@@ -288,6 +300,17 @@ impl Message {
             tool_call_id: None,
             usage: None,
             reasoning: None,
+            compaction: false,
+        }
+    }
+
+    /// A compaction summary: a `user` message the transcript marks as generated.
+    ///
+    /// A `user` role keeps the tail able to start with the user's real turn.
+    pub fn summary(content: impl Into<String>) -> Self {
+        Self {
+            compaction: true,
+            ..Self::user(content)
         }
     }
 
@@ -314,6 +337,7 @@ impl Message {
             tool_call_id: None,
             usage: None,
             reasoning: None,
+            compaction: false,
         }
     }
 
@@ -338,6 +362,7 @@ impl Message {
             tool_call_id: Some(tool_call_id),
             usage: None,
             reasoning: None,
+            compaction: false,
         }
     }
 
@@ -514,5 +539,36 @@ mod tests {
         let message: Message = serde_json::from_value(old).expect("an older transcript loads");
         assert!(message.images.is_empty());
         assert_eq!(message.content, "hi");
+    }
+
+    #[test]
+    fn a_transcript_written_before_compaction_existed_still_deserializes() {
+        // The shape `Message` had before `compaction` existed.
+        let old = serde_json::json!({
+            "id": MessageId::new(),
+            "role": "user",
+            "content": "hi",
+        });
+
+        let message: Message = serde_json::from_value(old).expect("an older transcript loads");
+        assert!(!message.compaction, "an absent flag reads as false");
+    }
+
+    #[test]
+    fn a_summary_is_a_user_message_marked_as_compaction() {
+        let summary = Message::summary("decisions so far");
+        assert_eq!(summary.role, Role::User);
+        assert!(summary.compaction);
+        let json = serde_json::to_value(&summary).expect("a summary serializes");
+        assert_eq!(json["compaction"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn an_ordinary_message_omits_the_compaction_flag() {
+        let json = serde_json::to_value(Message::user("plain")).expect("it serializes");
+        assert!(
+            json.get("compaction").is_none(),
+            "a message that is not a summary omits the field"
+        );
     }
 }

@@ -35,7 +35,7 @@ the message post.
 App load lists sessions and selects the most recent. An empty list opens the
 draft.
 
-The window bar shows “New chat” on the draft and the session title once a row exists. MCP server marks sit on the right of that line in both cases. The first click on a session that has not been opened in this window shows a spinner and “Loading conversation” until its transcript loads. A later click on the same session does not. Until a prompt is submitted, a greeting
+The window bar shows “New chat” on the draft and the session title once a row exists. MCP server marks sit on the right of that line in both cases. To their right, a mark appears when `GET /api/v1/health` fails or does not answer within 3 seconds. Hovering the mark says whether the check timed out, which HTTP status came back, or the error message. The shell checks every 5 seconds and removes the mark after a successful check. The first click on a session that has not been opened in this window shows a spinner and “Loading conversation” until its transcript loads. A later click on the same session does not. Until a prompt is submitted, a greeting
 sits in the center — **Good morning**, **Good afternoon**, or **Good evening**,
 from the local hour — with the composer in a card under it. The first echo or
 stored message returns the title, the transcript, and the bottom composer.
@@ -85,11 +85,10 @@ refetches the session and the message list without taking the phase from
 `has_pending_agent`. The actor clears that flag after the event. A
 `turn_started` during the refetch stays **Thinking**. A reload while a turn
 is already running still restores the phase from `has_pending_agent`. A failed turn, and every other shell error, is kept in memory and listed
-under Settings → Audit log until Robi restarts. An API response outside 2xx,
-and a request that throws, is written there too, without a second notice. Several can be open at once.
-One for the chat on screen sits at the bottom of that transcript. One for
-another chat, or for the app, sits at the top of the shell and names that chat
-when it has one. Dismiss hides it. The audit log keeps it. The 2-second refetch is what paints a stored turn when the frame that
+under Settings → Audit log until Robi restarts. That page also lists the last 250 API calls, newest first, 50 per page, with method, OpenAPI path, status, and duration. Clicking a row shows that response body. `GET /api/v1/health` is left out. An API response outside 2xx, and a request that throws, is written to the error list too,
+without a second notice. A fetch this page aborted, including the 10-second
+timeout, is not. Several can be open at once. Each one sits under the window title and names
+the chat when it has one. Dismiss hides it. The audit log keeps it. The 2-second refetch is what paints a stored turn when the frame that
 would have loaded it was dropped. A frame for the session on screen resets that wait. A frame for another session does not.
 
 Opening the stream refetches even on the first connect. A frame published
@@ -122,7 +121,8 @@ it, and 4 diff lines starting at the first added or removed line. Context above 
 lines, then `N more lines` when the change is longer. A running call shows a spinner.
 A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
 the body: numbered file text, match lines, paths, or the error. The row stays
-closed until that click.
+closed until that click. An opened read is a bordered panel, the same shape as a shell card: the header sits
+on the panel, and a rule divides it from the numbered file text.
 
 A finished `write_plan` is a bordered card. The label is **Created Plan**, or
 **Updated Plan** when the result status is `updated`. The title is the first
@@ -183,7 +183,10 @@ finished edit, built from `old` and `new`: that same path, the counts, the
 first 4 lines, and the same 24-line cap. **Reject** and **Approve** sit on that
 card. Approve posts `approve`. It uses `--accent` with dark text. Reject posts
 `reject`. Either button lightens on hover. The phase
-becomes **Thinking** until the resumed turn reports back. A call that ran
+becomes **Thinking** until the resumed turn reports back. If that post fails,
+the shell loads the assistant message again. A call that is still `pending`
+and `not_started` keeps the bar and returns the phase to idle. A call that is
+no longer waiting stays as the fetched row and keeps the thinking phase. A call that ran
 without asking stays a result row: `pending` approval with `succeeded`
 execution is not a prompt.
 
@@ -191,8 +194,9 @@ When the desktop window is not in front, that pause also posts one OS
 notification: **Robi needs approval**, and the verb and target of the first
 waiting call. A click focuses the window and selects the session. The bar is
 still where the call is approved or rejected. The next `turn_started` clears
-that notice so a later pause can post again. The browser shell does not post
-one.
+that notice so a later pause can post again. A failed turn posts **Robi**
+with the failure message the same way, and the in-app notice keeps that
+message either way. The browser shell does not post one.
 
 ## Mermaid diagrams
 
@@ -234,7 +238,7 @@ top-level value.
 ## Activity and the composer
 
 While the phase is not `idle`, the transcript shows a muted line, **Thinking**
-or **Responding**, then **for Ns** counted from that turn's user message, with
+or **Responding**, then **for Ns** counted from the latest message, with
 dots that step `.`, `..`, `...` beside it. The count waits until one second
 has passed. Reduced motion shows `...` and does not step. That line is the
 busy signal.
@@ -251,15 +255,25 @@ the arc empty. A model with no advertised window leaves it empty too.
 Clicking the ring opens a popover: used against the window and the percent,
 the last turn's input, output, and cached tokens, and the uncounted
 estimate when it is not zero. **Compact** in that popover runs the manual
-rewrite in [context-management.md](../workspace/context-management.md). Cached is omitted when it is zero. The ring
+rewrite in [context-management.md](../workspace/context-management.md). It is
+disabled while a turn runs or a compact is in flight; while the request is out
+the label reads **Compacting…**. Cached is omitted when it is zero. The ring
 holds its fill while a turn runs.
+
+A compaction summary is a `user` message the API flags `compaction: true`. The
+transcript does not draw it as a user bubble; it paints a **Context compacted**
+divider — a hairline rule with the label between it — on that row instead. The
+summary text is not shown. The rows it replaced are gone, so a client that
+receives `robi.agent.v1.transcript_compacted` refetches the message list.
 
 Unsent text stays with the chat it was typed in. Switching sessions, or moving between the greeting card and the bottom field, restores that chat's draft. A successful send clears it. The new-chat draft is its own slot until the first send creates a row.
 
 The textarea stays editable while a turn runs and while a send is in flight.
 Enter does not submit during session load, a send that has not returned, or
 while the phase is not `idle`. Until that send returns, the send slot is a
-spinner. After it returns, the control becomes **Stop**: a filled circle with a rounded square cut out, in the same
+spinner. After it returns, the control becomes **Stop**. A transcript read
+already in flight does not clear that phase: the read started before the
+local running mark. **Stop** is a filled circle with a rounded square cut out, in the same
 slot as the return mark. Stop posts `POST /chat_sessions/{id}/stop` and stays
 in that slot until the call returns, which is after the actor has exited. The
 client does not send a second instruction while the phase is not `idle`.
@@ -273,14 +287,21 @@ screen stays in that list when it is older than the window. Switching
 workspace returns the list to five.
 
 A session whose agent is still running shows a grayscale spinner on its row
-in the sidebar. That is the phase when it is not `idle`, or `has_pending_agent`
-when the list was loaded with the actor already running. Leaving that chat
-does not drop the spinner. `turn_finished` for that session still arrives on
-the open stream and clears the mark, without refetching its transcript.
-`turn_started` sets the mark the same way. Message frames for a session that
-is not on screen are not applied, so the row does not update on each token.
-A session refetch replaces the row when the title, mode, model, grants, or
-running flag change. Reduced motion keeps the ring still.
+in the sidebar. That is the phase when it is not `idle`, `has_pending_agent`
+when the list was loaded with the actor already running, or `turn_display` of
+`pending`. Leaving that chat does not drop the spinner. `turn_finished` for
+that session still arrives on the open stream and clears the running mark,
+without refetching its transcript. `turn_started` sets the mark the same way.
+A `robi.session.v1.updated` frame that carries `turn_display` applies that
+value to the row, then refetches the session. The actor publishes that frame
+after it has gone idle, so the refetch does not report the actor as running.
+`awaiting_approval` shows a filled `--accent` dot in the spinner's slot, with
+an accessible name that the session is waiting on approval. A fetch that
+started before that frame does not put the spinner back. `failed` is returned
+and not painted. Message frames for a session that is not on screen
+are not applied, so the row does not update on each token. A session refetch
+replaces the row when the title, mode, model, grants, running flag, or
+`turn_display` change. Reduced motion keeps the ring still.
 
 Mode and the model menu are quiet dropdowns on the left of that row, and
 inside the welcome card. The context meter sits on the right of an open
@@ -288,7 +309,10 @@ session's row. The welcome card does not show it. Mode is `ask`,
 `plan`, or `agent`. The selected mode, and each row in its menu, uses that
 mode's color: ask is `--mode-ask`, plan is `--mode-plan`, and agent stays
 `--ink-muted`. The model menu's label is the model and effort in effect,
-such as `Grok 4.7 Low`. Opening it shows a Model row and an Effort row, and
+such as `Grok 4.7 Low`. An OpenCode Go model is prefixed `OCG - `, such as
+`OCG - Grok 4.7 Low`, so it stays distinct from the same name on another
+provider. The same prefix appears in the model menus on General.
+Opening it shows a Model row and an Effort row, and
 each opens its own list. Model and effort show the value in effect for that
 mode: the session override when one is stored, otherwise that mode's
 setting, then the fallback setting. **Use default** clears that mode's

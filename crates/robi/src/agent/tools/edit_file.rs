@@ -83,13 +83,20 @@ impl Tool for EditFile {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        if std::fs::metadata(&resolved.absolute)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
+        let absolute = resolved.absolute.clone();
+        let (is_dir, before) = crate::agent::blocking::call(move || {
+            let is_dir = std::fs::metadata(&absolute)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false);
+            let before = read_text(&absolute)?;
+            Ok::<_, ToolError>((is_dir, before))
+        })
+        .await
+        .map_err(ToolError::Failed)??;
+        if is_dir {
             return Err(ToolError::Failed("path is a directory".into()));
         }
-        let Some(before) = read_text(&resolved.absolute)? else {
+        let Some(before) = before else {
             return Err(ToolError::Failed("file not found".into()));
         };
         let after = apply_edit(&before, &args.old, &args.new, args.replace_all)
@@ -103,7 +110,11 @@ impl Tool for EditFile {
             false,
         )
         .await?;
-        atomic_write(&resolved.absolute, &after)?;
+        let absolute = resolved.absolute.clone();
+        let written = after.clone();
+        crate::agent::blocking::call(move || atomic_write(&absolute, &written))
+            .await
+            .map_err(ToolError::Failed)??;
         self.ctx.note_lsp(&resolved.absolute, false).await;
         Ok(diff_json(&change_diff(
             &relative, &before, &after, true, false,

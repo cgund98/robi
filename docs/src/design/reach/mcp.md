@@ -283,7 +283,9 @@ Refresh rereads the files. Secret objects stay unresolved. `GET
 /api/v1/workspaces/{id}/mcp/config` returns the paths, the file text,
 and whether the project file's bytes match the stored hash. `GET /api/v1/workspaces/{id}/mcp` returns `{ id, status, title,
 icon, tool_count }`. `status` is `disconnected` until an agent-mode actor
-starts the server, then `starting`, `connected`, or `failed`. `title` and
+starts the server, then `starting`, `connected`, or `failed`. Each of those
+changes publishes `robi.mcp.v1.status` on the shell event stream. The window
+bar refetches this list from that frame. It does not poll. `title` and
 `icon` come from the server handshake when it sent them. `icon` is an
 `https` URL or a `data:image` URI. A received icon is written to
 `~/.robi/mcp-icons.json`, keyed by server id, and the list keeps using

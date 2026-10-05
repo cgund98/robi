@@ -28,7 +28,10 @@ still work when it is not.
 
 `read_file`, `read_code`, `list_dir`, `find`, `grep`, and `grant` live in
 `crates/robi/src/agent/tools/`. Each read resolves its path, then asks a
-`PathFilter` compiled from that session's rules. `grant` is exclusive and
+`PathFilter` compiled from that session's rules. The `std::fs` reads, and the
+`find` and fallback `grep` walks, run on Tokio's blocking pool so a slow disk
+does not occupy an async worker. The same rule covers every blocking call in
+`robi-api`; see [persistence.md](../persistence/persistence.md). `grant` is exclusive and
 always needs approval. It appends one allow for the refused path, `read` or
 `write`, including a path outside the workspace such as `../gopi`. A directory
 pattern matches that directory and its children. The workspace root is `^.*$`,

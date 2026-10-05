@@ -1,6 +1,7 @@
 //! List one directory, omitting paths the session may not read.
 
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -8,6 +9,8 @@ use robi_core::error::ToolError;
 use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+use crate::agent::workspace::PathFilter;
 
 use super::context::{denied, display_path, ToolContext};
 
@@ -61,42 +64,13 @@ impl Tool for ListDir {
         if !filter.allows_read(&resolved.relative) {
             return Err(denied(&resolved));
         }
-        let metadata = fs::metadata(&resolved.absolute)
-            .map_err(|err| ToolError::Failed(format!("list directory: {err}")))?;
-        if !metadata.is_dir() {
-            return Err(ToolError::Failed(format!(
-                "path is not a directory: {}",
-                display_path(&resolved)
-            )));
-        }
-        let mut entries = Vec::new();
-        let read = fs::read_dir(&resolved.absolute)
-            .map_err(|err| ToolError::Failed(format!("list directory: {err}")))?;
-        for entry in read {
-            let entry = entry.map_err(|err| ToolError::Failed(format!("list directory: {err}")))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let relative = if resolved.relative.is_empty() {
-                name.clone()
-            } else {
-                format!("{}/{name}", resolved.relative)
-            };
-            if !filter.allows_read(&relative) {
-                continue;
-            }
-            let kind = entry
-                .file_type()
-                .map(|kind| {
-                    if kind.is_symlink() {
-                        "symlink"
-                    } else if kind.is_dir() {
-                        "dir"
-                    } else {
-                        "file"
-                    }
-                })
-                .unwrap_or("file");
-            entries.push(json!({"name": name, "kind": kind}));
-        }
+        let absolute = resolved.absolute.clone();
+        let parent = resolved.relative.clone();
+        let filter = filter.clone();
+        let mut entries =
+            crate::agent::blocking::call(move || list_entries(&absolute, &parent, &filter))
+                .await
+                .map_err(ToolError::Failed)??;
         entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
         Ok(json!({
             "path": display_path(&resolved),
@@ -108,4 +82,48 @@ impl Tool for ListDir {
 #[derive(Debug, Deserialize)]
 struct ListArgs {
     path: Option<String>,
+}
+
+fn list_entries(
+    absolute: &Path,
+    parent: &str,
+    filter: &PathFilter,
+) -> Result<Vec<Value>, ToolError> {
+    let metadata = fs::metadata(absolute)
+        .map_err(|err| ToolError::Failed(format!("list directory: {err}")))?;
+    if !metadata.is_dir() {
+        let display = if parent.is_empty() { "." } else { parent };
+        return Err(ToolError::Failed(format!(
+            "path is not a directory: {display}"
+        )));
+    }
+    let mut entries = Vec::new();
+    let read = fs::read_dir(absolute)
+        .map_err(|err| ToolError::Failed(format!("list directory: {err}")))?;
+    for entry in read {
+        let entry = entry.map_err(|err| ToolError::Failed(format!("list directory: {err}")))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let relative = if parent.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent}/{name}")
+        };
+        if !filter.allows_read(&relative) {
+            continue;
+        }
+        let kind = entry
+            .file_type()
+            .map(|kind| {
+                if kind.is_symlink() {
+                    "symlink"
+                } else if kind.is_dir() {
+                    "dir"
+                } else {
+                    "file"
+                }
+            })
+            .unwrap_or("file");
+        entries.push(json!({"name": name, "kind": kind}));
+    }
+    Ok(entries)
 }

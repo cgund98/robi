@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { getSetting, putSetting, SETTING_KEYS } from '../../api/settings'
+import { getSettings, putSetting, SETTING_KEYS } from '../../api/settings'
 import styles from './Settings.module.css'
 
 export function PermissionsSettings() {
@@ -12,9 +12,9 @@ export function PermissionsSettings() {
     let cancelled = false
     void (async () => {
       try {
-        const [search, fetch] = await Promise.all([
-          getSetting(SETTING_KEYS.webSearchApproval),
-          getSetting(SETTING_KEYS.webFetchApproval)
+        const [search, fetch] = await getSettings([
+          SETTING_KEYS.webSearchApproval,
+          SETTING_KEYS.webFetchApproval
         ])
         if (!cancelled) {
           setSearchApproval(search.value !== 'off')

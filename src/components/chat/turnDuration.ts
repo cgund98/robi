@@ -32,7 +32,7 @@ export function workedLabel(startId: string, endId: string): string | null {
   return `Worked for ${formatElapsed(seconds)}`
 }
 
-/** Whole seconds the current turn has been pending, from its user message. */
+/** Whole seconds since the latest message, while the turn is still open. */
 export function pendingSeconds(startId: string | undefined, now: number): number | null {
   if (!startId) {
     return null

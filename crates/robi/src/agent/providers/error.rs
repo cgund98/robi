@@ -43,9 +43,6 @@ pub enum ProviderError {
     #[error("model '{model}' does not accept image input")]
     NoVision { model: String },
 
-    #[error("model '{model}' does not accept an effort setting")]
-    UnsupportedEffort { model: String },
-
     #[error("the request was cancelled")]
     Cancelled,
 }

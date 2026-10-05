@@ -6,7 +6,9 @@ import { useReconnectingEventSource } from '../infra/useReconnectingEventSource'
 import { useChatStore } from '../state/chatStore'
 import { useErrorLog } from '../state/errorLog'
 import { useIndexStore } from '../state/indexStore'
-import { postApprovalNotice, releaseApprovalPause } from './approvalNotice'
+import { useMcpStore } from '../state/mcpStore'
+import { useWorkspaceStore } from '../state/workspaceStore'
+import { postApprovalNotice, postTurnFailedNotice, releaseApprovalPause } from './approvalNotice'
 import { AGENT_EVENT_TYPES, buildAgentEventsStreamUrl, parseEventEnvelope } from './agentEvents'
 import { fetchStillCurrent, startFetch } from './latestFetch'
 import { transcriptCatchUpDue } from './transcriptCatchUp'
@@ -18,6 +20,8 @@ type DeltaData = {
   message?: string
   /** New session title on a `robi.session.v1.updated` frame. */
   title?: string
+  /** Display summary on a `robi.session.v1.updated` frame. */
+  turn_display?: string
   delta?: { kind?: string }
   outcome?: { kind?: string; message?: string }
 }
@@ -93,16 +97,17 @@ function bumpReviewSoon(sessionId: string): void {
 }
 
 /**
- * One session-scoped event stream for the shell. Frames refetch HTTP; they
- * are not written into the transcript. No connection while a draft is open.
+ * One event stream for the open workspace. Every session's frames arrive.
+ * A message or transcript fetch runs only for the session on screen.
  */
 export function useAgentEventsSSE(): void {
   const activeSessionId = useChatStore((state) => state.activeSessionId)
   const draftSelected = useChatStore((state) => state.draftSelected)
+  const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
   const phase = useChatStore((state) =>
     activeSessionId ? state.phaseBySession[activeSessionId] : undefined
   )
-  const url = !draftSelected && activeSessionId ? buildAgentEventsStreamUrl(activeSessionId) : null
+  const url = workspaceId ? buildAgentEventsStreamUrl(null, undefined, workspaceId) : null
   const heardAt = useRef(0)
 
   const onEvent = useCallback((event: MessageEvent) => {
@@ -116,6 +121,12 @@ export function useAgentEventsSSE(): void {
     if (envelope.type === 'robi.index.v1.progress') {
       if (envelope.subject) {
         void useIndexStore.getState().refresh(envelope.subject)
+      }
+      return
+    }
+    if (envelope.type === 'robi.mcp.v1.status') {
+      if (envelope.subject) {
+        void useMcpStore.getState().refresh(envelope.subject)
       }
       return
     }
@@ -176,14 +187,28 @@ export function useAgentEventsSSE(): void {
           useChatStore.getState().noteRunning(sessionId, false)
           const outcome = data?.outcome
           if (outcome?.kind === 'failed') {
-            useErrorLog.getState().report(outcome.message ?? 'The turn failed', sessionId)
+            const message = outcome.message ?? 'The turn failed'
+            useErrorLog.getState().report(message, sessionId)
+            void postTurnFailedNotice(sessionId, message)
           }
           return
         }
         useChatStore.getState().bumpReview(sessionId)
         const outcome = data?.outcome
         const failed = outcome?.kind === 'failed' ? (outcome.message ?? 'The turn failed') : null
+        if (failed) {
+          void postTurnFailedNotice(sessionId, failed)
+        }
         void useChatStore.getState().finishTurn(sessionId, failed)
+        return
+      }
+      case 'robi.agent.v1.transcript_compacted': {
+        if (!viewing()) {
+          return
+        }
+        // Rows were deleted, so a single message refetch is not enough: reload
+        // the whole transcript.
+        void useChatStore.getState().catchUpTranscript(sessionId)
         return
       }
       case 'robi.session.v1.created':
@@ -192,9 +217,14 @@ export function useAgentEventsSSE(): void {
         // An auto-generated or manual title arrives in the frame; apply it
         // without a refetch, which can race with an in-flight session read.
         const title = typeof data?.title === 'string' && data.title.length > 0 ? data.title : null
+        const turnDisplay = typeof data?.turn_display === 'string' ? data.turn_display : null
         if (title) {
           useChatStore.getState().renameSessionLocal(id, title)
-        } else {
+        }
+        if (turnDisplay) {
+          useChatStore.getState().noteTurnDisplay(id, turnDisplay)
+        }
+        if (turnDisplay || !title) {
           void useChatStore.getState().refreshSession(id)
         }
         return

@@ -140,7 +140,11 @@ impl Tool for ReadCode {
             return Err(ToolError::Cancelled);
         }
         let display = display_path(&resolved);
-        let text = read_text(&resolved.absolute, &display)?;
+        let absolute = resolved.absolute.clone();
+        let display_for_read = display.clone();
+        let text = crate::agent::blocking::call(move || read_text(&absolute, &display_for_read))
+            .await
+            .map_err(ToolError::Failed)??;
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }

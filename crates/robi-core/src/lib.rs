@@ -10,6 +10,7 @@
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 pub mod agent;
+pub mod compact;
 pub mod compress;
 pub mod config;
 pub mod error;

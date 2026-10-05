@@ -171,25 +171,38 @@ export function ToolCallCard({
     )
   }
 
+  const header = (
+    <button
+      type="button"
+      className={`${open && detail?.kind === 'code' ? styles.editRow : styles.row} ${status === 'failed' ? styles.rowFailed : ''}`}
+      aria-expanded={expandable ? open : undefined}
+      aria-invalid={status === 'failed' ? true : undefined}
+      disabled={!expandable}
+      onClick={() => {
+        if (expandable) {
+          setOpen((current) => !current)
+        }
+      }}
+    >
+      <ToolIcon name={call.name} />
+      <span className={styles.verb}>{summary.verb}</span>
+      <SummaryLabel summary={summary} />
+      <StatusMark status={status} />
+    </button>
+  )
+
+  if (open && detail?.kind === 'code') {
+    return (
+      <div className={styles.shell}>
+        {header}
+        <Detail detail={detail} panel />
+      </div>
+    )
+  }
+
   return (
     <div className={styles.call}>
-      <button
-        type="button"
-        className={`${styles.row} ${status === 'failed' ? styles.rowFailed : ''}`}
-        aria-expanded={expandable ? open : undefined}
-        aria-invalid={status === 'failed' ? true : undefined}
-        disabled={!expandable}
-        onClick={() => {
-          if (expandable) {
-            setOpen((current) => !current)
-          }
-        }}
-      >
-        <ToolIcon name={call.name} />
-        <span className={styles.verb}>{summary.verb}</span>
-        <SummaryLabel summary={summary} />
-        <StatusMark status={status} />
-      </button>
+      {header}
       {open && detail ? <Detail detail={detail} /> : null}
     </div>
   )
@@ -682,19 +695,21 @@ function ShellBody({
 }
 
 function Detail({
-  detail
+  detail,
+  panel = false
 }: {
   detail: Exclude<
     NonNullable<ReturnType<typeof toolDetail>>,
     { kind: 'shell' } | { kind: 'mcp' } | { kind: 'retrieve' }
   >
+  panel?: boolean
 }) {
   if (detail.kind === 'error') {
     return <pre className={styles.error}>{detail.text}</pre>
   }
   if (detail.kind === 'code') {
     return (
-      <pre className={styles.detail}>
+      <pre className={panel ? styles.shellBody : styles.detail}>
         {detail.lines.map((line, index) => (
           <span key={index} className={styles.codeLine}>
             <span className={styles.lineNo}>{detail.startLine + index}</span>

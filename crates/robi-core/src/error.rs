@@ -63,6 +63,8 @@ impl ToolError {
 pub enum AgentError {
     #[error("reached the iteration cap of {0} model turns")]
     MaxIterations(u32),
+    #[error("compaction failed: {0}")]
+    Compaction(String),
     #[error(transparent)]
     Model(#[from] ModelError),
     #[error(transparent)]

@@ -4,6 +4,8 @@ import { ApiError } from './sessions'
 export const SETTING_KEYS = {
   apiKey: 'opencode_go_api_key',
   anthropicApiKey: 'anthropic_api_key',
+  deepseekApiKey: 'deepseek_api_key',
+  deepseekBaseUrl: 'deepseek_base_url',
   braveSearchApiKey: 'brave_search_api_key',
   model: 'model',
   baseUrl: 'base_url',
@@ -23,7 +25,10 @@ export const SETTING_KEYS = {
   subagentTimeoutSeconds: 'subagent_timeout_seconds',
   toolTimeoutSeconds: 'tool_timeout_seconds',
   webSearchApproval: 'web_search_approval',
-  webFetchApproval: 'web_fetch_approval'
+  webFetchApproval: 'web_fetch_approval',
+  providerOpenCodeGo: 'provider_opencode_go',
+  providerAnthropic: 'provider_anthropic',
+  providerDeepseek: 'provider_deepseek'
 } as const
 
 export type SettingView = {
@@ -34,6 +39,18 @@ export type SettingView = {
   configured: boolean
 }
 
+function toView(data: { key: string; secret: boolean; value?: string | null }): SettingView {
+  const value = data.value ?? null
+  // A stored secret omits `value`. An unset key sends `null`.
+  const configured = data.secret ? data.value !== null : value != null && value.length > 0
+  return {
+    key: data.key,
+    secret: data.secret,
+    value: data.secret ? null : value,
+    configured
+  }
+}
+
 export async function getSetting(key: string): Promise<SettingView> {
   const result = await api.GET('/api/v1/settings/{key}', {
     params: { path: { key } }
@@ -41,17 +58,17 @@ export async function getSetting(key: string): Promise<SettingView> {
   if (!result.data) {
     throw new ApiError(result.response.status, 'Failed to load setting')
   }
-  const value = result.data.value ?? null
-  // A stored secret omits `value`. An unset key sends `null`.
-  const configured = result.data.secret
-    ? result.data.value !== null
-    : value != null && value.length > 0
-  return {
-    key: result.data.key,
-    secret: result.data.secret,
-    value: result.data.secret ? null : value,
-    configured
+  return toView(result.data)
+}
+
+export async function getSettings(keys: readonly string[]): Promise<SettingView[]> {
+  const result = await api.GET('/api/v1/settings', {
+    params: { query: { key: [...keys] } }
+  })
+  if (!result.data) {
+    throw new ApiError(result.response.status, 'Failed to load settings')
   }
+  return result.data.map(toView)
 }
 
 export async function putSetting(key: string, value: string, secret: boolean): Promise<void> {

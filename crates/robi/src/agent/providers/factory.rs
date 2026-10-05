@@ -12,7 +12,9 @@ use robi_core::tool::ToolRegistry;
 
 use super::anthropic::AnthropicModel;
 use super::catalog::ModelCatalog;
-use super::config::{ModelId, ProviderSettings, ANTHROPIC_PREFIX, OPENCODE_GO_PREFIX};
+use super::config::{
+    ModelId, ProviderSettings, ANTHROPIC_PREFIX, DEEPSEEK_PREFIX, OPENCODE_GO_PREFIX,
+};
 use super::error::ProviderError;
 use super::images::ImageSource;
 use super::openai::OpenAiCompatibleModel;
@@ -42,13 +44,21 @@ pub fn build_model(
     // prefix existed) names OpenCode Go. Normalize it to the prefixed form so the
     // catalog lookup succeeds, whichever path the caller took.
     let bare = settings.model.as_str().to_owned();
-    if !bare.starts_with(ANTHROPIC_PREFIX) && !bare.starts_with(OPENCODE_GO_PREFIX) {
+    if !bare.starts_with(ANTHROPIC_PREFIX)
+        && !bare.starts_with(OPENCODE_GO_PREFIX)
+        && !bare.starts_with(DEEPSEEK_PREFIX)
+    {
         settings.model = ModelId::new(format!("{OPENCODE_GO_PREFIX}{bare}"));
     }
 
-    if settings.model.as_str().starts_with(ANTHROPIC_PREFIX) {
+    let id = settings.model.as_str();
+    if id.starts_with(ANTHROPIC_PREFIX) {
         let catalog = Arc::new(ModelCatalog::anthropic());
         let model = AnthropicModel::new(settings, catalog, tools, images)?;
+        Ok(Arc::new(model))
+    } else if id.starts_with(DEEPSEEK_PREFIX) {
+        let catalog = Arc::new(ModelCatalog::deepseek());
+        let model = OpenAiCompatibleModel::new(settings, catalog, tools, images)?;
         Ok(Arc::new(model))
     } else {
         let catalog = Arc::new(ModelCatalog::opencode_go());
@@ -97,7 +107,7 @@ mod tests {
     fn a_known_anthropic_model_builds() {
         // A11: the prefix dispatches the adapter.
         let model = AnthropicModel::new(
-            ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-sonnet-4-6")),
+            ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-sonnet-5-5")),
             Arc::new(ModelCatalog::anthropic()),
             Arc::new(ToolRegistry::new()),
             no_images(),
@@ -152,24 +162,18 @@ mod tests {
     }
 
     #[test]
-    fn an_effort_on_a_model_that_rejects_it_is_refused_at_construction() {
-        // A2: Haiku 4.5 returns a 400 for `output_config`. The failure must be a
-        // startup error naming the model, not a mid-turn one.
+    fn an_effort_on_haiku_still_builds() {
+        // A2: Haiku rejects `output_config`, so the request omits it. A global
+        // effort must not stop the session from starting.
         let settings =
             ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-haiku-4-5"))
                 .with_reasoning_effort(crate::agent::providers::ReasoningEffort::High);
-        let error = match AnthropicModel::new(
+        AnthropicModel::new(
             settings,
             Arc::new(ModelCatalog::anthropic()),
             Arc::new(ToolRegistry::new()),
             no_images(),
-        ) {
-            Ok(_) => panic!("Haiku does not accept an effort setting"),
-            Err(error) => error,
-        };
-        assert!(
-            matches!(error, ProviderError::UnsupportedEffort { .. }),
-            "{error:?}"
-        );
+        )
+        .expect("Haiku builds; effort is omitted at request build");
     }
 }

@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use crate::compact::{CompactError, CompactOutcome, CompactTrigger, Compactor};
 use crate::compress::{CompressOutcome, CompressRequest, Compressor};
 use crate::config::LoopConfig;
 use crate::error::{AgentError, ModelError, StoreError, ToolError, TurnOutcome};
@@ -138,6 +139,7 @@ pub struct Agent {
     tools: Arc<ToolRegistry>,
     config: LoopConfig,
     compressor: Option<Arc<dyn Compressor>>,
+    compactor: Option<Arc<dyn Compactor>>,
 }
 
 impl Agent {
@@ -155,12 +157,25 @@ impl Agent {
             tools,
             config,
             compressor: None,
+            compactor: None,
         }
     }
 
     /// Compress large tool results before they are stored. Absent in tests.
     pub fn with_compressor(mut self, compressor: Arc<dyn Compressor>) -> Self {
         self.compressor = Some(compressor);
+        self
+    }
+
+    /// Summarize an older prefix and rewrite the transcript. Absent in tests.
+    pub fn with_compactor(mut self, compactor: Arc<dyn Compactor>) -> Self {
+        self.compactor = Some(compactor);
+        self
+    }
+
+    /// [`with_compactor`](Self::with_compactor) when the caller may not have one.
+    pub fn with_optional_compactor(mut self, compactor: Option<Arc<dyn Compactor>>) -> Self {
+        self.compactor = compactor;
         self
     }
 
@@ -180,6 +195,25 @@ impl Agent {
     /// The whole transcript, in order.
     pub async fn messages(&self, session: SessionId) -> Result<Vec<Message>, AgentError> {
         Ok(self.store.messages(session).await?)
+    }
+
+    /// Summarize an older prefix and rewrite the transcript.
+    ///
+    /// Reads the context window off the model this agent holds. A missing
+    /// compactor is refused so a caller that meant to compact is not silently
+    /// a no-op; the auto trigger checks for a compactor before calling.
+    pub async fn compact(
+        &self,
+        session: SessionId,
+        trigger: CompactTrigger,
+        cancel: CancellationToken,
+    ) -> Result<CompactOutcome, CompactError> {
+        let Some(compactor) = &self.compactor else {
+            return Err(CompactError("compaction is not configured".into()));
+        };
+        compactor
+            .compact(session, self.model.context_window(), trigger, &cancel)
+            .await
     }
 
     /// The calls waiting on a decision, in transcript order.
@@ -284,6 +318,22 @@ impl Agent {
             message: message.id,
         })
         .await;
+
+        // Auto-compact at turn start, after the user message is stored and
+        // before the first `generate`. Best-effort: a failure still runs the
+        // turn (the compactor surfaces it on the session error event).
+        // `resume` never compacts, and one attempt per turn is the "already
+        // compacted once" rule.
+        if let Some(compactor) = &self.compactor {
+            let _ = compactor
+                .compact(
+                    session,
+                    self.model.context_window(),
+                    CompactTrigger::Auto,
+                    &cancel,
+                )
+                .await;
+        }
 
         self.run(session, true, cancel).await
     }

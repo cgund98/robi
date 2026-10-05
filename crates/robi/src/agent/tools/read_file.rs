@@ -69,12 +69,13 @@ impl Tool for ReadFile {
         if !filter.allows_read(&resolved.relative) {
             return Err(denied(&resolved));
         }
-        read_resolved(
-            &resolved.absolute,
-            &display_path(&resolved),
-            args.offset.unwrap_or(1),
-            args.limit,
-        )
+        let absolute = resolved.absolute.clone();
+        let display = display_path(&resolved);
+        let offset = args.offset.unwrap_or(1);
+        let limit = args.limit;
+        crate::agent::blocking::call(move || read_resolved(&absolute, &display, offset, limit))
+            .await
+            .map_err(ToolError::Failed)?
     }
 }
 

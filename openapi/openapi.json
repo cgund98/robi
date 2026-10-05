@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.3"
+    "version": "0.1.4"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -159,6 +159,40 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/chat_sessions/{id}/compact": {
+      "post": {
+        "tags": [
+          "chat_message"
+        ],
+        "operationId": "compact_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Compaction accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompactingAgent"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Chat session is running, awaiting approval, or has nothing to compact"
           }
         }
       }
@@ -502,6 +536,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "workspace_id",
+            "in": "query",
+            "description": "When set without `session_id`, every session frame is delivered. Index\nand MCP frames are limited to this workspace. A `session_id` query\nstill derives the workspace from the session row.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -550,6 +593,43 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/CatalogModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "list_settings",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "description": "Repeat to read several keys in one request.",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings in request order. An unset key with a default is stored, then returned. An unset key with no default has a null value. Secret values are omitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SettingResponse"
                   }
                 }
               }
@@ -1154,6 +1234,10 @@
           "tool_calls"
         ],
         "properties": {
+          "compaction": {
+            "type": "boolean",
+            "description": "`true` on a compaction summary. Omitted on every other message."
+          },
           "content": {
             "type": "string"
           },
@@ -1216,7 +1300,8 @@
           "created_at",
           "updated_at",
           "last_used_at",
-          "has_pending_agent"
+          "has_pending_agent",
+          "turn_display"
         ],
         "properties": {
           "allow_hosts": {
@@ -1276,6 +1361,10 @@
               "null"
             ],
             "description": "Absent until the model names the chat session after the first turn, or a\ncreate/rename supplies one."
+          },
+          "turn_display": {
+            "type": "string",
+            "description": "Display summary of the latest turn: `idle`, `pending`, `awaiting_approval`, or `failed`."
           },
           "updated_at": {
             "type": "string"
@@ -1439,6 +1528,17 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "CompactingAgent": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
           }
         }
       },

@@ -79,6 +79,19 @@ export async function stopSession(sessionId: string): Promise<void> {
   )
 }
 
+export async function compactSession(sessionId: string): Promise<void> {
+  const result = await api.POST('/api/v1/chat_sessions/{id}/compact', {
+    params: { path: { id: sessionId } }
+  })
+  if (result.response.ok) {
+    return
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to compact the context')
+  )
+}
+
 export async function submitInstruction(
   sessionId: string,
   instruction: string,

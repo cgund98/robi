@@ -291,6 +291,9 @@ impl Assembler {
             }
             BlockDelta::ThinkingDelta { thinking } => {
                 if !thinking.is_empty() {
+                    if self.thinking.is_empty() {
+                        tracing::info!("model started reasoning");
+                    }
                     self.thinking.push_str(&thinking);
                     deltas.push(Delta::Reasoning(thinking));
                 }

@@ -67,6 +67,10 @@ graph LR
 - **`web_api/`** holds Axum routes, DTOs, and OpenAPI. A response outside 2xx is logged with its method, path, and status. `AppState` carries the
   workspace service, the chat session service, the chat message service, and
   the settings service. Handlers do not see the pool or an `Agent`.
+  Blocking work — filesystem calls, synchronous SQLite, and directory walks —
+  runs on Tokio's blocking pool via `spawn_blocking` (`agent::blocking::call`
+  in the agent). A blocking call on an async worker stalls every other request
+  on `robi-api`. New tools and routes follow the same rule.
 - **`bootstrap`** (`crates/robi/src/bootstrap.rs`) is the composition root.
   It builds the factory the runtime uses, stores that factory on the runtime,
   and returns the router. `robi-api` and the Tauri process both call it.
@@ -136,6 +140,11 @@ Index: `(workspace_id, last_used_at DESC, id DESC)`.
 | `body` | `TEXT NOT NULL` | `serde_json` of `robi_core::Message` without tool-call `result` payloads. Status, errors, and `original_id` stay here. The result is filled back from the session blob file on read |
 
 Unique `(chat_session_id, position)`.
+
+Compaction rewrites the transcript once, after its summary call has finished:
+`MessageStore::replace_prefix` deletes the summarized prefix rows and inserts
+the summary at `min(position) - 1` in a single transaction. A failure leaves the
+transcript unchanged.
 
 Image bytes, tool results, and tool originals are not SQLite rows. Each session
 has `~/.robi/sessions/<session_id>/blobs.redb`. Tables inside that file:
@@ -227,7 +236,14 @@ tool originals, and plan files go with each deleted session.
 DTOs use strings for ids and timestamps. The domain keeps `SessionId`,
 `WorkspaceId`, and `DateTime<Utc>`. Every chat session response also carries
 `has_pending_agent`. It is true while that session's actor is running, and it
-is read from the runtime's in-memory slots. It is not a column.
+is read from the runtime's in-memory slots. It is not a column. Every response
+also carries `turn_display`: `idle`, `pending`, `awaiting_approval`, or
+`failed`. That column is a display summary. `PATCH` cannot set it. The runtime
+writes `pending` when a message or a tool decision is accepted, and writes
+`idle`, `awaiting_approval`, or `failed` when the turn finishes. Startup
+recomputes it from the transcript: a waiting tool call becomes
+`awaiting_approval`, a stored `failed` stays when nothing is waiting, and a
+leftover `pending` becomes `idle`.
 
 ### Chat messages and the runtime
 
@@ -238,6 +254,7 @@ is read from the runtime's in-memory slots. It is not a column.
 | `GET` | `/chat_sessions/{id}/messages/{message_id}` | `200` one message | `404` if the chat session or the message is missing, `400` if either id is not a UUID |
 | `POST` | `/chat_sessions/{id}/tool_calls/{call_id}` | `202` `{ "status": "accepted" }` | `400` if an id is not a UUID or `decision` is not `approve` or `reject`, `404` if the chat session is missing, `409` if the actor is running |
 | `POST` | `/chat_sessions/{id}/stop` | `202` `{ "status": "stopped" }` | `400` if `id` is not a UUID, `404` if the chat session is missing |
+| `POST` | `/chat_sessions/{id}/compact` | `202` `{ "status": "compacting" }` | `400` if `id` is not a UUID, `404` if the chat session is missing, `409` if the actor is running, the turn is awaiting approval, or nothing is compactable |
 
 `POST` of a message body is `{ "instruction" }`. The handler returns once the
 session actor has taken the instruction. `POST` of a tool call body is
@@ -285,11 +302,16 @@ that is not in this list is `400`.
 |---|---|---|
 | `opencode_go_api_key` | yes | None. A chat turn is `400` until this is set, when the model id carries the `ocg_` prefix |
 | `anthropic_api_key` | yes | None. A chat turn is `400` until this is set, when the model id carries the `ant_` prefix |
-| `model` | no | `ocg_glm-5.3`, written on the first read when the key is absent. The `ocg_`/`ant_` prefix selects the provider (see [providers-streaming.md](../providers/providers-streaming.md#a11--model-ids-carry-a-provider-prefix-the-prefix-resolves-the-provider)) |
+| `deepseek_api_key` | yes | None. A chat turn is `400` until this is set, when the model id carries the `dsk_` prefix |
+| `provider_opencode_go` | no | `on`, written on the first read when the key is absent. `off` leaves OpenCode Go models out of `GET /api/v1/models` and makes a turn that resolves an `ocg_` model `400` |
+| `provider_anthropic` | no | `on`, written on the first read when the key is absent. `off` leaves Anthropic models out of `GET /api/v1/models` and makes a turn that resolves an `ant_` model `400` |
+| `provider_deepseek` | no | `on`, written on the first read when the key is absent. `off` leaves DeepSeek models out of `GET /api/v1/models` and makes a turn that resolves a `dsk_` model `400` |
+| `model` | no | `ocg_glm-5.3`, written on the first read when the key is absent. The `ocg_`/`ant_`/`dsk_` prefix selects the provider (see [providers-streaming.md](../providers/providers-streaming.md#a11--model-ids-carry-a-provider-prefix-the-prefix-resolves-the-provider)) |
 | `reasoning_effort` | no | None. Optional `low`, `medium`, or `high`. Fallback when a mode has no effort |
 | `model_ask`, `model_plan`, `model_agent` | no | None. Optional model id for that mode. Empty inherits `model` |
 | `reasoning_effort_ask`, `reasoning_effort_plan`, `reasoning_effort_agent` | no | None. Optional effort for that mode. Empty inherits `reasoning_effort` |
-| `base_url` | no | None. Optional provider base URL |
+| `base_url` | no | None. Optional base URL for OpenCode Go and Anthropic |
+| `deepseek_base_url` | no | None. Optional DeepSeek base URL. Unset uses `https://api.deepseek.com` |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
 | `lsp` | no | `on`, written on the first read when the key is absent. `off` leaves the language-server tools unregistered. See [lsp.md](../intelligence/lsp.md) |
 | `max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one primary-agent run, from 1 to 500. Read when the session actor starts |
@@ -310,10 +332,11 @@ non-secret key so the next read inherits. A secret key cannot be removed.
 the result to `build_model`. A turn that is already running keeps its model.
 The server starts without an API key: health and these routes work, and the
 first chat turn fails until the key the resolved provider needs is set
-(`opencode_go_api_key` for an `ocg_` model, `anthropic_api_key` for an `ant_` one).
+(`opencode_go_api_key` for an `ocg_` model, `anthropic_api_key` for an `ant_` one, `deepseek_api_key` for a `dsk_` one).
 
 | Method | Path | Success | Failure |
 |---|---|---|---|
+| `GET` | `/settings?key=` | `200` array of settings, one per repeated `key`, in request order | `400` if `key` is missing, empty, or not in the whitelist |
 | `GET` | `/settings/{key}` | `200` setting | `400` if `key` is not in the whitelist |
 | `PUT` | `/settings/{key}` | `204` | `400` if `key` is not in the whitelist, `value` is empty, or the secret flag does not match the key. `500` if the files could not be written |
 | `DELETE` | `/settings/{key}` | `204` | `400` if `key` is not in the whitelist or the key is a secret. `500` if the files could not be written |

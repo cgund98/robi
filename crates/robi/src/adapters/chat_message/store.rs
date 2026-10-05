@@ -244,6 +244,82 @@ impl MessageStore for SqliteMessageStore {
         }
         Ok(())
     }
+
+    async fn replace_prefix(
+        &self,
+        session: SessionId,
+        delete: &[MessageId],
+        mut summary: Message,
+    ) -> Result<(), StoreError> {
+        if !session_exists(Arc::clone(&self.pool), session)
+            .await
+            .map_err(backend)?
+        {
+            return Err(StoreError::SessionNotFound(session));
+        }
+
+        self.persist_results(session, &mut summary).await?;
+        let body = serde_json::to_string(&summary).map_err(|error| {
+            StoreError::Backend(format!(
+                "chat message {} did not serialize: {error}",
+                summary.id
+            ))
+        })?;
+
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        for id in delete {
+            sqlx::query(
+                r#"
+                DELETE FROM chat_messages
+                WHERE id = ?1 AND chat_session_id = ?2
+                "#,
+            )
+            .bind(id.to_string())
+            .bind(session.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+
+        // Positions start at 0 and the prefix is contiguous, so one before the
+        // remainder's minimum puts the summary at the front without renumbering.
+        let min_position: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT MIN(position)
+            FROM chat_messages
+            WHERE chat_session_id = ?1
+            "#,
+        )
+        .bind(session.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?;
+
+        let Some(min_position) = min_position else {
+            // The tail is never empty, so this is a caller bug. Nothing is
+            // written and the transcript is left as it was.
+            return Err(StoreError::Backend(
+                "replace_prefix would leave an empty transcript".to_owned(),
+            ));
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO chat_messages (id, chat_session_id, position, body)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+        )
+        .bind(summary.id.to_string())
+        .bind(session.to_string())
+        .bind(min_position - 1)
+        .bind(&body)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+
+        tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
 }
 
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -421,6 +497,47 @@ mod tests {
                 .unwrap_err(),
             missing
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replace_prefix_deletes_the_prefix_and_puts_the_summary_first() {
+        let (store, pool) = store().await;
+        let workspace = WorkspaceId::new();
+        insert_workspace(&pool, workspace).await;
+        let session = store.create_session(workspace);
+        let first = Message::user("first");
+        let second = Message::assistant("second");
+        let third = Message::user("third");
+        let fourth = Message::assistant("fourth");
+        for message in [&first, &second, &third, &fourth] {
+            store.append(session, message.clone()).await.unwrap();
+        }
+        let before = last_used_at(&pool, session).await;
+
+        let summary = Message::summary("what happened so far");
+        store
+            .replace_prefix(session, &[first.id, second.id], summary.clone())
+            .await
+            .unwrap();
+
+        let messages = store.messages(session).await.unwrap();
+        assert_eq!(messages, vec![summary, third, fourth]);
+        assert_eq!(
+            last_used_at(&pool, session).await,
+            before,
+            "a rewrite does not move last_used_at"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replace_prefix_on_a_missing_session_is_not_found() {
+        let (store, _) = store().await;
+        let session = SessionId::new();
+        let error = store
+            .replace_prefix(session, &[], Message::summary("x"))
+            .await
+            .unwrap_err();
+        assert_eq!(error, StoreError::SessionNotFound(session));
     }
 
     use robi_core::error::StoreError;

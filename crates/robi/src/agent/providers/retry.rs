@@ -35,6 +35,17 @@ impl RetryPolicy {
         }
     }
 
+    /// The wait before the next attempt.
+    ///
+    /// A `Retry-After` delay is used when the provider sent one, and it is
+    /// never longer than [`Self::cap`]. Otherwise the wait is [`Self::backoff`].
+    pub fn retry_delay(&self, attempt: u32, after: Option<Duration>) -> Duration {
+        match after {
+            Some(after) => after.min(self.cap),
+            None => self.backoff(attempt),
+        }
+    }
+
     /// The wait before attempt `attempt + 1`, with full jitter.
     ///
     /// Full jitter — a uniform draw from zero to the exponential ceiling — spreads
@@ -174,6 +185,15 @@ mod tests {
                 "attempt {attempt} waited {delay:?}, over the {ceiling:?} ceiling"
             );
         }
+    }
+
+    #[test]
+    fn a_long_retry_after_stops_at_the_cap() {
+        let policy = RetryPolicy::default();
+        assert_eq!(
+            policy.retry_delay(1, Some(Duration::from_secs(120))),
+            policy.cap
+        );
     }
 
     #[test]

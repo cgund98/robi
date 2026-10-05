@@ -4,7 +4,6 @@ import { useNavigate } from 'react-router-dom'
 
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
 import styles from './Sidebar.module.css'
-import { IndexStatusLine } from './IndexStatusLine'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 type SidebarProps = {
@@ -15,6 +14,8 @@ type SidebarProps = {
   disabled?: boolean
   /** Sessions whose agent is still running. */
   runningSessionIds?: ReadonlySet<string>
+  /** Sessions waiting on a tool approval. */
+  awaitingSessionIds?: ReadonlySet<string>
   onSelectSession: (id: string) => void
   onNewSession: () => void
   onRenameSession: (id: string) => void
@@ -26,6 +27,7 @@ const SessionRow = memo(function SessionRow({
   title,
   active,
   running,
+  awaiting,
   disabled,
   onSelect,
   onRename,
@@ -35,6 +37,7 @@ const SessionRow = memo(function SessionRow({
   title: string
   active: boolean
   running: boolean
+  awaiting: boolean
   disabled: boolean
   onSelect: (id: string) => void
   onRename: (id: string) => void
@@ -46,11 +49,17 @@ const SessionRow = memo(function SessionRow({
         type="button"
         className={`${styles.sessionButton} ${active ? styles.sessionButtonActive : ''}`}
         onClick={() => onSelect(id)}
-        title={running ? `${title} (running)` : title}
-        aria-label={running ? `${title}, agent running` : undefined}
+        title={running ? `${title} (running)` : awaiting ? `${title} (needs approval)` : title}
+        aria-label={
+          running
+            ? `${title}, agent running`
+            : awaiting
+              ? `${title}, waiting on approval`
+              : undefined
+        }
         disabled={disabled}
       >
-        {running ? <RunningSpinner /> : null}
+        {running ? <RunningSpinner /> : awaiting ? <ApprovalDot /> : null}
         <span className={styles.sessionTitle}>{title}</span>
       </button>
       <div className={styles.sessionActions}>
@@ -84,6 +93,10 @@ const RunningSpinner = memo(function RunningSpinner() {
   return <span className={styles.spinner} aria-hidden />
 })
 
+const ApprovalDot = memo(function ApprovalDot() {
+  return <span className={styles.approvalDot} aria-hidden />
+})
+
 const INITIAL_VISIBLE = 5
 const SHOW_MORE_STEP = 10
 
@@ -94,6 +107,7 @@ export function Sidebar({
   docsSelected = false,
   disabled = false,
   runningSessionIds,
+  awaitingSessionIds,
   onSelectSession,
   onNewSession,
   onRenameSession,
@@ -172,6 +186,10 @@ export function Sidebar({
               title={sessionDisplayTitle(session)}
               active={session.id === activeSessionId}
               running={runningSessionIds?.has(session.id) ?? false}
+              awaiting={
+                !(runningSessionIds?.has(session.id) ?? false) &&
+                (awaitingSessionIds?.has(session.id) ?? false)
+              }
               disabled={disabled}
               onSelect={onSelectSession}
               onRename={onRenameSession}
@@ -192,7 +210,6 @@ export function Sidebar({
       </div>
 
       <div className={styles.footer}>
-        <IndexStatusLine />
         <button
           type="button"
           className={styles.navLink}

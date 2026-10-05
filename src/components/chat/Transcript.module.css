@@ -113,3 +113,25 @@
   width: 3ch;
   text-align: left;
 }
+
+.compacted {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.compacted::before,
+.compacted::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--ink-faint);
+}
+
+.compactedLabel {
+  white-space: nowrap;
+}

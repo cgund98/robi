@@ -144,7 +144,11 @@ impl Tool for Todos {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let Some(before) = read_text(&resolved.absolute)? else {
+        let absolute = resolved.absolute.clone();
+        let Some(before) = crate::agent::blocking::call(move || read_text(&absolute))
+            .await
+            .map_err(ToolError::Failed)??
+        else {
             return Err(ToolError::Failed("plan file does not exist".into()));
         };
         let (items, body) = split_plan(&before)?;
@@ -158,7 +162,10 @@ impl Tool for Todos {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| ToolError::Failed("plan file name is missing".into()))?,
         );
-        atomic_write(&resolved.absolute, &text)?;
+        let absolute = resolved.absolute.clone();
+        crate::agent::blocking::call(move || atomic_write(&absolute, &text))
+            .await
+            .map_err(ToolError::Failed)??;
         self.ctx.remember_plan(&stored).await?;
         Ok(json!({
             "path": stored,

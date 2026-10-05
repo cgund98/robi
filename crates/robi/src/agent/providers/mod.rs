@@ -18,7 +18,7 @@ pub mod sse;
 pub use catalog::{ModelCatalog, ModelInfo};
 pub use config::{
     ApiKey, ModelId, ProviderId, ProviderKind, ProviderSettings, ReasoningEffort, ANTHROPIC_PREFIX,
-    OPENCODE_GO_PREFIX,
+    DEEPSEEK_PREFIX, OPENCODE_GO_PREFIX,
 };
 pub use error::ProviderError;
 pub use factory::build_model;

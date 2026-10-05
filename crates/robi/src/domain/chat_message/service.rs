@@ -71,6 +71,15 @@ impl ChatMessageService {
         self.runtime.stop(session).await
     }
 
+    /// Summarize an older prefix and rewrite the transcript.
+    ///
+    /// `Ok` means the actor accepted the job. The rewrite completes later and
+    /// announces itself on the `transcript_compacted` event.
+    pub async fn compact(&self, session: SessionId) -> Result<(), ServiceError> {
+        self.sessions.get_chat_session(session).await?;
+        self.runtime.compact(session).await
+    }
+
     pub async fn list_messages(&self, session: SessionId) -> Result<Vec<Message>, ServiceError> {
         self.sessions.get_chat_session(session).await?;
         self.store.messages(session).await.map_err(map_store)
@@ -153,6 +162,7 @@ mod tests {
                     mode: AgentMode::Agent,
                     model_config: crate::domain::chat_session::model::ModelConfig::default(),
                     plan_path: None,
+                    turn_display: crate::domain::chat_session::model::TurnDisplay::Idle,
                     created_at: now,
                     updated_at: now,
                     last_used_at: now,
@@ -202,6 +212,14 @@ mod tests {
             _title: String,
         ) -> Result<Option<ChatSession>, ServiceError> {
             Err(ServiceError::Unknown)
+        }
+
+        async fn set_turn_display(
+            &self,
+            _id: SessionId,
+            _display: crate::domain::chat_session::model::TurnDisplay,
+        ) -> Result<(), ServiceError> {
+            Ok(())
         }
 
         async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
@@ -261,6 +279,10 @@ mod tests {
             self.stopped.lock().expect("fake runtime").push(session);
             Ok(())
         }
+
+        async fn compact(&self, _session: SessionId) -> Result<(), ServiceError> {
+            Ok(())
+        }
     }
 
     struct FakeStore {
@@ -314,6 +336,21 @@ mod tests {
         }
 
         async fn update(&self, _session: SessionId, _message: Message) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        async fn replace_prefix(
+            &self,
+            session: SessionId,
+            delete: &[MessageId],
+            summary: Message,
+        ) -> Result<(), StoreError> {
+            let mut sessions = self.messages.lock().expect("fake store");
+            let transcript = sessions
+                .get_mut(&session)
+                .ok_or(StoreError::SessionNotFound(session))?;
+            transcript.retain(|message| !delete.contains(&message.id));
+            transcript.insert(0, summary);
             Ok(())
         }
     }

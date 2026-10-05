@@ -13,11 +13,12 @@ const envelope = {
 }
 
 describe('agent events', () => {
-  it('builds the stream url for the active session', () => {
-    const url = buildAgentEventsStreamUrl(envelope.subject, '')
+  it('builds the stream url for the open workspace', () => {
+    const url = buildAgentEventsStreamUrl(null, '', envelope.subject)
     const parsed = new URL(url, 'http://127.0.0.1')
     expect(parsed.pathname).toBe('/api/v1/events/stream')
-    expect(parsed.searchParams.get('session_id')).toBe(envelope.subject)
+    expect(parsed.searchParams.get('session_id')).toBeNull()
+    expect(parsed.searchParams.get('workspace_id')).toBe(envelope.subject)
     expect(parsed.searchParams.getAll('event_types')).toEqual([...AGENT_EVENT_TYPES])
   })
 

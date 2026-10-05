@@ -72,9 +72,14 @@ impl Tool for Grant {
             }
         };
         let resolved = self.ctx.resolve(&args.path)?;
-        let directory = std::fs::metadata(&resolved.absolute)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false);
+        let absolute = resolved.absolute.clone();
+        let directory = crate::agent::blocking::call(move || {
+            std::fs::metadata(&absolute)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
         let pattern = allow_pattern(&resolved.relative, directory);
         let session = self
             .ctx

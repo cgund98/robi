@@ -282,7 +282,7 @@ Policy:
 
 | Response | Retry |
 |---|---|
-| 429 | Yes, after the `Retry-After` delay when present |
+| 429 | Yes, after `Retry-After` when present, capped at 8 s |
 | 5xx | Yes |
 | Connect failure, or timeout on response headers | Yes |
 | 400, 401, 403, 404, 422 | No |
@@ -291,7 +291,9 @@ Policy:
 | Anything after the first delta | No |
 
 Backoff is exponential with full jitter, 500 ms base, 8 s cap, 3 attempts.
-`Retry-After` accepts both delta-seconds and an HTTP date.
+`Retry-After` accepts both delta-seconds and an HTTP date, and a delay longer
+than 8 s waits 8 s. The wait for response headers is 45 s. The gap between
+chunks stays 5 min.
 
 ### D8 — Credentials come from a factory, and the model never looks behind it
 
@@ -508,11 +510,11 @@ a `providers/transport.rs` extraction is the follow-up if it proves noisy.
 ### A2 — Per-model effort gating lives in the catalog
 
 `ModelInfo` gains `supports_effort: bool`. The Anthropic table sets it `true` for
-`ant_claude-sonnet-4-6`, `ant_claude-opus-4-6`, and `ant_claude-opus-4-5`, and
+`ant_claude-fable-5-1`, `ant_claude-opus-5-5`, and `ant_claude-sonnet-5-5`, and
 `false` for `ant_claude-haiku-4-5`. Haiku rejects `output_config` with a 400
-("Extra inputs are not permitted"), so `AnthropicModel::new` refuses a configured
-effort on a model whose flag is `false`, naming the model — a startup error, like
-the tool-less and no-vision precedents, not a mid-turn failure. OpenCode Go rides
+("Extra inputs are not permitted"), so the adapter omits the field when the
+flag is `false`. A configured effort still builds the model: the setting is
+global, and switching the session to Haiku must not fail startup. OpenCode Go rides
 effort on `reasoning_effort` and is never gated, so its rows carry `true`.
 
 ### A3 — Reasoning without an effort field is thinking, and the trace round-trips
@@ -571,20 +573,27 @@ failure are identical to OpenCode Go.
 
 ### A11 — Model ids carry a provider prefix; the prefix resolves the provider
 
-**There is no provider setting and no provider picker.** The dropdown is one flat
-list; the id itself names the provider.
+**There is no provider picker.** The dropdown is one flat list; the id itself
+names the provider. Each provider has an on/off setting (`provider_opencode_go`,
+`provider_anthropic`, `provider_deepseek`, default `on`). `off` drops that catalog from
+`GET /api/v1/models` and makes `SettingsModelSource` refuse a turn whose resolved
+id belongs to it. The prefix is still the dispatch.
 
 - **Prefixed ids everywhere.** OpenCode Go rows are `ocg_glm-5.3`, …; Anthropic
-  rows are `ant_claude-sonnet-4-6`, …. The prefix is part of the id in the settings
+  rows are `ant_claude-sonnet-5-5`, …; DeepSeek rows are `dsk_deepseek-flash` and
+  `dsk_deepseek-v4-pro`. The prefix is part of the id in the settings
   store, the session's `model_config`, the `/api/v1/models` response, the dropdown,
   and the catalog keys.
 - **The prefix is the dispatch.** `SettingsModelSource` runs the existing
   resolution chain (session override → mode setting → `MODEL` → default), then
   reads the prefix: `ant_` builds `ProviderSettings::anthropic(...)` and requires
   `anthropic_api_key`; `ocg_` builds `ProviderSettings::opencode_go(...)` and
-  requires `opencode_go_api_key`. `build_model` dispatches the same way.
+  requires `opencode_go_api_key`; `dsk_` builds `ProviderSettings::deepseek(...)`
+  and requires `deepseek_api_key`. DeepSeek uses the OpenAI-compatible adapter
+  and its own base URL (`deepseek_base_url`, default `https://api.deepseek.com`).
+  `build_model` dispatches the same way.
 - **The wire gets the bare id.** Both providers want their own id
-  (`claude-sonnet-4-6`, `glm-5.3`), never the prefix. `ModelId::wire_id` strips it,
+  (`claude-sonnet-5-5`, `glm-5.3`), never the prefix. `ModelId::wire_id` strips it,
   golden-tested.
 - **`DEFAULT_MODEL` is `ocg_glm-5.3`.**
 - **Legacy bare ids read as OpenCode Go.** A settings or session row written
@@ -592,8 +601,8 @@ list; the id itself names the provider.
   prefix as OpenCode Go, `build_model` normalizes it to the prefixed form, and
   `normalize_model` rewrites it on store. No stored session breaks.
 - **`normalize_model` validates the union** of both catalogs.
-- **`GET /api/v1/models` lists both catalogs** in one flat list. The frontend
-  picker is otherwise unchanged.
+- **`GET /api/v1/models` lists the enabled catalogs** in one flat list. A
+  provider set to `off` is omitted. The frontend picker is otherwise unchanged.
 - **The key follows the provider.** Switching a session to a Claude model makes the
   next actor read `anthropic_api_key`; a missing key is the existing "… is not set"
   refusal naming the key.
@@ -602,11 +611,10 @@ list; the id itself names the provider.
 
 ### A12 — Effort on Anthropic maps to `output_config`, not `budget_tokens`
 
-On 4.6 models `output_config: { effort }` is a stable API field and controls all
-token spend, thinking included. Opus 4.5 needs the `effort-2025-11-24` beta header,
-which the adapter sends only for that model id. Haiku rejects the field outright
-(A2). `budget_tokens` is not used: it is deprecated on 4.6 and rejected on later
-models. An unset effort sends no `output_config` and no beta header.
+On the current lineup `output_config: { effort }` is a stable API field and
+controls all token spend, thinking included. Haiku rejects the field outright
+(A2). `budget_tokens` is not used: later models reject it. An unset effort sends
+no `output_config`.
 
 ## Anthropic request mapping
 
@@ -621,7 +629,7 @@ models. An unset effort sends no `output_config` and no beta header.
 | `ToolRegistry::tools()` | `tools: [{name, description, input_schema}]`, no `function` wrapper |
 | `settings.reasoning_effort` | `output_config: {effort}`, only when `supports_effort` (A2/A12) |
 | — | `max_tokens`: the catalog's `max_output` (A5), `stream: true` |
-| — | headers: `x-api-key`, `anthropic-version`, `User-Agent`, `Content-Type`, and `anthropic-beta` for Opus 4.5 |
+| — | headers: `x-api-key`, `anthropic-version`, `User-Agent`, `Content-Type` |
 
 ## Anthropic response mapping
 
@@ -742,7 +750,7 @@ pub struct ProviderSettings {
     pub system_prompt: String,
     pub session_header: Option<HeaderName>, // Some("x-opencode-session")
     pub user_agent: String,         // "robi/0.1"
-    pub header_timeout: Duration,   // 5 min
+    pub header_timeout: Duration,   // 45 s
     pub chunk_timeout: Duration,    // 5 min
     pub retry: RetryPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -782,10 +790,13 @@ impl Model for OpenAiCompatibleModel {
 
 `generate` sends the request under `header_timeout`, then spawns one task that owns
 the response body and forwards deltas over an `mpsc` channel wrapped in
-`ModelStream`. That task selects on `cancel.cancelled()` around every chunk read,
-so a cancel drops the body and closes the connection instead of leaving a task
-parked in `chunk().await`. After a cancellation the task sends no
-`Delta::Failed`, because the loop already owns the cancelled outcome.
+`ModelStream`. The header wait and that task both select on `cancel.cancelled()`:
+around the request, around every chunk read, and around every delta send. The
+channel is bounded, so a bare `send().await` would ignore a stop until the loop
+drained the queue. A cancel drops the body and closes the connection instead of
+leaving a task parked in `chunk().await` or `send().await`. After a cancellation
+the task sends no `Delta::Failed`, because the loop already owns the cancelled
+outcome.
 
 ## Request mapping
 
@@ -856,7 +867,7 @@ Quirks to handle, each with a test:
 | 404, or a model absent from the catalog | Name the model id | No |
 | A catalog model without tool support | Refused at `build_model`, naming the id | No |
 | 400, 422 | Surface the provider's message; the body is deterministic | No |
-| 429 | Honour `Retry-After`, else back off | Yes, before the first delta |
+| 429 | Honour `Retry-After` up to the 8 s cap, else back off. The last attempt fails the turn | Yes, before the first delta |
 | 5xx | Back off | Yes, before the first delta |
 | Connect failure, or header timeout | Treat as transport | Yes, before the first delta |
 | Inter-chunk gap over `chunk_timeout` | Terminal; a stalled stream is not recoverable in place | No |
@@ -1006,7 +1017,7 @@ cargo run -p robi --example simple -- "Add 40 and 2" # one prompt instead
 
 # Anthropic: the prefix on ROBI_MODEL selects the provider and the key.
 export ANTHROPIC_API_KEY=...
-ROBI_MODEL=ant_claude-sonnet-4-6 cargo run -p robi --example simple
+ROBI_MODEL=ant_claude-sonnet-5-5 cargo run -p robi --example simple
 ```
 
 | Variable | Required | Default | Meaning |

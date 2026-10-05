@@ -119,13 +119,14 @@ impl Tool for Diagnostics {
         match outcome {
             Err(LspError::Cancelled) => Err(ToolError::Cancelled),
             Ok((items, pending)) => {
-                let (diagnostics, truncated) = diagnostic_items(
-                    &items,
-                    &ready.absolute,
-                    &self.ctx.root,
-                    &ready.filter,
-                    DIAGNOSTIC_LIMIT,
-                );
+                let absolute = ready.absolute.clone();
+                let root = self.ctx.root.clone();
+                let filter = ready.filter.clone();
+                let (diagnostics, truncated) = crate::agent::blocking::call(move || {
+                    diagnostic_items(&items, &absolute, &root, &filter, DIAGNOSTIC_LIMIT)
+                })
+                .await
+                .map_err(ToolError::Failed)?;
                 Ok(json!({
                     "available": true,
                     "language": ready.language,
@@ -287,7 +288,12 @@ impl Tool for WorkspaceSymbol {
             return Err(ToolError::InvalidArgs("query is empty".into()));
         }
         let filter = self.ctx.filter().await?;
-        let present = self.ctx.lsp.present(&self.ctx.root, &filter);
+        let lsp = Arc::clone(&self.ctx.lsp);
+        let root = self.ctx.root.clone();
+        let walk_filter = filter.clone();
+        let present = crate::agent::blocking::call(move || lsp.present(&root, &walk_filter))
+            .await
+            .map_err(ToolError::Failed)?;
         if present.is_empty() {
             tracing::warn!("workspace symbol search found no supported language");
             return Ok(unavailable(
@@ -347,7 +353,14 @@ impl Tool for WorkspaceSymbol {
                             "kind": symbol_kind_name(hit.kind),
                             "path": relative,
                             "line": hit.line + 1,
-                            "character": scalar_column(&hit.absolute, hit.line, hit.character),
+                            "character": crate::agent::blocking::call({
+                                let absolute = hit.absolute.clone();
+                                let line = hit.line;
+                                let character = hit.character;
+                                move || scalar_column(&absolute, line, character)
+                            })
+                            .await
+                            .unwrap_or(hit.character),
                         }));
                     }
                 }
@@ -413,6 +426,28 @@ impl Prepared {
     }
 }
 
+fn read_lsp_file(
+    absolute: &std::path::Path,
+    display: &str,
+) -> Result<(std::fs::Metadata, Vec<u8>), ToolError> {
+    let meta = match std::fs::metadata(absolute) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ToolError::Failed(format!("file not found: {display}")));
+        }
+        Err(err) => return Err(ToolError::Failed(format!("read file: {err}"))),
+    };
+    if meta.is_dir() {
+        return Err(ToolError::Failed(format!("path is a directory: {display}")));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(ToolError::Failed(format!("file is too large: {display}")));
+    }
+    let bytes =
+        std::fs::read(absolute).map_err(|err| ToolError::Failed(format!("read file: {err}")))?;
+    Ok((meta, bytes))
+}
+
 async fn prepare_file(
     ctx: &ToolContext,
     path: &str,
@@ -443,21 +478,12 @@ async fn prepare_file(
         )));
     };
     let display = display_path(&resolved);
-    let meta = match std::fs::metadata(&resolved.absolute) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ToolError::Failed(format!("file not found: {display}")));
-        }
-        Err(err) => return Err(ToolError::Failed(format!("read file: {err}"))),
-    };
-    if meta.is_dir() {
-        return Err(ToolError::Failed(format!("path is a directory: {display}")));
-    }
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(ToolError::Failed(format!("file is too large: {display}")));
-    }
-    let bytes = std::fs::read(&resolved.absolute)
-        .map_err(|err| ToolError::Failed(format!("read file: {err}")))?;
+    let absolute = resolved.absolute.clone();
+    let display_for_read = display.clone();
+    let (meta, bytes) =
+        crate::agent::blocking::call(move || read_lsp_file(&absolute, &display_for_read))
+            .await
+            .map_err(ToolError::Failed)??;
     let text = String::from_utf8(bytes)
         .map_err(|_| ToolError::Failed(format!("file is not utf-8: {display}")))?;
     if let Some((line, character)) = position {
@@ -537,7 +563,12 @@ async fn locate(
     };
     match points {
         Ok(points) => {
-            let (locations, truncated) = location_hits(&points, &ctx.root, &ready.filter, limit);
+            let root = ctx.root.clone();
+            let filter = ready.filter.clone();
+            let (locations, truncated) =
+                crate::agent::blocking::call(move || location_hits(&points, &root, &filter, limit))
+                    .await
+                    .map_err(ToolError::Failed)?;
             Ok(json!({
                 "available": true,
                 "language": ready.language,

@@ -36,6 +36,22 @@ export interface paths {
         patch: operations["update_chat_session"];
         trace?: never;
     };
+    "/api/v1/chat_sessions/{id}/compact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["compact_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat_sessions/{id}/messages": {
         parameters: {
             query?: never;
@@ -172,6 +188,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["list_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_settings"];
         put?: never;
         post?: never;
         delete?: never;
@@ -362,6 +394,8 @@ export interface components {
             media_type: string;
         };
         ChatMessage: {
+            /** @description `true` on a compaction summary. Omitted on every other message. */
+            compaction?: boolean;
             content: string;
             id: string;
             /**
@@ -395,6 +429,8 @@ export interface components {
              *     create/rename supplies one.
              */
             title?: string | null;
+            /** @description Display summary of the latest turn: `idle`, `pending`, `awaiting_approval`, or `failed`. */
+            turn_display: string;
             updated_at: string;
             workspace_id: string;
         };
@@ -443,6 +479,9 @@ export interface components {
             input: number;
             /** Format: int64 */
             output: number;
+        };
+        CompactingAgent: {
+            status: string;
         };
         CreateChatSession: {
             /** @description `ask`, `plan`, or `agent`. Omitted starts in agent mode. */
@@ -817,6 +856,36 @@ export interface operations {
             };
         };
     };
+    compact_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Compaction accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompactingAgent"];
+                };
+            };
+            /** @description Chat session is running, awaiting approval, or has nothing to compact */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_chat_messages: {
         parameters: {
             query?: never;
@@ -1059,6 +1128,12 @@ export interface operations {
                 event_types?: string[];
                 /** @description When set, only envelopes whose subject is this session. */
                 session_id?: string;
+                /**
+                 * @description When set without `session_id`, every session frame is delivered. Index
+                 *     and MCP frames are limited to this workspace. A `session_id` query
+                 *     still derives the workspace from the session row.
+                 */
+                workspace_id?: string;
             };
             header?: never;
             path?: never;
@@ -1120,6 +1195,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogModel"][];
+                };
+            };
+        };
+    };
+    list_settings: {
+        parameters: {
+            query: {
+                /** @description Repeat to read several keys in one request. */
+                key: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Settings in request order. An unset key with a default is stored, then returned. An unset key with no default has a null value. Secret values are omitted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingResponse"][];
                 };
             };
         };

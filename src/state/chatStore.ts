@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 
 import {
+  compactSession,
   decideToolCall,
+  getMessage,
   listMessages,
   stopSession,
   submitInstruction,
@@ -25,8 +27,14 @@ import { useErrorLog } from './errorLog'
 import { useWorkspaceStore } from './workspaceStore'
 
 function noteError(message: string, sessionId?: string | null): string {
-  useErrorLog.getState().report(message, sessionId ?? null)
+  if (!isAbortMessage(message)) {
+    useErrorLog.getState().report(message, sessionId ?? null)
+  }
   return message
+}
+
+function isAbortMessage(message: string): boolean {
+  return message === 'Fetch is aborted' || message === 'The operation was aborted.'
 }
 
 export type AgentPhase = 'idle' | 'thinking' | 'responding'
@@ -56,6 +64,8 @@ type ChatState = {
   busy: boolean
   /** Session whose stop request is in flight. Input stays locked until it returns. */
   stoppingSessionId: string | null
+  /** Session whose compact request is in flight. The Compact button is disabled until it returns. */
+  compactingSessionId: string | null
   loadSessions: (options?: { draft?: boolean }) => Promise<void>
   selectSession: (id: string) => Promise<void>
   selectDraft: () => void
@@ -64,6 +74,8 @@ type ChatState = {
   setEffortChoice: (effort: string | null) => Promise<void>
   sendInstruction: (instruction: string, images?: File[]) => Promise<boolean>
   stopAgent: () => Promise<void>
+  /** Ask the active session to summarize its older prefix. */
+  compactAgent: () => Promise<void>
   decideCall: (sessionId: string, callId: string, decision: 'approve' | 'reject') => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
   removeSession: (id: string) => Promise<void>
@@ -80,6 +92,8 @@ type ChatState = {
   refreshSession: (sessionId: string) => Promise<void>
   /** Apply a title delivered on an SSE frame without a refetch. */
   renameSessionLocal: (sessionId: string, title: string) => void
+  /** Apply `turn_display` from an SSE frame before the session refetch returns. */
+  noteTurnDisplay: (sessionId: string, turnDisplay: string) => void
   hydrateFromStream: () => Promise<void>
   /** Bumped when a tool call or turn finishes, so the review strip refetches. */
   reviewTickBySession: Record<string, number>
@@ -98,6 +112,8 @@ const sessionInsertedAt = new Map<string, number>()
 const titleRevision = new Map<string, number>()
 /** `has_pending_agent` written by a turn frame. A fetch that started earlier keeps it. */
 const pendingRevision = new Map<string, number>()
+/** `turn_display` written from an event. A fetch that started earlier keeps it. */
+const turnDisplayRevision = new Map<string, number>()
 
 const transcriptFlight = new Map<string, Promise<TranscriptRead | null>>()
 
@@ -135,6 +151,38 @@ function stampPending(sessionId: string): void {
   pendingRevision.set(sessionId, bumpRevision())
 }
 
+/** Reload the assistant row that owns this call. A failed load keeps the row we have. */
+async function refreshCallMessage(
+  get: () => ChatState,
+  sessionId: string,
+  callId: string
+): Promise<ChatMessage | null> {
+  const current = get().messagesBySession[sessionId]?.find((item) =>
+    item.tool_calls.some((call) => call.id === callId)
+  )
+  if (!current) {
+    return null
+  }
+  try {
+    const fresh = await getMessage(sessionId, current.id)
+    get().upsertMessage(sessionId, fresh)
+    return fresh
+  } catch {
+    return current
+  }
+}
+
+function callStillOpen(message: ChatMessage | null, callId: string): boolean {
+  if (!message) {
+    return true
+  }
+  const call = message.tool_calls.find((item) => item.id === callId)
+  if (!call) {
+    return true
+  }
+  return call.approval_status === 'pending' && call.execution_status === 'not_started'
+}
+
 function errorText(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
@@ -161,6 +209,14 @@ function replaceSession(
   }
   if ((pendingRevision.get(session.id) ?? 0) > seenAt) {
     next = { ...next, has_pending_agent: current.has_pending_agent }
+  }
+  if ((turnDisplayRevision.get(session.id) ?? 0) > seenAt) {
+    next = {
+      ...next,
+      turn_display: current.turn_display,
+      has_pending_agent:
+        current.turn_display === 'awaiting_approval' ? false : next.has_pending_agent
+    }
   }
   if (current.updated_at > next.updated_at) {
     return sessions
@@ -201,6 +257,7 @@ function sameSessionRow(current: ChatSession, next: ChatSession): boolean {
     current.title === next.title &&
     current.mode === next.mode &&
     current.has_pending_agent === next.has_pending_agent &&
+    current.turn_display === next.turn_display &&
     JSON.stringify(current.model_config) === JSON.stringify(next.model_config) &&
     JSON.stringify(current.allow_hosts) === JSON.stringify(next.allow_hosts) &&
     JSON.stringify(current.path_allow_read) === JSON.stringify(next.path_allow_read) &&
@@ -281,7 +338,20 @@ function withoutEcho(
   return copies(next) > copies(previous) ? null : echo
 }
 
-function nextPhase(current: AgentPhase | undefined, hasPending: boolean): AgentPhase {
+function nextPhase(
+  current: AgentPhase | undefined,
+  hasPending: boolean,
+  sessionId: string,
+  seenAt: number
+): AgentPhase {
+  // A send marks the session running before the actor is visible to a read
+  // that is already in flight. That read must not put the phase back to idle.
+  if (
+    (pendingRevision.get(sessionId) ?? 0) > seenAt &&
+    (current === 'thinking' || current === 'responding')
+  ) {
+    return current
+  }
   if (!hasPending) {
     return 'idle'
   }
@@ -395,7 +465,12 @@ function applyTranscript(
         phaseMode === 'session' && session
           ? {
               ...state.phaseBySession,
-              [sessionId]: nextPhase(state.phaseBySession[sessionId], session.has_pending_agent)
+              [sessionId]: nextPhase(
+                state.phaseBySession[sessionId],
+                session.has_pending_agent,
+                sessionId,
+                seenAt
+              )
             }
           : state.phaseBySession
     }
@@ -417,6 +492,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   transcriptLoading: false,
   busy: false,
   stoppingSessionId: null,
+  compactingSessionId: null,
   reviewTickBySession: {},
 
   loadSessions: async (options) => {
@@ -466,6 +542,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return
         }
         applyTranscript(currentId, transcript.messages, transcript.session, transcript.seenAt)
+        get().bumpReview(currentId)
         return
       }
       const fallback = next[0]
@@ -479,6 +556,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return
       }
       applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
+      get().bumpReview(fallback.id)
     } catch (err) {
       if (epoch !== hydrateEpoch) {
         return
@@ -508,6 +586,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       error: null,
       transcriptLoading: firstOpen
     })
+    // Opening a session reloads its review, so the strip reflects this
+    // session's files instead of whatever the previous one left behind.
+    get().bumpReview(id)
     try {
       const transcript = await readTranscript(id)
       if (epoch !== hydrateEpoch) {
@@ -623,20 +704,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({ busy: false })
           return false
         }
+        stampPending(created.id)
         set((state) => ({
           busy: false,
           pendingEcho: { sessionId: created.id, text },
-          phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' }
+          phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' },
+          sessions: state.sessions.map((item) =>
+            item.id === created.id ? { ...item, has_pending_agent: true } : item
+          )
         }))
         writeComposerDraft(created.id, '')
         return true
       }
 
       await submitInstruction(activeSessionId, text, images)
+      stampPending(activeSessionId)
       set((state) => ({
         busy: false,
         pendingEcho: { sessionId: activeSessionId, text },
-        phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' }
+        phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' },
+        sessions: state.sessions.map((item) =>
+          item.id === activeSessionId ? { ...item, has_pending_agent: true } : item
+        )
       }))
       writeComposerDraft(activeSessionId, '')
       return true
@@ -694,20 +783,62 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  compactAgent: async () => {
+    const { draftSelected, activeSessionId, compactingSessionId } = get()
+    if (draftSelected || activeSessionId === null || compactingSessionId === activeSessionId) {
+      return
+    }
+    const sessionId = activeSessionId
+    set({ compactingSessionId: sessionId, error: null })
+    try {
+      await compactSession(sessionId)
+      // The rewrite completes on the actor and arrives as `transcript_compacted`,
+      // which refetches the transcript. Nothing else to do here.
+      set((state) => ({
+        compactingSessionId:
+          state.compactingSessionId === sessionId ? null : state.compactingSessionId
+      }))
+    } catch (err) {
+      set((state) => ({
+        compactingSessionId:
+          state.compactingSessionId === sessionId ? null : state.compactingSessionId,
+        error: noteError(errorText(err, 'Failed to compact the context'), sessionId)
+      }))
+    }
+  },
+
   decideCall: async (sessionId, callId, decision) => {
+    stampPending(sessionId)
     set((state) => ({
       busy: true,
       error: null,
-      phaseBySession: { ...state.phaseBySession, [sessionId]: 'thinking' }
+      phaseBySession: { ...state.phaseBySession, [sessionId]: 'thinking' },
+      sessions: state.sessions.map((item) =>
+        item.id === sessionId ? { ...item, has_pending_agent: true } : item
+      )
     }))
     try {
       await decideToolCall(sessionId, callId, decision)
       set({ busy: false })
     } catch (err) {
+      const fresh = await refreshCallMessage(get, sessionId, callId)
+      const stillOpen = callStillOpen(fresh, callId)
+      if (stillOpen) {
+        stampPending(sessionId)
+      }
       set((state) => ({
         busy: false,
-        error: noteError(errorText(err, 'Failed to settle the tool call'), sessionId),
-        phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
+        error: stillOpen
+          ? noteError(errorText(err, 'Failed to settle the tool call'), sessionId)
+          : state.error,
+        phaseBySession: stillOpen
+          ? { ...state.phaseBySession, [sessionId]: 'idle' }
+          : state.phaseBySession,
+        sessions: stillOpen
+          ? state.sessions.map((item) =>
+              item.id === sessionId ? { ...item, has_pending_agent: false } : item
+            )
+          : state.sessions
       }))
     }
   },
@@ -820,6 +951,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setPhase: (sessionId, phase) => {
+    if (phase === 'thinking' || phase === 'responding') {
+      stampPending(sessionId)
+    }
     set((state) => {
       if (state.phaseBySession[sessionId] === phase) {
         return state
@@ -835,6 +969,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     const phase: AgentPhase = kind === 'text' ? 'responding' : 'thinking'
+    stampPending(sessionId)
     set((state) => {
       if (state.phaseBySession[sessionId] === phase) {
         return state
@@ -938,6 +1073,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       set({ error: noteError(errorText(err, 'Failed to load chat session'), sessionId) })
     }
+  },
+
+  noteTurnDisplay: (sessionId, turnDisplay) => {
+    turnDisplayRevision.set(sessionId, bumpRevision())
+    set((state) => ({
+      sessions: state.sessions.map((item) =>
+        item.id === sessionId
+          ? {
+              ...item,
+              turn_display: turnDisplay,
+              has_pending_agent:
+                turnDisplay === 'awaiting_approval' ? false : item.has_pending_agent
+            }
+          : item
+      )
+    }))
   },
 
   renameSessionLocal: (sessionId, title) => {

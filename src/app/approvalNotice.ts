@@ -67,11 +67,41 @@ export async function postApprovalNotice(
   }
   try {
     await invoke('show_approval_notice', {
+      title: 'Robi needs approval',
       body: await noticeBody(sessionId, callId),
       session_id: sessionId
     })
   } catch {
     releasePause(posted, sessionId)
+  }
+}
+
+/**
+ * One banner when a turn fails and this window is not in front.
+ * A click focuses the window and selects the session. The in-app notice
+ * still carries the same message.
+ */
+export async function postTurnFailedNotice(sessionId: string, message: string): Promise<void> {
+  if (!isTauri() || !message) {
+    return
+  }
+  const win = getCurrentWindow()
+  const [focused, minimized, visible] = await Promise.all([
+    win.isFocused(),
+    win.isMinimized(),
+    win.isVisible()
+  ])
+  if (windowInFront({ focused, minimized, visible })) {
+    return
+  }
+  try {
+    await invoke('show_approval_notice', {
+      title: 'Robi',
+      body: message,
+      session_id: sessionId
+    })
+  } catch {
+    // The in-app notice already has the message.
   }
 }
 

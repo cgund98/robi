@@ -256,10 +256,26 @@ pub async fn search_docs(
         .map_err(|_| ServiceError::Unknown)?;
     let blocking = Arc::clone(&index);
     let fts = text.clone();
-    let hits = tokio::task::spawn_blocking(move || blocking.search(&query_vec, &fts, SEARCH_K))
-        .await
-        .map_err(|_| ServiceError::Unknown)?
-        .map_err(|_| ServiceError::Unknown)?;
+    // The task's first status is `indexing`, before the schema exists. A query
+    // in that window has nothing to rank; the status is the answer. A failure
+    // once the index is ready is still an error.
+    let not_ready = status.state != IndexState::Ready;
+    let hits = match tokio::task::spawn_blocking(move || {
+        blocking.search(&query_vec, &fts, SEARCH_K)
+    })
+    .await
+    {
+        Ok(Ok(hits)) => hits,
+        Ok(Err(_)) | Err(_) if not_ready => {
+            return Ok(Json(DocSearchResult {
+                query: text,
+                engine: engine.as_str().to_owned(),
+                index: IndexStatusBody::from_status(index.status()),
+                hits: Vec::new(),
+            }));
+        }
+        Ok(Err(_)) | Err(_) => return Err(ServiceError::Unknown),
+    };
     // Re-read: the scan may have advanced while the query ran.
     let status = index.status();
     Ok(Json(DocSearchResult {
@@ -797,6 +813,14 @@ mod tests {
             unreachable!("docs search does not touch chat sessions")
         }
 
+        async fn set_turn_display(
+            &self,
+            _id: SessionId,
+            _display: crate::domain::chat_session::model::TurnDisplay,
+        ) -> Result<(), ServiceError> {
+            Ok(())
+        }
+
         async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
             unreachable!("docs search does not touch chat sessions")
         }
@@ -833,6 +857,10 @@ mod tests {
         async fn stop(&self, _session: SessionId) -> Result<(), ServiceError> {
             unreachable!("docs search does not stop")
         }
+
+        async fn compact(&self, _session: SessionId) -> Result<(), ServiceError> {
+            unreachable!("docs search does not compact")
+        }
     }
 
     #[async_trait]
@@ -863,6 +891,15 @@ mod tests {
 
         async fn update(&self, _session: SessionId, _message: Message) -> Result<(), StoreError> {
             unreachable!("docs search does not update")
+        }
+
+        async fn replace_prefix(
+            &self,
+            _session: SessionId,
+            _delete: &[MessageId],
+            _summary: Message,
+        ) -> Result<(), StoreError> {
+            unreachable!("docs search does not compact")
         }
     }
 

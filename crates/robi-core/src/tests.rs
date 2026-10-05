@@ -4,13 +4,14 @@
 //! no filesystem, no Tauri.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
+use crate::compact::{CompactError, CompactOutcome, CompactTrigger, Compactor};
 use crate::config::LoopConfig;
 use crate::error::{AgentError, ModelError, RegistryError, ToolError, TurnOutcome};
 use crate::event::Event;
@@ -1390,4 +1391,109 @@ fn the_registry_lists_tools_by_name_and_states_every_concurrency() {
     assert_eq!(snapshot.get("grep"), Some(&Concurrency::Concurrent));
     assert_eq!(snapshot.get("write"), Some(&Concurrency::Exclusive));
     assert_eq!(snapshot.len(), 3, "every tool states a concurrency");
+}
+
+// ---------------------------------------------------------------------------
+// Compaction
+// ---------------------------------------------------------------------------
+
+/// Records every `compact` call and returns a scripted result.
+struct StubCompactor {
+    calls: Mutex<Vec<(SessionId, Option<u64>, CompactTrigger)>>,
+    fail: bool,
+}
+
+impl StubCompactor {
+    fn new(fail: bool) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            fail,
+        }
+    }
+
+    fn triggers(&self) -> Vec<CompactTrigger> {
+        self.calls
+            .lock()
+            .expect("compactor calls")
+            .iter()
+            .map(|(_, _, trigger)| *trigger)
+            .collect()
+    }
+}
+
+#[async_trait]
+impl Compactor for StubCompactor {
+    async fn compact(
+        &self,
+        session: SessionId,
+        window: Option<u64>,
+        trigger: CompactTrigger,
+        _cancel: &CancellationToken,
+    ) -> Result<CompactOutcome, CompactError> {
+        self.calls
+            .lock()
+            .expect("compactor calls")
+            .push((session, window, trigger));
+        if self.fail {
+            Err(CompactError("the summary call failed".into()))
+        } else {
+            Ok(CompactOutcome::BelowThreshold)
+        }
+    }
+}
+
+fn agent_with_compactor(compactor: Arc<dyn Compactor>) -> (Agent, Arc<InMemoryStore>, SessionId) {
+    let timeline = Arc::new(Timeline::default());
+    let sink = Arc::new(RecordingSink::new(timeline.clone()));
+    let store = Arc::new(InMemoryStore::new(timeline));
+    let agent = Agent::new(
+        store.clone(),
+        sink,
+        Arc::new(StubModel::saying("done")),
+        Arc::new(ToolRegistry::new()),
+        LoopConfig::default(),
+    )
+    .with_compactor(compactor);
+    let session = agent.new_chat(WorkspaceId::new());
+    (agent, store, session)
+}
+
+#[tokio::test]
+async fn auto_compaction_runs_once_at_the_start_of_a_user_turn() {
+    let compactor = Arc::new(StubCompactor::new(false));
+    let (agent, _store, session) = agent_with_compactor(compactor.clone());
+
+    let outcome = agent.user_input(session, "go", no_cancel()).await;
+
+    assert_eq!(outcome, TurnOutcome::Complete);
+    assert_eq!(compactor.triggers(), vec![CompactTrigger::Auto]);
+    assert_eq!(compactor.calls.lock().unwrap()[0].0, session);
+}
+
+#[tokio::test]
+async fn a_failing_auto_compaction_still_runs_the_turn() {
+    let compactor = Arc::new(StubCompactor::new(true));
+    let (agent, store, session) = agent_with_compactor(compactor.clone());
+
+    let outcome = agent.user_input(session, "go", no_cancel()).await;
+
+    assert_eq!(outcome, TurnOutcome::Complete);
+    assert_eq!(compactor.triggers(), vec![CompactTrigger::Auto]);
+    // The user message and the assistant reply are both stored.
+    assert_eq!(store.transcript(session).len(), 2);
+}
+
+#[tokio::test]
+async fn resume_does_not_compact() {
+    let compactor = Arc::new(StubCompactor::new(false));
+    let (agent, _store, session) = agent_with_compactor(compactor.clone());
+
+    agent.user_input(session, "go", no_cancel()).await;
+    agent.resume(session, no_cancel()).await;
+
+    assert_eq!(
+        compactor.triggers(),
+        vec![CompactTrigger::Auto],
+        "compaction happens on a user turn, not on a resume"
+    );
 }

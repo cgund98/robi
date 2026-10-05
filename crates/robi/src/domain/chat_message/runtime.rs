@@ -44,4 +44,11 @@ pub trait ChatRuntime: Send + Sync {
     ///
     /// Returns after that session's actor has exited. An idle session is a no-op.
     async fn stop(&self, session: SessionId) -> Result<(), ServiceError>;
+
+    /// Summarize an older prefix and rewrite the transcript.
+    ///
+    /// `Ok` means the actor accepted the job; completion is the
+    /// `transcript_compacted` event. `Err(Conflict)` when the actor is running,
+    /// the transcript is awaiting approval, or there is nothing to compact.
+    async fn compact(&self, session: SessionId) -> Result<(), ServiceError>;
 }

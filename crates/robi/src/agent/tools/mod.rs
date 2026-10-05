@@ -14,7 +14,7 @@ mod grep;
 mod list_dir;
 mod lsp;
 mod marker;
-mod memory_store;
+pub(crate) mod memory_store;
 pub(crate) mod plan_file;
 mod read_code;
 mod read_file;

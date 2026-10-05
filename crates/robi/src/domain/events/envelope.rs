@@ -21,6 +21,7 @@ pub const MESSAGE_DELTA: &str = "robi.agent.v1.message_delta";
 pub const TOOL_CALL_UPDATED: &str = "robi.agent.v1.tool_call_updated";
 pub const AWAITING_APPROVAL: &str = "robi.agent.v1.awaiting_approval";
 pub const TURN_FINISHED: &str = "robi.agent.v1.turn_finished";
+pub const TRANSCRIPT_COMPACTED: &str = "robi.agent.v1.transcript_compacted";
 pub const SESSION_SOURCE: &str = "robi/session";
 pub const SESSION_CREATED: &str = "robi.session.v1.created";
 pub const SESSION_UPDATED: &str = "robi.session.v1.updated";
@@ -30,6 +31,8 @@ pub const APP_SUBJECT: &str = "app";
 pub const APP_ERROR: &str = "robi.app.v1.error";
 pub const INDEX_PROGRESS: &str = "robi.index.v1.progress";
 pub const INDEX_SOURCE: &str = "robi/index";
+pub const MCP_STATUS: &str = "robi.mcp.v1.status";
+pub const MCP_SOURCE: &str = "robi/mcp";
 
 /// Types a `session_id` stream filter still delivers. They are not about the
 /// selected session: another window's list, a process-wide failure, or the
@@ -44,6 +47,10 @@ pub const SESSION_FILTER_EXCEPTIONS: &[&str] = &[
     TURN_FINISHED,
 ];
 
+/// Workspace-scoped types a stream may deliver when it is filtered to one
+/// workspace. The subject is the workspace id.
+pub const WORKSPACE_EVENT_TYPES: &[&str] = &[INDEX_PROGRESS, MCP_STATUS];
+
 /// Every agent type the shell asks for. Order is the type map in the design.
 pub const AGENT_EVENT_TYPES: &[&str] = &[
     TURN_STARTED,
@@ -53,10 +60,13 @@ pub const AGENT_EVENT_TYPES: &[&str] = &[
     TOOL_CALL_UPDATED,
     AWAITING_APPROVAL,
     TURN_FINISHED,
+    TRANSCRIPT_COMPACTED,
     SESSION_CREATED,
     SESSION_UPDATED,
     SESSION_DELETED,
     APP_ERROR,
+    INDEX_PROGRESS,
+    MCP_STATUS,
 ];
 
 /// One event on the wire.
@@ -166,9 +176,38 @@ impl EventEnvelope {
         session_ref_with_title(SESSION_UPDATED, session, Some(title))
     }
 
+    /// The display summary changed. The shell refetches the session.
+    pub fn session_turn_display(
+        session: SessionId,
+        display: crate::domain::chat_session::model::TurnDisplay,
+    ) -> Self {
+        EventEnvelope::from_payload(
+            SESSION_SOURCE,
+            SESSION_UPDATED,
+            session.to_string(),
+            json!({
+                "session_id": session.to_string(),
+                "turn_display": display.as_str(),
+            }),
+        )
+        .expect("turn display payload")
+    }
+
     /// A chat session row was removed.
     pub fn session_deleted(session: SessionId) -> Self {
         session_ref(SESSION_DELETED, session)
+    }
+
+    /// A compact rewrote the transcript. `subject` is the session; the shell
+    /// refetches the message list, because rows were deleted.
+    pub fn transcript_compacted(session: SessionId, message: MessageId) -> Self {
+        Self::from_payload(
+            SOURCE,
+            TRANSCRIPT_COMPACTED,
+            session.to_string(),
+            message_ref(session, message),
+        )
+        .expect("compaction payload")
     }
 
     /// A failure the shell should show. `subject` is [`APP_SUBJECT`].
@@ -186,6 +225,18 @@ impl EventEnvelope {
     /// Index build progress. `subject` is the workspace id.
     pub fn index_progress(workspace_id: &str, data: Value) -> Self {
         Self::from_payload(INDEX_SOURCE, INDEX_PROGRESS, workspace_id, data).expect("index payload")
+    }
+
+    /// MCP servers for one workspace changed. `subject` is the workspace id.
+    /// The shell refetches `GET /workspaces/{id}/mcp`.
+    pub fn mcp_status(workspace_id: &str) -> Self {
+        Self::from_payload(
+            MCP_SOURCE,
+            MCP_STATUS,
+            workspace_id,
+            json!({ "workspace_id": workspace_id }),
+        )
+        .expect("mcp payload")
     }
 }
 
@@ -425,5 +476,22 @@ mod tests {
         assert_eq!(envelope.data["message"], "MCP server demo failed to start");
         assert!(chrono::DateTime::parse_from_rfc3339(&envelope.time).is_ok());
         assert_ne!(envelope.id, Uuid::nil());
+    }
+
+    #[test]
+    fn transcript_compacted_names_the_session_and_the_summary() {
+        let session = SessionId::new();
+        let message = MessageId::new();
+        let envelope = EventEnvelope::transcript_compacted(session, message);
+        assert_eq!(envelope.event_type, TRANSCRIPT_COMPACTED);
+        assert_eq!(envelope.source, SOURCE);
+        assert_eq!(envelope.subject, session.to_string());
+        assert_eq!(
+            envelope.data,
+            json!({
+                "session_id": session.to_string(),
+                "message_id": message.to_string(),
+            })
+        );
     }
 }

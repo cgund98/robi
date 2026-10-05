@@ -34,11 +34,13 @@ web_fetch_approval = "on"
 # ~/.robi/secrets.toml
 opencode_go_api_key = "sk-..."
 anthropic_api_key = "sk-ant-..."
+deepseek_api_key = "sk-..."
 brave_search_api_key = "..."
 ```
 
 The same keys are readable and writable over HTTP at `/api/v1/settings/{key}`.
-Secret values are never returned by that route.
+`GET /api/v1/settings?key=` reads several keys in one request; repeat `key`
+for each one. Secret values are never returned by either route.
 
 ## Settings keys
 
@@ -50,8 +52,12 @@ files and later reads always agree.
 |---|---|---|---|
 | `opencode_go_api_key` | yes | none | Bearer credential for OpenCode Go models (`ocg_` prefix). |
 | `anthropic_api_key` | yes | none | `x-api-key` credential for Anthropic models (`ant_` prefix). |
+| `deepseek_api_key` | yes | none | Bearer credential for DeepSeek models (`dsk_` prefix). |
+| `provider_opencode_go` | no | `on` | `off` hides OpenCode Go models from the picker and refuses a turn that needs one. |
+| `provider_anthropic` | no | `on` | `off` hides Anthropic models from the picker and refuses a turn that needs one. |
+| `provider_deepseek` | no | `on` | `off` hides DeepSeek models from the picker and refuses a turn that needs one. |
 | `brave_search_api_key` | yes | none | Brave Search token for `web_search`. |
-| `model` | no | `ocg_glm-5.3` | Default model id. The `ocg_`/`ant_` prefix selects the provider. |
+| `model` | no | `ocg_glm-5.3` | Default model id. The `ocg_`/`ant_`/`dsk_` prefix selects the provider. |
 | `model_ask` | no | none | Model for ask mode. Empty inherits `model`. |
 | `model_plan` | no | none | Model for plan mode. Empty inherits `model`. |
 | `model_agent` | no | none | Model for agent mode. Empty inherits `model`. |
@@ -59,7 +65,8 @@ files and later reads always agree.
 | `reasoning_effort_ask` | no | none | Effort for ask mode. Empty inherits `reasoning_effort`. |
 | `reasoning_effort_plan` | no | none | Effort for plan mode. Empty inherits `reasoning_effort`. |
 | `reasoning_effort_agent` | no | none | Effort for agent mode. Empty inherits `reasoning_effort`. |
-| `base_url` | no | none | Provider base URL. Unset uses the provider default. |
+| `base_url` | no | none | Base URL for OpenCode Go and Anthropic. Unset uses that provider's default. |
+| `deepseek_base_url` | no | none | Base URL for DeepSeek. Unset uses `https://api.deepseek.com`. |
 | `system_prompt` | no | none | Extra system-prompt text. Unset adds no block. |
 | `lsp` | no | `on` | `on` registers the language-server tools; `off` leaves them out. |
 | `max_iterations` | no | `50` | Model turns in one primary-agent run. A whole number from 1 to 500. Read when the session actor starts. |

@@ -59,7 +59,10 @@ repair. Chat sessions never live in this file.
 The first embedder is local. The model is `nomic-ai/nomic-embed-text-v1.5`,
 768 dimensions, run on CPU through ONNX (`fastembed`). The session uses two
 intra-op threads, and its thread pools do not spin while idle, so an embed
-stays on at most two cores. Query embeds use that same session. Document text is
+stays on at most two cores. Load and inference run on Tokio's blocking pool,
+not on a runtime worker. ONNX on a worker waits for threads that are blocked
+inside ONNX, and the HTTP server on that same runtime then stops accepting
+until the process restarts. Query embeds use that same session. Document text is
 prefixed with `search_document: `. Query text is prefixed with
 `search_query: `. Those prefixes are part of the model, and the stored
 vectors are meaningless without them.
@@ -224,7 +227,7 @@ an embedding are queued, and each of those counts as finished when its
 vectors are stored. `files_done` is that finished count, so one changed
 file in the middle of the tree leaves the counter at the unchanged
 total while that file embeds. After the scan, `notify` watches the root.
-Events for one path collapse for 500 ms. The file is hashed, and a hash
+Events for one path collapse for 30 seconds. Each new event for that path resets the wait, so a burst of saves is one hash. The file is hashed, and a hash
 that matches `files.content_hash` does not parse or embed. A changed or
 new file deletes that path's chunks and inserts the new ones in one
 transaction. A missing file deletes that path. A removed directory
@@ -259,7 +262,10 @@ The shell shows this status for the active session's workspace and
 offers pause and resume. Opening the event stream publishes the current
 status, and the index task publishes again whenever that status changes.
 Each `robi.index.v1.progress` frame on the existing `EventSource` makes
-the shell `GET` this route. The frame is not written into the line.
+the shell `GET` this route. A successful response is kept for 10 seconds,
+so a burst of frames does not repeat the request, and frames that arrive
+while a request is in flight share that one call. Pause and resume write
+their response into the same cache. The frame is not written into the line.
 
 | Field | Value |
 |---|---|
@@ -272,27 +278,29 @@ The shell ignores the frame when `subject` is not the active workspace.
 This page is the contract for that type. [events-sse.md](../shell/events-sse.md)
 keeps the agent types.
 
-The line sits at the bottom of the sidebar, above Settings, for the
-active workspace only. A `--rule` hairline separates it from Settings.
-It uses `--ink-muted` at the sidebar item size.
-It is not a badge on the transcript, and it is not a turn activity
-line. `ready` draws nothing.
+The control sits in the top-left of the chat header, to the left of the
+page title, for the active workspace only. It is a 22px pill: a 14px
+progress wheel and a short label. The wheel's arc is the share of files
+still remaining (`files_total - files_done` over `files_total`). While
+the total is still zero and the task is busy, the wheel spins a short
+arc instead. Clicking the pill opens a menu: a one-word state, then a counts line
+(`files_done/files_total · remaining remaining`, or `0/0` before the
+walk has seen a file). `failed` adds `error` between those lines.
+Pause or Resume sits under the counts. It is not a badge on the transcript, and it is not a
+turn activity line. `ready` draws nothing.
 
-| `state` | Line | Control |
-|---|---|---|
-| `downloading` | Downloading index | Pause |
-| `indexing` | Indexing `files_done`/`files_total` | Pause |
-| `paused` | Index paused | Resume |
-| `failed` | Index failed | Resume |
+| `state` | Pill | Menu | Control |
+|---|---|---|---|
+| `downloading` | Indexing | Downloading, then `0/0` | Pause |
+| `indexing` | Indexing | Indexing, then `done/total · remaining remaining` | Pause |
+| `paused` | Paused | Paused, then the same counts line | Resume |
+| `failed` | Failed | Failed, then `error`, then the counts line | Resume |
 
-`indexing` stays hidden for the first 5 seconds. If `state` leaves `indexing` before that, the line never appears. `downloading`, `paused`, and `failed` appear immediately. `indexing` keeps the counts at `0/0` until the walk has seen a file.
-`failed` puts `error` on the line's title. Pause and Resume call the
-`PUT`. The task finishes the current file, or the model load, before
-`state` changes. Until then the control reads Pausing or Resuming, the
-button is disabled, and the 12px ring stays up. That ring is the same
-grayscale spinner as a running session, and it also sits at the start of
-the `downloading` and `indexing` lines. Reduced motion leaves the ring
-still.
+`indexing` stays hidden for the first 5 seconds. If `state` leaves `indexing` before that, the pill never appears. `downloading`, `paused`, and `failed` appear immediately. `indexing` keeps the counts at `0/0` until the walk has seen a file.
+Pause and Resume call the `PUT`. The task finishes the current file, or
+the model load, before `state` changes. Until then the control reads
+Pausing or Resuming and the button is disabled. Reduced motion leaves
+the indeterminate wheel still.
 
 There is no battery API in this version. The index runs while a surface
 for that workspace is open — a chat session or a docs search, plus the
@@ -337,7 +345,9 @@ a partial index is visible to the model. Empty `hits` with
 hit **after** fusion, so a code hit cannot occupy a ranked slot, and returns
 the index status beside the hits so a caller can say the corpus was
 incomplete. It holds a lease for the request alone; the linger above keeps
-the task running between queries. The shell side of that contract — the
+the task running between queries. A query that lands before the schema
+exists — the task's first status is `indexing` — returns that status and
+no hits. A search error once the index is `ready` is a 500. The shell side of that contract — the
 response shape, the partial-result notice, and the poll — is
 [docs-viewer.md](../shell/docs-viewer.md).
 
@@ -468,7 +478,7 @@ builds the tool with a fake `Embedder` that returns fixed vectors.
   a second runtime. Reciprocal rank fusion is the whole rerank until
   measured queries show it is not enough.
 - **Re-embedding on every save event.** A watcher fires per keystroke.
-  The 500 ms collapse plus the content hash skips a file that did not
+  The 30 second collapse plus the content hash skips a file that did not
   change.
 - **One global index for every workspace.** Chunks from two trees would
   share a file, and deleting a workspace would mean a selective delete

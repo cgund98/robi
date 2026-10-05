@@ -1,49 +1,31 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
-import { listMcpServers, type McpServer } from '../../api/mcp'
+import type { McpServer } from '../../api/mcp'
+import { useMcpStore } from '../../state/mcpStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
 import styles from './McpTray.module.css'
 
 export function McpTray() {
   const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
-  const [loaded, setLoaded] = useState<{ id: string; servers: McpServer[] } | null>(null)
-  const servers = loaded?.id === workspaceId ? loaded.servers : []
+  const loadedId = useMcpStore((state) => state.workspaceId)
+  const servers = useMcpStore((state) => state.servers)
+  const visible = loadedId === workspaceId ? servers : []
 
   useEffect(() => {
     if (!workspaceId) {
       return
     }
-    const id = workspaceId
-    let cancelled = false
-    const load = () => {
-      void listMcpServers(id)
-        .then((rows) => {
-          if (!cancelled) {
-            setLoaded({ id, servers: rows })
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setLoaded({ id, servers: [] })
-          }
-        })
-    }
-    load()
-    const timer = window.setInterval(load, 4000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
+    void useMcpStore.getState().refresh(workspaceId)
   }, [workspaceId])
 
-  if (servers.length === 0) {
+  if (visible.length === 0) {
     return null
   }
 
   return (
     <div className={styles.tray} aria-label="MCP servers">
-      {servers.map((server) => (
+      {visible.map((server) => (
         <Link
           key={server.id}
           className={`${styles.mark} ${markClass(server.status)}`}

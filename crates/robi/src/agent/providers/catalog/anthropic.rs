@@ -6,9 +6,9 @@
 //! `ant_` (A11).
 //!
 //! `supports_effort` is the load-bearing flag here (A2). `output_config.effort` is
-//! stable on the 4.6 models, beta on Opus 4.5, and **rejected outright by Haiku
-//! 4.5** — "Extra inputs are not permitted" — so Haiku carries `false` and the
-//! adapter never sends the field for it.
+//! accepted by Fable 5.1, Opus 5.5, and Sonnet 5.5, and **rejected outright by
+//! Haiku 4.5** — "Extra inputs are not permitted" — so Haiku carries `false` and
+//! the adapter never sends the field for it.
 
 use super::ModelInfo;
 use crate::agent::providers::config::{ModelId, ANTHROPIC_PREFIX};
@@ -19,14 +19,26 @@ use crate::agent::providers::config::{ModelId, ANTHROPIC_PREFIX};
 /// requires `max_tokens`, so `max_output` is the request's cap (A5).
 const MODELS: &[(&str, &str, u64, u64, bool)] = &[
     (
-        "claude-sonnet-4-6",
-        "Claude Sonnet 4.6",
-        200_000,
-        64_000,
+        "claude-fable-5-1",
+        "Claude Fable 5.1",
+        1_000_000,
+        128_000,
         true,
     ),
-    ("claude-opus-4-6", "Claude Opus 4.6", 200_000, 32_000, true),
-    ("claude-opus-4-5", "Claude Opus 4.5", 200_000, 64_000, true),
+    (
+        "claude-opus-5-5",
+        "Claude Opus 5.5",
+        1_000_000,
+        128_000,
+        true,
+    ),
+    (
+        "claude-sonnet-5-5",
+        "Claude Sonnet 5.5",
+        1_000_000,
+        128_000,
+        true,
+    ),
     (
         "claude-haiku-4-5",
         "Claude Haiku 4.5",

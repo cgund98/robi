@@ -26,7 +26,7 @@
 //!
 //! ```sh
 //! export ANTHROPIC_API_KEY=...
-//! ROBI_MODEL=ant_claude-sonnet-4-6 cargo run -p robi --example simple
+//! ROBI_MODEL=ant_claude-sonnet-5-5 cargo run -p robi --example simple
 //! ```
 
 use std::collections::HashMap;
@@ -239,6 +239,7 @@ fn settings_from_env() -> Result<ProviderSettings, Box<dyn Error>> {
     let (key_var, key_label) = match kind {
         ProviderKind::OpenCodeGo => ("OPENCODE_GO_API_KEY", "an OpenCode Go"),
         ProviderKind::Anthropic => ("ANTHROPIC_API_KEY", "an Anthropic"),
+        ProviderKind::DeepSeek => ("DEEPSEEK_API_KEY", "a DeepSeek"),
     };
     let key = std::env::var(key_var).map_err(|_| {
         format!(
@@ -261,6 +262,9 @@ fn settings_from_env() -> Result<ProviderSettings, Box<dyn Error>> {
                 settings.max_tokens = Some(info.max_output);
             }
             settings
+        }
+        ProviderKind::DeepSeek => {
+            ProviderSettings::deepseek(ApiKey::new(key), ModelId::new(model.as_str()))
         }
     };
     settings.system_prompt = SYSTEM_PROMPT.to_owned();
@@ -461,6 +465,19 @@ impl MessageStore for MemoryStore {
                 Some(existing) => *existing = message,
                 None => messages.push(message),
             }
+        })
+    }
+
+    /// Delete the summarized prefix and put the summary at the front.
+    async fn replace_prefix(
+        &self,
+        session: SessionId,
+        delete: &[MessageId],
+        summary: Message,
+    ) -> Result<(), StoreError> {
+        self.with_session(session, |messages| {
+            messages.retain(|message| !delete.contains(&message.id));
+            messages.insert(0, summary);
         })
     }
 }

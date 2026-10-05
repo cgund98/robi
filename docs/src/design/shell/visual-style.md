@@ -247,16 +247,18 @@ text. Not cards. Tool **results** that need inspection become tool cards
 A full-page shell, not a dialog. Left rail: back to the chat, then the section
 list. Right pane: a title, then one or more sections, in the same centered
 column as the chat (`--chat-column-width`). Each section is a muted
-heading and a bordered card of rows. **Model Providers** has **Model Defaults**
+heading and a bordered card of rows. **General** starts with **Model Defaults**
 (one row per Global, Agent, Ask, and Plan: mode name, model menu on the left,
-effort menu on the same row). An unset mode shows the Global model and effort
-in those menus, and its Default item clears the override. Global effort stays a
-segmented control. and a separate card per provider. OpenCode
-holds the API key and base URL. **Permissions** is a single card: switches for
-web search approval and web fetch approval, both on by default. **General** is a
-single card: the workspace, a language-server switch, then max iterations and
-subagent max iterations, a subagent timeout, and a tool timeout. **Audit log**
-lists errors from this run of the app, newest first. It is not saved. Use the same tokens;
+effort menu on the same row). An unset mode shows Global Default
+in those menus, and that item clears the override. Global effort stays a
+segmented control. **OpenCode Go** and **Anthropic** are each their own card:
+an enabled switch, on by default, then that provider's API key. OpenCode Go also
+has the optional base URL. A switch that is off disables that card's key field. **Permissions** is a single card: switches for
+web search approval and web fetch approval, both on by default. Below model
+defaults, **General** has the workspace, a language-server switch, then max
+iterations and subagent max iterations, a subagent timeout, and a tool timeout.
+**Audit log**
+lists the last 250 API calls in a table (time, method, path, status, duration), 50 per page. Clicking a row shows that response body. Errors from this run of the app follow, newest first. Health checks are omitted. It is not saved. Use the same tokens;
 active nav is `--bg-surface-active`, the selected effort pill may use `--accent`.
 Text fields, including secrets, sit one step above the card (`--bg-surface-hover`)
 with a `--bg-surface-active` border. Focus moves that border to `--ink-faint`.
@@ -264,7 +266,7 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
+The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. While the workspace index is not ready, a small pill sits at the left of that bar, before the title: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
 
 The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.

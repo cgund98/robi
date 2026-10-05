@@ -1,5 +1,45 @@
 use chrono::{DateTime, Utc};
+use robi_core::error::TurnOutcome;
 use robi_core::ids::{SessionId, WorkspaceId};
+
+/// Display-only summary of the latest turn. The transcript is the source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TurnDisplay {
+    #[default]
+    Idle,
+    Pending,
+    AwaitingApproval,
+    Failed,
+}
+
+impl TurnDisplay {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Pending => "pending",
+            Self::AwaitingApproval => "awaiting_approval",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "idle" => Ok(Self::Idle),
+            "pending" => Ok(Self::Pending),
+            "awaiting_approval" => Ok(Self::AwaitingApproval),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("unknown turn display: {value}")),
+        }
+    }
+
+    pub fn from_outcome(outcome: &TurnOutcome) -> Self {
+        match outcome {
+            TurnOutcome::Complete | TurnOutcome::Cancelled => Self::Idle,
+            TurnOutcome::Paused => Self::AwaitingApproval,
+            TurnOutcome::Failed(_) => Self::Failed,
+        }
+    }
+}
 
 /// Regex lists that decide which paths a session may read or write.
 ///
@@ -290,6 +330,8 @@ pub struct ChatSession {
     /// Null until one of those tools runs. A later write replaces it.
     /// `updated_at` and `last_used_at` do not move.
     pub plan_path: Option<String>,
+    /// Sidebar summary of the latest turn. Not read by the loop.
+    pub turn_display: TurnDisplay,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,

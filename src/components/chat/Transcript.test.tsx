@@ -212,3 +212,32 @@ describe('Transcript follow', () => {
     restore()
   })
 })
+
+describe('Transcript compaction divider', () => {
+  it('renders a Context compacted divider for a summary message', () => {
+    render(
+      <Transcript
+        messages={[
+          {
+            id: 'sum',
+            role: 'user',
+            content: 'decisions so far',
+            tool_calls: [],
+            compaction: true
+          },
+          { id: 'user-1', role: 'user', content: 'keep going', tool_calls: [] }
+        ]}
+        echo={null}
+        phase="idle"
+        mode="agent"
+        deciding={false}
+        onDecide={() => {}}
+      />
+    )
+    const divider = screen.getByRole('separator')
+    expect(divider.textContent).toBe('Context compacted')
+    // The summary text is not shown as a user bubble.
+    expect(screen.queryByText('decisions so far')).toBeNull()
+    expect(screen.getByText('keep going')).toBeTruthy()
+  })
+})

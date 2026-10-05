@@ -1,8 +1,12 @@
-import { memo, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import * as Popover from '@radix-ui/react-popover'
 
 import { useIndexStore } from '../../state/indexStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
-import styles from './Sidebar.module.css'
+import styles from './IndexStatusLine.module.css'
+
+const RADIUS = 6
+const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 
 export function IndexStatusLine() {
   const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
@@ -32,48 +36,94 @@ export function IndexStatusLine() {
     return null
   }
 
-  const label = lineLabel(status.state, status.files_done, status.files_total)
+  const done = status.files_done
+  const total = status.files_total
+  const remaining = Math.max(0, total - done)
   const busy = status.state === 'downloading' || status.state === 'indexing'
-  const title = status.state === 'failed' ? (status.error ?? 'Index failed') : undefined
+  const known = total > 0
+  const remainingFill = known ? remaining / total : 0
   const control =
     pending === 'pause' ? 'Pausing' : pending === 'resume' ? 'Resuming' : busy ? 'Pause' : 'Resume'
+  const heading = menuHeading(status.state)
+  const progress = known ? `${done}/${total} · ${remaining} remaining` : '0/0'
+  const error = status.state === 'failed' ? status.error : null
 
   return (
-    <>
-      <div className={styles.indexLine} title={title} aria-busy={pending ? true : undefined}>
-        {busy || pending ? <IndexSpinner /> : null}
-        <span className={styles.indexText}>{label}</span>
-        <button
-          type="button"
-          className={styles.indexButton}
-          disabled={pending !== null}
-          onClick={() => {
-            void setPaused(busy)
-          }}
-        >
-          {control}
-        </button>
-      </div>
-      <div className={styles.indexDivider} role="separator" />
-    </>
+    <Popover.Root>
+      <Popover.Trigger
+        className={styles.wedge}
+        aria-label={error ? `${heading}. ${error}. ${progress}` : `${heading}. ${progress}`}
+        aria-busy={pending ? true : undefined}
+      >
+        <ProgressWheel fill={remainingFill} indeterminate={!known && (busy || pending !== null)} />
+        <span className={styles.label}>{wedgeLabel(status.state)}</span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content className={styles.panel} side="bottom" align="start" sideOffset={8}>
+          <p className={styles.heading}>{heading}</p>
+          {error ? <p className={styles.error}>{error}</p> : null}
+          <p className={styles.progress}>{progress}</p>
+          <button
+            type="button"
+            className={styles.action}
+            disabled={pending !== null}
+            onClick={() => {
+              void setPaused(busy)
+            }}
+          >
+            {control}
+          </button>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   )
 }
 
-const IndexSpinner = memo(function IndexSpinner() {
-  return <span className={styles.spinner} aria-hidden />
-})
+function ProgressWheel({ fill, indeterminate }: { fill: number; indeterminate: boolean }) {
+  return (
+    <svg
+      className={indeterminate ? `${styles.wheel} ${styles.spin}` : styles.wheel}
+      viewBox="0 0 16 16"
+      aria-hidden
+    >
+      <circle className={styles.track} cx="8" cy="8" r={RADIUS} />
+      <circle
+        className={styles.arc}
+        cx="8"
+        cy="8"
+        r={RADIUS}
+        strokeDasharray={
+          indeterminate
+            ? `${CIRCUMFERENCE * 0.25} ${CIRCUMFERENCE}`
+            : `${CIRCUMFERENCE} ${CIRCUMFERENCE}`
+        }
+        strokeDashoffset={indeterminate ? 0 : CIRCUMFERENCE * (1 - fill)}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  )
+}
 
-function lineLabel(state: string, done: number, total: number): string {
+function wedgeLabel(state: string): string {
+  switch (state) {
+    case 'paused':
+      return 'Paused'
+    case 'failed':
+      return 'Failed'
+    default:
+      return 'Indexing'
+  }
+}
+
+function menuHeading(state: string): string {
   switch (state) {
     case 'downloading':
-      return 'Downloading index'
-    case 'indexing':
-      return `Indexing ${done}/${total}`
+      return 'Downloading'
     case 'paused':
-      return 'Index paused'
+      return 'Paused'
     case 'failed':
-      return 'Index failed'
+      return 'Failed'
     default:
-      return ''
+      return 'Indexing files for search'
   }
 }

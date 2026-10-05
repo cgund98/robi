@@ -167,6 +167,10 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     if removed > 0 {
         tracing::info!(removed, "pruned chat sessions");
     }
+    chat_session_service
+        .reconcile_turn_displays(store.as_ref())
+        .await
+        .map_err(|err| BootstrapError::Prune(err.to_string()))?;
     Ok(AppState {
         workspace_service: Arc::new(WorkspaceService {
             repository: workspaces,

@@ -80,23 +80,33 @@ impl Tool for Find {
         } else {
             None
         };
-        let mut files = Vec::new();
-        let mut truncated = false;
+        let root = self.ctx.root.clone();
+        let start = resolved.absolute.clone();
         let pattern = args.pattern.unwrap_or_default();
-        walk_find(
-            &mut FindWalk {
-                root: &self.ctx.root,
-                filter: &filter,
-                pattern: &pattern,
-                glob: matcher.as_ref(),
-                hidden: args.hidden,
-                no_ignore: args.no_ignore,
-                cancel: &run.cancel,
-                files: &mut files,
-                truncated: &mut truncated,
-            },
-            &resolved.absolute,
-        )?;
+        let hidden = args.hidden;
+        let no_ignore = args.no_ignore;
+        let cancel = run.cancel.clone();
+        let (files, truncated) = crate::agent::blocking::call(move || {
+            let mut files = Vec::new();
+            let mut truncated = false;
+            walk_find(
+                &mut FindWalk {
+                    root: &root,
+                    filter: &filter,
+                    pattern: &pattern,
+                    glob: matcher.as_ref(),
+                    hidden,
+                    no_ignore,
+                    cancel: &cancel,
+                    files: &mut files,
+                    truncated: &mut truncated,
+                },
+                &start,
+            )?;
+            Ok::<_, ToolError>((files, truncated))
+        })
+        .await
+        .map_err(ToolError::Failed)??;
         let mut payload = json!({
             "files": files,
             "truncated": truncated,

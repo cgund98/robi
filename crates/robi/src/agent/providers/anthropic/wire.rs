@@ -320,7 +320,7 @@ mod tests {
 
     fn settings() -> ProviderSettings {
         let mut settings =
-            ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-sonnet-4-6"));
+            ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-sonnet-5-5"));
         settings.system_prompt = "You are Robi.".to_owned();
         settings.max_tokens = Some(64_000);
         settings
@@ -335,7 +335,7 @@ mod tests {
     fn the_system_prompt_is_top_level_and_the_model_is_bare() {
         let request = req(&settings(), &[Message::user("hi")]);
         assert_eq!(
-            request.model, "claude-sonnet-4-6",
+            request.model, "claude-sonnet-5-5",
             "the ant_ prefix is stripped"
         );
         assert_eq!(request.system.as_deref(), Some("You are Robi."));

@@ -42,8 +42,10 @@ pub struct AnthropicModel {
 }
 
 impl AnthropicModel {
-    /// Build an adapter, refusing a model that cannot drive the loop, one that
-    /// cannot call tools, and a configured effort the model rejects (A2).
+    /// Build an adapter, refusing a model that cannot drive the loop or one that
+    /// cannot call tools. A configured effort on a model that rejects it is
+    /// dropped at request build (A2), not here: the setting is global and Haiku
+    /// must still start.
     pub fn new(
         settings: ProviderSettings,
         catalog: Arc<ModelCatalog>,
@@ -55,13 +57,6 @@ impl AnthropicModel {
             .ok_or_else(|| ProviderError::UnknownModel(settings.model.to_string()))?;
         if !info.supports_tools {
             return Err(ProviderError::ToolLessModel(settings.model.to_string()));
-        }
-        // A2: Haiku 4.5 returns a 400 for `output_config`. Refuse the
-        // configuration here rather than discover it on the first turn.
-        if settings.reasoning_effort.is_some() && !info.supports_effort {
-            return Err(ProviderError::UnsupportedEffort {
-                model: settings.model.to_string(),
-            });
         }
 
         let client = reqwest::Client::builder()
@@ -92,17 +87,6 @@ impl AnthropicModel {
             .get(&self.settings.model)
             .map(|info| info.supports_effort)
             .unwrap_or(false)
-    }
-
-    /// The beta header Opus 4.5 needs before it accepts `output_config.effort`.
-    fn effort_beta(&self) -> Option<&'static str> {
-        if self.settings.reasoning_effort.is_some()
-            && self.settings.model.wire_id() == "claude-opus-4-5"
-        {
-            Some(ProviderSettings::ANTHROPIC_EFFORT_BETA)
-        } else {
-            None
-        }
     }
 }
 
@@ -140,6 +124,12 @@ impl Model for AnthropicModel {
         });
 
         Ok(ModelStream::new(rx))
+    }
+
+    fn context_window(&self) -> Option<u64> {
+        self.catalog
+            .get(&self.settings.model)
+            .map(|info| info.context_window)
     }
 }
 
@@ -200,7 +190,7 @@ impl AnthropicModel {
         loop {
             attempt += 1;
 
-            match self.send_once(&url, body).await {
+            match self.send_once(&url, body, cancel).await {
                 Ok(response) => return Ok(response),
                 Err((error, retry)) => {
                     let Retry::Yes { after } = retry else {
@@ -210,7 +200,7 @@ impl AnthropicModel {
                         return Err(error);
                     }
 
-                    let delay = after.unwrap_or_else(|| self.settings.retry.backoff(attempt));
+                    let delay = self.settings.retry.retry_delay(attempt, after);
                     tracing::debug!(attempt, ?delay, "retrying a provider request");
 
                     tokio::select! {
@@ -228,8 +218,9 @@ impl AnthropicModel {
         &self,
         url: &str,
         body: &[u8],
+        cancel: &CancellationToken,
     ) -> Result<reqwest::Response, (ProviderError, Retry)> {
-        let mut request = self
+        let request = self
             .client
             .post(url)
             .header("x-api-key", self.settings.api_key.expose())
@@ -238,28 +229,39 @@ impl AnthropicModel {
             .header(http::header::ACCEPT, "text/event-stream")
             .body(body.to_vec());
 
-        if let Some(beta) = self.effort_beta() {
-            request = request.header("anthropic-beta", beta);
-        }
-
         // A timeout on the request as a whole would also bound the stream, so the
-        // wait for response headers is bounded here instead.
-        let response = match tokio::time::timeout(self.settings.header_timeout, request.send())
-            .await
-        {
-            Err(_) => {
-                return Err((
-                    ProviderError::Transport("timed out waiting for response headers".to_owned()),
-                    Retry::Yes { after: None },
-                ))
+        // wait for response headers is bounded here instead. The gap until
+        // "provider accepted the request" is the provider holding the headers.
+        tracing::info!(
+            model = %self.settings.model,
+            bytes = body.len(),
+            "sending provider request"
+        );
+        // Select on the token here, not only at the loop. `generate` owns this
+        // wait, and dropping it from the outside still leaves the socket up
+        // until this task polls the cancel.
+        let response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                return Err((ProviderError::Cancelled, Retry::No));
             }
-            Ok(Err(error)) => {
-                return Err((
-                    ProviderError::Transport(error.to_string()),
-                    Retry::Yes { after: None },
-                ))
+            response = tokio::time::timeout(self.settings.header_timeout, request.send()) => {
+                match response {
+                    Err(_) => {
+                        return Err((
+                            ProviderError::Transport("no response before the timeout".to_owned()),
+                            Retry::Yes { after: None },
+                        ))
+                    }
+                    Ok(Err(error)) => {
+                        return Err((
+                            ProviderError::Transport(error.to_string()),
+                            Retry::Yes { after: None },
+                        ))
+                    }
+                    Ok(Ok(response)) => response,
+                }
             }
-            Ok(Ok(response)) => response,
         };
 
         let status = response.status();
@@ -304,6 +306,7 @@ async fn pump(
     let mut decoder = SseDecoder::new();
     let mut assembler = Assembler::new();
     let mut body = response.bytes_stream();
+    let mut saw_byte = false;
 
     loop {
         let chunk = tokio::select! {
@@ -315,21 +318,21 @@ async fn pump(
                         "no chunk arrived within {chunk_timeout:?}"
                     ));
                     tracing::warn!(?chunk_timeout, "provider stream stalled");
-                    let _ = tx.send(Delta::Failed(error.into_model_error())).await;
+                    let _ = send_delta(&tx, Delta::Failed(error.into_model_error()), &cancel).await;
                     return;
                 }
                 Ok(None) => {
-                    if absorb(&tx, &mut assembler, decoder.finish()).await {
+                    if absorb(&tx, &mut assembler, decoder.finish(), &cancel).await {
                         return;
                     }
                     let outcome = match assembler.on_eof() {
                         Ok(deltas) => {
                             note_stop_reason(&assembler);
-                            send_all(&tx, deltas).await
+                            send_all(&tx, deltas, &cancel).await
                         }
                         Err(error) => {
                             tracing::warn!(%error, "provider stream failed");
-                            tx.send(Delta::Failed(error.into_model_error())).await.is_ok()
+                            send_delta(&tx, Delta::Failed(error.into_model_error()), &cancel).await
                         }
                     };
                     let _ = outcome;
@@ -338,14 +341,18 @@ async fn pump(
                 Ok(Some(Err(error))) => {
                     tracing::warn!(%error, "provider stream failed");
                     let error = ProviderError::Transport(error.to_string());
-                    let _ = tx.send(Delta::Failed(error.into_model_error())).await;
+                    let _ = send_delta(&tx, Delta::Failed(error.into_model_error()), &cancel).await;
                     return;
                 }
                 Ok(Some(Ok(bytes))) => bytes,
             },
         };
 
-        if absorb(&tx, &mut assembler, decoder.push(&chunk)).await {
+        if !saw_byte {
+            saw_byte = true;
+            tracing::info!("provider sent the first byte");
+        }
+        if absorb(&tx, &mut assembler, decoder.push(&chunk), &cancel).await {
             return;
         }
     }
@@ -359,14 +366,18 @@ async fn absorb(
     tx: &mpsc::Sender<Delta>,
     assembler: &mut Assembler,
     payloads: Vec<String>,
+    cancel: &CancellationToken,
 ) -> bool {
     for payload in payloads {
+        if cancel.is_cancelled() {
+            return true;
+        }
         match assembler.on_payload(&payload) {
             Ok(deltas) => {
                 let finished = deltas
                     .iter()
                     .any(|delta| matches!(delta, Delta::Finished(_)));
-                if !send_all(tx, deltas).await {
+                if !send_all(tx, deltas, cancel).await {
                     return true;
                 }
                 if finished {
@@ -377,7 +388,7 @@ async fn absorb(
             }
             Err(error) => {
                 tracing::warn!(%error, "provider stream failed");
-                let _ = tx.send(Delta::Failed(error.into_model_error())).await;
+                let _ = send_delta(tx, Delta::Failed(error.into_model_error()), cancel).await;
                 return true;
             }
         }
@@ -393,21 +404,38 @@ fn note_stop_reason(assembler: &Assembler) {
     }
 }
 
-/// Forward deltas, stopping if the loop stopped listening.
-async fn send_all(tx: &mpsc::Sender<Delta>, deltas: Vec<Delta>) -> bool {
+/// Forward deltas, stopping if the loop stopped listening or the turn was cancelled.
+///
+/// A cancel has to win while `send` is waiting. The channel is bounded, and the
+/// loop may be busy emitting the previous delta, so a bare `send().await` would
+/// ignore the token until the loop drained the queue.
+async fn send_all(
+    tx: &mpsc::Sender<Delta>,
+    deltas: Vec<Delta>,
+    cancel: &CancellationToken,
+) -> bool {
     for delta in deltas {
-        if tx.send(delta).await.is_err() {
+        if !send_delta(tx, delta, cancel).await {
             return false;
         }
     }
     true
 }
 
+/// Send one delta, or stop when the turn is cancelled or the receiver is gone.
+async fn send_delta(tx: &mpsc::Sender<Delta>, delta: Delta, cancel: &CancellationToken) -> bool {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => false,
+        result = tx.send(delta) => result.is_ok(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::providers::catalog::ModelInfo;
-    use crate::agent::providers::config::{ApiKey, ModelId, ReasoningEffort};
+    use crate::agent::providers::config::{ApiKey, ModelId};
     use crate::agent::providers::ProviderError;
     use robi_core::message::ImageAttachment;
 
@@ -487,25 +515,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_model_that_rejects_effort_is_refused_naming_itself() {
-        let settings = settings_for("ant_no_effort").with_reasoning_effort(ReasoningEffort::High);
-        let error = match AnthropicModel::new(
-            settings,
-            Arc::new(catalog()),
-            Arc::new(ToolRegistry::new()),
-            source(&[]),
-        ) {
-            Ok(_) => panic!("the model rejects effort"),
-            Err(error) => error,
-        };
-        assert!(
-            matches!(error, ProviderError::UnsupportedEffort { .. }),
-            "{error:?}"
-        );
-        assert!(error.to_string().contains("ant_no_effort"));
-    }
-
     #[tokio::test]
     async fn a_non_vision_model_rejects_the_turn_naming_itself() {
         let m = model("ant_visionless", catalog(), source(&[]));
@@ -557,33 +566,5 @@ mod tests {
             .await
             .expect("text-only turns resolve to an empty map");
         assert!(resolved.is_empty());
-    }
-
-    #[test]
-    fn the_effort_beta_header_is_sent_only_for_opus_4_5() {
-        let opus = model("ant_vision", catalog(), source(&[]));
-        // The test catalog model is not opus, so no beta header.
-        assert!(opus.effort_beta().is_none());
-
-        let opus = AnthropicModel::new(
-            settings_for("ant_claude-opus-4-5").with_reasoning_effort(ReasoningEffort::High),
-            Arc::new(ModelCatalog::anthropic()),
-            Arc::new(ToolRegistry::new()),
-            source(&[]),
-        )
-        .expect("builds");
-        assert_eq!(opus.effort_beta(), Some("effort-2025-11-24"));
-
-        let sonnet = AnthropicModel::new(
-            settings_for("ant_claude-sonnet-4-6").with_reasoning_effort(ReasoningEffort::High),
-            Arc::new(ModelCatalog::anthropic()),
-            Arc::new(ToolRegistry::new()),
-            source(&[]),
-        )
-        .expect("builds");
-        assert!(
-            sonnet.effort_beta().is_none(),
-            "4.6 models need no beta header"
-        );
     }
 }

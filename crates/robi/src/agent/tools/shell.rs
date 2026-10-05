@@ -127,8 +127,20 @@ impl Tool for Shell {
         };
         let home = crate::agent::workspace::user_home()
             .map_err(|err| ToolError::Failed(err.to_string()))?;
-        let home = home.canonicalize().unwrap_or(home);
-        let temp_dir = private_temp().map_err(|err| ToolError::Failed(err.to_string()))?;
+        let unsandboxed = args.unsandboxed;
+        let (home, temp_dir, toolchain) = crate::agent::blocking::call(move || {
+            let home = home.canonicalize().unwrap_or(home);
+            let temp_dir = private_temp().map_err(|err| err.to_string())?;
+            let toolchain = if unsandboxed {
+                Vec::new()
+            } else {
+                toolchain_reads(&home)
+            };
+            Ok::<_, String>((home, temp_dir, toolchain))
+        })
+        .await
+        .map_err(ToolError::Failed)?
+        .map_err(ToolError::Failed)?;
         let temp_guard = TempDir(temp_dir.clone());
         let session = self
             .ctx
@@ -144,11 +156,7 @@ impl Tool for Shell {
             cwd,
             network,
             env: Vec::new(),
-            toolchain_reads: if args.unsandboxed {
-                Vec::new()
-            } else {
-                toolchain_reads(&home)
-            },
+            toolchain_reads: toolchain,
             wide_reads: Vec::new(),
             wide_writes: Vec::new(),
             protected_read_files: Vec::new(),
@@ -197,7 +205,15 @@ impl Tool for Shell {
             .setting_value(crate::domain::settings::keys::PATH_ENTRIES)
             .await;
         let path_bin = if profile.sandboxed {
-            install_path_wrappers(&temp_dir, &home, &extra_path)
+            let temp_dir = temp_dir.clone();
+            let home = home.clone();
+            let extra_path = extra_path.clone();
+            crate::agent::blocking::call(move || {
+                install_path_wrappers(&temp_dir, &home, &extra_path)
+            })
+            .await
+            .ok()
+            .flatten()
         } else {
             None
         };
@@ -296,7 +312,19 @@ struct TempDir(PathBuf);
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let path = std::mem::take(&mut self.0);
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        let remove = move || {
+            let _ = std::fs::remove_dir_all(&path);
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Detach the blocking cleanup task; we cannot await inside `Drop`.
+            std::mem::drop(tokio::task::spawn_blocking(remove));
+        } else {
+            remove();
+        }
     }
 }
 

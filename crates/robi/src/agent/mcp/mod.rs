@@ -193,9 +193,16 @@ impl McpHub {
         if self.open.lock().await.is_some_and(|id| id != workspace) {
             return;
         }
-        let user = read_file(&user_path(&self.home));
+        let home = self.home.clone();
         let project_file = project_path(root);
-        let project_bytes = std::fs::read(&project_file).unwrap_or_default();
+        let (user, project_bytes) = crate::agent::blocking::call(move || {
+            (
+                read_file(&user_path(&home)),
+                std::fs::read(&project_file).unwrap_or_default(),
+            )
+        })
+        .await
+        .unwrap_or_default();
         let trusted = stored_hash.is_some_and(|hash| hash == file_hash(&project_bytes));
         let project = String::from_utf8_lossy(&project_bytes).into_owned();
         let secrets = self.secrets().await;
@@ -274,6 +281,7 @@ impl McpHub {
                 pending.push(server.clone());
             }
         }
+        self.publish_status(workspace);
         for server in pending {
             tracing::info!(
                 server = %server.id,
@@ -331,6 +339,8 @@ impl McpHub {
                     );
                 }
             }
+            drop(state);
+            self.publish_status(workspace);
         }
     }
 
@@ -369,6 +379,12 @@ impl McpHub {
         }
     }
 
+    /// Tell subscribers this workspace's server list changed.
+    pub fn publish_status(&self, workspace: WorkspaceId) {
+        self.bus
+            .publish(EventEnvelope::mcp_status(&workspace.to_string()));
+    }
+
     /// Configured servers for this workspace, with the status of any connection
     /// this process has opened. A server that has not been started is
     /// `disconnected`. Secrets and header values are not included.
@@ -378,12 +394,23 @@ impl McpHub {
         root: &Path,
         stored_hash: Option<&str>,
     ) -> Vec<McpServerStatus> {
-        let user = read_file(&user_path(&self.home));
-        let project_bytes = std::fs::read(project_path(root)).unwrap_or_default();
+        let home = self.home.clone();
+        let project_file = project_path(root);
+        let (user, project_bytes) = crate::agent::blocking::call(move || {
+            (
+                read_file(&user_path(&home)),
+                std::fs::read(&project_file).unwrap_or_default(),
+            )
+        })
+        .await
+        .unwrap_or_default();
         let trusted = stored_hash.is_some_and(|hash| hash == file_hash(&project_bytes));
         let project = String::from_utf8_lossy(&project_bytes).into_owned();
         let (servers, _) = merge(&user, &project, trusted, &self.secrets().await);
-        let cached = load_icons(&self.home);
+        let home = self.home.clone();
+        let cached = crate::agent::blocking::call(move || load_icons(&home))
+            .await
+            .unwrap_or_default();
         let state = self.inner.lock().await;
         let live = state.workspaces.get(&workspace);
         servers
@@ -434,7 +461,10 @@ impl McpHub {
 
     async fn secrets(&self) -> BTreeMap<String, String> {
         let path = self.home.join("secrets.toml");
-        let Ok(body) = std::fs::read_to_string(&path) else {
+        let Ok(body) = crate::agent::blocking::call(move || std::fs::read_to_string(&path))
+            .await
+            .unwrap_or(Err(std::io::Error::other("filesystem read failed")))
+        else {
             return BTreeMap::new();
         };
         let Ok(table) = toml::from_str::<toml::Table>(&body) else {

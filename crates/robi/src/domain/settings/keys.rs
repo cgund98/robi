@@ -10,6 +10,9 @@ pub const OPENCODE_GO_API_KEY: &str = "opencode_go_api_key";
 /// Anthropic credential (`x-api-key`). Always a secret. No default.
 pub const ANTHROPIC_API_KEY: &str = "anthropic_api_key";
 
+/// DeepSeek bearer credential. Always a secret. No default.
+pub const DEEPSEEK_API_KEY: &str = "deepseek_api_key";
+
 /// Model id passed to the provider. Not a secret.
 pub const MODEL: &str = "model";
 
@@ -55,7 +58,31 @@ pub fn effort_key(mode: crate::domain::chat_session::model::AgentMode) -> &'stat
 }
 
 /// Optional provider base URL. Not a secret. Unset leaves the provider default.
+/// Applies to OpenCode Go and Anthropic. DeepSeek uses [`DEEPSEEK_BASE_URL`].
 pub const BASE_URL: &str = "base_url";
+
+/// Optional DeepSeek base URL. Not a secret. Unset leaves `https://api.deepseek.com`.
+pub const DEEPSEEK_BASE_URL: &str = "deepseek_base_url";
+
+/// `on` or `off`. Not a secret. Absent and the stored default are `on`.
+pub const PROVIDER_OPENCODE_GO: &str = "provider_opencode_go";
+
+/// `on` or `off`. Not a secret. Absent and the stored default are `on`.
+pub const PROVIDER_ANTHROPIC: &str = "provider_anthropic";
+
+/// `on` or `off`. Not a secret. Absent and the stored default are `on`.
+pub const PROVIDER_DEEPSEEK: &str = "provider_deepseek";
+
+/// The provider is offered in the model list and can drive a turn.
+pub const PROVIDER_ON: &str = "on";
+
+/// The provider is left out of the model list, and a turn that needs it fails.
+pub const PROVIDER_OFF: &str = "off";
+
+/// True unless the stored value is [`PROVIDER_OFF`].
+pub fn provider_enabled(value: Option<&str>) -> bool {
+    value != Some(PROVIDER_OFF)
+}
 
 /// Extra system-prompt text. Not a secret. Unset adds no user block.
 pub const SYSTEM_PROMPT: &str = "system_prompt";
@@ -162,10 +189,12 @@ pub struct KnownSetting {
 /// The whitelist entry for `key`, or `None` when the API must refuse it.
 pub fn known_setting(key: &str) -> Option<KnownSetting> {
     match key {
-        OPENCODE_GO_API_KEY | ANTHROPIC_API_KEY | BRAVE_SEARCH_API_KEY => Some(KnownSetting {
-            secret: true,
-            default_value: None,
-        }),
+        OPENCODE_GO_API_KEY | ANTHROPIC_API_KEY | DEEPSEEK_API_KEY | BRAVE_SEARCH_API_KEY => {
+            Some(KnownSetting {
+                secret: true,
+                default_value: None,
+            })
+        }
         MODEL => Some(KnownSetting {
             secret: false,
             default_value: Some(DEFAULT_MODEL),
@@ -174,12 +203,17 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
             secret: false,
             default_value: Some(LSP_ON),
         }),
+        PROVIDER_OPENCODE_GO | PROVIDER_ANTHROPIC | PROVIDER_DEEPSEEK => Some(KnownSetting {
+            secret: false,
+            default_value: Some(PROVIDER_ON),
+        }),
         WEB_SEARCH_APPROVAL | WEB_FETCH_APPROVAL => Some(KnownSetting {
             secret: false,
             default_value: Some(APPROVAL_ON),
         }),
         REASONING_EFFORT
         | BASE_URL
+        | DEEPSEEK_BASE_URL
         | SYSTEM_PROMPT
         | MODEL_ASK
         | MODEL_PLAN

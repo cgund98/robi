@@ -21,9 +21,21 @@ type ErrorLogState = {
 
 let nextId = 0
 
+/** A fetch this page cancelled. It is not a failure to keep. */
+function isAbortText(message: string): boolean {
+  return (
+    message === 'Fetch is aborted' ||
+    message === 'The operation was aborted.' ||
+    message === 'The user aborted a request.'
+  )
+}
+
 export const useErrorLog = create<ErrorLogState>((set) => ({
   entries: [],
   report: (message, sessionId = null) => {
+    if (isAbortText(message)) {
+      return
+    }
     const entry: ErrorEntry = {
       id: `error-${++nextId}`,
       message,
@@ -34,6 +46,9 @@ export const useErrorLog = create<ErrorLogState>((set) => ({
     set((state) => ({ entries: [entry, ...state.entries] }))
   },
   record: (message) => {
+    if (isAbortText(message) || message.endsWith('(Fetch is aborted)')) {
+      return
+    }
     const entry: ErrorEntry = {
       id: `error-${++nextId}`,
       message,
@@ -50,22 +65,15 @@ export const useErrorLog = create<ErrorLogState>((set) => ({
   }
 }))
 
-/** Where an open error is drawn. Hidden entries stay on the audit log only. */
-export function noticePlacement(
-  entry: Pick<ErrorEntry, 'open' | 'sessionId'>,
-  activeSessionId: string | null,
-  transcriptVisible: boolean
-): 'transcript' | 'top' | 'hidden' {
+/**
+ * Where an open error is drawn. Every open error sits under the window title,
+ * including one for the chat on screen. The bar above the composer grows
+ * upward and can push that notice off the top of the window. Hidden entries
+ * stay on the audit log only.
+ */
+export function noticePlacement(entry: Pick<ErrorEntry, 'open'>): 'top' | 'hidden' {
   if (!entry.open) {
     return 'hidden'
-  }
-  if (
-    transcriptVisible &&
-    entry.sessionId !== null &&
-    activeSessionId !== null &&
-    entry.sessionId === activeSessionId
-  ) {
-    return 'transcript'
   }
   return 'top'
 }

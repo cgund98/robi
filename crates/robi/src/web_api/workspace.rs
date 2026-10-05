@@ -257,8 +257,14 @@ pub async fn get_mcp_config(
         }));
     };
     let root = std::path::PathBuf::from(&workspace.root);
-    let root = root.canonicalize().unwrap_or(root);
-    let files = mcp.config_files(&root, workspace.mcp_project_sha256.as_deref());
+    let hash = workspace.mcp_project_sha256.clone();
+    let mcp = mcp.clone();
+    let files = crate::agent::blocking::call(move || {
+        let root = root.canonicalize().unwrap_or(root);
+        mcp.config_files(&root, hash.as_deref())
+    })
+    .await
+    .map_err(ServiceError::BadRequest)?;
     Ok(Json(McpConfig {
         user_path: files.user_path,
         user_text: files.user_text,

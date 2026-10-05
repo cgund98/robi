@@ -34,13 +34,18 @@ pub async fn review_for_session(
     session_id: SessionId,
 ) -> Result<Vec<ReviewFile>, ServiceError> {
     let baselines = repo.list_baselines(session_id).await?;
-    let mut files = Vec::with_capacity(baselines.len());
-    for baseline in baselines {
-        if let Some(file) = review_baseline(root, &baseline)? {
-            files.push(file);
+    let root = root.to_path_buf();
+    crate::agent::blocking::call(move || {
+        let mut files = Vec::with_capacity(baselines.len());
+        for baseline in baselines {
+            if let Some(file) = review_baseline(&root, &baseline)? {
+                files.push(file);
+            }
         }
-    }
-    Ok(files)
+        Ok(files)
+    })
+    .await
+    .map_err(ServiceError::BadRequest)?
 }
 
 /// One file diff per baseline this session still tracks.
@@ -53,13 +58,18 @@ pub async fn hunks_for_session(
     session_id: SessionId,
 ) -> Result<Vec<FileDiff>, ServiceError> {
     let baselines = repo.list_baselines(session_id).await?;
-    let mut diffs = Vec::with_capacity(baselines.len());
-    for baseline in baselines {
-        if let Some(file_diff) = diff_baseline(root, &baseline)? {
-            diffs.push(file_diff);
+    let root = root.to_path_buf();
+    crate::agent::blocking::call(move || {
+        let mut diffs = Vec::with_capacity(baselines.len());
+        for baseline in baselines {
+            if let Some(file_diff) = diff_baseline(&root, &baseline)? {
+                diffs.push(file_diff);
+            }
         }
-    }
-    Ok(diffs)
+        Ok(diffs)
+    })
+    .await
+    .map_err(ServiceError::BadRequest)?
 }
 
 fn review_baseline(

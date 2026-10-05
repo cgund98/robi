@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { listModels, type CatalogModel } from '../../api/models'
 import { sessionDisplayTitle, type AgentMode, type ChatSession } from '../../api/sessions'
-import { getSetting, SETTING_KEYS } from '../../api/settings'
+import { getSettings, SETTING_KEYS } from '../../api/settings'
 import { useApprovalNoticeOpen } from '../../app/approvalNotice'
 import { useAgentEventsSSE } from '../../app/useAgentEventsSSE'
 import { sessionMode, useChatStore, type AgentPhase } from '../../state/chatStore'
@@ -48,12 +48,26 @@ export function AppLayout() {
       const ids: string[] = []
       for (const session of state.sessions) {
         const sessionPhase = state.phaseBySession[session.id]
-        if (session.has_pending_agent || (sessionPhase !== undefined && sessionPhase !== 'idle')) {
+        if (session.turn_display === 'awaiting_approval') {
+          continue
+        }
+        if (
+          session.has_pending_agent ||
+          session.turn_display === 'pending' ||
+          (sessionPhase !== undefined && sessionPhase !== 'idle')
+        ) {
           ids.push(session.id)
         }
       }
       return ids
     })
+  )
+  const awaitingIds = useChatStore(
+    useShallow((state) =>
+      state.sessions
+        .filter((session) => session.turn_display === 'awaiting_approval')
+        .map((session) => session.id)
+    )
   )
   const phase = useChatStore((state): AgentPhase => {
     if (state.draftSelected || !state.activeSessionId) {
@@ -97,6 +111,8 @@ export function AppLayout() {
   const setEffortChoice = useChatStore((state) => state.setEffortChoice)
   const sendInstruction = useChatStore((state) => state.sendInstruction)
   const stopAgent = useChatStore((state) => state.stopAgent)
+  const compactAgent = useChatStore((state) => state.compactAgent)
+  const compactingSessionId = useChatStore((state) => state.compactingSessionId)
   const stoppingSessionId = useChatStore((state) => state.stoppingSessionId)
   const { models, fallbackModelId, fallbackEffort, modeDefaults } = useModelDefaults()
   const decideCall = useChatStore((state) => state.decideCall)
@@ -204,7 +220,6 @@ export function AppLayout() {
 
   const sessionTitle =
     loading && !activeSession && !draftSelected ? 'Loading…' : sessionDisplayTitle(activeSession)
-  const transcriptVisible = !reviewSessionId && !docsOpen && !plan
   const mode: AgentMode = draftSelected || !activeSession ? draftMode : sessionMode(activeSession)
   const modeDefault = modeDefaults[mode]
   const defaultModelId = modeDefault.model ?? fallbackModelId
@@ -247,6 +262,7 @@ export function AppLayout() {
         docsSelected={docsOpen}
         disabled={loading}
         runningSessionIds={new Set(runningIds)}
+        awaitingSessionIds={new Set(awaitingIds)}
         onSelectSession={openSession}
         onNewSession={openDraft}
         onRenameSession={askRename}
@@ -254,7 +270,7 @@ export function AppLayout() {
       />
       <div className={styles.main}>
         <ChatHeader sessionTitle={docsOpen ? 'Documentation' : sessionTitle} />
-        <ErrorNotices placement="top" transcriptVisible={transcriptVisible} />
+        <ErrorNotices />
         {reviewSessionId ? (
           <ReviewScreen key={reviewSessionId} sessionId={reviewSessionId} />
         ) : docsOpen ? (
@@ -278,7 +294,6 @@ export function AppLayout() {
         ) : fresh ? (
           <div className={styles.welcome}>
             <EmptyGreeting />
-            <ErrorNotices placement="transcript" transcriptVisible={transcriptVisible} />
             <Composer
               placement="welcome"
               disabled={composerLocked}
@@ -326,7 +341,6 @@ export function AppLayout() {
                 }}
               />
               <div className={styles.dock} ref={dockRef}>
-                <ErrorNotices placement="transcript" transcriptVisible={transcriptVisible} />
                 {activeSessionId ? (
                   <EditReviewStrip key={activeSessionId} sessionId={activeSessionId} />
                 ) : null}
@@ -350,6 +364,8 @@ export function AppLayout() {
                   draftKey={composerDraftKey}
                   pendingText={echo}
                   workspaceId={activeWorkspaceId}
+                  onCompact={() => void compactAgent()}
+                  compacting={compactingSessionId === activeSessionId}
                 />
               </div>
             </div>
@@ -429,32 +445,33 @@ function useModelDefaults(): {
         }
       })
       .catch(() => {})
-    void getSetting(SETTING_KEYS.model)
-      .then((setting) => {
-        if (!cancelled && setting.value) {
-          setFallbackModelId(setting.value)
-        }
-      })
-      .catch(() => {})
-    void getSetting(SETTING_KEYS.reasoningEffort)
-      .then((setting) => {
-        if (!cancelled) {
-          setFallbackEffort(setting.value)
-        }
-      })
-      .catch(() => {})
     const modes: AgentMode[] = ['ask', 'plan', 'agent']
-    void Promise.all(
-      modes.map(async (mode) => {
+    void getSettings([
+      SETTING_KEYS.model,
+      SETTING_KEYS.reasoningEffort,
+      ...modes.flatMap((mode) => {
         const keys = MODE_SETTING_KEYS[mode]
-        const [model, effort] = await Promise.all([getSetting(keys.model), getSetting(keys.effort)])
-        return [mode, { model: model.value, effort: effort.value }] as const
+        return [keys.model, keys.effort]
       })
-    )
-      .then((entries) => {
-        if (!cancelled) {
-          setModeDefaults(Object.fromEntries(entries) as Record<AgentMode, ModeDefault>)
+    ])
+      .then((settings) => {
+        if (cancelled) {
+          return
         }
+        const [model, effort, ...modeSettings] = settings
+        if (model?.value) {
+          setFallbackModelId(model.value)
+        }
+        setFallbackEffort(effort?.value ?? null)
+        const entries = modes.map((mode, index) => {
+          const modelSetting = modeSettings[index * 2]
+          const effortSetting = modeSettings[index * 2 + 1]
+          return [
+            mode,
+            { model: modelSetting?.value ?? null, effort: effortSetting?.value ?? null }
+          ] as const
+        })
+        setModeDefaults(Object.fromEntries(entries) as Record<AgentMode, ModeDefault>)
       })
       .catch(() => {})
     return () => {

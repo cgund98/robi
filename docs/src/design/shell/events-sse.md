@@ -89,7 +89,8 @@ Rejected alternatives:
 | Query | Rule |
 |---|---|
 | `event_types` | Repeated. Optional. When present, only envelopes whose `type` is in the list. When absent, every agent type. |
-| `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id, plus index progress for that session's workspace, session create/update/delete, `robi.app.v1.error`, and `turn_started` / `turn_finished` for any session. Message and tool frames for another session stay off this stream. |
+| `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id, plus index progress and MCP status whose subject is that session's workspace, session create/update/delete, `robi.app.v1.error`, and `turn_started` / `turn_finished` for any session. Message and tool frames for another session stay off this stream. |
+| `workspace_id` | Optional UUID. The shell always sets this and does not set `session_id`. Every session frame is delivered. Index progress and MCP status are limited to this workspace. |
 
 Response headers:
 
@@ -154,9 +155,10 @@ These are not core `Event`s. Build them with `EventEnvelope::from_payload`.
 | `type` | `source` | `subject` | `data` | When |
 |---|---|---|---|---|
 | `robi.session.v1.created` | `robi/session` | session id | `{ "session_id" }` | After a session row is stored |
-| `robi.session.v1.updated` | `robi/session` | session id | `{ "session_id", "title"? }` | After any stored field changes, including a generated title. `title` is set when the change is a rename |
+| `robi.session.v1.updated` | `robi/session` | session id | `{ "session_id", "title"?, "turn_display"? }` | After any stored field changes, including a generated title. `title` is set when the change is a rename. `turn_display` is set when the display summary changes |
 | `robi.session.v1.deleted` | `robi/session` | session id | `{ "session_id" }` | After the session row is removed |
 | `robi.app.v1.error` | `robi/app` | `app` | `{ "message" }` | A failure the user should see. `message` is short text. The first publisher is an MCP server that failed to start |
+| `robi.mcp.v1.status` | `robi/mcp` | workspace id | `{ "workspace_id" }` | After an MCP server is marked starting, connected, or failed, and once when the stream opens. The shell refetches `GET /workspaces/{id}/mcp` |
 
 A `session_id` query still delivers these four types, plus `turn_started` and
 `turn_finished` for every session. The four are the session list and
@@ -217,7 +219,7 @@ One connection for the shell, mounted from `AppLayout`.
 | Piece | Role |
 |---|---|
 | `src/infra/useReconnectingEventSource.ts` | One `EventSource`, reconnect on error, an epoch so a stale handler cannot apply |
-| `src/app/useAgentEventsSSE.ts` | Builds `/api/v1/events/stream` with the active `session_id` when a session is selected, and the agent `event_types` |
+| `src/app/useAgentEventsSSE.ts` | Builds `/api/v1/events/stream` with the open workspace's `workspace_id` and the agent `event_types`. It does not set `session_id` |
 | Envelope parse | `JSON.parse(event.data)` as `EventEnvelope`; dispatch on `type` |
 
 Handlers stay thin. They refetch HTTP and update the activity phase. They do
@@ -229,24 +231,25 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 | `type` | Shell |
 |---|---|
 | `robi.agent.v1.turn_started` | Phase `thinking` when that session is on screen. Otherwise the sidebar marks that row running, and does not fetch its transcript |
-| `robi.agent.v1.message_delta` | `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored |
-| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. One GET is in flight per message; a newer frame schedules one trailing GET. A full transcript reload merges with any row upserted after that reload started. `tool_call_updated` refreshes the review strip immediately, then once more after a burst goes quiet |
+| `robi.agent.v1.message_delta` | When that session is on screen: `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored. A frame for another session does not change the phase and does not fetch |
+| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | When that session is on screen: `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. One GET is in flight per message; a newer frame schedules one trailing GET. A full transcript reload merges with any row upserted after that reload started. `tool_call_updated` refreshes the review strip immediately, then once more after a burst goes quiet. A frame for another session does not fetch |
 | `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
-| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome is recorded and shown at the bottom of that transcript until dismissed. The refetch does not put the phase back on `thinking` when `has_pending_agent` is still set: the actor clears that flag after this event. A `turn_started` that arrives during the refetch, including the next piece of work, sets `thinking` and the refetch leaves it. When another session is on screen: clear that row's running mark. A `failed` outcome is still recorded and shown at the top of the shell until dismissed. No transcript fetch |
-| `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. A title carried on the frame is applied immediately. A fetch that started before that title, or before a local insert, does not wipe them. The phase is unchanged |
+| `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome is recorded and shown under the window title until dismissed. When the desktop window is not in front, the same message is one OS notification; a click focuses the window and selects the session. The refetch does not put the phase back on `thinking` when `has_pending_agent` is still set: the actor clears that flag after this event. A `turn_started` that arrives during the refetch, including the next piece of work, sets `thinking` and the refetch leaves it. When another session is on screen: clear that row's running mark. A `failed` outcome is still recorded and shown under the window title until dismissed, and posted as that same notification when the window is not in front. No transcript fetch |
+| `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. A title carried on the frame is applied immediately. A frame that carries `turn_display` applies that value to the row immediately and still refetches. A fetch that started before the frame does not overwrite `turn_display` or put the running spinner back on an `awaiting_approval` row. A title-only frame does not refetch. A fetch that started before a title, or before a local insert, does not wipe them. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
 | `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
-| `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. The stream publishes once when it opens, then again as the index changes |
+| `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. A successful GET is reused for 10 seconds, and concurrent frames share one request. The stream publishes once when it opens, then again as the index changes |
+| `robi.mcp.v1.status` | `GET /workspaces/{id}/mcp` for `subject` when that workspace is active. The stream publishes once when it opens, then again as a server's status changes. The tray does not poll |
 
 Do not open a second `EventSource` per feature.
 
-On every successful `open`, refetch the session list and the active
-transcript. Selecting a session and that open share one in-flight transcript
-read. The list merge keeps a row inserted locally after the fetch started.
-When the selected session changes, close the stream and open a
-new URL with the new `session_id`. A draft has no session id, so the shell
-does not connect. A frame for another session does not reset the 2-second
-catch-up wait for the session on screen.
+On every successful `open`, refetch the session list and the transcript for
+the session on screen. Selecting a session and that open share one in-flight
+transcript read. The list merge keeps a row inserted locally after the fetch
+started. The stream stays open across session switches. Changing workspace
+closes it and opens a URL with the new `workspace_id`. A frame for another
+session does not reset the 2-second catch-up wait, and it does not fetch that
+session's transcript.
 
 ## Failure modes
 

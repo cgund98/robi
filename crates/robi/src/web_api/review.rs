@@ -286,6 +286,10 @@ mod tests {
         async fn stop(&self, _session: SessionId) -> Result<(), ServiceError> {
             Ok(())
         }
+
+        async fn compact(&self, _session: SessionId) -> Result<(), ServiceError> {
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -315,6 +319,15 @@ mod tests {
         }
 
         async fn update(&self, _session: SessionId, _message: Message) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        async fn replace_prefix(
+            &self,
+            _session: SessionId,
+            _delete: &[MessageId],
+            _summary: Message,
+        ) -> Result<(), StoreError> {
             Ok(())
         }
     }

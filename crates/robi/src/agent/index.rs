@@ -282,8 +282,17 @@ mod tests {
             hub.index(id).is_some(),
             "the task outlives its last surface for the linger"
         );
-        tokio::time::sleep(Duration::from_millis(700)).await;
-        assert!(hub.index(id).is_none(), "stopped once the window passed");
+        // The stop check is scheduled, not synchronous. Poll until it lands.
+        let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if hub.index(id).is_none() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(stopped.is_ok(), "stopped once the window passed");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -55,8 +55,8 @@ and an open client refetches the message list.
 
 The meter and the trigger share one number.
 
-`used` is the latest assistant `usage.input`, plus the characters of every
-message after that assistant message, divided by four. `usage.input` is
+`used` is the latest assistant `usage.input`, plus the characters of that
+message and every later message, divided by four. `usage.input` is
 already the prompt through that request, so earlier messages are not added
 again. When no assistant message has reported usage, `used` is the characters
 of the whole transcript divided by four.
@@ -90,6 +90,10 @@ Nothing to compact means the prefix is empty: the transcript is only the
 current turn. Manual compact returns `409` with `{"error":"nothing to compact"}`.
 Auto compact skips.
 
+When the model advertises no `context_window`, a manual compact still runs:
+there is no figure to target, so it cuts at the newest legal user boundary and
+keeps only the current turn. That is `plan_last_turn`.
+
 ### Summary
 
 One model call, no tools, on the session's current model. The prompt is the
@@ -97,6 +101,11 @@ prefix rendered as `role: content` lines, then an instruction to write a
 summary the next turn can continue from: decisions made, files read or
 changed, tool outcomes that still matter, and constraints the user set. The
 call's output is the summary message's `content`.
+
+The rendered prefix is bounded below the model's window: the newest prefix
+messages are kept whole and the oldest are dropped with an omitted-count line,
+leaving headroom for the reply. A model that advertises no window caps the
+render at a fixed size.
 
 That message is role `user`, so the tail can still start with the user's real
 turn. `compaction: true` is how the UI and a later compact tell it from a
@@ -168,9 +177,34 @@ pub struct Cut {
 /// `None` when the prefix would be empty.
 pub fn plan_cut(messages: &[Message], context_window: u64) -> Option<Cut>;
 
+/// Cut at the newest user boundary, keeping only the current turn. Used for a
+/// manual compact when the model advertises no window.
+pub fn plan_last_turn(messages: &[Message]) -> Option<Cut>;
+
 /// Same figure the meter uses, without the composer draft.
 pub fn estimate_tokens(messages: &[Message]) -> u64;
 ```
+
+The pure functions live in `robi-core`. The summary call, the transactional
+rewrite, and the route live in `crates/robi` behind the `Compactor` trait,
+which the loop calls at the start of a user turn:
+
+```rust
+#[async_trait]
+pub trait Compactor: Send + Sync {
+    async fn compact(
+        &self,
+        session: SessionId,
+        window: Option<u64>,
+        trigger: CompactTrigger,
+        cancel: &CancellationToken,
+    ) -> Result<CompactOutcome, CompactError>;
+}
+```
+
+`CompactOutcome` is `Compacted { message }`, `BelowThreshold` (auto only,
+below 80%), or `Nothing` (empty prefix). `CompactError` means the transcript
+was left unchanged.
 
 `POST /api/v1/chat_sessions/{id}/compact` returns `202`
 `{"status":"compacting"}` once the actor has accepted the job. Completion is

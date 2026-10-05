@@ -115,9 +115,23 @@ impl SettingsModelSource {
         // A11: the prefix names the provider. An id with neither known prefix is a
         // legacy OpenCode Go id, read-compatible forever; new writes are prefixed.
         let kind = ProviderKind::of(&model);
+        let provider_key = match kind {
+            ProviderKind::OpenCodeGo => keys::PROVIDER_OPENCODE_GO,
+            ProviderKind::Anthropic => keys::PROVIDER_ANTHROPIC,
+            ProviderKind::DeepSeek => keys::PROVIDER_DEEPSEEK,
+        };
+        let provider_value = self.settings.get(provider_key).await?;
+        if !keys::provider_enabled(
+            provider_value
+                .as_ref()
+                .map(|setting| setting.value.as_str()),
+        ) {
+            return Err(ServiceError::BadRequest(format!("{provider_key} is off")));
+        }
         let (key_name, key_value) = match kind {
             ProviderKind::OpenCodeGo => (keys::OPENCODE_GO_API_KEY, keys::OPENCODE_GO_API_KEY),
             ProviderKind::Anthropic => (keys::ANTHROPIC_API_KEY, keys::ANTHROPIC_API_KEY),
+            ProviderKind::DeepSeek => (keys::DEEPSEEK_API_KEY, keys::DEEPSEEK_API_KEY),
         };
         let api_key = match self.settings.get(key_value).await? {
             Some(setting) if !setting.value.trim().is_empty() => setting.value,
@@ -139,8 +153,15 @@ impl SettingsModelSource {
                 }
                 settings
             }
+            ProviderKind::DeepSeek => {
+                ProviderSettings::deepseek(ApiKey::new(api_key), ModelId::new(model.as_str()))
+            }
         };
-        if let Some(base_url) = self.settings.get(keys::BASE_URL).await? {
+        let base_key = match kind {
+            ProviderKind::DeepSeek => keys::DEEPSEEK_BASE_URL,
+            ProviderKind::OpenCodeGo | ProviderKind::Anthropic => keys::BASE_URL,
+        };
+        if let Some(base_url) = self.settings.get(base_key).await? {
             if !base_url.value.is_empty() {
                 settings.base_url = base_url.value;
             }
@@ -185,16 +206,20 @@ impl ModelSource for SettingsModelSource {
             Some(setting) if !setting.value.trim().is_empty() => Some(setting.value),
             _ => None,
         };
-        settings.system_prompt =
+        let tools_for_prompt = Arc::clone(&tools);
+        settings.system_prompt = crate::agent::blocking::call(move || {
             crate::agent::prompt::assemble_session(crate::agent::prompt::SessionPrompt {
-                tools: &tools,
+                tools: &tools_for_prompt,
                 user_prompt,
                 config_dir: crate::adapters::settings::home_dir().ok(),
                 workspace,
                 mode,
                 plan_path,
                 max_bytes: crate::agent::prompt::DEFAULT_MAX_BYTES,
-            });
+            })
+        })
+        .await
+        .unwrap_or_default();
         build_model(settings, tools, self.images())
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }
@@ -451,7 +476,7 @@ mod tests {
         // A11: the prefix names the provider and the key follows it.
         let store = Arc::new(MemorySettingsStore::new());
         store
-            .set(keys::MODEL, "ant_claude-sonnet-4-6".into(), false)
+            .set(keys::MODEL, "ant_claude-sonnet-5-5".into(), false)
             .await
             .unwrap();
         let source = SettingsModelSource::new(store.clone(), no_images());
@@ -477,7 +502,50 @@ mod tests {
         assert_eq!(settings.id.as_str(), "anthropic");
         assert_eq!(settings.api_key.expose(), "sk-ant");
         // A5: max_tokens comes from the catalog for the Anthropic provider.
-        assert_eq!(settings.max_tokens, Some(64_000));
+        assert_eq!(settings.max_tokens, Some(128_000));
+    }
+
+    #[tokio::test]
+    async fn a_dsk_prefix_resolves_deepseek_and_uses_its_own_base_url() {
+        let store = Arc::new(MemorySettingsStore::new());
+        store
+            .set(keys::MODEL, "dsk_deepseek-flash".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::BASE_URL, "https://opencode.example/v1".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(
+                keys::DEEPSEEK_BASE_URL,
+                "https://deepseek.example".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let source = SettingsModelSource::new(store.clone(), no_images());
+
+        let error = source
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("deepseek_api_key is not set".into())
+        );
+
+        store
+            .set(keys::DEEPSEEK_API_KEY, "sk-dsk".into(), true)
+            .await
+            .unwrap();
+        let settings = source
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
+            .await
+            .unwrap();
+        assert_eq!(settings.id.as_str(), "deepseek");
+        assert_eq!(settings.api_key.expose(), "sk-dsk");
+        assert_eq!(settings.base_url, "https://deepseek.example");
     }
 
     #[tokio::test]
@@ -540,6 +608,28 @@ mod tests {
         assert!(
             error.to_string().contains("not-a-model"),
             "the error names the model: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_provider_is_refused() {
+        let store = Arc::new(MemorySettingsStore::new());
+        store
+            .set(keys::OPENCODE_GO_API_KEY, "sk-one".into(), true)
+            .await
+            .unwrap();
+        store
+            .set(keys::PROVIDER_OPENCODE_GO, "off".into(), false)
+            .await
+            .unwrap();
+        let source = SettingsModelSource::new(store, no_images());
+        let error = source
+            .provider_settings(AgentMode::Agent, &ModeOverride::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("provider_opencode_go is off".into())
         );
     }
 }

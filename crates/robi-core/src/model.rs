@@ -94,6 +94,15 @@ pub trait Model: Send + Sync {
         transcript: &[Message],
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError>;
+
+    /// The model's advertised context window, when the provider states one.
+    ///
+    /// The loop reads this to decide whether a user turn should auto-compact.
+    /// A model that cannot name a window keeps the default `None`, which never
+    /// auto-compacts.
+    fn context_window(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// A model that always fails. Useful as a placeholder before M1.

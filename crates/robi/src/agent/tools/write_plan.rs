@@ -109,7 +109,7 @@ impl Tool for WritePlan {
         }
         let todos = normalize_todos(&args.todos)?;
         let home = user_home().map_err(|err| ToolError::Failed(err.to_string()))?;
-        let destination = self.destination(&args, &home)?;
+        let destination = self.destination(&args, &home).await?;
         let resolved = self.ctx.resolve(&destination.argument)?;
         if !is_session_plan_file(&resolved.absolute, &home, self.ctx.session_id) {
             return Err(ToolError::Failed(
@@ -120,13 +120,19 @@ impl Tool for WritePlan {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        if std::fs::metadata(&resolved.absolute)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
+        let absolute = resolved.absolute.clone();
+        let (is_dir, existing) = crate::agent::blocking::call(move || {
+            let is_dir = std::fs::metadata(&absolute)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false);
+            let existing = read_text(&absolute)?;
+            Ok::<_, ToolError>((is_dir, existing))
+        })
+        .await
+        .map_err(ToolError::Failed)??;
+        if is_dir {
             return Err(ToolError::Failed("path is a directory".into()));
         }
-        let existing = read_text(&resolved.absolute)?;
         if !self.create && existing.is_none() {
             return Err(ToolError::Failed("plan file does not exist".into()));
         }
@@ -143,8 +149,13 @@ impl Tool for WritePlan {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| ToolError::Failed("plan file name is missing".into()))?,
         );
-        ensure_parent(&resolved.absolute)?;
-        atomic_write(&resolved.absolute, &text)?;
+        let absolute = resolved.absolute.clone();
+        crate::agent::blocking::call(move || {
+            ensure_parent(&absolute)?;
+            atomic_write(&absolute, &text)
+        })
+        .await
+        .map_err(ToolError::Failed)??;
         self.ctx.remember_plan(&stored).await?;
         Ok(json!({
             "path": stored,
@@ -159,7 +170,7 @@ struct Destination {
 }
 
 impl WritePlan {
-    fn destination(
+    async fn destination(
         &self,
         args: &WritePlanArgs,
         home: &std::path::Path,
@@ -178,9 +189,14 @@ impl WritePlan {
                     "path must be a markdown file under ~/.robi/plans for this session".into(),
                 ));
             }
-            let exists = std::fs::metadata(&resolved.absolute)
-                .map(|meta| meta.is_file())
-                .unwrap_or(false);
+            let absolute = resolved.absolute.clone();
+            let exists = crate::agent::blocking::call(move || {
+                std::fs::metadata(&absolute)
+                    .map(|meta| meta.is_file())
+                    .unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false);
             if !exists {
                 return Err(ToolError::Failed("plan file does not exist".into()));
             }

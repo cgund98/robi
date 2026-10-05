@@ -174,6 +174,21 @@ impl MessageStore for InMemoryStore {
         self.timeline.push(Step::Update(id));
         Ok(())
     }
+
+    async fn replace_prefix(
+        &self,
+        session: SessionId,
+        delete: &[MessageId],
+        summary: Message,
+    ) -> Result<(), StoreError> {
+        let id = summary.id;
+        self.with_session(session, |messages| {
+            messages.retain(|message| !delete.contains(&message.id));
+            messages.insert(0, summary);
+        })?;
+        self.timeline.push(Step::Append(id));
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

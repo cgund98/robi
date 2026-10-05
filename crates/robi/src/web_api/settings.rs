@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::StatusCode,
     routing::get,
     Json, Router,
@@ -12,11 +12,54 @@ use crate::web_api::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/api/v1/settings", get(list_settings))
         .route(
             "/api/v1/settings/{key}",
             get(get_setting).put(set_setting).delete(delete_setting),
         )
         .with_state(state)
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListSettingsQuery {
+    /// Repeat to read several keys in one request.
+    pub key: Vec<String>,
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/settings",
+    params(ListSettingsQuery),
+    responses(
+        (status = 200, description = "Settings in request order. An unset key with a default is stored, then returned. An unset key with no default has a null value. Secret values are omitted.", body = Vec<SettingResponse>)
+    )
+)]
+pub async fn list_settings(
+    State(state): State<AppState>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Vec<SettingResponse>>, ServiceError> {
+    // Axum's `Query` extractor rejects a repeated key: it keeps one string and
+    // then fails to deserialize `Vec`.
+    let keys = setting_keys(raw.as_deref());
+    let settings = state.settings_service.get_many(&keys).await?;
+    let body = keys
+        .iter()
+        .zip(settings)
+        .map(|(key, setting)| SettingResponse::from_read(key, setting))
+        .collect();
+    Ok(Json(body))
+}
+
+fn setting_keys(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw.filter(|value| !value.is_empty()) else {
+        return Vec::new();
+    };
+    url::form_urlencoded::parse(raw.as_bytes())
+        .filter(|(name, value)| name == "key" && !value.is_empty())
+        .map(|(_, value)| value.into_owned())
+        .collect()
 }
 
 #[axum::debug_handler]
@@ -119,5 +162,16 @@ impl Serialize for SettingResponse {
             state.serialize_field("value", &self.value)?;
         }
         state.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::setting_keys;
+
+    #[test]
+    fn repeated_key_query_keeps_every_value() {
+        let keys = setting_keys(Some("key=base_url&key=model&other=1"));
+        assert_eq!(keys, ["base_url", "model"]);
     }
 }

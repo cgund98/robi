@@ -11,9 +11,23 @@ type ContextMeterProps = {
   draft: string
   pendingText: string
   contextWindow: number | null
+  /** Summarize the older prefix. Absent in the welcome card's draft. */
+  onCompact?: () => void
+  /** A compact request is in flight. */
+  compacting?: boolean
+  /** A turn is running; a compact cannot start. */
+  compactDisabled?: boolean
 }
 
-export function ContextMeter({ messages, draft, pendingText, contextWindow }: ContextMeterProps) {
+export function ContextMeter({
+  messages,
+  draft,
+  pendingText,
+  contextWindow,
+  onCompact,
+  compacting = false,
+  compactDisabled = false
+}: ContextMeterProps) {
   const estimate = estimateContext(messages, draft, contextWindow, pendingText)
   const percent = estimate.percent
   const fill = percent == null ? 0 : percent / 100
@@ -60,6 +74,16 @@ export function ContextMeter({ messages, draft, pendingText, contextWindow }: Co
               </div>
             ) : null}
           </dl>
+          {onCompact ? (
+            <button
+              type="button"
+              className={styles.meterAction}
+              disabled={compacting || compactDisabled}
+              onClick={onCompact}
+            >
+              {compacting ? 'Compacting…' : 'Compact'}
+            </button>
+          ) : null}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

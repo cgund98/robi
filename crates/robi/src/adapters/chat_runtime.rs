@@ -25,7 +25,7 @@ use crate::{
     domain::{
         chat_message::runtime::{ChatRuntime, SubmitOutcome},
         chat_session::{
-            model::{AgentMode, ModeOverride},
+            model::{AgentMode, ModeOverride, TurnDisplay},
             service::ChatSessionService,
         },
         error::ServiceError,
@@ -88,6 +88,32 @@ impl AgentFactory {
             )),
             None => agent,
         }
+        .with_optional_compactor(
+            self.compactor(session)
+                .map(|compactor| compactor as Arc<dyn robi_core::compact::Compactor>),
+        )
+    }
+
+    /// Build the session's compactor. `None` when the factory has no session
+    /// repository or event bus (tests that do not compact).
+    pub fn compactor(
+        &self,
+        session: SessionId,
+    ) -> Option<Arc<crate::agent::compact::SessionCompactor>> {
+        let sessions = self.sessions.clone()?;
+        let bus = self.bus.clone()?;
+        let models = Arc::new(crate::agent::tools::SessionChildModels {
+            session_id: session,
+            sessions,
+            models: Arc::clone(&self.models),
+        });
+        Some(Arc::new(crate::agent::compact::SessionCompactor::new(
+            session,
+            Arc::clone(&self.store),
+            Arc::clone(&self.events),
+            bus,
+            models,
+        )))
     }
 
     /// The tools this session's actor will run.
@@ -176,6 +202,7 @@ impl AgentFactory {
                     sessions: Arc::clone(sessions),
                     session,
                 });
+                tracing::info!(%session, "waiting on mcp");
                 mcp.attach(
                     workspace.id,
                     &root,
@@ -185,6 +212,7 @@ impl AgentFactory {
                     &crate::agent::mcp::RmcpOpener,
                 )
                 .await;
+                tracing::info!(%session, "mcp ready");
             }
         }
         tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
@@ -234,6 +262,7 @@ enum Work {
         call: ToolCallId,
         reject: Option<String>,
     },
+    Compact,
 }
 
 #[derive(Default)]
@@ -336,6 +365,62 @@ impl SerializedChatRuntime {
         Ok(())
     }
 
+    async fn start_compact(
+        &self,
+        session: SessionId,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+    ) -> Result<(), ServiceError> {
+        let mut slots = self.slots.map.lock().await;
+        let slot = slots.entry(session).or_default();
+        if slot.running {
+            tracing::warn!(%session, "compaction refused because the session is running");
+            return Err(ServiceError::Conflict("chat session is running".into()));
+        }
+        slot.running = true;
+        slot.generation += 1;
+        slot.pending = Some(Work::Compact);
+        drop(slots);
+        let max_iterations = self.factory.max_iterations().await?;
+        self.spawn_actor(session, model, tools, max_iterations);
+        Ok(())
+    }
+
+    async fn note_turn_display(&self, session: SessionId, display: TurnDisplay) {
+        let Some(sessions) = &self.factory.sessions else {
+            return;
+        };
+        if let Err(err) = sessions.set_turn_display(session, display).await {
+            tracing::warn!(%session, %err, "failed to store turn display");
+        }
+    }
+
+    /// Build the model the session's actor will hold, without tools.
+    ///
+    /// Used to read the context window for a manual compact, which runs no
+    /// tools.
+    async fn window_for(&self, session: SessionId) -> Result<Option<u64>, ServiceError> {
+        let Some(sessions) = &self.factory.sessions else {
+            return Ok(None);
+        };
+        let chat = sessions.get_chat_session(session).await?;
+        let choice = chat.model_config.for_mode(chat.mode).clone();
+        let model = self
+            .factory
+            .models
+            .model(Arc::new(ToolRegistry::new()), None, chat.mode, choice, None)
+            .await?;
+        Ok(model.context_window())
+    }
+
+    /// Build the session's compactor, if the factory has one.
+    fn compactor_handle(
+        &self,
+        session: SessionId,
+    ) -> Option<Arc<crate::agent::compact::SessionCompactor>> {
+        self.factory.compactor(session)
+    }
+
     async fn actor_running(&self, session: SessionId) -> bool {
         self.slots
             .map
@@ -355,6 +440,7 @@ impl ChatRuntime for SerializedChatRuntime {
         images: Vec<robi_core::message::ImageAttachment>,
     ) -> Result<SubmitOutcome, ServiceError> {
         if interrupt_if_running(&self.slots, session, &instruction, images.clone()).await {
+            self.note_turn_display(session, TurnDisplay::Pending).await;
             return Ok(SubmitOutcome::Accepted);
         }
 
@@ -369,6 +455,8 @@ impl ChatRuntime for SerializedChatRuntime {
             let slot = slots.entry(session).or_default();
             if slot.running {
                 replace_pending(slot, session, instruction, images);
+                drop(slots);
+                self.note_turn_display(session, TurnDisplay::Pending).await;
                 return Ok(SubmitOutcome::Accepted);
             }
         }
@@ -384,8 +472,11 @@ impl ChatRuntime for SerializedChatRuntime {
                 return Err(error);
             }
         };
-        self.start_actor(session, instruction, images, model, tools)
-            .await
+        let outcome = self
+            .start_actor(session, instruction, images, model, tools)
+            .await?;
+        self.note_turn_display(session, TurnDisplay::Pending).await;
+        Ok(outcome)
     }
 
     async fn decide(
@@ -415,7 +506,9 @@ impl ChatRuntime for SerializedChatRuntime {
         let approved = reject.is_none();
         tracing::info!(%session, %call, approved, "tool decision accepted");
         self.start_decision(session, call, reject, model, tools)
-            .await
+            .await?;
+        self.note_turn_display(session, TurnDisplay::Pending).await;
+        Ok(())
     }
 
     async fn running_session_ids(&self) -> Vec<SessionId> {
@@ -462,6 +555,36 @@ impl ChatRuntime for SerializedChatRuntime {
             }
             notified.await;
         }
+    }
+
+    async fn compact(&self, session: SessionId) -> Result<(), ServiceError> {
+        if self.actor_running(session).await {
+            tracing::warn!(%session, "compaction refused because the session is running");
+            return Err(ServiceError::Conflict("chat session is running".into()));
+        }
+        // Feasibility is checked before the slot is reserved, so a refusal is a
+        // 4xx on the request rather than a failure inside the actor.
+        let compactor = self
+            .compactor_handle(session)
+            .ok_or_else(|| ServiceError::Conflict("compaction is not configured".into()))?;
+        let window = self.window_for(session).await?;
+        if let Err(refusal) = compactor.feasibility(window).await {
+            return match refusal.conflict_message() {
+                Some(message) => Err(ServiceError::Conflict(message.to_owned())),
+                None => Err(ServiceError::Unknown),
+            };
+        }
+
+        // The actor's model only needs to expose the window; the compactor
+        // builds its own no-tools model. A tools-less build is enough.
+        let (tools, workspace, mode, choice, plan_path) =
+            self.factory.session_registry(session).await?;
+        let model = self
+            .factory
+            .models
+            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .await?;
+        self.start_compact(session, model, tools).await
     }
 }
 
@@ -531,11 +654,15 @@ async fn skill_loads(
         return Vec::new();
     };
     let root = std::path::PathBuf::from(&workspace.root);
-    let root = root.canonicalize().unwrap_or(root);
     let home = crate::adapters::settings::home_dir()
         .ok()
         .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
-    let skills = crate::agent::skills::scan(home.as_deref(), Some(&root));
+    let skills = crate::agent::blocking::call(move || {
+        let root = root.canonicalize().unwrap_or(root);
+        crate::agent::skills::scan(home.as_deref(), Some(&root))
+    })
+    .await
+    .unwrap_or_default();
     crate::agent::skills::loads_for_text(instruction, &skills)
 }
 
@@ -547,6 +674,7 @@ async fn run_actor(
     slots: Arc<Slots>,
     session: SessionId,
 ) {
+    let mut display = crate::domain::chat_session::model::TurnDisplay::Idle;
     loop {
         let (work, cancel) = {
             let mut guard = slots.map.lock().await;
@@ -562,6 +690,11 @@ async fn run_actor(
                 tracing::info!(%session, "session actor idle");
                 drop(guard);
                 slots.idle.notify_waiters();
+                if let Some(sessions) = &sessions {
+                    if let Err(err) = sessions.set_turn_display(session, display).await {
+                        tracing::warn!(%session, %err, "failed to store turn display");
+                    }
+                }
                 return;
             };
             let cancel = CancellationToken::new();
@@ -569,6 +702,7 @@ async fn run_actor(
             (work, cancel)
         };
 
+        let titled = matches!(work, Work::Instruction { .. } | Work::Decision { .. });
         let outcome = match work {
             Work::Instruction {
                 instruction,
@@ -589,6 +723,24 @@ async fn run_actor(
                 );
                 decide_then_resume(&agent, session, call, reject, cancel).await
             }
+            Work::Compact => {
+                tracing::info!(%session, "session actor started a compact");
+                match agent
+                    .compact(session, robi_core::compact::CompactTrigger::Manual, cancel)
+                    .await
+                {
+                    Ok(outcome) => {
+                        tracing::info!(%session, ?outcome, "compaction finished");
+                        TurnOutcome::Complete
+                    }
+                    Err(error) => {
+                        tracing::error!(%session, %error, "compaction failed");
+                        TurnOutcome::Failed(robi_core::error::AgentError::Compaction(
+                            error.to_string(),
+                        ))
+                    }
+                }
+            }
         };
         match &outcome {
             TurnOutcome::Complete => {
@@ -604,7 +756,8 @@ async fn run_actor(
                 tracing::error!(%session, %error, "chat turn failed");
             }
         }
-        let title_sessions = if matches!(outcome, TurnOutcome::Complete) {
+        display = crate::domain::chat_session::model::TurnDisplay::from_outcome(&outcome);
+        let title_sessions = if titled && matches!(outcome, TurnOutcome::Complete) {
             sessions.clone()
         } else {
             None
@@ -720,6 +873,21 @@ mod tests {
             } else {
                 transcript.push(message);
             }
+            Ok(())
+        }
+
+        async fn replace_prefix(
+            &self,
+            session: SessionId,
+            delete: &[MessageId],
+            summary: Message,
+        ) -> Result<(), StoreError> {
+            let mut messages = self.messages.lock().expect("messages");
+            let transcript = messages
+                .get_mut(&session)
+                .ok_or(StoreError::SessionNotFound(session))?;
+            transcript.retain(|message| !delete.contains(&message.id));
+            transcript.insert(0, summary);
             Ok(())
         }
     }
@@ -1475,10 +1643,18 @@ mod tests {
         .expect("title is stored");
         assert_eq!(named, "Parser cleanup");
 
-        let envelope = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
-            .await
-            .expect("session_updated")
-            .expect("envelope");
+        // The turn-display updates are `session_updated` too and carry no title.
+        // Read frames until the one that names the session.
+        let envelope = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let envelope = subscription.recv().await.expect("envelope");
+                if envelope.event_type == SESSION_UPDATED && envelope.data.get("title").is_some() {
+                    return envelope;
+                }
+            }
+        })
+        .await
+        .expect("session_updated with a title");
         assert_eq!(envelope.event_type, SESSION_UPDATED);
         assert_eq!(envelope.subject, session.to_string());
         assert_eq!(envelope.data["session_id"], session.to_string());
@@ -1599,6 +1775,149 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_manual_compact_rewrites_the_transcript_and_announces_it() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        store.append(session, Message::user("first")).await.unwrap();
+        store
+            .append(session, Message::assistant("ok"))
+            .await
+            .unwrap();
+        store
+            .append(session, Message::user("second"))
+            .await
+            .unwrap();
+        store
+            .append(session, Message::assistant("ok2"))
+            .await
+            .unwrap();
+        let bus = Arc::new(EventBus::new());
+        let mut subscription = bus.subscribe();
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::new(session)),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            plan_cleaner: None,
+        });
+        let runtime = titled_runtime(
+            store.clone(),
+            Arc::new(TitleModel {
+                calls: AtomicUsize::new(0),
+                prompts: Mutex::new(Vec::new()),
+                fail_user_turns: false,
+            }),
+            sessions,
+            Arc::clone(&bus),
+        );
+
+        runtime.compact(session).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if runtime.running_session_ids().await.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actor goes idle");
+
+        let messages = store.messages(session).await.unwrap();
+        assert!(messages[0].compaction, "the summary is first and marked");
+        assert_eq!(messages.len(), 3, "summary plus the kept last turn");
+        assert_eq!(messages[1].content, "second");
+
+        let envelope = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
+            .await
+            .expect("transcript_compacted")
+            .expect("envelope");
+        assert_eq!(
+            envelope.event_type,
+            crate::domain::events::TRANSCRIPT_COMPACTED
+        );
+        assert_eq!(envelope.data["message_id"], messages[0].id.to_string());
+    }
+
+    #[tokio::test]
+    async fn compact_is_refused_while_the_actor_is_running() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        store.append(session, Message::user("first")).await.unwrap();
+        store
+            .append(session, Message::assistant("ok"))
+            .await
+            .unwrap();
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::new(session)),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            plan_cleaner: None,
+        });
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runtime = titled_runtime(
+            store,
+            Arc::new(GateModel {
+                started: started_tx,
+                release: Arc::new(Notify::new()),
+                transcripts: Arc::new(Mutex::new(Vec::new())),
+                calls: AtomicUsize::new(0),
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: Arc::new(AtomicUsize::new(0)),
+            }),
+            sessions,
+            Arc::new(EventBus::new()),
+        );
+
+        runtime
+            .submit(session, "go".into(), Vec::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("model started")
+            .expect("started channel");
+
+        let error = runtime.compact(session).await.unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::Conflict("chat session is running".into())
+        );
+
+        runtime.stop(session).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_with_nothing_to_compact_is_a_conflict() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        // One turn only: the prefix would be empty.
+        store.append(session, Message::user("hi")).await.unwrap();
+        store
+            .append(session, Message::assistant("ok"))
+            .await
+            .unwrap();
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(MemorySessions::new(session)),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            plan_cleaner: None,
+        });
+        let runtime = titled_runtime(
+            store,
+            Arc::new(TitleModel {
+                calls: AtomicUsize::new(0),
+                prompts: Mutex::new(Vec::new()),
+                fail_user_turns: false,
+            }),
+            sessions,
+            Arc::new(EventBus::new()),
+        );
+
+        let error = runtime.compact(session).await.unwrap_err();
+        assert_eq!(error, ServiceError::Conflict("nothing to compact".into()));
+    }
+
     /// Chat session rows for title tests. Message storage stays on `MemoryStore`.
     struct MemorySessions {
         sessions: Mutex<std::collections::HashMap<SessionId, ChatSession>>,
@@ -1637,6 +1956,7 @@ mod tests {
                 mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
                 plan_path: None,
+                turn_display: crate::domain::chat_session::model::TurnDisplay::Idle,
                 created_at: now,
                 updated_at: now,
                 last_used_at: now,
@@ -1677,6 +1997,19 @@ mod tests {
             command: crate::domain::chat_session::model::UpdateChatSessionCommand,
         ) -> Result<ChatSession, ServiceError> {
             Err(ServiceError::NotFound(command.id.to_string()))
+        }
+
+        async fn set_turn_display(
+            &self,
+            id: SessionId,
+            display: crate::domain::chat_session::model::TurnDisplay,
+        ) -> Result<(), ServiceError> {
+            let mut sessions = self.sessions.lock().expect("sessions");
+            let session = sessions
+                .get_mut(&id)
+                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
+            session.turn_display = display;
+            Ok(())
         }
 
         async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {

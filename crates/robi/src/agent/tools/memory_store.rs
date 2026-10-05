@@ -75,4 +75,16 @@ impl MessageStore for MemoryStore {
             }
         })
     }
+
+    async fn replace_prefix(
+        &self,
+        session: SessionId,
+        delete: &[MessageId],
+        summary: Message,
+    ) -> Result<(), StoreError> {
+        self.with_session(session, |messages| {
+            messages.retain(|message| !delete.contains(&message.id));
+            messages.insert(0, summary);
+        })
+    }
 }

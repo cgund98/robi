@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use robi_core::ids::{SessionId, WorkspaceId};
 
 use crate::domain::{
-    chat_session::model::{ChatSession, CreateChatSessionCommand, UpdateChatSessionCommand},
+    chat_session::model::{
+        ChatSession, CreateChatSessionCommand, TurnDisplay, UpdateChatSessionCommand,
+    },
     error::ServiceError,
 };
 
@@ -48,6 +50,15 @@ pub trait ChatSessionRepository: Send + Sync {
     /// `updated_at` and `last_used_at` stay put. A missing session is
     /// [`ServiceError::NotFound`].
     async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError>;
+
+    /// Store the display summary. `updated_at` and `last_used_at` stay put.
+    ///
+    /// A missing session is [`ServiceError::NotFound`].
+    async fn set_turn_display(
+        &self,
+        id: SessionId,
+        display: TurnDisplay,
+    ) -> Result<(), ServiceError>;
 
     async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError>;
 }

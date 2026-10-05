@@ -1014,7 +1014,7 @@ fn anthropic_text_stream(text: &str) -> Reply {
 async fn an_anthropic_turn_streams_text_and_finishes() {
     let fake = Fake::scripted(vec![anthropic_text_stream("Hello")]);
     let base = spawn(fake.clone()).await;
-    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let model = build_anthropic(base, "ant_claude-sonnet-5-5", Arc::new(ToolRegistry::new()));
 
     let stream = model
         .generate(
@@ -1036,7 +1036,7 @@ async fn an_anthropic_turn_streams_text_and_finishes() {
 async fn the_anthropic_request_carries_the_key_version_and_bare_model_id() {
     let fake = Fake::scripted(vec![anthropic_text_stream("ok")]);
     let base = spawn(fake.clone()).await;
-    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let model = build_anthropic(base, "ant_claude-sonnet-5-5", Arc::new(ToolRegistry::new()));
 
     let stream = model
         .generate(
@@ -1064,7 +1064,7 @@ async fn the_anthropic_request_carries_the_key_version_and_bare_model_id() {
         "2023-06-01"
     );
     assert_eq!(
-        recorded.body["model"], "claude-sonnet-4-6",
+        recorded.body["model"], "claude-sonnet-5-5",
         "the ant_ prefix is stripped on the wire"
     );
     // The Messages API requires max_tokens.
@@ -1102,7 +1102,7 @@ async fn an_anthropic_thinking_trace_round_trips_on_the_next_request() {
     );
     let fake = Fake::scripted(vec![tool_turn, anthropic_text_stream("done")]);
     let base = spawn(fake.clone()).await;
-    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let model = build_anthropic(base, "ant_claude-sonnet-5-5", Arc::new(ToolRegistry::new()));
 
     let stream = model
         .generate(
@@ -1158,9 +1158,13 @@ async fn an_anthropic_thinking_trace_round_trips_on_the_next_request() {
 
 #[tokio::test]
 async fn the_haiku_effort_gate_omits_output_config() {
-    // A2: Haiku rejects output_config. Build with no effort first (allowed), then
-    // confirm an effort on Haiku is refused at construction.
-    let fake = Fake::scripted(vec![anthropic_text_stream("ok")]);
+    // A2: Haiku rejects `output_config`. No effort builds and sends none. An
+    // effort set on Haiku still builds (the setting is global) and is dropped
+    // at request build.
+    let fake = Fake::scripted(vec![
+        anthropic_text_stream("ok"),
+        anthropic_text_stream("ok again"),
+    ]);
     let base = spawn(fake.clone()).await;
     let model = build_anthropic(
         base.clone(),
@@ -1181,13 +1185,25 @@ async fn the_haiku_effort_gate_omits_output_config() {
         "no effort means no output_config"
     );
 
-    // An effort on Haiku fails at build time.
+    // An effort on Haiku does not fail at build: the setting is global, and the
+    // request omits `output_config` for a model that rejects it (A2).
     let mut settings = anthropic_settings(base, "ant_claude-haiku-4-5");
     settings.reasoning_effort = Some(robi::agent::providers::ReasoningEffort::High);
-    let error = build_model(settings, Arc::new(ToolRegistry::new()), no_images())
-        .err()
-        .expect("Haiku rejects an effort");
-    assert!(error.to_string().contains("effort"), "{error}");
+    let model = build_model(settings, Arc::new(ToolRegistry::new()), no_images())
+        .expect("Haiku builds even with an effort set");
+    let stream = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the turn is accepted");
+    drain(stream).await;
+    assert!(
+        fake.requests()[1].body.get("output_config").is_none(),
+        "Haiku drops the effort at request build"
+    );
 }
 
 #[tokio::test]
@@ -1202,7 +1218,7 @@ async fn an_anthropic_error_event_inside_a_200_stream_becomes_a_failure() {
         Duration::ZERO,
     )]);
     let base = spawn(fake).await;
-    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let model = build_anthropic(base, "ant_claude-sonnet-5-5", Arc::new(ToolRegistry::new()));
 
     let stream = model
         .generate(
@@ -1234,7 +1250,7 @@ async fn an_anthropic_500_is_retried_and_then_succeeds() {
         anthropic_text_stream("recovered"),
     ]);
     let base = spawn(fake.clone()).await;
-    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let model = build_anthropic(base, "ant_claude-sonnet-5-5", Arc::new(ToolRegistry::new()));
 
     let stream = model
         .generate(
@@ -1262,7 +1278,7 @@ async fn an_anthropic_turn_drives_the_agent_end_to_end() {
     let fake = Fake::scripted(vec![anthropic_text_stream("the file defines a struct")]);
     let base = spawn(fake.clone()).await;
 
-    let model = build_anthropic(base, "ant_claude-sonnet-4-6", Arc::new(ToolRegistry::new()));
+    let model = build_anthropic(base, "ant_claude-sonnet-5-5", Arc::new(ToolRegistry::new()));
     let store = Arc::new(MemoryStore::default());
     let agent = Agent::new(
         store.clone(),
@@ -1401,6 +1417,19 @@ impl MessageStore for MemoryStore {
             Some(existing) => *existing = message,
             None => messages.push(message),
         }
+        Ok(())
+    }
+
+    async fn replace_prefix(
+        &self,
+        session: SessionId,
+        delete: &[MessageId],
+        summary: Message,
+    ) -> Result<(), StoreError> {
+        let mut sessions = self.sessions.lock().expect("the store is not poisoned");
+        let messages = sessions.entry(session).or_default();
+        messages.retain(|message| !delete.contains(&message.id));
+        messages.insert(0, summary);
         Ok(())
     }
 }

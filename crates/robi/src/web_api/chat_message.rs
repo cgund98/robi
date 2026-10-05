@@ -49,6 +49,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(stop_agent),
         )
         .route(
+            "/api/v1/chat_sessions/{id}/compact",
+            axum::routing::post(compact_session),
+        )
+        .route(
             "/api/v1/chat_sessions/{id}/tool_originals/{original_id}",
             get(get_tool_original),
         )
@@ -436,6 +440,31 @@ pub async fn stop_agent(
     ))
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    post,
+    path = "/api/v1/chat_sessions/{id}/compact",
+    params(("id" = String, Path, description = "Chat session id")),
+    responses(
+        (status = 202, description = "Compaction accepted", body = CompactingAgent),
+        (status = 409, description = "Chat session is running, awaiting approval, or has nothing to compact")
+    )
+)]
+pub async fn compact_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<CompactingAgent>), ServiceError> {
+    let session = parse_session_id(&id)?;
+    state.chat_message_service.compact(session).await?;
+    tracing::info!(%session, "compaction accepted");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CompactingAgent {
+            status: "compacting".into(),
+        }),
+    ))
+}
+
 fn parse_session_id(value: &str) -> Result<robi_core::ids::SessionId, ServiceError> {
     let id =
         Uuid::parse_str(value).map_err(|_| ServiceError::BadRequest("id must be a UUID".into()))?;
@@ -479,6 +508,11 @@ pub struct StoppedAgent {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+pub struct CompactingAgent {
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ChatMessage {
     pub id: String,
     pub role: String,
@@ -495,6 +529,9 @@ pub struct ChatMessage {
     /// Present when the provider reported tokens for this model turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ChatUsage>,
+    /// `true` on a compaction summary. Omitted on every other message.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compaction: bool,
 }
 
 /// One image a user attached, referenced by id. The bytes live in the store.
@@ -591,8 +628,14 @@ impl From<Message> for ChatMessage {
                 .collect(),
             tool_call_id: message.tool_call_id.map(|id| id.to_string()),
             usage: message.usage.map(ChatUsage::from),
+            compaction: message.compaction,
         }
     }
+}
+
+/// Serde helper: omit `compaction` when it is `false`.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl From<Usage> for ChatUsage {
@@ -676,6 +719,172 @@ mod tests {
     use super::*;
     use robi_core::message::Usage;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use axum::extract::State;
+    use robi_core::ids::{SessionId, ToolCallId};
+    use uuid::Uuid;
+
+    use crate::domain::{
+        chat_message::{runtime::SubmitOutcome, service::ChatMessageService},
+        chat_session::service::ChatSessionService,
+        error::ServiceError,
+        events::EventBus,
+        settings::{memory::MemorySettingsStore, store::SettingsStore, SettingsService},
+    };
+    use crate::web_api::state::AppState;
+
+    /// A runtime that records `compact` calls and returns a scripted result.
+    struct RecordingRuntime {
+        compacts: AtomicUsize,
+        conflict: Option<String>,
+    }
+
+    #[async_trait]
+    impl crate::domain::chat_message::runtime::ChatRuntime for RecordingRuntime {
+        async fn submit(
+            &self,
+            _session: SessionId,
+            _instruction: String,
+            _images: Vec<robi_core::message::ImageAttachment>,
+        ) -> Result<SubmitOutcome, ServiceError> {
+            Ok(SubmitOutcome::Accepted)
+        }
+
+        async fn running_session_ids(&self) -> Vec<SessionId> {
+            Vec::new()
+        }
+
+        async fn decide(
+            &self,
+            _session: SessionId,
+            _call: ToolCallId,
+            _reject: Option<String>,
+        ) -> Result<(), ServiceError> {
+            Ok(())
+        }
+
+        async fn stop(&self, _session: SessionId) -> Result<(), ServiceError> {
+            Ok(())
+        }
+
+        async fn compact(&self, _session: SessionId) -> Result<(), ServiceError> {
+            self.compacts.fetch_add(1, Ordering::SeqCst);
+            match &self.conflict {
+                Some(message) => Err(ServiceError::Conflict(message.clone())),
+                None => Ok(()),
+            }
+        }
+    }
+
+    async fn state_with(
+        runtime: Arc<dyn crate::domain::chat_message::runtime::ChatRuntime>,
+    ) -> AppState {
+        use crate::adapters::{
+            chat_message::SqliteMessageStore, chat_session::repo::SqliteChatSessionRepository,
+            sqlite, workspace::repo::SqliteWorkspaceRepository,
+        };
+        let url = format!(
+            "sqlite://file:robi-compact-{}?mode=memory&cache=shared",
+            Uuid::now_v7().simple()
+        );
+        let pool = Arc::new(sqlite::init_pool(&url).await.expect("pool"));
+        let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
+        let workspace_service = Arc::new(crate::domain::workspace::service::WorkspaceService {
+            repository: workspaces.clone(),
+            asset_cleaner: None,
+        });
+        let sessions = Arc::new(ChatSessionService {
+            repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
+            workspaces,
+            events: None,
+            plan_cleaner: None,
+        });
+        let store: Arc<dyn robi_core::store::MessageStore> = Arc::new(SqliteMessageStore::new(
+            Arc::clone(&pool),
+            crate::adapters::session_blobs::SessionBlobs::new(
+                std::env::temp_dir().join(format!("robi-compact-{}", Uuid::now_v7().simple())),
+            ),
+        ));
+        AppState {
+            workspace_service,
+            chat_session_service: Arc::clone(&sessions),
+            chat_message_service: Arc::new(ChatMessageService {
+                sessions,
+                runtime,
+                store,
+            }),
+            settings_service: Arc::new(SettingsService {
+                store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
+            }),
+            event_bus: Arc::new(EventBus::new()),
+            file_changes: Arc::new(
+                crate::adapters::file_change::repo::SqliteFileChangeRepository::new(Arc::clone(
+                    &pool,
+                )),
+            ),
+            index: Arc::new(crate::agent::index::IndexHub::new(
+                std::env::temp_dir(),
+                Arc::new(EventBus::new()),
+                Arc::new(robi_index::FakeEmbedder::new(4)),
+            )),
+            mcp: None,
+            originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
+            image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_rejects_a_bad_id() {
+        let runtime = Arc::new(RecordingRuntime {
+            compacts: AtomicUsize::new(0),
+            conflict: None,
+        });
+        let state = state_with(runtime.clone()).await;
+        let error = compact_session(State(state), Path("not-a-uuid".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, ServiceError::BadRequest("id must be a UUID".into()));
+        assert_eq!(runtime.compacts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn compact_maps_a_conflict_to_409() {
+        let runtime = Arc::new(RecordingRuntime {
+            compacts: AtomicUsize::new(0),
+            conflict: Some("nothing to compact".into()),
+        });
+        let state = state_with(runtime.clone()).await;
+        // A workspace and session so the session lookup succeeds.
+        let root = std::env::temp_dir().join(format!("robi-compact-{}", Uuid::now_v7().simple()));
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = state
+            .workspace_service
+            .open_workspace(root.to_str().unwrap())
+            .await
+            .unwrap();
+        let session = state
+            .chat_session_service
+            .create_chat_session(
+                crate::domain::chat_session::model::CreateChatSessionCommand {
+                    workspace_id: workspace.workspace.id,
+                    title: None,
+                    mode: crate::domain::chat_session::model::AgentMode::Agent,
+                    model_config: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = compact_session(State(state), Path(session.id.to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, ServiceError::Conflict("nothing to compact".into()));
+        assert_eq!(runtime.compacts.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn a_message_keeps_its_usage() {
         let message = Message::assistant("done").with_usage(Usage {
@@ -693,5 +902,18 @@ mod tests {
     fn a_message_without_usage_omits_the_field() {
         let value = serde_json::to_value(ChatMessage::from(Message::user("hi"))).expect("json");
         assert!(value.get("usage").is_none());
+    }
+
+    #[test]
+    fn a_summary_carries_the_compaction_flag_and_others_omit_it() {
+        let summary =
+            serde_json::to_value(ChatMessage::from(Message::summary("so far"))).expect("json");
+        assert_eq!(summary["compaction"], serde_json::json!(true));
+
+        let plain = serde_json::to_value(ChatMessage::from(Message::user("hi"))).expect("json");
+        assert!(
+            plain.get("compaction").is_none(),
+            "an ordinary message omits the flag"
+        );
     }
 }

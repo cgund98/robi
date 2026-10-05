@@ -70,11 +70,15 @@ pub const OPENCODE_GO_PREFIX: &str = "ocg_";
 /// The provider prefix Anthropic model ids carry.
 pub const ANTHROPIC_PREFIX: &str = "ant_";
 
+/// The provider prefix DeepSeek model ids carry.
+pub const DEEPSEEK_PREFIX: &str = "dsk_";
+
 /// Which provider a model id belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     OpenCodeGo,
     Anthropic,
+    DeepSeek,
 }
 
 impl ProviderKind {
@@ -86,6 +90,8 @@ impl ProviderKind {
     pub fn of(model: &str) -> Self {
         if model.starts_with(ANTHROPIC_PREFIX) {
             ProviderKind::Anthropic
+        } else if model.starts_with(DEEPSEEK_PREFIX) {
+            ProviderKind::DeepSeek
         } else {
             ProviderKind::OpenCodeGo
         }
@@ -95,6 +101,7 @@ impl ProviderKind {
         match self {
             ProviderKind::OpenCodeGo => "opencode-go",
             ProviderKind::Anthropic => "anthropic",
+            ProviderKind::DeepSeek => "deepseek",
         }
     }
 }
@@ -104,7 +111,14 @@ pub fn strip_model_prefix(model: &str) -> &str {
     model
         .strip_prefix(OPENCODE_GO_PREFIX)
         .or_else(|| model.strip_prefix(ANTHROPIC_PREFIX))
+        .or_else(|| model.strip_prefix(DEEPSEEK_PREFIX))
         .unwrap_or(model)
+}
+
+fn has_known_prefix(model: &str) -> bool {
+    model.starts_with(OPENCODE_GO_PREFIX)
+        || model.starts_with(ANTHROPIC_PREFIX)
+        || model.starts_with(DEEPSEEK_PREFIX)
 }
 
 /// Prefix a bare id for `kind` if it does not already carry one.
@@ -116,8 +130,9 @@ pub fn prefixed_model_id(model: &str, kind: ProviderKind) -> String {
     let prefix = match kind {
         ProviderKind::OpenCodeGo => OPENCODE_GO_PREFIX,
         ProviderKind::Anthropic => ANTHROPIC_PREFIX,
+        ProviderKind::DeepSeek => DEEPSEEK_PREFIX,
     };
-    if model.starts_with(OPENCODE_GO_PREFIX) || model.starts_with(ANTHROPIC_PREFIX) {
+    if has_known_prefix(model) {
         model.to_owned()
     } else {
         format!("{prefix}{model}")
@@ -179,6 +194,12 @@ impl ReasoningEffort {
     }
 }
 
+/// How long to wait for response headers. A stream that has started is bounded
+/// by `chunk_timeout` instead. A provider that accepts the connection and then
+/// never answers, including a rate limit that never arrives as a status, fails
+/// the turn here.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Everything one configured model needs.
 #[derive(Debug, Clone)]
 pub struct ProviderSettings {
@@ -219,7 +240,7 @@ impl ProviderSettings {
             // The vendor asks a client to name itself rather than send a library
             // default, because it monitors traffic for abuse.
             user_agent: concat!("robi/", env!("CARGO_PKG_VERSION")).to_owned(),
-            header_timeout: Duration::from_secs(300),
+            header_timeout: HEADER_TIMEOUT,
             chunk_timeout: Duration::from_secs(300),
             retry: RetryPolicy::default(),
             reasoning_effort: None,
@@ -242,7 +263,29 @@ impl ProviderSettings {
             system_prompt: String::new(),
             session_header: None,
             user_agent: concat!("robi/", env!("CARGO_PKG_VERSION")).to_owned(),
-            header_timeout: Duration::from_secs(300),
+            header_timeout: HEADER_TIMEOUT,
+            chunk_timeout: Duration::from_secs(300),
+            retry: RetryPolicy::default(),
+            reasoning_effort: None,
+            session_key_override: None,
+            max_tokens: None,
+        }
+    }
+
+    /// DeepSeek's OpenAI-compatible chat-completions endpoint.
+    ///
+    /// No session header. The path is `/chat/completions` on `api.deepseek.com`,
+    /// with no `/v1` segment.
+    pub fn deepseek(api_key: ApiKey, model: ModelId) -> Self {
+        Self {
+            id: ProviderId::new("deepseek"),
+            base_url: "https://api.deepseek.com".to_owned(),
+            api_key,
+            model,
+            system_prompt: String::new(),
+            session_header: None,
+            user_agent: concat!("robi/", env!("CARGO_PKG_VERSION")).to_owned(),
+            header_timeout: HEADER_TIMEOUT,
             chunk_timeout: Duration::from_secs(300),
             retry: RetryPolicy::default(),
             reasoning_effort: None,
@@ -253,9 +296,6 @@ impl ProviderSettings {
 
     /// The Anthropic version header every request must carry.
     pub const ANTHROPIC_VERSION: &'static str = "2023-06-01";
-
-    /// The beta header Opus 4.5 needs before it accepts `output_config.effort`.
-    pub const ANTHROPIC_EFFORT_BETA: &'static str = "effort-2025-11-24";
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
@@ -291,7 +331,7 @@ impl ProviderSettings {
     pub fn messages_or_chat_url(&self) -> String {
         match ProviderKind::of(self.model.as_str()) {
             ProviderKind::Anthropic => self.messages_url(),
-            ProviderKind::OpenCodeGo => self.chat_completions_url(),
+            ProviderKind::OpenCodeGo | ProviderKind::DeepSeek => self.chat_completions_url(),
         }
     }
 }
@@ -342,7 +382,7 @@ mod tests {
     #[test]
     fn the_messages_url_joins_without_a_double_slash() {
         let settings =
-            ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-sonnet-4-6"));
+            ProviderSettings::anthropic(ApiKey::new("k"), ModelId::new("ant_claude-sonnet-5-5"));
         assert_eq!(
             settings.messages_url(),
             "https://api.anthropic.com/v1/messages"
@@ -353,8 +393,12 @@ mod tests {
     fn a_model_id_strips_only_a_known_prefix() {
         assert_eq!(ModelId::new("ocg_glm-5.3").wire_id(), "glm-5.3");
         assert_eq!(
-            ModelId::new("ant_claude-sonnet-4-6").wire_id(),
-            "claude-sonnet-4-6"
+            ModelId::new("ant_claude-sonnet-5-5").wire_id(),
+            "claude-sonnet-5-5"
+        );
+        assert_eq!(
+            ModelId::new("dsk_deepseek-flash").wire_id(),
+            "deepseek-flash"
         );
         assert_eq!(
             ModelId::new("glm-5.3").wire_id(),
@@ -367,8 +411,12 @@ mod tests {
     fn the_prefix_selects_the_provider_and_bare_ids_are_legacy_opencode_go() {
         assert_eq!(ProviderKind::of("ocg_glm-5.3"), ProviderKind::OpenCodeGo);
         assert_eq!(
-            ProviderKind::of("ant_claude-opus-4-6"),
+            ProviderKind::of("ant_claude-opus-5-5"),
             ProviderKind::Anthropic
+        );
+        assert_eq!(
+            ProviderKind::of("dsk_deepseek-flash"),
+            ProviderKind::DeepSeek
         );
         assert_eq!(
             ProviderKind::of("glm-5.3"),

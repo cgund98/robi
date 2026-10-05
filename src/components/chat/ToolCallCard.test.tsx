@@ -28,7 +28,9 @@ describe('ToolCallCard', () => {
     expect(screen.queryByLabelText('Done')).toBeNull()
     expect(screen.queryByText('fn main() {}')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Read/ }))
-    expect(screen.getByText('fn main() {}')).toBeTruthy()
+    const body = screen.getByText('fn main() {}').closest('pre')
+    expect(body?.className).toContain('shellBody')
+    expect(body?.parentElement?.className).toContain('shell')
   })
 
   it('shows the requested line window on a read', () => {

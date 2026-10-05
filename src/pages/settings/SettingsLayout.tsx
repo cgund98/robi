@@ -3,11 +3,11 @@ import { NavLink, Outlet } from 'react-router-dom'
 import styles from './Settings.module.css'
 
 const ITEMS = [
-  { to: '/settings/providers', label: 'Model Providers' },
-  { to: '/settings/mcp', label: 'MCP' },
-  { to: '/settings/permissions', label: 'Permissions' },
+  { to: '/settings/audit', label: 'Audit log' },
   { to: '/settings/general', label: 'General' },
-  { to: '/settings/audit', label: 'Audit log' }
+  { to: '/settings/mcp', label: 'MCP' },
+  { to: '/settings/providers', label: 'Model Providers' },
+  { to: '/settings/permissions', label: 'Permissions' }
 ] as const
 
 export function SettingsLayout() {

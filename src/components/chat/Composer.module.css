@@ -275,6 +275,27 @@
   font-size: 13px;
 }
 
+.meterAction {
+  margin-top: var(--space-3);
+  width: 100%;
+  padding: 6px 10px;
+  color: var(--ink);
+  font-size: 13px;
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--ink-faint);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.meterAction:hover:not(:disabled) {
+  border-color: var(--ink-muted);
+}
+
+.meterAction:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
 /* Hidden file input whose label the attach button activates. */
 .fileInput {
   display: none;

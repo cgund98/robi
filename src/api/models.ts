@@ -7,12 +7,24 @@ export type CatalogModel = {
   contextWindow: number
 }
 
+const OPENCODE_GO_ID_PREFIX = 'ocg_'
+const OPENCODE_GO_LABEL_PREFIX = 'OCG - '
+
+/** Menu label. OpenCode Go ids share names with other catalogs, so they carry `OCG - `. */
+export function modelDisplayName(id: string, displayName?: string | null): string {
+  const name = displayName || id
+  if (id.startsWith(OPENCODE_GO_ID_PREFIX) && !name.startsWith(OPENCODE_GO_LABEL_PREFIX)) {
+    return `${OPENCODE_GO_LABEL_PREFIX}${name}`
+  }
+  return name
+}
+
 export async function listModels(): Promise<CatalogModel[]> {
   const result = await api.GET('/api/v1/models')
   if (result.data) {
     return result.data.map((model) => ({
       id: model.id,
-      displayName: model.display_name,
+      displayName: modelDisplayName(model.id, model.display_name),
       contextWindow: model.context_window
     }))
   }

@@ -76,6 +76,7 @@ impl Tool for McpTool {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
+        tracing::info!(server = %self.server, tool = %self.remote, "waiting on mcp tool");
         let result = self
             .session
             .call_tool(&self.remote, args, &run.cancel)
@@ -95,7 +96,15 @@ impl Tool for McpTool {
             ));
         }
         match render_owned(&result) {
-            Ok(text) => Ok(json!(text)),
+            Ok(text) => {
+                tracing::info!(
+                    server = %self.server,
+                    tool = %self.remote,
+                    bytes = text.len(),
+                    "mcp tool result"
+                );
+                Ok(json!(text))
+            }
             Err(message) => Err(ToolError::Failed(message)),
         }
     }

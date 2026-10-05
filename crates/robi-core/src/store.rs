@@ -40,4 +40,16 @@ pub trait MessageStore: Send + Sync {
     /// Used for status changes on an existing message: a tool call going from
     /// `pending` to `approved`, or gaining its result.
     async fn update(&self, session: SessionId, message: Message) -> Result<(), StoreError>;
+
+    /// Delete `delete` and insert `summary` before what remains, atomically.
+    ///
+    /// Compaction rewrites the transcript once, after the summary call has
+    /// finished. An error leaves the transcript exactly as it was. The summary
+    /// takes the front position, so a later transcript read starts with it.
+    async fn replace_prefix(
+        &self,
+        session: SessionId,
+        delete: &[MessageId],
+        summary: Message,
+    ) -> Result<(), StoreError>;
 }

@@ -72,13 +72,20 @@ impl Tool for DeleteFile {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        if std::fs::metadata(&resolved.absolute)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
+        let absolute = resolved.absolute.clone();
+        let (is_dir, before) = crate::agent::blocking::call(move || {
+            let is_dir = std::fs::metadata(&absolute)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false);
+            let before = read_text(&absolute)?;
+            Ok::<_, ToolError>((is_dir, before))
+        })
+        .await
+        .map_err(ToolError::Failed)??;
+        if is_dir {
             return Err(ToolError::Failed("path is a directory".into()));
         }
-        let Some(before) = read_text(&resolved.absolute)? else {
+        let Some(before) = before else {
             return Err(ToolError::Failed("file not found".into()));
         };
         let relative = display_path(&resolved);
@@ -88,9 +95,18 @@ impl Tool for DeleteFile {
             .get_baseline(self.ctx.session_id, &relative)
             .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
+        let absolute = resolved.absolute.clone();
+        let remove = || {
+            let absolute = absolute.clone();
+            move || {
+                std::fs::remove_file(&absolute)
+                    .map_err(|err| ToolError::Failed(format!("delete file: {err}")))
+            }
+        };
         if existing.as_ref().is_some_and(|baseline| baseline.created) {
-            std::fs::remove_file(&resolved.absolute)
-                .map_err(|err| ToolError::Failed(format!("delete file: {err}")))?;
+            crate::agent::blocking::call(remove())
+                .await
+                .map_err(ToolError::Failed)??;
             self.ctx
                 .file_changes
                 .delete_baseline(self.ctx.session_id, &relative)
@@ -105,8 +121,9 @@ impl Tool for DeleteFile {
                 false,
             )
             .await?;
-            std::fs::remove_file(&resolved.absolute)
-                .map_err(|err| ToolError::Failed(format!("delete file: {err}")))?;
+            crate::agent::blocking::call(remove())
+                .await
+                .map_err(ToolError::Failed)??;
         }
         self.ctx.note_lsp(&resolved.absolute, true).await;
         Ok(diff_json(&change_diff(&relative, &before, "", true, true)))

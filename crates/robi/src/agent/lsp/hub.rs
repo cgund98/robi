@@ -163,19 +163,21 @@ impl LspHub {
                 }
                 continue;
             }
-            let Ok(meta) = std::fs::metadata(absolute) else {
-                tracing::warn!(
-                    path = %absolute.display(),
-                    "language server file disappeared"
-                );
-                client.close_if_open(absolute).await;
-                continue;
-            };
-            let Ok(bytes) = std::fs::read(absolute) else {
+            let path = absolute.to_path_buf();
+            let read = crate::agent::blocking::call(move || {
+                let meta = std::fs::metadata(&path).ok()?;
+                let bytes = std::fs::read(&path).ok()?;
+                Some((meta, bytes))
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some((meta, bytes)) = read else {
                 tracing::warn!(
                     path = %absolute.display(),
                     "failed to read a file for the language server"
                 );
+                client.close_if_open(absolute).await;
                 continue;
             };
             let Ok(text) = String::from_utf8(bytes) else {

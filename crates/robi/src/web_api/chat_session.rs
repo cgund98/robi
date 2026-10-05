@@ -196,6 +196,7 @@ async fn running_sessions(state: &AppState) -> HashSet<SessionId> {
 fn to_response(session: DomainChatSession, running: &HashSet<SessionId>) -> ChatSession {
     ChatSession {
         has_pending_agent: running.contains(&session.id),
+        turn_display: session.turn_display.as_str().to_owned(),
         id: session.id.to_string(),
         workspace_id: session.workspace_id.to_string(),
         title: session.title,
@@ -416,6 +417,8 @@ pub struct ChatSession {
     pub last_used_at: String,
     /// True while this session's actor is running. Read from memory, not the database.
     pub has_pending_agent: bool,
+    /// Display summary of the latest turn: `idle`, `pending`, `awaiting_approval`, or `failed`.
+    pub turn_display: String,
 }
 
 fn rfc3339(timestamp: DateTime<Utc>) -> String {
@@ -515,6 +518,10 @@ mod tests {
 
         async fn stop(&self, session: SessionId) -> Result<(), ServiceError> {
             self.stopped.lock().expect("runtime lock").push(session);
+            Ok(())
+        }
+
+        async fn compact(&self, _session: SessionId) -> Result<(), ServiceError> {
             Ok(())
         }
     }
