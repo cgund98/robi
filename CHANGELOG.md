@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.5](https://github.com/cgund98/robi/compare/v0.1.4...v0.1.5) (2026-10-05)
+
+
+### Features
+
+* anthropic models, compaction, blocking threads ([f687326](https://github.com/cgund98/robi/commit/f687326d780aacf6689baa2e2909142372522be7))
+* implement anthropic models ([1a80ac0](https://github.com/cgund98/robi/commit/1a80ac07b7664b20c3e2f3cf866aabe2ac7e4fc4))
+
+
+### Bug Fixes
+
+* optimize review screen for one file at a time ([dcef8b4](https://github.com/cgund98/robi/commit/dcef8b435b670c73e88573af303e3c3debaeea09))
+* review screen build types ([24d8a33](https://github.com/cgund98/robi/commit/24d8a334f09ff2005cb9dea5db0d894943ff7291))
+
 ## [0.1.4](https://github.com/cgund98/robi/compare/v0.1.3...v0.1.4) (2026-10-04)
 
 
