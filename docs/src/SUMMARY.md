@@ -5,6 +5,9 @@
 # Guides
 
 - [Quickstart](guides/quickstart.md)
+- [Code review](guides/code-review.md)
+- [Documentation viewing and search](guides/documentation-search.md)
+- [Setting up MCP servers](guides/mcp-servers.md)
 - [Releases](guides/releases.md)
 
 # Concepts

@@ -6,6 +6,10 @@ Robi reads two files from its home directory, `~/.robi/`:
 - `secrets.toml` — credentials. Must be mode `0600`; a file that group or world
   can read is refused.
 
+The app reads and writes both files for you through **Settings**; editing them
+by hand is only needed for headless or manual setups. See
+[Quickstart](../guides/quickstart.md) for the in-app flow.
+
 Both are plain TOML. The key is a string and the value is a string, for example:
 
 ```toml

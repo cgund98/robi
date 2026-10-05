@@ -1,0 +1,94 @@
+# Documentation viewing and search
+
+Robi can read the documentation already in your workspace — `README.md`,
+`AGENTS.md`, `docs/`, and any other markdown — inside the app, and search it
+with two engines. The viewer is read-only; it is a development slice of the
+planned project navigation.
+
+## Open the viewer
+
+Click **Documentation** in the sidebar, or go to `#/docs`. The session sidebar
+stays in place and the main column becomes the viewer. Choosing another session,
+or **New chat**, leaves it.
+
+The viewer has two panes:
+
+- **Left — the page tree.** Every markdown file in the workspace, built from the
+  same gitignore walk as `grep`: hidden entries and `.gitignore`d paths are
+  skipped, so `node_modules/`, `target/`, and `dist/` stay out. Symlinks are not
+  followed, and the walk stops at 500 files. Directories sort before files, each
+  group alphabetical and case-insensitive, and every directory folds and expands
+  (expanded by default).
+- **Right — the document.** Nothing opens on load; the viewer starts with
+  **Select a document to open it.** Click a page in the tree to render it. The
+  document renders with the same markdown component as assistant text: GFM,
+  stepped-down headings, tables, and fenced `mermaid` diagrams, in a centered
+  column (640–880px) so wide tables and code stay readable.
+
+The tree is cached per workspace, so a return visit paints it instantly and
+refreshes in the background. The page you last opened, the folders you folded,
+and each page's scroll position are remembered too.
+
+**Links work.** A relative link ending in `.md` or `.markdown` resolves against
+the open file and opens that page in the viewer. A link that would leave the
+workspace stays a plain link, and absolute URLs and in-page fragments open as
+usual. Each page you open is a history entry, so the side mouse buttons walk back
+and forward through pages.
+
+## Search
+
+A **Search documentation…** field sits in the header, with an engine toggle:
+**Semantic** or **Text**. The search starts half a second after your last
+keystroke. Another keystroke — or a change of engine — cancels the wait and
+aborts any request already in flight, so only one search runs and only the latest
+text is sent. While it waits or runs, a spinner sits in the field and the results
+pane says **Searching…**. A field with no text brings the tree back.
+
+Results replace the tree on the left; the document on the right stays open.
+Click a hit to open it. Clearing the field restores the tree.
+
+### Semantic
+
+The default. It runs the fused vector-plus-full-text index and keeps only
+markdown hits, so a code hit cannot take a ranked slot. A hit's title is the
+section's heading chain (for example `Install.Overview`) and its snippet is the
+start of that chunk.
+
+**The first semantic query starts the index.** Until the scan finishes the
+results are partial, and the screen says so above the hits rather than failing:
+
+| Notice | Meaning |
+|---|---|
+| **Indexing N/M — results may be incomplete** | the scan is still running |
+| **Preparing search…** | the index is being downloaded |
+| **Search index paused.** | with a **Resume** button |
+| **Search index failed.** | with a **Resume** button |
+
+While a notice is up the screen polls the index status every two seconds and
+re-runs the search when the state changes, so the hits fill in as the scan
+catches up. **Resume** restarts a paused or failed scan.
+
+### Text
+
+The **Text** control runs a literal, case-insensitive scan of markdown via
+`ripgrep`. If `rg` is not installed it scans the same markdown set the tree
+lists. It does not start the index and returns immediately. Each file appears
+once, at its first matching line, ordered by match count.
+
+## Limits
+
+- A scanned file that cannot be read is skipped, not the whole request.
+- A file over 512 KiB is cut, ending with `[The tail of this file was cut.]`.
+- A non-UTF-8 or non-markdown file is rejected.
+- A workspace with no markdown shows **No markdown files in this workspace.**
+
+## Where this is specified
+
+The two routes, the engine choice, the index states, and the history behaviour
+are in [Docs viewer](../design/shell/docs-viewer.md). The ranking behind the
+semantic engine is in [Semantic search](../design/intelligence/semantic-search.md).
+
+## Next
+
+- [Tools](../reference/tools.md) — how the assistant searches the same corpus.
+- [HTTP API](../reference/http-api.md) — the docs and search routes.
