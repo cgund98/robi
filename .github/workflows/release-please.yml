@@ -41,10 +41,11 @@ jobs:
           - name: macos
             platform: macos-latest
             bundles: dmg
-          # Built on 22.04 for an older glibc baseline. The AppImage bundles its
-          # own runtime dependencies; the deb needs libwebkit2gtk-4.1 at runtime.
+          # 24.04 matches the glibc the prebuilt ONNX Runtime archive was built
+          # against. The AppImage bundles its own runtime dependencies; the deb
+          # needs libwebkit2gtk-4.1 at runtime. Both need glibc 2.38 or newer.
           - name: linux
-            platform: ubuntu-22.04
+            platform: ubuntu-24.04
             bundles: appimage,deb
     runs-on: ${{ matrix.platform }}
     steps:
