@@ -316,7 +316,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["get_doc"];
-        put?: never;
+        put: operations["put_doc"];
         post?: never;
         delete?: never;
         options?: never;
@@ -403,6 +403,17 @@ export interface components {
             context_window: number;
             display_name: string;
             id: string;
+        };
+        /**
+         * @description One change: replace the base range `from..to` with `insert`.
+         *
+         *     `from` and `to` count UTF-16 code units into the base text, matching
+         *     CodeMirror's `ChangeSet.iterChanges`. Ranges are ordered and do not overlap.
+         */
+        ChangeRange: {
+            from: number;
+            insert?: string;
+            to: number;
         };
         /**
          * @description One text file a user attached. Metadata for the `filename (1-10)` chip; the
@@ -550,6 +561,11 @@ export interface components {
         DocContent: {
             content: string;
             path: string;
+            /**
+             * @description The content hash of `content`. The editor sends this back as
+             *     `base_version` on a save.
+             */
+            version: string;
         };
         DocEntry: {
             /** @description Workspace-relative, `/` separated. */
@@ -562,7 +578,7 @@ export interface components {
             path: string;
             /**
              * Format: double
-             * @description Reciprocal rank fusion score. Higher is better.
+             * @description How many chunks of this document matched. Higher is better.
              */
             score: number;
             /** @description The chunk's opening text, cut at 500 bytes on a character boundary. */
@@ -588,6 +604,36 @@ export interface components {
             index: components["schemas"]["IndexStatusBody"];
             /** @description The trimmed query that was run. */
             query: string;
+        };
+        /**
+         * @description A `409` body: the change set named a base that is no longer cached. The
+         *     client re-sends the whole buffer against this `version`.
+         */
+        DocWriteConflict: {
+            content: string;
+            version: string;
+        };
+        DocWriteRequest: {
+            /** @description The version the change set was built from. Absent on a create. */
+            base_version?: string | null;
+            /** @description CodeMirror change ranges against `base_version`. The autosave path. */
+            changes?: components["schemas"]["ChangeRange"][] | null;
+            /** @description The whole buffer. Sent on a create and after a 409. */
+            content?: string | null;
+            /**
+             * @description The open chat session, for the checkpoint. Absent when the docs view
+             *     has no session; the save still lands, without a baseline.
+             */
+            session_id?: string | null;
+        };
+        DocWriteResponse: {
+            /** @description The reconciled text, which may differ from the buffer when it merged. */
+            content: string;
+            /** @description `applied`, `merged`, `created`, or `unchanged`. */
+            outcome: string;
+            path: string;
+            /** @description The content hash to use as the next save's `base_version`. */
+            version: string;
         };
         DocsListing: {
             files: components["schemas"]["DocEntry"][];
@@ -1601,6 +1647,58 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    put_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+                /** @description Workspace-relative path to a markdown file */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DocWriteRequest"];
+            };
+        };
+        responses: {
+            /** @description The reconciled text and its new version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocWriteResponse"];
+                };
+            };
+            /** @description Not markdown, not UTF-8, a malformed change set, or neither content nor changes */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such file, or a path outside the workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The base version is gone; re-send the whole buffer */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocWriteConflict"];
+                };
             };
         };
     };

@@ -90,7 +90,7 @@ Rejected alternatives:
 |---|---|
 | `event_types` | Repeated. Optional. When present, only envelopes whose `type` is in the list. When absent, every agent type. |
 | `session_id` | Optional UUID. When present, only envelopes whose `subject` equals that session id, plus index progress and MCP status whose subject is that session's workspace, session create/update/delete, `robi.app.v1.error`, and `turn_started` / `turn_finished` for any session. Message and tool frames for another session stay off this stream. |
-| `workspace_id` | Optional UUID. The shell always sets this and does not set `session_id`. Every session frame is delivered. Index progress and MCP status are limited to this workspace. |
+| `workspace_id` | Optional UUID. The shell always sets this and does not set `session_id`. Every session frame is delivered. Index progress, MCP status, and file changes are limited to this workspace. |
 
 Response headers:
 
@@ -159,6 +159,7 @@ These are not core `Event`s. Build them with `EventEnvelope::from_payload`.
 | `robi.session.v1.deleted` | `robi/session` | session id | `{ "session_id" }` | After the session row is removed |
 | `robi.app.v1.error` | `robi/app` | `app` | `{ "message" }` | A failure the user should see. `message` is short text. The first publisher is an MCP server that failed to start |
 | `robi.mcp.v1.status` | `robi/mcp` | workspace id | `{ "workspace_id" }` | After an MCP server is marked starting, connected, or failed, and once when the stream opens. The shell refetches `GET /workspaces/{id}/mcp` |
+| `robi.workspace.v1.file_changed` | `robi/workspace` | workspace id | `{ "workspace_id", "path", "source", "session_id", "outcome" }` | After a file is written: a docs-editor save or an edit-tool write. `source` is `user` or `agent`; `outcome` is `applied`, `merged`, `created`, `deleted`, or `unchanged`; `session_id` is null for a save with no open session. The viewer refreshes the tree, and the open page, from this frame — see [docs-mode.md](docs-mode.md) |
 
 A `session_id` query still delivers these four types, plus `turn_started` and
 `turn_finished` for every session. The four are the session list and
@@ -239,6 +240,7 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 | `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
 | `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. A successful GET is reused for 10 seconds, and concurrent frames share one request. The stream publishes once when it opens, then again as the index changes |
 | `robi.mcp.v1.status` | `GET /workspaces/{id}/mcp` for `subject` when that workspace is active. The stream publishes once when it opens, then again as a server's status changes. The tray does not poll |
+| `robi.workspace.v1.file_changed` | Record the path, source, and outcome in the docs store. The viewer refreshes the tree, and refetches the open page unless it holds unsaved edits — see [docs-mode.md](docs-mode.md). No fetch of its own |
 
 Do not open a second `EventSource` per feature.
 

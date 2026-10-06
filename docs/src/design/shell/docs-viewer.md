@@ -2,16 +2,17 @@
 
 This page is the workspace Markdown viewer: a file tree of the workspace's
 markdown pages on the left and the rendered document on the right. It is the
-read-only first slice of M10's project navigation. The editor and the docs
-*mode* are later in M10.
+read-only half of M10's project navigation. Editing the open page — CodeMirror,
+debounced autosave, and the reconciliation with an agent edit — is
+[docs-mode.md](docs-mode.md).
 
 ## What this page does not cover
 
 | Topic | Where it belongs |
 |---|---|
-| The `docs` agent mode (its tool set and prompt prefix) | M10 F10.1, `docs/src/roadmap.md` |
-| Editing a page in the viewer | M10 F10.3. The viewer only reads; the chat tray is how the agent changes a page |
-| Widening the filter past markdown and the docs directories | M10 F10.2. This page shows markdown only |
+| Editing the open page, autosave, and the save protocol | [docs-mode.md](docs-mode.md) |
+| The `file_changed` event | [docs-mode.md](docs-mode.md) and [events-sse.md](events-sse.md) |
+| Widening the filter past markdown and the docs directories | M10 F10.1. This page shows markdown only |
 | The shared path filter and grants | [roadmap](../../roadmap.md) (M3) |
 | Markdown rendering itself (GFM, mermaid, headings) | [chat-ui.md](chat-ui.md) |
 
@@ -142,21 +143,36 @@ mode and model controls, and the composer — with no pending-edit review strip.
 A session that is still running shows the same activity line and **Stop**
 control as it does in the main column.
 
-**An agent edit refreshes the page.** The store already bumps a per-session
-review tick when a tool call lands and when a turn finishes. The viewer reads
+**A plan opens over the sheet.** The transcript's **View Plan** button opens the
+plan page in the main column, over the document sheet, with the tray still
+beside it, so a plan can be read while the chat stays in reach. **Back** returns
+to the sheet at the page that was open: the viewer stays mounted while the plan
+is shown, so its tree, its open page, and its search are kept. A plan opened
+from the main column's chat is still cleared when the route changes to the
+viewer, so the sheet is not hidden behind a plan left open in another view.
+
+**An agent edit refreshes the page.** The store bumps a per-session review tick
+when a tool call lands and when a turn finishes, and the `file_changed` frame
+([docs-mode.md](docs-mode.md)) refreshes the tree on any write. The viewer reads
 the active session's tick and re-fetches the open document and the tree listing
-on each change. A fetch that returns the same text leaves the state object
-alone, so a no-op tick does not reset the rendered document or its scroll
-position. A page the agent created appears in the tree on the same tick.
+on each change. While the page is open in Edit mode with unsaved changes, the
+buffer is kept and the refetch is skipped, so an agent edit is merged by the next
+autosave rather than clobbering the editor. A fetch that returns the same text
+leaves the state object alone, so a no-op tick does not reset the rendered
+document or its scroll position. A page the agent created appears in the tree on
+the same tick.
 
-### Attach a line to chat
+### Hover actions on a block
 
-A line of the open page can be sent to the agent without retyping it. Hovering a
-rendered block — a paragraph, a heading, a list item, a table row, a code fence,
-a blockquote, a rule — shows a small **add to chat** button (a chat bubble with
-a plus) at the right of that block.
-Clicking it adds the block's **raw markdown lines** to the composer as a file
-attachment and opens the tray.
+A line of the open page can be sent to the agent, or edited, without retyping
+it. Hovering a rendered block — a paragraph, a heading, a list item, a table
+row, a code fence, a blockquote, a rule — shows an **ellipsis** button at the
+right of that block. It opens a menu:
+
+- **Add to chat** adds the block's **raw markdown lines** to the composer as a
+  file attachment and opens the tray. Offered only when the screen has a tray.
+- **Open in editor** switches the toolbar to **Edit** and puts the cursor at the
+  end of the block's first source line.
 
 The unit is a rendered block, but the range is a source range.
 `AssistantMarkdown`'s document mode stamps each block's element with
@@ -166,10 +182,23 @@ never a count of rendered elements or wrapped visual lines. The hover reads that
 attribute (`target.closest('[data-md-lines]')`), so the innermost block under the
 pointer wins: a paragraph inside a list item carries the paragraph's tighter
 range, and a tight list item falls back to its own. A paragraph that wraps over
-several source lines attaches the whole paragraph (`40-44`); a heading, a table
-row, or a single-line paragraph attaches one line. The button is pinned to the
-hovered block's top inside the sheet (`data-md-attach`, `data-find-ignore`), and
-it clears on the next pointer move that is not over a block and on any scroll.
+several source lines spans all of them (`40-44`); a heading, a table row, or a
+single-line paragraph is one line.
+
+**Open in editor uses the block's first line.** The pointer's exact visual line
+is not recoverable without character-offset reconciliation through markdown
+rendering, which the viewer deliberately avoids, so a multi-line block reveals
+`start`, not the line the pointer is closest to. The cursor lands at the end of
+that line and the editor takes focus. The reveal is queued and applied when the
+editor mounts, because switching the mode creates the view.
+
+The button is pinned to the hovered block's top inside the sheet
+(`data-md-attach`, `data-find-ignore`), so the hover tracking and the find bar
+both ignore it. The menu renders in a portal; while it is open the viewer does
+not retarget the hover on pointer move, and does not clear it on the viewer's
+`mouseleave` or on scroll, so reaching into the menu cannot dismiss the block it
+belongs to. It clears on the next pointer move that is not over a block, and on
+any scroll once the menu is closed.
 
 **The attachment is built client-side, like the paperclip's.** The viewer slices
 the raw lines (`attachmentFromDocument`), sets the chip's `start_line` /

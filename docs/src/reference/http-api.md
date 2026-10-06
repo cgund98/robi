@@ -43,7 +43,8 @@ handler that takes 2 seconds or longer is logged at warning with its duration.
 | `GET` | `/api/v1/workspaces/{id}/index` | The semantic index status, with a cursor. |
 | `PUT` | `/api/v1/workspaces/{id}/index` | Pause or resume the index (`state`: `paused` / `running`). |
 | `GET` | `/api/v1/workspaces/{id}/docs` | The markdown files in the workspace, gitignore respected. |
-| `GET` | `/api/v1/workspaces/{id}/docs/{path}` | One markdown file's text. |
+| `GET` | `/api/v1/workspaces/{id}/docs/{path}` | One markdown file's text, with its content-hash `version`. |
+| `PUT` | `/api/v1/workspaces/{id}/docs/{path}` | Save the open page. The body is a CodeMirror change set (`base_version` + `changes`) or the whole buffer (`content`). Reconciles against the disk and returns `{path, content, version, outcome}`. A base version the server no longer has is `409` with `{content, version}`. |
 | `GET` | `/api/v1/workspaces/{id}/docs/search` | Markdown search. `engine` is `semantic` (default, the index) or `ripgrep` (a literal scan that does not start the index). |
 
 ## Chat sessions

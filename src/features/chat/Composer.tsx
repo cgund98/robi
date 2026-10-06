@@ -187,7 +187,8 @@ export function Composer(props: {
     updateDraft('')
     setImages([])
     setFiles([])
-    let sent = false
+    // Both the `try` and the `catch` assign `sent`, so it has no initial value.
+    let sent: boolean
     try {
       sent = await props.onSubmit(text, sentImages, sentFiles)
     } catch {

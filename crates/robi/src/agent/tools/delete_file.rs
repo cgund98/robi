@@ -9,7 +9,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::change::{
-    change_diff, diff_json, lock_path, read_text, record_baseline, write_approval,
+    change_diff, diff_json, lock_path, publish_file_changed, read_text, record_baseline,
+    status_outcome, write_approval,
 };
 use super::context::{display_path, ToolContext};
 
@@ -126,6 +127,8 @@ impl Tool for DeleteFile {
                 .map_err(ToolError::Failed)??;
         }
         self.ctx.note_lsp(&resolved.absolute, true).await;
-        Ok(diff_json(&change_diff(&relative, &before, "", true, true)))
+        let file_diff = change_diff(&relative, &before, "", true, true);
+        publish_file_changed(&self.ctx, &relative, status_outcome(file_diff.status));
+        Ok(diff_json(&file_diff))
     }
 }

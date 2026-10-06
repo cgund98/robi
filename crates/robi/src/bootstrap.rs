@@ -200,6 +200,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         mcp: Some(mcp),
         originals,
         image_source,
+        docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
     })
 }
 

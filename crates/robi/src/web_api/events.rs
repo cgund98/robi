@@ -474,6 +474,7 @@ mod tests {
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
+            docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
         }
     }
 

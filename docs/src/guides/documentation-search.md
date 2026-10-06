@@ -55,11 +55,16 @@ tray on the right holds the current session's conversation and its message box.
   viewer refreshes as the edit lands. A new page the agent creates shows up in
   the tree. You do not have to reopen anything.
 
-## Send a line to the chat
+## Send a line to the chat, or edit it
 
-You can point the agent at a specific part of the page without retyping it. Hover
-a block — a paragraph, a heading, a list item, a table row, a code fence — and a
-small **add to chat** button appears at the right of that block. Click it.
+You can point the agent at a specific part of the page without retyping it, or
+jump straight to that part in the editor. Hover a block — a paragraph, a
+heading, a list item, a table row, a code fence — and an **ellipsis** button
+appears at the right of that block. Click it for two choices:
+
+- **Add to chat** adds the block to the message box.
+- **Open in editor** switches to the editor and puts the cursor at the end of
+  that block's first source line.
 
 The block is added to the message box as an attachment chip, the chat tray opens
 if it was closed, and the caret goes to the message box so you can say what you

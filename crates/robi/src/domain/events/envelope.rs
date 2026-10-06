@@ -33,6 +33,8 @@ pub const INDEX_PROGRESS: &str = "robi.index.v1.progress";
 pub const INDEX_SOURCE: &str = "robi/index";
 pub const MCP_STATUS: &str = "robi.mcp.v1.status";
 pub const MCP_SOURCE: &str = "robi/mcp";
+pub const WORKSPACE_SOURCE: &str = "robi/workspace";
+pub const FILE_CHANGED: &str = "robi.workspace.v1.file_changed";
 
 /// Types a `session_id` stream filter still delivers. They are not about the
 /// selected session: another window's list, a process-wide failure, or the
@@ -49,7 +51,7 @@ pub const SESSION_FILTER_EXCEPTIONS: &[&str] = &[
 
 /// Workspace-scoped types a stream may deliver when it is filtered to one
 /// workspace. The subject is the workspace id.
-pub const WORKSPACE_EVENT_TYPES: &[&str] = &[INDEX_PROGRESS, MCP_STATUS];
+pub const WORKSPACE_EVENT_TYPES: &[&str] = &[INDEX_PROGRESS, MCP_STATUS, FILE_CHANGED];
 
 /// Every agent type the shell asks for. Order is the type map in the design.
 pub const AGENT_EVENT_TYPES: &[&str] = &[
@@ -67,6 +69,7 @@ pub const AGENT_EVENT_TYPES: &[&str] = &[
     APP_ERROR,
     INDEX_PROGRESS,
     MCP_STATUS,
+    FILE_CHANGED,
 ];
 
 /// One event on the wire.
@@ -237,6 +240,33 @@ impl EventEnvelope {
             json!({ "workspace_id": workspace_id }),
         )
         .expect("mcp payload")
+    }
+
+    /// A file in the workspace changed. `subject` is the workspace id.
+    ///
+    /// `source` is `user` for an editor save and `agent` for an edit tool.
+    /// `outcome` is `applied`, `merged`, or `created`. `session_id` is the
+    /// session that owns the change, absent when the save had no open session.
+    pub fn file_changed(
+        workspace_id: &str,
+        path: &str,
+        source: &str,
+        session_id: Option<&str>,
+        outcome: &str,
+    ) -> Self {
+        Self::from_payload(
+            WORKSPACE_SOURCE,
+            FILE_CHANGED,
+            workspace_id,
+            json!({
+                "workspace_id": workspace_id,
+                "path": path,
+                "source": source,
+                "session_id": session_id,
+                "outcome": outcome,
+            }),
+        )
+        .expect("file change payload")
     }
 }
 
@@ -493,5 +523,30 @@ mod tests {
                 "message_id": message.to_string(),
             })
         );
+    }
+
+    #[test]
+    fn file_changed_carries_the_path_and_the_source() {
+        let workspace = "11111111-1111-1111-1111-111111111111";
+        let session = SessionId::new();
+        let envelope = EventEnvelope::file_changed(
+            workspace,
+            "docs/a.md",
+            "agent",
+            Some(&session.to_string()),
+            "applied",
+        );
+        assert_eq!(envelope.event_type, FILE_CHANGED);
+        assert_eq!(envelope.source, WORKSPACE_SOURCE);
+        assert_eq!(envelope.subject, workspace);
+        assert_eq!(envelope.data["path"], "docs/a.md");
+        assert_eq!(envelope.data["source"], "agent");
+        assert_eq!(envelope.data["session_id"], session.to_string());
+        assert_eq!(envelope.data["outcome"], "applied");
+
+        let anonymous = EventEnvelope::file_changed(workspace, "docs/b.md", "user", None, "merged");
+        assert_eq!(anonymous.data["session_id"], serde_json::Value::Null);
+        assert!(WORKSPACE_EVENT_TYPES.contains(&FILE_CHANGED));
+        assert!(AGENT_EVENT_TYPES.contains(&FILE_CHANGED));
     }
 }

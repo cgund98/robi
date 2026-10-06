@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::agent::docs::DocsEditCache;
 use crate::agent::index::IndexHub;
 use crate::agent::providers::ImageStore;
 use crate::domain::{
@@ -26,4 +27,7 @@ pub struct AppState {
     /// The stored bytes behind a user message's image attachments. Concrete so
     /// the ingestion handler can write new rows.
     pub image_source: Arc<dyn ImageStore>,
+    /// Recent document versions, keyed by content hash. The docs editor sends
+    /// deltas against a version; a hit means the base is still reachable.
+    pub docs_edits: Arc<DocsEditCache>,
 }

@@ -297,6 +297,7 @@ mod tests {
         assert_eq!(index.status().state, IndexState::Ready);
         let ctx = Arc::new(ToolContext {
             session_id: harness.session_id,
+            workspace_id: harness.ctx.workspace_id,
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
@@ -305,6 +306,7 @@ mod tests {
             lsp_enabled: true,
             originals: None,
             settings: None,
+            events: None,
         });
         let tool = SemanticSearch::new(ctx);
         let all = tool

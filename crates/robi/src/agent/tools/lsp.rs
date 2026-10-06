@@ -745,6 +745,7 @@ mod tests {
             .await;
         let ctx = Arc::new(ToolContext {
             session_id: harness.ctx.session_id,
+            workspace_id: harness.ctx.workspace_id,
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
@@ -753,6 +754,7 @@ mod tests {
             originals: None,
             lsp_enabled: true,
             settings: None,
+            events: None,
         });
         (harness, ctx)
     }
@@ -803,6 +805,7 @@ mod tests {
         std::fs::write(harness.ctx.root.join("notes.md"), "hello\n").unwrap();
         let ctx = Arc::new(ToolContext {
             session_id: harness.ctx.session_id,
+            workspace_id: harness.ctx.workspace_id,
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
@@ -811,6 +814,7 @@ mod tests {
             originals: None,
             lsp_enabled: true,
             settings: None,
+            events: None,
         });
         let missing = Diagnostics::new(Arc::clone(&ctx))
             .execute(json!({ "path": "lib.rs" }), run())

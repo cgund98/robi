@@ -4,18 +4,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use robi_core::error::ToolError;
-use robi_core::ids::SessionId;
+use robi_core::ids::{SessionId, WorkspaceId};
 
 use crate::agent::index::IndexHub;
 use crate::agent::lsp::LspHub;
 use crate::agent::workspace::{resolve_path, user_home, PathFilter, ResolvedPath};
 use crate::domain::chat_session::service::ChatSessionService;
+use crate::domain::events::EventBus;
 use crate::domain::file_change::repo::FileChangeRepository;
 use crate::domain::settings::store::SettingsStore;
 
 /// The workspace and the session whose path rules a tool call reloads.
 pub struct ToolContext {
     pub session_id: SessionId,
+    /// The workspace this session belongs to, the `file_changed` subject.
+    pub workspace_id: WorkspaceId,
     pub root: PathBuf,
     pub sessions: Arc<ChatSessionService>,
     pub file_changes: Arc<dyn FileChangeRepository>,
@@ -29,6 +32,9 @@ pub struct ToolContext {
     /// Live settings. Each path-filter and sandbox build reads
     /// `path_allow_read` and `path_allow_write` from here. Absent in tests.
     pub settings: Option<Arc<dyn SettingsStore>>,
+    /// The event bus. An edit tool announces the path it wrote here. Absent in
+    /// tests that do not publish.
+    pub events: Option<Arc<EventBus>>,
 }
 
 impl ToolContext {

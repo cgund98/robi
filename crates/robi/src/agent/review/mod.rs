@@ -8,7 +8,8 @@ mod lock;
 mod session;
 
 pub use diff::{
-    accept, diff, reject, review_lines, FileDiff, FileStatus, Hunk, ReviewLine, ReviewLineKind,
+    accept, diff, reject, review_lines, split_lines, FileDiff, FileStatus, Hunk, ReviewLine,
+    ReviewLineKind,
 };
 pub use lock::lock_path;
 pub use session::{

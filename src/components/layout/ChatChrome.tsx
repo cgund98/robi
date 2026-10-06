@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { useLocation, useNavigate } from '@solidjs/router'
+import { useIsRouting, useLocation, useNavigate } from '@solidjs/router'
 import { isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js'
@@ -51,11 +51,17 @@ const MODE_SETTING_KEYS: Record<AgentMode, { model: string; effort: string }> = 
 export function ChatChrome() {
   const navigate = useNavigate()
   const location = useLocation()
+  const isRouting = useIsRouting()
   const [renameId, setRenameId] = createSignal<string | null>(null)
   const [renameError, setRenameError] = createSignal<string | null>(null)
   const [deleteId, setDeleteId] = createSignal<string | null>(null)
   const [deleteError, setDeleteError] = createSignal<string | null>(null)
-  const [plan, setPlan] = createSignal<{ view: PlanView; sessionId: string | null } | null>(null)
+  const [plan, setPlan] = createSignal<{
+    view: PlanView
+    sessionId: string | null
+    // Opened from the docs chat tray, so the plan may cover the docs sheet.
+    overDocs: boolean
+  } | null>(null)
   const [trayOpen, setTrayOpen] = createSignal(false)
   const [models, setModels] = createSignal<CatalogModel[]>([])
   const [fallbackModelId, setFallbackModelId] = createSignal('glm-5.3')
@@ -111,8 +117,8 @@ export function ChatChrome() {
       let unlisten: (() => void) | undefined
       void listen<string>('approval-notice-open', (event) => {
         if (event.payload) {
-          void chat.selectSession(event.payload)
           navigate(`/sessions/${event.payload}`)
+          void chat.selectSession(event.payload)
         }
       }).then((stop) => {
         unlisten = stop
@@ -147,7 +153,7 @@ export function ChatChrome() {
 
   createEffect(() => {
     const id = reviewSessionId()
-    if (!id) {
+    if (isRouting() || !id) {
       return
     }
     if (chat.activeSessionId !== id || chat.draftSelected) {
@@ -157,7 +163,7 @@ export function ChatChrome() {
 
   createEffect(() => {
     const id = chatSessionId()
-    if (chat.loading || reviewSessionId() || docsOpen() || !id) {
+    if (isRouting() || chat.loading || reviewSessionId() || docsOpen() || !id) {
       return
     }
     if (!chat.sessions.some((session) => session.id === id)) {
@@ -174,7 +180,7 @@ export function ChatChrome() {
       current &&
       (chat.draftSelected ||
         reviewSessionId() !== null ||
-        docsOpen() ||
+        (docsOpen() && !current.overDocs) ||
         current.sessionId !== chat.activeSessionId)
     ) {
       setPlan(null)
@@ -278,10 +284,13 @@ export function ChatChrome() {
       void chat.selectSession(id)
       return
     }
-    void chat.selectSession(id)
+    // Navigate first: the route reaches `location` on a later microtask, so the
+    // reconciling effect below must see `isRouting()` already true and bail.
+    // Writing the store first would let that effect re-select the old route.
     if (location.pathname !== `/sessions/${id}`) {
       navigate(`/sessions/${id}`)
     }
+    void chat.selectSession(id)
   }
   const openDraft = () => {
     setPlan(null)
@@ -290,10 +299,12 @@ export function ChatChrome() {
       chat.selectDraft()
       return
     }
-    chat.selectDraft()
+    // See openSession: navigate before the store write so the reconciling effect
+    // does not read a stale `/sessions/:id` route and undo the draft selection.
     if (location.pathname !== '/') {
       navigate('/')
     }
+    chat.selectDraft()
   }
 
   const chatProps = () => ({
@@ -314,7 +325,8 @@ export function ChatChrome() {
     onBuild: (path: string) => {
       void buildPlan(path)
     },
-    onViewPlan: (next: PlanView) => setPlan({ view: next, sessionId: chat.activeSessionId }),
+    onViewPlan: (next: PlanView) =>
+      setPlan({ view: next, sessionId: chat.activeSessionId, overDocs: docsOpen() }),
     disabled: composerLocked(),
     pending: chat.busy,
     running: agentRunning(),
@@ -370,16 +382,18 @@ export function ChatChrome() {
           keyed
         >
           {(id) => (
-            <DocsScreen
-              workspaceId={id === 'none' ? null : id}
-              onAttachLine={(file) => {
-                setTrayOpen(true)
-                requestComposerAttachment(composerDraftKey(), file)
-              }}
-            />
+            <div style={{ display: plan() ? 'none' : 'contents' }}>
+              <DocsScreen
+                workspaceId={id === 'none' ? null : id}
+                onAttachLine={(file) => {
+                  setTrayOpen(true)
+                  requestComposerAttachment(composerDraftKey(), file)
+                }}
+              />
+            </div>
           )}
         </Show>
-        <Show when={!reviewSessionId() && !docsOpen() && plan()}>
+        <Show when={!reviewSessionId() && plan()}>
           <PlanPage
             plan={plan()!.view}
             buildDisabled={composerLocked() || plan()!.view.path.length === 0}

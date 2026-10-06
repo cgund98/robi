@@ -1,6 +1,8 @@
 .bar {
   position: absolute;
-  top: var(--space-2);
+  /* Clear the docs toolbar, which sits above the viewer whenever a document
+     is open. The find bar only appears in that same state. */
+  top: 52px;
   right: var(--space-3);
   z-index: 1;
   display: flex;

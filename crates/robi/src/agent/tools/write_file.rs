@@ -9,8 +9,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::change::{
-    atomic_write, change_diff, diff_json, ensure_parent, lock_path, read_text, record_baseline,
-    write_approval,
+    atomic_write, change_diff, diff_json, ensure_parent, lock_path, publish_file_changed,
+    read_text, record_baseline, status_outcome, write_approval,
 };
 use super::context::{display_path, ToolContext};
 use super::marker::reject_marker;
@@ -110,12 +110,8 @@ impl Tool for WriteFile {
         .await
         .map_err(ToolError::Failed)??;
         self.ctx.note_lsp(&resolved.absolute, false).await;
-        Ok(diff_json(&change_diff(
-            &relative,
-            &before,
-            &args.content,
-            existed,
-            false,
-        )))
+        let file_diff = change_diff(&relative, &before, &args.content, existed, false);
+        publish_file_changed(&self.ctx, &relative, status_outcome(file_diff.status));
+        Ok(diff_json(&file_diff))
     }
 }

@@ -1,6 +1,5 @@
 /** @jsxImportSource solid-js */
 import { useSearchParams } from '@solidjs/router'
-import { ChatBubble } from '../../components/ui/icons'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 
 import { getIndexStatus, type IndexStatus } from '../../api/codeIndex'
@@ -9,19 +8,29 @@ import {
   lastValidPath,
   readCollapsed,
   readContent,
+  readMode,
   readScroll,
+  readVersion,
   recordCollapsed,
+  recordMode,
   recordPath,
   recordScroll,
-  writeContent
+  writeContent,
+  writeVersion,
+  type DocViewMode
 } from './docsCache'
 import { chat } from '../../state/chatStore'
+import { docs as docsEvents } from '../../state/docsStore'
 import { index } from '../../state/indexStore'
 import { workspaces } from '../../state/workspaceStore'
 import { buildFileTree } from '../review/tree'
 import type { FileAttachment } from '../chat/textAttachments'
 import styles from './DocsScreen.module.css'
 import { attachmentFromDocument } from './docAttachment'
+import { createDocsEditor, type DocsEditor } from './docsEditor'
+import { DocLineMenu } from './DocLineMenu'
+import { DocToolbar } from './DocToolbar'
+import { useDocAutosave } from './useDocAutosave'
 import {
   applyHighlights,
   clearHighlights,
@@ -39,9 +48,12 @@ export function DocsScreen(props: {
   workspaceId: string | null
   onAttachLine?: (file: FileAttachment) => void
 }) {
+  const [docsTick, setDocsTick] = createSignal(0)
   const docs = useWorkspaceDocs(
     () => props.workspaceId,
-    () => (chat.activeSessionId ? (chat.reviewTickBySession[chat.activeSessionId] ?? 0) : 0)
+    () =>
+      (chat.activeSessionId ? (chat.reviewTickBySession[chat.activeSessionId] ?? 0) : 0) +
+      docsTick()
   )
   const [searchParams, setSearchParams] = useSearchParams<{ file: string }>()
   const urlFile = () => (typeof searchParams.file === 'string' ? searchParams.file : null)
@@ -78,9 +90,12 @@ export function DocsScreen(props: {
     if (path === selected()) {
       return
     }
+    // Leaving the document: flush whatever is pending for the old path.
+    flushEdits()
     const workspaceId = props.workspaceId
     setContent(workspaceId ? (readContent(workspaceId, path) ?? null) : null)
     setContentError(null)
+    setMergeNotice(null)
     setSelected(path)
     setSearchParams({ file: path })
   }
@@ -89,6 +104,26 @@ export function DocsScreen(props: {
     props.workspaceId && selected() ? (readContent(props.workspaceId, selected()!) ?? null) : null
   )
   const [contentError, setContentError] = createSignal<DocError | null>(null)
+
+  // Preview or Edit. The choice is remembered per workspace.
+  const [mode, setMode] = createSignal<DocViewMode>(
+    props.workspaceId ? readMode(props.workspaceId) : 'rendered'
+  )
+  const [mergeNotice, setMergeNotice] = createSignal<string | null>(null)
+  const [editorHost, setEditorHost] = createSignal<HTMLDivElement>()
+  const [menuOpen, setMenuOpen] = createSignal(false)
+  let editor: DocsEditor | undefined
+  let editorPath: string | null = null
+  /** A line to reveal once the editor has mounted. See `openInEditor`. */
+  let pendingReveal: number | null = null
+
+  const autosave = useDocAutosave({
+    workspaceId: () => props.workspaceId,
+    path: () => selected(),
+    sessionId: () => chat.activeSessionId,
+    readText: () => editor?.getText() ?? '',
+    onRemoteText: (text) => editor?.replaceAll(text)
+  })
   const [lineHover, setLineHover] = createSignal<{
     start: number
     end: number
@@ -248,11 +283,60 @@ export function DocsScreen(props: {
     }
   })
 
+  /** Flush the editor's pending save. The flush points beyond the debounce. */
+  function flushEdits() {
+    void autosave.flush()
+  }
+
+  // Mount the editor while Edit is on, and rebuild it when the document
+  // changes. Solid runs the component once, so the view is created here rather
+  // than in JSX; only a mode or path change tears it down.
+  createEffect(() => {
+    const host = editorHost()
+    const path = selected()
+    const text = content()
+    const active = mode() === 'edit' && host !== undefined && path !== null && text !== null
+    if (!active || editorPath !== path) {
+      editor?.destroy()
+      editor = undefined
+      editorPath = null
+    }
+    if (!active || !host || path === null || text === null || editor) {
+      return
+    }
+    editor = createDocsEditor({
+      parent: host,
+      initial: text,
+      onChange: (change) => autosave.noteChange(change),
+      onSave: () => void autosave.flush()
+    })
+    editorPath = path
+    autosave.begin(readVersion(props.workspaceId ?? '', path) ?? null)
+    // "Open in editor" switched the mode; place the cursor once the view exists.
+    if (pendingReveal !== null) {
+      editor.revealLine(pendingReveal)
+      pendingReveal = null
+    }
+  })
+
+  // The open document refetches on a review tick or a `file_changed` frame. A
+  // buffer with unsaved edits is never clobbered; the save merges instead.
   createEffect(() => {
     const workspaceId = props.workspaceId
     const path = selected()
-    void (chat.activeSessionId ? (chat.reviewTickBySession[chat.activeSessionId] ?? 0) : 0)
+    const reviewTick = chat.activeSessionId
+      ? (chat.reviewTickBySession[chat.activeSessionId] ?? 0)
+      : 0
+    const change = docsEvents.change
+    void reviewTick
+    void change?.seq
     if (!workspaceId || !path) {
+      return
+    }
+    if (autosave.dirty() && editorPath === path) {
+      if (change && change.path === path && change.source === 'agent') {
+        setMergeNotice('Agent changed this file — saving will merge.')
+      }
       return
     }
     let cancelled = false
@@ -262,8 +346,15 @@ export function DocsScreen(props: {
           return
         }
         writeContent(workspaceId, path, doc.content)
+        writeVersion(workspaceId, path, doc.version)
         setContent((current) => (current === doc.content ? current : doc.content))
         setContentError(null)
+        if (editor && editorPath === path && !autosave.dirty()) {
+          if (!editor.hasFocus() && editor.getText() !== doc.content) {
+            editor.replaceAll(doc.content)
+          }
+          autosave.begin(doc.version)
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -276,6 +367,47 @@ export function DocsScreen(props: {
     onCleanup(() => {
       cancelled = true
     })
+  })
+
+  // Any file change refreshes the tree; the open document is handled above.
+  createEffect(() => {
+    if (docsEvents.change) {
+      setDocsTick((tick) => tick + 1)
+    }
+  })
+
+  // A finished save clears the merge notice.
+  createEffect(() => {
+    if (autosave.status().kind === 'saved') {
+      setMergeNotice(null)
+    }
+  })
+
+  function changeMode(next: DocViewMode) {
+    if (next === mode()) {
+      return
+    }
+    flushEdits()
+    setMode(next)
+    if (props.workspaceId) {
+      recordMode(props.workspaceId, next)
+    }
+    if (next === 'rendered') {
+      setMergeNotice(null)
+    }
+  }
+
+  onMount(() => {
+    const onBlur = () => flushEdits()
+    window.addEventListener('blur', onBlur)
+    onCleanup(() => window.removeEventListener('blur', onBlur))
+  })
+
+  onCleanup(() => {
+    // The flush reads the buffer synchronously, so destroying after is safe.
+    flushEdits()
+    editor?.destroy()
+    editor = undefined
   })
 
   createEffect(() => {
@@ -299,7 +431,9 @@ export function DocsScreen(props: {
     }
     const onScroll = () => {
       scrollTop = node.scrollTop
-      setLineHover(null)
+      if (!menuOpen()) {
+        setLineHover(null)
+      }
     }
     node.addEventListener('scroll', onScroll, { passive: true })
     onCleanup(() => {
@@ -509,7 +643,9 @@ export function DocsScreen(props: {
   }
 
   function onViewerMouseMove(event: MouseEvent) {
-    if (!props.onAttachLine) {
+    if (menuOpen()) {
+      // The menu is in a portal; moving the pointer into it must not retarget
+      // the trigger or drop the hovered block.
       return
     }
     const target = event.target
@@ -541,6 +677,13 @@ export function DocsScreen(props: {
     )
   }
 
+  /** The label for a block's line range, used for the trigger and the menu. */
+  function lineRangeLabel(range: { start: number; end: number }): string {
+    return range.start === range.end
+      ? `line ${range.start}`
+      : `lines ${range.start} to ${range.end}`
+  }
+
   function attachLine(range: { start: number; end: number }) {
     setLineHover(null)
     const text = content()
@@ -561,6 +704,20 @@ export function DocsScreen(props: {
     } catch (error) {
       setAttachNotice(error instanceof Error ? error.message : 'Could not attach the line')
     }
+  }
+
+  /**
+   * Switch to Edit with the cursor at the end of the block's first source line.
+   *
+   * The editor does not exist yet when the mode flips, so the line is queued
+   * and revealed by the mount effect.
+   */
+  function openInEditor(range: { start: number; end: number }) {
+    setLineHover(null)
+    setMenuOpen(false)
+    setMergeNotice(null)
+    pendingReveal = range.start
+    changeMode('edit')
   }
 
   const hover = lineHover
@@ -697,6 +854,16 @@ export function DocsScreen(props: {
                   </div>
                 </Show>
                 <div class={styles.viewerWrap}>
+                  <Show when={selected() !== null && content() !== null}>
+                    <DocToolbar
+                      mode={mode()}
+                      onMode={changeMode}
+                      onSave={flushEdits}
+                      dirty={autosave.dirty()}
+                      status={autosave.status()}
+                      notice={mergeNotice()}
+                    />
+                  </Show>
                   <Show
                     when={
                       findOpen() && !selectedError() && selected() !== null && content() !== null
@@ -726,7 +893,11 @@ export function DocsScreen(props: {
                     class={styles.viewer}
                     ref={viewer}
                     onMouseMove={onViewerMouseMove}
-                    onMouseLeave={() => setLineHover(null)}
+                    onMouseLeave={() => {
+                      if (!menuOpen()) {
+                        setLineHover(null)
+                      }
+                    }}
                   >
                     <Show
                       when={!selectedError()}
@@ -744,38 +915,44 @@ export function DocsScreen(props: {
                         }
                       >
                         {(path) => (
-                          <div class={styles.sheet} ref={sheet}>
-                            <AssistantMarkdown
-                              text={content() ?? ''}
-                              document
-                              docPath={path}
-                              onDocLink={openDocument}
-                            />
-                            <Show when={props.onAttachLine && hover()}>
-                              <button
-                                type="button"
-                                class={styles.lineAttach}
-                                style={{ top: `${hover()!.top}px` }}
-                                data-md-attach
-                                data-find-ignore
-                                aria-label={`Add ${
-                                  hover()!.start === hover()!.end
-                                    ? `line ${hover()!.start}`
-                                    : `lines ${hover()!.start} to ${hover()!.end}`
-                                } to chat`}
-                                title="Add to chat"
-                                onMouseDown={(event) => event.preventDefault()}
-                                onClick={() => {
-                                  const range = hover()
-                                  if (range) {
-                                    attachLine(range)
-                                  }
-                                }}
-                              >
-                                <ChatBubble size={16} aria-hidden="true" />
-                              </button>
-                            </Show>
-                          </div>
+                          <Show
+                            when={mode() === 'edit'}
+                            fallback={
+                              <div class={styles.sheet} ref={sheet}>
+                                <AssistantMarkdown
+                                  text={content() ?? ''}
+                                  document
+                                  docPath={path}
+                                  onDocLink={openDocument}
+                                />
+                                <Show when={hover()}>
+                                  <DocLineMenu
+                                    top={hover()!.top}
+                                    label={`Line actions for ${lineRangeLabel(hover()!)}`}
+                                    onAddToChat={
+                                      props.onAttachLine
+                                        ? () => {
+                                            const range = hover()
+                                            if (range) {
+                                              attachLine(range)
+                                            }
+                                          }
+                                        : undefined
+                                    }
+                                    onOpenInEditor={() => {
+                                      const range = hover()
+                                      if (range) {
+                                        openInEditor(range)
+                                      }
+                                    }}
+                                    onOpenChange={setMenuOpen}
+                                  />
+                                </Show>
+                              </div>
+                            }
+                          >
+                            <div class={styles.editor} ref={(el) => setEditorHost(el)} />
+                          </Show>
                         )}
                       </Show>
                     </Show>

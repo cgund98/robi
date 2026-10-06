@@ -3,7 +3,7 @@
 //! Each tool closes over one chat session. It reloads that session's path
 //! rules at the start of every call.
 
-mod change;
+pub(crate) mod change;
 mod context;
 mod delegate;
 mod delete_file;
@@ -344,6 +344,7 @@ mod registry_tests {
         let harness = apply_tests::harness().await;
         let ctx = Arc::new(ToolContext {
             session_id: harness.ctx.session_id,
+            workspace_id: harness.ctx.workspace_id,
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
@@ -352,6 +353,7 @@ mod registry_tests {
             lsp_enabled: false,
             originals: None,
             settings: None,
+            events: None,
         });
         let registry = ToolRegistry::new();
         register_tools_for_mode(
@@ -379,5 +381,49 @@ mod registry_tests {
         let child = subagent::child_tool_names(robi_core::message::SubagentMode::Explore, ctx);
         assert!(!child.iter().any(|name| name == "diagnostics"));
         assert!(child.iter().any(|name| name == "grep"));
+    }
+
+    #[tokio::test]
+    async fn an_edit_tool_publishes_a_file_changed_frame() {
+        use crate::domain::events::{EventBus, FILE_CHANGED};
+        use robi_core::tool::Tool;
+        use serde_json::json;
+
+        let harness = apply_tests::harness().await;
+        std::fs::write(harness.root.join("note.md"), "one\n").unwrap();
+        let session = harness.ctx.session_id;
+        let workspace = harness.ctx.workspace_id;
+        let bus = Arc::new(EventBus::new());
+        let mut subscription = bus.subscribe();
+        let ctx = Arc::new(ToolContext {
+            session_id: session,
+            workspace_id: workspace,
+            root: harness.ctx.root.clone(),
+            sessions: Arc::clone(&harness.ctx.sessions),
+            file_changes: Arc::clone(&harness.ctx.file_changes),
+            index: None,
+            lsp: crate::agent::lsp::LspHub::new(),
+            lsp_enabled: false,
+            originals: None,
+            settings: None,
+            events: Some(Arc::clone(&bus)),
+        });
+        super::write_file::WriteFile::new(ctx)
+            .execute(
+                json!({ "path": "note.md", "content": "two\n" }),
+                robi_core::tool::ToolRun::new(tokio_util::sync::CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("a frame")
+            .expect("a frame");
+        assert_eq!(envelope.event_type, FILE_CHANGED);
+        assert_eq!(envelope.subject, workspace.to_string());
+        assert_eq!(envelope.data["path"], "note.md");
+        assert_eq!(envelope.data["source"], "agent");
+        assert_eq!(envelope.data["session_id"], session.to_string());
     }
 }

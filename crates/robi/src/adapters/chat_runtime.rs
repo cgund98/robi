@@ -171,6 +171,7 @@ impl AgentFactory {
         };
         let ctx = Arc::new(crate::agent::tools::ToolContext {
             session_id: session,
+            workspace_id: chat.workspace_id,
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
@@ -179,6 +180,7 @@ impl AgentFactory {
             lsp_enabled,
             originals: self.originals.clone(),
             settings: self.settings.clone(),
+            events: self.bus.clone(),
         });
         let models = Arc::new(crate::agent::tools::SessionChildModels {
             session_id: session,

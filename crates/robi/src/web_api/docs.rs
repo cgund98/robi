@@ -19,6 +19,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path as AxumPath, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
@@ -27,8 +29,11 @@ use robi_index::{ChunkHit, IndexState};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    agent::docs::{apply_changes, merge3, version_hash, ChangeRange},
+    agent::tools::change::{atomic_write, lock_path, record_baseline},
     agent::workspace::workspace_relative,
     domain::error::ServiceError,
+    domain::events::EventEnvelope,
     web_api::{code_index::IndexStatusBody, state::AppState, workspace::parse_workspace_id},
 };
 
@@ -60,7 +65,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/workspaces/{id}/docs", get(list_docs))
         .route("/api/v1/workspaces/{id}/docs/search", get(search_docs))
-        .route("/api/v1/workspaces/{id}/docs/{*path}", get(get_doc))
+        .route(
+            "/api/v1/workspaces/{id}/docs/{*path}",
+            get(get_doc).put(put_doc),
+        )
         .with_state(state)
 }
 
@@ -79,6 +87,9 @@ pub struct DocEntry {
 pub struct DocContent {
     pub path: String,
     pub content: String,
+    /// The content hash of `content`. The editor sends this back as
+    /// `base_version` on a save.
+    pub version: String,
 }
 
 #[axum::debug_handler]
@@ -130,7 +141,252 @@ pub async fn get_doc(
     let content = tokio::task::spawn_blocking(move || read_markdown(&root, &requested))
         .await
         .map_err(|_| ServiceError::Unknown)??;
-    Ok(Json(DocContent { path, content }))
+    let version = state.docs_edits.insert(&content);
+    Ok(Json(DocContent {
+        path,
+        content,
+        version,
+    }))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DocWriteRequest {
+    /// The open chat session, for the checkpoint. Absent when the docs view
+    /// has no session; the save still lands, without a baseline.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The version the change set was built from. Absent on a create.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    /// The whole buffer. Sent on a create and after a 409.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// CodeMirror change ranges against `base_version`. The autosave path.
+    #[serde(default)]
+    pub changes: Option<Vec<ChangeRange>>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct DocWriteResponse {
+    pub path: String,
+    /// The reconciled text, which may differ from the buffer when it merged.
+    pub content: String,
+    /// The content hash to use as the next save's `base_version`.
+    pub version: String,
+    /// `applied`, `merged`, `created`, or `unchanged`.
+    pub outcome: String,
+}
+
+/// A `409` body: the change set named a base that is no longer cached. The
+/// client re-sends the whole buffer against this `version`.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct DocWriteConflict {
+    pub content: String,
+    pub version: String,
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    put,
+    path = "/api/v1/workspaces/{id}/docs/{path}",
+    params(
+        ("id" = String, Path, description = "Workspace id"),
+        ("path" = String, Path, description = "Workspace-relative path to a markdown file")
+    ),
+    request_body = DocWriteRequest,
+    responses(
+        (status = 200, description = "The reconciled text and its new version", body = DocWriteResponse),
+        (status = 400, description = "Not markdown, not UTF-8, a malformed change set, or neither content nor changes"),
+        (status = 404, description = "No such file, or a path outside the workspace"),
+        (status = 409, description = "The base version is gone; re-send the whole buffer", body = DocWriteConflict)
+    )
+)]
+pub async fn put_doc(
+    State(state): State<AppState>,
+    AxumPath((id, path)): AxumPath<(String, String)>,
+    Json(body): Json<DocWriteRequest>,
+) -> Result<Response, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let root = PathBuf::from(&workspace.root);
+    let absolute = {
+        let root = root.clone();
+        let relative = path.clone();
+        crate::agent::blocking::call(move || confine_markdown_write(&root, &relative))
+            .await
+            .map_err(|_| ServiceError::Unknown)??
+    };
+
+    // The lock covers the read and the write, so two saves cannot interleave.
+    let _guard = lock_path(&absolute).await;
+
+    let existed = {
+        let absolute = absolute.clone();
+        crate::agent::blocking::call(move || absolute.is_file())
+            .await
+            .map_err(|_| ServiceError::Unknown)?
+    };
+    let disk = if existed {
+        let absolute = absolute.clone();
+        crate::agent::blocking::call(move || read_doc_bytes(&absolute))
+            .await
+            .map_err(|_| ServiceError::Unknown)??
+    } else {
+        String::new()
+    };
+    let disk_version = version_hash(&disk);
+
+    // The client's target text: the whole buffer, or the change set applied to
+    // its named base. A missing base with a delta is a 409.
+    let client = match body.content.clone() {
+        Some(content) => content,
+        None => {
+            let changes = body
+                .changes
+                .as_deref()
+                .ok_or_else(|| ServiceError::BadRequest("content or changes is required".into()))?;
+            let Some(base_version) = body.base_version.as_deref() else {
+                return Err(ServiceError::BadRequest(
+                    "base_version is required with changes".into(),
+                ));
+            };
+            let Some(base) = state.docs_edits.get(base_version) else {
+                return Ok(conflict_response(&disk, &disk_version));
+            };
+            apply_changes(&base, changes).map_err(ServiceError::BadRequest)?
+        }
+    };
+
+    let (written, outcome) = if !existed {
+        (client, "created")
+    } else if body.base_version.as_deref() == Some(disk_version.as_str()) {
+        // The base is what the disk holds: the change set applies as sent.
+        (client, "applied")
+    } else if let Some(base_version) = body.base_version.as_deref() {
+        match state.docs_edits.get(base_version) {
+            Some(base) => (merge3(&base, &disk, &client), "merged"),
+            None => return Ok(conflict_response(&disk, &disk_version)),
+        }
+    } else {
+        return Ok(conflict_response(&disk, &disk_version));
+    };
+
+    if existed && written == disk {
+        return Ok(Json(DocWriteResponse {
+            path,
+            content: written,
+            version: disk_version,
+            outcome: "unchanged".to_owned(),
+        })
+        .into_response());
+    }
+
+    // Best effort: a save must land even when the view has no open session.
+    if let Some(session_id) = body.session_id.as_deref().and_then(parse_session_id) {
+        if let Err(err) = record_baseline(
+            state.file_changes.as_ref(),
+            session_id,
+            &path,
+            &disk,
+            !existed,
+        )
+        .await
+        {
+            tracing::warn!(%err, %path, "docs save could not record a checkpoint");
+        }
+    }
+
+    {
+        let absolute = absolute.clone();
+        let text = written.clone();
+        crate::agent::blocking::call(move || atomic_write(&absolute, &text))
+            .await
+            .map_err(|_| ServiceError::Unknown)?
+            .map_err(|err| {
+                tracing::warn!(%err, %path, "docs save could not write the file");
+                ServiceError::Unknown
+            })?;
+    }
+
+    let version = state.docs_edits.insert(&written);
+    state.event_bus.publish(EventEnvelope::file_changed(
+        &id.to_string(),
+        &path,
+        "user",
+        body.session_id.as_deref(),
+        outcome,
+    ));
+
+    Ok(Json(DocWriteResponse {
+        path,
+        content: written,
+        version,
+        outcome: outcome.to_owned(),
+    })
+    .into_response())
+}
+
+fn conflict_response(content: &str, version: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(DocWriteConflict {
+            content: content.to_owned(),
+            version: version.to_owned(),
+        }),
+    )
+        .into_response()
+}
+
+fn parse_session_id(raw: &str) -> Option<robi_core::ids::SessionId> {
+    uuid::Uuid::parse_str(raw)
+        .ok()
+        .map(robi_core::ids::SessionId::from_uuid)
+}
+
+/// The absolute path of a markdown file to write.
+///
+/// A missing file is a create: the parent directory is canonicalized and
+/// checked to be inside `root`, and the file is joined onto it.
+fn confine_markdown_write(root: &Path, relative: &str) -> Result<PathBuf, ServiceError> {
+    if !is_markdown(Path::new(relative)) {
+        return Err(ServiceError::BadRequest(
+            "only markdown files can be edited".into(),
+        ));
+    }
+    let joined = root.join(relative);
+    if joined.exists() {
+        let canonical = joined
+            .canonicalize()
+            .map_err(|_| ServiceError::NotFound(relative.to_owned()))?;
+        if !canonical.is_file() {
+            return Err(ServiceError::BadRequest("path is not a file".into()));
+        }
+        let inside = workspace_relative(root, &canonical);
+        if inside.starts_with("..") || inside.is_empty() {
+            return Err(ServiceError::NotFound(relative.to_owned()));
+        }
+        return Ok(canonical);
+    }
+    let parent = joined
+        .parent()
+        .ok_or_else(|| ServiceError::NotFound(relative.to_owned()))?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|_| ServiceError::NotFound(relative.to_owned()))?;
+    let inside = workspace_relative(root, &canonical_parent);
+    if inside.starts_with("..") {
+        return Err(ServiceError::NotFound(relative.to_owned()));
+    }
+    let name = joined
+        .file_name()
+        .ok_or_else(|| ServiceError::NotFound(relative.to_owned()))?;
+    Ok(canonical_parent.join(name))
+}
+
+/// The whole text of a file, without the read-side byte cap.
+fn read_doc_bytes(path: &Path) -> Result<String, ServiceError> {
+    let bytes = std::fs::read(path).map_err(|_| ServiceError::Unknown)?;
+    String::from_utf8(bytes).map_err(|_| ServiceError::BadRequest("file is not UTF-8".into()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,6 +1250,7 @@ mod tests {
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
+            docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
         };
         Fixture {
             state,
@@ -1335,6 +1592,274 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let _ = fs::remove_dir_all(&fixture.root);
+    }
+
+    use super::{put_doc, DocWriteRequest};
+    use crate::agent::docs::{version_hash, ChangeRange};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    fn delta(from: usize, to: usize, insert: &str) -> ChangeRange {
+        ChangeRange {
+            from,
+            to,
+            insert: insert.to_owned(),
+        }
+    }
+
+    /// Call the handler directly and read the status and JSON body.
+    async fn put(
+        fixture: &Fixture,
+        path: &str,
+        body: DocWriteRequest,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let outcome = put_doc(
+            State(fixture.state.clone()),
+            AxumPath((fixture.workspace_id.to_string(), path.to_owned())),
+            axum::Json(body),
+        )
+        .await;
+        match outcome {
+            Ok(response) => {
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                (status, serde_json::from_slice(&bytes).unwrap())
+            }
+            Err(err) => (err.into_response().status(), serde_json::Value::Null),
+        }
+    }
+
+    #[tokio::test]
+    async fn put_applies_a_delta_when_the_base_matches_the_disk() {
+        let fixture = fixture();
+        let path = "README.md";
+        let absolute = fixture.root.join(path);
+        let disk = fs::read_to_string(&absolute).unwrap();
+        let version = version_hash(&disk);
+        // A GET seeds the version cache; the delta can then be applied.
+        fixture.state.docs_edits.put(version.clone(), &disk);
+
+        let (status, body) = put(
+            &fixture,
+            path,
+            DocWriteRequest {
+                session_id: None,
+                base_version: Some(version),
+                content: None,
+                changes: Some(vec![delta(0, 0, "X")]),
+            },
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["outcome"], "applied");
+        let written = fs::read_to_string(&absolute).unwrap();
+        assert!(written.starts_with('X'), "{written}");
+        assert_eq!(body["content"], written);
+        assert_ne!(body["version"], serde_json::Value::Null);
+        let _ = fs::remove_dir_all(&fixture.root);
+    }
+
+    #[tokio::test]
+    async fn put_records_one_baseline_across_repeated_autosaves() {
+        let fixture = fixture();
+        let session = SessionId::new();
+        let path = "README.md";
+        let absolute = fixture.root.join(path);
+        let original = fs::read_to_string(&absolute).unwrap();
+        let mut version = version_hash(&original);
+        fixture.state.docs_edits.put(version.clone(), &original);
+
+        for _ in 0..3 {
+            let (status, body) = put(
+                &fixture,
+                path,
+                DocWriteRequest {
+                    session_id: Some(session.to_string()),
+                    base_version: Some(version.clone()),
+                    content: None,
+                    changes: Some(vec![delta(0, 0, "X")]),
+                },
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            version = body["version"].as_str().unwrap().to_owned();
+        }
+
+        // Every save kept the bytes from before the first one.
+        let baseline = fixture
+            .state
+            .file_changes
+            .get_baseline(session, path)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(baseline.baseline, original);
+        assert!(!baseline.created);
+        let _ = fs::remove_dir_all(&fixture.root);
+    }
+
+    #[tokio::test]
+    async fn put_merges_an_agent_edit_with_a_client_edit() {
+        let fixture = fixture();
+        let path = "README.md";
+        let absolute = fixture.root.join(path);
+        let original = fs::read_to_string(&absolute).unwrap();
+        let client_base = version_hash(&original);
+        // The client fetched this version; the server still has the bytes.
+        fixture.state.docs_edits.put(client_base.clone(), &original);
+        // An agent rewrote the heading while the client was editing.
+        fs::write(&absolute, original.replace("Handbook", "Manual")).unwrap();
+
+        // The client inserted a line after the first line, which the agent's
+        // change to that same line does not overlap.
+        let insert_at = original.split('\n').next().unwrap().encode_utf16().count() + 1;
+        let (status, body) = put(
+            &fixture,
+            path,
+            DocWriteRequest {
+                session_id: None,
+                base_version: Some(client_base),
+                content: None,
+                changes: Some(vec![delta(insert_at, insert_at, "X\n")]),
+            },
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["outcome"], "merged");
+        let written = fs::read_to_string(&absolute).unwrap();
+        assert!(written.contains("Manual"), "{written}");
+        assert!(written.contains("\nX\n"), "{written}");
+        let _ = fs::remove_dir_all(&fixture.root);
+    }
+
+    #[tokio::test]
+    async fn put_conflicts_when_the_base_version_is_gone() {
+        let fixture = fixture();
+        let path = "README.md";
+        let disk = fs::read_to_string(fixture.root.join(path)).unwrap();
+
+        let (status, body) = put(
+            &fixture,
+            path,
+            DocWriteRequest {
+                session_id: None,
+                base_version: Some("sha256:not-a-real-version".to_owned()),
+                content: None,
+                changes: Some(vec![delta(0, 0, "X")]),
+            },
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["content"], disk);
+        assert_eq!(body["version"], version_hash(&disk));
+        let _ = fs::remove_dir_all(&fixture.root);
+    }
+
+    #[tokio::test]
+    async fn put_publishes_one_file_changed_frame() {
+        let fixture = fixture();
+        let path = "README.md";
+        let absolute = fixture.root.join(path);
+        let disk = fs::read_to_string(&absolute).unwrap();
+        let version = version_hash(&disk);
+        fixture.state.docs_edits.put(version.clone(), &disk);
+        let mut subscription = fixture.state.event_bus.subscribe();
+
+        let (status, _) = put(
+            &fixture,
+            path,
+            DocWriteRequest {
+                session_id: None,
+                base_version: Some(version),
+                content: None,
+                changes: Some(vec![delta(0, 0, "X")]),
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let envelope = tokio::time::timeout(Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("a frame")
+            .expect("a frame");
+        assert_eq!(envelope.event_type, crate::domain::events::FILE_CHANGED);
+        assert_eq!(envelope.subject, fixture.workspace_id.to_string());
+        assert_eq!(envelope.data["path"], path);
+        assert_eq!(envelope.data["source"], "user");
+        assert_eq!(envelope.data["outcome"], "applied");
+        let _ = fs::remove_dir_all(&fixture.root);
+    }
+
+    #[tokio::test]
+    async fn put_reports_unchanged_and_refuses_bad_paths() {
+        let fixture = fixture();
+        let path = "README.md";
+        let absolute = fixture.root.join(path);
+        let disk = fs::read_to_string(&absolute).unwrap();
+        let version = version_hash(&disk);
+
+        let (status, body) = put(
+            &fixture,
+            path,
+            DocWriteRequest {
+                session_id: None,
+                base_version: Some(version),
+                content: Some(disk.clone()),
+                changes: None,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["outcome"], "unchanged");
+        assert_eq!(fs::read_to_string(&absolute).unwrap(), disk);
+
+        // A non-markdown name is refused.
+        let (status, _) = put(
+            &fixture,
+            "src/lib.rs",
+            DocWriteRequest {
+                session_id: None,
+                base_version: None,
+                content: Some("x".to_owned()),
+                changes: None,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // A path that escapes the workspace is not found.
+        let (status, _) = put(
+            &fixture,
+            "../escape.md",
+            DocWriteRequest {
+                session_id: None,
+                base_version: None,
+                content: Some("x".to_owned()),
+                changes: None,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Neither content nor changes is a bad request.
+        let (status, _) = put(
+            &fixture,
+            path,
+            DocWriteRequest {
+                session_id: None,
+                base_version: Some(version_hash("")),
+                content: None,
+                changes: None,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         let _ = fs::remove_dir_all(&fixture.root);
     }
 }

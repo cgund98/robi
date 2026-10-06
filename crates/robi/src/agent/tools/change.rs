@@ -8,6 +8,7 @@ use robi_core::tool::ApprovalDecision;
 use serde_json::{json, Value};
 
 use crate::agent::review::{diff, lock_path as lock_review_path, FileDiff, FileStatus};
+use crate::domain::events::EventEnvelope;
 use crate::domain::file_change::repo::FileChangeRepository;
 
 use super::context::ToolContext;
@@ -112,4 +113,30 @@ pub fn diff_json(file_diff: &FileDiff) -> Value {
         "status": file_diff.status,
         "hunks": file_diff.hunks,
     })
+}
+
+/// The `file_changed` outcome word for a write's diff status.
+pub fn status_outcome(status: FileStatus) -> &'static str {
+    match status {
+        FileStatus::Added => "created",
+        FileStatus::Modified => "applied",
+        FileStatus::Deleted => "deleted",
+    }
+}
+
+/// Announce a path an edit tool just wrote, so the docs viewer can react.
+///
+/// The frame is `robi.workspace.v1.file_changed` with `source: "agent"`. A
+/// context with no bus (a test) publishes nothing.
+pub fn publish_file_changed(ctx: &ToolContext, path: &str, outcome: &str) {
+    let Some(events) = &ctx.events else {
+        return;
+    };
+    events.publish(EventEnvelope::file_changed(
+        &ctx.workspace_id.to_string(),
+        path,
+        "agent",
+        Some(&ctx.session_id.to_string()),
+        outcome,
+    ));
 }

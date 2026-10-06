@@ -21,7 +21,8 @@ export const AGENT_EVENT_TYPES = [
   'robi.session.v1.deleted',
   'robi.app.v1.error',
   'robi.index.v1.progress',
-  'robi.mcp.v1.status'
+  'robi.mcp.v1.status',
+  'robi.workspace.v1.file_changed'
 ] as const
 
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number]

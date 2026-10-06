@@ -63,6 +63,7 @@ pub(crate) async fn harness() -> Harness {
     let canonical = std::fs::canonicalize(&root).unwrap();
     let ctx = Arc::new(ToolContext {
         session_id: chat.id,
+        workspace_id: chat.workspace_id,
         root: canonical,
         sessions,
         file_changes: Arc::new(SqliteFileChangeRepository::new(pool)),
@@ -71,6 +72,7 @@ pub(crate) async fn harness() -> Harness {
         lsp_enabled: true,
         originals: None,
         settings: None,
+        events: None,
     });
     Harness {
         ctx,

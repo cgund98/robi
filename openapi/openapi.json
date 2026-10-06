@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.7"
+    "version": "0.1.8"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -1020,6 +1020,70 @@
             "description": "No such file, or a path outside the workspace"
           }
         }
+      },
+      "put": {
+        "tags": [
+          "docs"
+        ],
+        "operationId": "put_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Workspace-relative path to a markdown file",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The reconciled text and its new version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not markdown, not UTF-8, a malformed change set, or neither content nor changes"
+          },
+          "404": {
+            "description": "No such file, or a path outside the workspace"
+          },
+          "409": {
+            "description": "The base version is gone; re-send the whole buffer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocWriteConflict"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/workspaces/{id}/index": {
@@ -1249,6 +1313,27 @@
           },
           "id": {
             "type": "string"
+          }
+        }
+      },
+      "ChangeRange": {
+        "type": "object",
+        "description": "One change: replace the base range `from..to` with `insert`.\n\n`from` and `to` count UTF-16 code units into the base text, matching\nCodeMirror's `ChangeSet.iterChanges`. Ranges are ordered and do not overlap.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "insert": {
+            "type": "string"
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -1720,7 +1805,8 @@
         "type": "object",
         "required": [
           "path",
-          "content"
+          "content",
+          "version"
         ],
         "properties": {
           "content": {
@@ -1728,6 +1814,10 @@
           },
           "path": {
             "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "The content hash of `content`. The editor sends this back as\n`base_version` on a save."
           }
         }
       },
@@ -1810,6 +1900,84 @@
           "query": {
             "type": "string",
             "description": "The trimmed query that was run."
+          }
+        }
+      },
+      "DocWriteConflict": {
+        "type": "object",
+        "description": "A `409` body: the change set named a base that is no longer cached. The\nclient re-sends the whole buffer against this `version`.",
+        "required": [
+          "content",
+          "version"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "DocWriteRequest": {
+        "type": "object",
+        "properties": {
+          "base_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version the change set was built from. Absent on a create."
+          },
+          "changes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ChangeRange"
+            },
+            "description": "CodeMirror change ranges against `base_version`. The autosave path."
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The whole buffer. Sent on a create and after a 409."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The open chat session, for the checkpoint. Absent when the docs view\nhas no session; the save still lands, without a baseline."
+          }
+        }
+      },
+      "DocWriteResponse": {
+        "type": "object",
+        "required": [
+          "path",
+          "content",
+          "version",
+          "outcome"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The reconciled text, which may differ from the buffer when it merged."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`applied`, `merged`, `created`, or `unchanged`."
+          },
+          "path": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "The content hash to use as the next save's `base_version`."
           }
         }
       },

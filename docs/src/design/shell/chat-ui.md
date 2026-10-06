@@ -139,7 +139,9 @@ name. Under it is the first paragraph of the markdown, clamped to three lines.
 **View Plan** and **Build** sit at the bottom right, both in `--mode-plan`. **View Plan** replaces
 the chat with a page that fills the main column. The header is **Back**, the
 plan name, and **Build**. **Back**, or choosing another session, returns to
-the chat. The body lists that call's todo steps, then the markdown, rendered
+the chat. Opened from the docs chat tray it fills the main column over the
+document sheet instead, and **Back** returns to that sheet; see
+[docs-viewer.md](docs-viewer.md). The body lists that call's todo steps, then the markdown, rendered
 the same way as assistant text. A step is pending, in progress, completed, or
 canceled. A step with no content is left off. Opening the page again shows
 the same markdown and the same steps. Either **Build** switches the session
@@ -220,7 +222,12 @@ imported, so it loads only the first time a fence renders and never sits in
 the main bundle. While the render is in flight the fence shows as an ordinary
 code block; when the SVG is ready it replaces the source in a centered,
 horizontally scrollable surface (see
-[visual-style.md](visual-style.md#mermaid-diagrams)). A source mermaid cannot
+[visual-style.md](visual-style.md#mermaid-diagrams)). Mermaid writes
+`width="100%"` and no height. WebKit then paints the SVG at its 150px default
+and clips the rest, which cuts a sequence diagram off under the participant
+boxes. The renderer copies the viewBox width and height onto the root so the
+diagram keeps its aspect ratio, and the stylesheet still shrinks it to the
+column. A source mermaid cannot
 parse keeps the code fence. Mermaid's own error diagram is suppressed, so a
 bad diagram does not paint a wide error into the page; the failure is logged.
 
@@ -235,7 +242,15 @@ Both fenced `flowchart` blocks and `sequenceDiagram` blocks use that theme. A
 sequence diagram reads its own variable groups — `actor*` for the participant
 boxes and lifelines, `signal*` for messages, `note*` for notes, and `labelBox*`
 / `activation*` for the loop/alt frames and the bars inside them — so those are
-set explicitly rather than left to mermaid's light defaults.
+set explicitly rather than left to mermaid's light defaults. A semicolon ends
+a sequence statement, so a semicolon inside a note or message (for example
+`unknown;<br/>`) makes the rest of the line fail to parse and the fence stay
+on screen as source. A semicolon that begins the next statement is kept. One
+that sits in the prose is drawn as a fullwidth semicolon, which is not a
+statement break. An actor id that is a sequence keyword is quoted before
+render. `Loop` is one of those: the lexer matches `loop` without regard to
+case, so `API->>Loop` is read as the start of a loop and the diagram stays
+source. The alias after `as` and the message after `:` are unchanged.
 
 Diagram text is the shell's UI sans at 14px, matching the fenced code block it
 replaces. The font comes from the top-level `fontFamily` key rather than a

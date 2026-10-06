@@ -208,6 +208,13 @@
   flex-direction: column;
 }
 
+.editor {
+  /* The CodeMirror mount point in Edit mode. It fills the pane; CodeMirror's
+     own scroller handles overflow. */
+  height: 100%;
+  min-height: 0;
+}
+
 .viewer {
   /* Containing block for the hidden diagram source. Without it, that
      absolute label escapes this pane and the window scrolls past the page. */
@@ -228,29 +235,6 @@
   box-sizing: border-box;
   margin: 0;
   padding: var(--space-5) var(--space-5) var(--space-6);
-}
-
-/* The ellipsis that appears at the right of the hovered block, pinned to that
-   block's top. A faint ground so it stays legible over text. */
-.lineAttach {
-  position: absolute;
-  right: var(--space-1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  color: var(--ink-muted);
-  cursor: pointer;
-}
-
-.lineAttach:hover {
-  border-color: var(--accent);
-  color: var(--ink-bright);
 }
 
 .attachNotice {

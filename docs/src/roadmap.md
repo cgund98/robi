@@ -48,7 +48,7 @@ network. It is done when its tests pass. See
 | M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search |
 | M8 | Reach | Integrations and headless use | MCP client, skills, web tools |
 | M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
-| M10 | Docs mode | Read and write project documentation | A docs mode, a filtered file tree, and an editor shared by the user and the agent |
+| M10 | Docs view | Read and write project documentation | A filtered file tree, and an editor shared by the user and the agent |
 
 The line between "usable" and "differentiated" falls after M5. M1–M3 produce a
 chat app that reads code. M4 makes it an agent. M5 is where Robi stops being a
@@ -66,7 +66,7 @@ graph LR
   M6 --> M7
   M7 --> M8[M8 Reach]
   M4 --> M9[M9 Output compression]
-  M5 --> M10[M10 Docs mode]
+  M5 --> M10[M10 Docs view]
 ```
 
 M6 and M7 both need M4 but not each other. M8 needs M5. M9 needs M4: it
@@ -95,7 +95,7 @@ section that owns it.
 | M9 | Built-in JSON and search-hit compression | Not built. `docs/src/design/compression/tool-output-compression.md` is later. D12 is settled for shell output. |
 | M9 | Learned line model for shell output (phase 4) | Not in the first cut. Feature-gated and last (D11). |
 | M9 | Context meter showing tokens saved | Required by the M9 exit criteria. The meter shows usage. |
-| M10 | Docs mode, filtered file tree, and a shared editor | The read-only docs viewer is built — `docs/src/design/shell/docs-viewer.md`. The mode and the editor are later. |
+| M10 | Docs view: filtered tree, shared editor | The read-only viewer (`docs/src/design/shell/docs-viewer.md`) and the editor with autosave (`docs/src/design/shell/docs-mode.md`) are built. Widening the filter past markdown is later. |
 
 ---
 
@@ -946,22 +946,17 @@ tools, search hits, and the other pass-through shapes are still
 
 ---
 
-## M10 — Docs mode
+## M10 — Docs view
 
 **Goal** — read and write project documentation in one place. The window is a
 filtered file tree and an editor. The user and the agent change the same files.
 
-It needs M5. A mode is a tool set and a prompt prefix, and the edit tools
-already exist from M4. It does not need review, the index, MCP, or compression.
+A **view**, not an agent mode. The documentation screen is a route (`#/docs`)
+with a toolbar; the mode enum stays ask, plan, and agent. The agent changes docs
+with the same edit tools it uses everywhere, so no new registry or prompt prefix
+is needed. It needs M4. It does not need review, the index, MCP, or compression.
 
-### F10.1 The mode
-
-- A `docs` mode beside ask, plan, and agent. It uses the same switch: the next
-  actor reads the stored mode and gets that registry and prefix.
-- The tool set is the read tools and the edit tools. The prefix keeps the turn
-  on documentation: the pages, their structure, and the words in them.
-
-### F10.2 Project navigation
+### F10.1 Project navigation
 
 - A file tree of the workspace, filtered to documentation. Markdown and the
   docs directories are in. Source files, build output, and ignored paths are
@@ -970,27 +965,31 @@ already exist from M4. It does not need review, the index, MCP, or compression.
   when a page names a file outside that set.
 
 The read-only viewer is built: see
-[docs/src/design/shell/docs-viewer.md](design/shell/docs-viewer.md). Editing,
-the `docs` mode, and widening the filter are still to come.
+[docs/src/design/shell/docs-viewer.md](design/shell/docs-viewer.md). Widening the
+filter is still to come.
 
-### F10.3 Editing
+### F10.2 Editing
 
 - The open file is an editor. The user types in it. A save goes through the M4
   write path, so a manual edit gets a checkpoint like an agent edit.
 - The agent edits the open file, or another doc, with the existing edit tools.
   The editor shows that change. There is one copy of the file.
 
-The shell side is partly built. The docs view has a right-side chat tray holding
-the selected session's transcript and composer, and the viewer re-fetches the
-open page and the tree when the agent edits a file. See
-[docs-viewer.md](design/shell/docs-viewer.md#chat-tray). The viewer is still
-read-only; the `docs` mode and the in-viewer editor are the rest of F10.3.
+Built: see [docs-mode.md](design/shell/docs-mode.md). The open page mounts a
+CodeMirror editor behind a **Preview | Edit** toolbar. Each keystroke
+re-arms a one-second debounce; the accumulated CodeMirror change set is saved
+through the M4 write path. The server reconciles the delta against the disk with
+a three-way merge, and the user's edit wins where the two overlap. A
+`robi.workspace.v1.file_changed` frame is published by every write — the editor
+save and the edit tools — so the viewer refreshes the tree, and the open page
+when it has no unsaved edits.
 
 **Exit criteria for M10** — open the docs tree, open a page, change a sentence
 by hand, ask the agent to revise another page, and find both changes in the
 tree after a restart.
 
-**Design doc needed** — `docs/src/design/shell/docs-mode.md`.
+**Design docs** — `docs/src/design/shell/docs-viewer.md` (reading) and
+`docs/src/design/shell/docs-mode.md` (editing), both done.
 
 ---
 
