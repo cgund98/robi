@@ -14,7 +14,8 @@ export default tseslint.config(
       '.pnpm-store/**',
       'target/**',
       'crates/**',
-      'docs/book/**'
+      'docs/book/**',
+      'src/solid/**'
     ]
   },
   js.configs.recommended,

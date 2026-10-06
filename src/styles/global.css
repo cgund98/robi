@@ -8,7 +8,8 @@
 
 html,
 body,
-#root {
+#root,
+#solid-root {
   height: 100%;
 }
 
@@ -34,8 +35,15 @@ button {
 }
 
 * {
+  scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: var(--bg-surface-active) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto;
+  }
 }
 
 *::-webkit-scrollbar {

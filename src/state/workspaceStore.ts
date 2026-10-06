@@ -2,16 +2,17 @@ import { create } from 'zustand'
 
 import { focusMcp } from '../api/mcp'
 import { createWorkspace, deleteWorkspace, listWorkspaces, type Workspace } from '../api/workspaces'
+import type { ErrorReporter, StoreGet, StoreSet } from './storeDeps'
 import { useErrorLog } from './errorLog'
 
-function noteError(message: string): string {
-  useErrorLog.getState().report(message, null)
+function noteError(deps: ErrorReporter, message: string): string {
+  deps.reportError(message, null)
   return message
 }
 
 const ACTIVE_WORKSPACE_KEY = 'robi.activeWorkspaceId'
 
-type WorkspaceState = {
+export type WorkspaceState = {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
   loaded: boolean
@@ -62,72 +63,87 @@ function chooseActive(workspaces: Workspace[], preferred: string | null): string
   return workspaces[0]?.id ?? null
 }
 
-export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
-  workspaces: [],
-  activeWorkspaceId: readActiveId(),
-  loaded: false,
-  error: null,
+export function createWorkspaceState(
+  set: StoreSet<WorkspaceState>,
+  get: StoreGet<WorkspaceState>,
+  deps: ErrorReporter
+): WorkspaceState {
+  return {
+    workspaces: [],
+    activeWorkspaceId: readActiveId(),
+    loaded: false,
+    error: null,
 
-  loadWorkspaces: async () => {
-    try {
-      const workspaces = await listWorkspaces()
-      const activeWorkspaceId = chooseActive(workspaces, readActiveId() ?? get().activeWorkspaceId)
+    loadWorkspaces: async () => {
+      try {
+        const workspaces = await listWorkspaces()
+        const activeWorkspaceId = chooseActive(
+          workspaces,
+          readActiveId() ?? get().activeWorkspaceId
+        )
+        writeActiveId(activeWorkspaceId)
+        set({ workspaces, activeWorkspaceId, loaded: true, error: null })
+        focusOpenWorkspace(activeWorkspaceId)
+      } catch (err) {
+        set({
+          loaded: true,
+          error: noteError(deps, errorText(err, 'Failed to load workspaces'))
+        })
+      }
+    },
+
+    selectWorkspace: (id) => {
+      if (!get().workspaces.some((workspace) => workspace.id === id)) {
+        return
+      }
+      if (get().activeWorkspaceId === id) {
+        return
+      }
+      writeActiveId(id)
+      set({ activeWorkspaceId: id, error: null })
+      focusOpenWorkspace(id)
+    },
+
+    addWorkspace: async (root) => {
+      set({ error: null })
+      try {
+        const workspace = await createWorkspace(root)
+        const rest = get().workspaces.filter((item) => item.id !== workspace.id)
+        writeActiveId(workspace.id)
+        set({
+          workspaces: [workspace, ...rest],
+          activeWorkspaceId: workspace.id,
+          loaded: true,
+          error: null
+        })
+        focusOpenWorkspace(workspace.id)
+      } catch (err) {
+        set({ error: noteError(deps, errorText(err, 'Failed to add workspace')) })
+      }
+    },
+
+    removeWorkspace: async (id) => {
+      set({ error: null })
+      try {
+        await deleteWorkspace(id)
+      } catch (err) {
+        set({ error: noteError(deps, errorText(err, 'Failed to remove workspace')) })
+        return
+      }
+      const workspaces = get().workspaces.filter((workspace) => workspace.id !== id)
+      const activeWorkspaceId =
+        get().activeWorkspaceId === id ? (workspaces[0]?.id ?? null) : get().activeWorkspaceId
       writeActiveId(activeWorkspaceId)
-      set({ workspaces, activeWorkspaceId, loaded: true, error: null })
-      focusOpenWorkspace(activeWorkspaceId)
-    } catch (err) {
-      set({
-        loaded: true,
-        error: noteError(errorText(err, 'Failed to load workspaces'))
-      })
-    }
-  },
-
-  selectWorkspace: (id) => {
-    if (!get().workspaces.some((workspace) => workspace.id === id)) {
-      return
-    }
-    if (get().activeWorkspaceId === id) {
-      return
-    }
-    writeActiveId(id)
-    set({ activeWorkspaceId: id, error: null })
-    focusOpenWorkspace(id)
-  },
-
-  addWorkspace: async (root) => {
-    set({ error: null })
-    try {
-      const workspace = await createWorkspace(root)
-      const rest = get().workspaces.filter((item) => item.id !== workspace.id)
-      writeActiveId(workspace.id)
-      set({
-        workspaces: [workspace, ...rest],
-        activeWorkspaceId: workspace.id,
-        loaded: true,
-        error: null
-      })
-      focusOpenWorkspace(workspace.id)
-    } catch (err) {
-      set({ error: noteError(errorText(err, 'Failed to add workspace')) })
-    }
-  },
-
-  removeWorkspace: async (id) => {
-    set({ error: null })
-    try {
-      await deleteWorkspace(id)
-    } catch (err) {
-      set({ error: noteError(errorText(err, 'Failed to remove workspace')) })
-      return
-    }
-    const workspaces = get().workspaces.filter((workspace) => workspace.id !== id)
-    const activeWorkspaceId =
-      get().activeWorkspaceId === id ? (workspaces[0]?.id ?? null) : get().activeWorkspaceId
-    writeActiveId(activeWorkspaceId)
-    set({ workspaces, activeWorkspaceId, error: null })
-    if (activeWorkspaceId !== id) {
-      focusOpenWorkspace(activeWorkspaceId)
+      set({ workspaces, activeWorkspaceId, error: null })
+      if (activeWorkspaceId !== id) {
+        focusOpenWorkspace(activeWorkspaceId)
+      }
     }
   }
-}))
+}
+
+export const useWorkspaceStore = create<WorkspaceState>((set, get) =>
+  createWorkspaceState(set, get, {
+    reportError: (message) => useErrorLog.getState().report(message, null)
+  })
+)

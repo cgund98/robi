@@ -2,6 +2,8 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { isTauri } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 
+import type { StoreGet, StoreSet } from './storeDeps'
+
 /** Chrome's zoom ladder, so the steps feel the same as a browser's Cmd/Ctrl + and -. */
 export const UI_SCALE_STEPS = [
   0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3
@@ -77,7 +79,7 @@ export async function applyUiScale(scale: number): Promise<void> {
   }
 }
 
-type UiScaleState = {
+export type UiScaleState = {
   scale: number
   setScale: (scale: number) => void
   zoomIn: () => void
@@ -92,29 +94,36 @@ function apply(scale: number) {
   })
 }
 
-export const useUiScaleStore = create<UiScaleState>((set, get) => ({
-  scale: readStoredUiScale(),
+export function createUiScaleState(
+  set: StoreSet<UiScaleState>,
+  get: StoreGet<UiScaleState>
+): UiScaleState {
+  return {
+    scale: readStoredUiScale(),
 
-  setScale: (scale) => {
-    const next = clampUiScale(scale)
-    set({ scale: next })
-    apply(next)
-  },
+    setScale: (scale) => {
+      const next = clampUiScale(scale)
+      set({ scale: next })
+      apply(next)
+    },
 
-  zoomIn: () => {
-    const next = stepUiScale(get().scale, 1)
-    set({ scale: next })
-    apply(next)
-  },
+    zoomIn: () => {
+      const next = stepUiScale(get().scale, 1)
+      set({ scale: next })
+      apply(next)
+    },
 
-  zoomOut: () => {
-    const next = stepUiScale(get().scale, -1)
-    set({ scale: next })
-    apply(next)
-  },
+    zoomOut: () => {
+      const next = stepUiScale(get().scale, -1)
+      set({ scale: next })
+      apply(next)
+    },
 
-  reset: () => {
-    set({ scale: UI_SCALE_DEFAULT })
-    apply(UI_SCALE_DEFAULT)
+    reset: () => {
+      set({ scale: UI_SCALE_DEFAULT })
+      apply(UI_SCALE_DEFAULT)
+    }
   }
-}))
+}
+
+export const useUiScaleStore = create<UiScaleState>((set, get) => createUiScaleState(set, get))

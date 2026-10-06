@@ -426,6 +426,8 @@
   border: 0;
   background: transparent;
   color: var(--ink-muted);
+  text-decoration: none;
+  cursor: pointer;
   padding: var(--space-1) var(--space-3);
   border-radius: 999px;
   font-size: 13px;

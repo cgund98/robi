@@ -131,15 +131,16 @@ Menus and dialogs use Radix primitives, styled with those tokens.
 |------|---------|
 | Web-only Vite dev | `pnpm dev` (port **1430**, strict; proxies `/api` → `127.0.0.1:1431`) |
 | Local API | `cargo run -p robi --bin robi-api` (default `127.0.0.1:1431`) |
-| Desktop app | `pnpm tauri dev` |
+| Desktop app | `pnpm tauri dev` (Solid UI only, for now) |
 | Production web build | `pnpm build` |
 | Lint (ESLint + Prettier) | `pnpm run lint` |
 | Format | `pnpm run format` |
 | Typecheck | `pnpm run typecheck` |
 | Generate API client types | `pnpm run generate:api` (from `openapi/openapi.json`) |
 
-`pnpm dev` serves the web UI alone. `pnpm tauri dev` opens the desktop window
-against that same server. Chat-session HTTP goes through the Vite `/api` proxy
+`pnpm dev` serves the web UI alone and can switch renderers. `pnpm tauri dev`
+opens the desktop window on a Solid-only Vite server, not that same page.
+Chat-session HTTP goes through the Vite `/api` proxy
 to `robi-api`; run the API alongside the web UI. The shell opens one
 `EventSource` on `/api/v1/events/stream` through that proxy — see
 [docs/src/design/shell/events-sse.md](docs/src/design/shell/events-sse.md). Never hand-edit

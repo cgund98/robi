@@ -1,3 +1,6 @@
+import { useState } from 'react'
+
+import { readUiRenderer, uiRendererHref, type UiRenderer } from '../../app/uiRenderer'
 import { formatUiScale, UI_SCALE_DEFAULT, useUiScaleStore } from '../../state/uiScaleStore'
 import styles from './Settings.module.css'
 
@@ -7,6 +10,7 @@ export function DisplaySettings() {
   const zoomIn = useUiScaleStore((state) => state.zoomIn)
   const zoomOut = useUiScaleStore((state) => state.zoomOut)
   const reset = useUiScaleStore((state) => state.reset)
+  const [renderer] = useState<UiRenderer>(() => readUiRenderer())
 
   return (
     <section className={styles.section}>
@@ -46,6 +50,27 @@ export function DisplaySettings() {
             >
               Reset
             </button>
+          </div>
+        </div>
+        <div className={styles.row}>
+          <div className={styles.copy}>
+            <div className={styles.label}>UI renderer</div>
+            <div className={styles.hint}>
+              React or Solid. Remembered on this device. Switching reloads this page.
+            </div>
+          </div>
+          <div className={styles.segments} role="group" aria-label="UI renderer">
+            {(['react', 'solid'] as const).map((value) => (
+              <a
+                key={value}
+                href={uiRendererHref(value)}
+                rel="external"
+                className={`${styles.segment} ${renderer === value ? styles.segmentActive : ''}`}
+                aria-current={renderer === value ? 'true' : undefined}
+              >
+                {value === 'react' ? 'React' : 'Solid'}
+              </a>
+            ))}
           </div>
         </div>
       </div>

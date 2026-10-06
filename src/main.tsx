@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client'
 import { resolveApiBase } from './api/client'
 import { App } from './app/App'
 import { withoutDocsRoute } from './app/startupRoute'
+import { readUiRenderer } from './app/uiRenderer'
 import { applyUiScale, useUiScaleStore } from './state/uiScaleStore'
 import './styles/global.css'
 
@@ -19,6 +20,12 @@ void resolveApiBase().then(() => {
   if (hash !== window.location.hash) {
     window.history.replaceState(null, '', hash)
   }
+  if (readUiRenderer() === 'solid') {
+    document.getElementById('root')?.setAttribute('hidden', '')
+    void import('./solid/main.tsx')
+    return
+  }
+  document.getElementById('solid-root')?.setAttribute('hidden', '')
   ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <React.StrictMode>
       <App />

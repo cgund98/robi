@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+import type { StoreSet } from './storeDeps'
+
 /** One API call from this page load. Not written to disk. */
 export type RequestEntry = {
   id: string
@@ -16,21 +18,27 @@ export type RequestEntry = {
 
 const MAX_ENTRIES = 250
 
-type RequestLogState = {
+export type RequestLogState = {
   entries: RequestEntry[]
   record: (entry: Omit<RequestEntry, 'id' | 'at'>) => void
 }
 
 let nextId = 0
 
-export const useRequestLog = create<RequestLogState>((set) => ({
-  entries: [],
-  record: (entry) => {
-    const row: RequestEntry = {
-      id: `request-${++nextId}`,
-      at: Date.now(),
-      ...entry
+export function createRequestLog(set: StoreSet<RequestLogState>): RequestLogState {
+  return {
+    entries: [],
+    record: (entry) => {
+      const row: RequestEntry = {
+        id: `request-${++nextId}`,
+        at: Date.now(),
+        ...entry
+      }
+      set((state) => ({ entries: [row, ...state.entries].slice(0, MAX_ENTRIES) }))
     }
-    set((state) => ({ entries: [row, ...state.entries].slice(0, MAX_ENTRIES) }))
   }
-}))
+}
+
+export const useRequestLog = create<RequestLogState>((set) =>
+  createRequestLog((partial) => set(partial))
+)

@@ -29,11 +29,14 @@ import {
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
 import { claimComposerDraft, writeComposerDraft } from './composerDrafts'
 import { useErrorLog } from './errorLog'
+import type { ActiveWorkspace, ErrorReporter, StoreGet, StoreSet } from './storeDeps'
 import { useWorkspaceStore } from './workspaceStore'
 
-function noteError(message: string, sessionId?: string | null): string {
+export type ChatDeps = ErrorReporter & ActiveWorkspace
+
+function noteError(deps: ChatDeps, message: string, sessionId?: string | null): string {
   if (!isAbortMessage(message)) {
-    useErrorLog.getState().report(message, sessionId ?? null)
+    deps.reportError(message, sessionId ?? null)
   }
   return message
 }
@@ -50,7 +53,7 @@ type PendingEcho = {
   files: AttachmentMeta[]
 }
 
-type ChatState = {
+export type ChatState = {
   sessions: ChatSession[]
   activeSessionId: string | null
   draftSelected: boolean
@@ -308,6 +311,7 @@ function draftConfig(state: ChatState): { mode: AgentMode; modelConfig?: ModelCo
 }
 
 async function setChoice(
+  deps: ChatDeps,
   get: () => ChatState,
   set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
   key: 'model' | 'reasoning_effort',
@@ -330,7 +334,7 @@ async function setChoice(
       error: null
     }))
   } catch (err) {
-    set({ error: noteError(errorText(err, 'Failed to update the model'), activeSessionId) })
+    set({ error: noteError(deps, errorText(err, 'Failed to update the model'), activeSessionId) })
   }
 }
 
@@ -454,13 +458,14 @@ function mergeMessages(
 }
 
 function applyTranscript(
+  set: StoreSet<ChatState>,
   sessionId: string,
   messages: ChatMessage[] | null,
   session: ChatSession | null,
   seenAt: number,
   phaseMode: ApplyPhase = 'session'
 ): void {
-  useChatStore.setState((state) => {
+  set((state) => {
     const previous = state.messagesBySession[sessionId] ?? []
     const nextMessages = messages ? mergeMessages(sessionId, messages, previous, seenAt) : null
     return {
@@ -487,55 +492,40 @@ function applyTranscript(
   })
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
-  sessions: [],
-  activeSessionId: null,
-  draftSelected: false,
-  draftMode: 'agent',
-  draftModel: null,
-  draftEffort: null,
-  messagesBySession: {},
-  phaseBySession: {},
-  pendingEcho: null,
-  error: null,
-  loading: true,
-  transcriptLoading: false,
-  busy: false,
-  stoppingSessionId: null,
-  compactingSessionId: null,
-  reviewTickBySession: {},
+export function createChatState(
+  set: StoreSet<ChatState>,
+  get: StoreGet<ChatState>,
+  deps: ChatDeps
+): ChatState {
+  return {
+    sessions: [],
+    activeSessionId: null,
+    draftSelected: false,
+    draftMode: 'agent',
+    draftModel: null,
+    draftEffort: null,
+    messagesBySession: {},
+    phaseBySession: {},
+    pendingEcho: null,
+    error: null,
+    loading: true,
+    transcriptLoading: false,
+    busy: false,
+    stoppingSessionId: null,
+    compactingSessionId: null,
+    reviewTickBySession: {},
 
-  loadSessions: async (options) => {
-    const epoch = bumpHydrate()
-    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId
-    const firstPaint = get().sessions.length === 0
-    set({ loading: firstPaint, busy: !firstPaint, error: null })
-    if (!workspaceId) {
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      set({
-        sessions: [],
-        loading: false,
-        busy: false,
-        draftSelected: true,
-        activeSessionId: null
-      })
-      return
-    }
-    const listGeneration = startFetch(sessionsListKey(workspaceId))
-    try {
-      const next = await listSessions(workspaceId)
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      if (!fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)) {
-        set({ loading: false, busy: false })
-        return
-      }
-      if (options?.draft) {
+    loadSessions: async (options) => {
+      const epoch = bumpHydrate()
+      const workspaceId = deps.activeWorkspaceId()
+      const firstPaint = get().sessions.length === 0
+      set({ loading: firstPaint, busy: !firstPaint, error: null })
+      if (!workspaceId) {
+        if (epoch !== hydrateEpoch) {
+          return
+        }
         set({
-          sessions: next,
+          sessions: [],
           loading: false,
           busy: false,
           draftSelected: true,
@@ -543,601 +533,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         return
       }
-      const currentId = get().activeSessionId
-      const keep = currentId !== null && next.some((session) => session.id === currentId)
-      set({ sessions: next, loading: false, busy: false })
-      if (keep && currentId) {
-        const transcript = await readTranscript(currentId)
-        if (epoch !== hydrateEpoch || !transcript) {
+      const listGeneration = startFetch(sessionsListKey(workspaceId))
+      try {
+        const next = await listSessions(workspaceId)
+        if (epoch !== hydrateEpoch) {
           return
         }
-        applyTranscript(currentId, transcript.messages, transcript.session, transcript.seenAt)
-        get().bumpReview(currentId)
-        return
-      }
-      const fallback = next[0]
-      if (!fallback) {
-        set({ draftSelected: true, activeSessionId: null })
-        return
-      }
-      set({ activeSessionId: fallback.id, draftSelected: false })
-      const transcript = await readTranscript(fallback.id)
-      if (epoch !== hydrateEpoch || !transcript) {
-        return
-      }
-      applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
-      get().bumpReview(fallback.id)
-    } catch (err) {
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      if (!fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)) {
-        set({ loading: false, busy: false })
-        return
-      }
-      set({
-        loading: false,
-        busy: false,
-        error: noteError(errorText(err, 'Failed to load chat sessions')),
-        draftSelected: get().activeSessionId ? get().draftSelected : true
-      })
-    }
-  },
-
-  selectSession: async (id) => {
-    if (get().activeSessionId === id && !get().draftSelected) {
-      return
-    }
-    const epoch = bumpHydrate()
-    const firstOpen = get().messagesBySession[id] === undefined
-    set({
-      activeSessionId: id,
-      draftSelected: false,
-      error: null,
-      transcriptLoading: firstOpen
-    })
-    // Opening a session reloads its review, so the strip reflects this
-    // session's files instead of whatever the previous one left behind.
-    get().bumpReview(id)
-    try {
-      const transcript = await readTranscript(id)
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      if (transcript) {
-        applyTranscript(id, transcript.messages, transcript.session, transcript.seenAt)
-      }
-      set({ transcriptLoading: false })
-    } catch (err) {
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      set({
-        transcriptLoading: false,
-        error: noteError(errorText(err, 'Failed to load chat session'), id)
-      })
-    }
-  },
-
-  selectDraft: () => {
-    if (get().draftSelected) {
-      return
-    }
-    bumpHydrate()
-    set({
-      draftSelected: true,
-      activeSessionId: null,
-      error: null,
-      transcriptLoading: false,
-      draftMode: 'agent',
-      draftModel: null,
-      draftEffort: null
-    })
-  },
-
-  setModeChoice: async (mode) => {
-    const { draftSelected, activeSessionId } = get()
-    if (draftSelected || activeSessionId === null) {
-      set({ draftMode: mode })
-      return
-    }
-    const seenAt = revisionNow()
-    try {
-      const updated = await patchSession(activeSessionId, { mode })
-      set((state) => ({
-        sessions: replaceSession(state.sessions, updated, seenAt),
-        error: null
-      }))
-    } catch (err) {
-      set({ error: noteError(errorText(err, 'Failed to update the mode'), activeSessionId) })
-    }
-  },
-
-  setModelChoice: async (model) => {
-    await setChoice(get, set, 'model', model)
-  },
-
-  setEffortChoice: async (effort) => {
-    await setChoice(get, set, 'reasoning_effort', effort)
-  },
-
-  sendInstruction: async (instruction, images, files) => {
-    const text = instruction.trim()
-    const hasImages = (images?.length ?? 0) > 0
-    const hasFiles = (files?.length ?? 0) > 0
-    if ((!text && !hasImages && !hasFiles) || get().busy) {
-      return false
-    }
-    const echoFiles = (files ?? []).map((file) => ({
-      name: file.name,
-      path: file.path ?? file.absolutePath,
-      startLine: file.startLine,
-      endLine: file.endLine
-    }))
-    const fileInputs = hasFiles ? toFileInputs(files!) : undefined
-    const { draftSelected, activeSessionId } = get()
-    const creating = draftSelected || activeSessionId === null
-    if (!creating) {
-      const phase = get().phaseBySession[activeSessionId] ?? 'idle'
-      if (phase !== 'idle') {
-        return false
-      }
-    }
-
-    stopTick += 1
-    set({ busy: true, error: null })
-    try {
-      if (creating) {
-        const workspaceId = useWorkspaceStore.getState().activeWorkspaceId
-        if (!workspaceId) {
-          set({ busy: false, error: noteError('Choose a workspace first') })
-          return false
+        if (!fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)) {
+          set({ loading: false, busy: false })
+          return
         }
-        const created = await createSession(workspaceId, undefined, draftConfig(get()))
-        claimComposerDraft(created.id, instruction)
-        stampSessionInserted(created.id)
-        const epoch = bumpHydrate()
-        set((state) => ({
-          sessions: [created, ...state.sessions.filter((session) => session.id !== created.id)],
-          activeSessionId: created.id,
-          draftSelected: false,
-          draftMode: 'agent',
-          draftModel: null,
-          draftEffort: null
-        }))
-        try {
-          await submitInstruction(created.id, text, images, fileInputs)
-        } catch (err) {
-          if (epoch !== hydrateEpoch) {
-            set({ busy: false })
-            return false
-          }
+        if (options?.draft) {
           set({
+            sessions: next,
+            loading: false,
             busy: false,
-            error: noteError(errorText(err, 'Failed to send message'), activeSessionId)
+            draftSelected: true,
+            activeSessionId: null
           })
-          return false
+          return
         }
-        if (epoch !== hydrateEpoch) {
-          set({ busy: false })
-          return false
-        }
-        stampPending(created.id)
-        set((state) => ({
-          busy: false,
-          pendingEcho: { sessionId: created.id, text, files: echoFiles },
-          phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' },
-          sessions: state.sessions.map((item) =>
-            item.id === created.id ? { ...item, has_pending_agent: true } : item
+        const currentId = get().activeSessionId
+        const keep = currentId !== null && next.some((session) => session.id === currentId)
+        set({ sessions: next, loading: false, busy: false })
+        if (keep && currentId) {
+          const transcript = await readTranscript(currentId)
+          if (epoch !== hydrateEpoch || !transcript) {
+            return
+          }
+          applyTranscript(
+            set,
+            currentId,
+            transcript.messages,
+            transcript.session,
+            transcript.seenAt
           )
-        }))
-        writeComposerDraft(created.id, '')
-        return true
-      }
-
-      await submitInstruction(activeSessionId, text, images, fileInputs)
-      stampPending(activeSessionId)
-      set((state) => ({
-        busy: false,
-        pendingEcho: { sessionId: activeSessionId, text, files: echoFiles },
-        phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' },
-        sessions: state.sessions.map((item) =>
-          item.id === activeSessionId ? { ...item, has_pending_agent: true } : item
-        )
-      }))
-      writeComposerDraft(activeSessionId, '')
-      return true
-    } catch (err) {
-      set({
-        busy: false,
-        error: noteError(errorText(err, 'Failed to send message'), activeSessionId)
-      })
-      return false
-    }
-  },
-
-  stopAgent: async () => {
-    const { draftSelected, activeSessionId, stoppingSessionId } = get()
-    if (draftSelected || activeSessionId === null || stoppingSessionId === activeSessionId) {
-      return
-    }
-    const phase = get().phaseBySession[activeSessionId] ?? 'idle'
-    if (phase === 'idle') {
-      return
-    }
-    const sessionId = activeSessionId
-    set({ stoppingSessionId: sessionId, error: null })
-    try {
-      await stopSession(sessionId)
-      stopTick += 1
-      const tick = stopTick
-      const epoch = hydrateEpoch
-      set((state) => ({
-        stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
-        phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
-      }))
-      const transcript = await readTranscript(sessionId)
-      if (tick !== stopTick || epoch !== hydrateEpoch) {
-        return
-      }
-      if (transcript) {
-        applyTranscript(
-          sessionId,
-          transcript.messages,
-          transcript.session,
-          transcript.seenAt,
-          'preserve'
-        )
-        get().bumpReview(sessionId)
-      }
-      set((state) => ({
-        pendingEcho: state.pendingEcho?.sessionId === sessionId ? null : state.pendingEcho
-      }))
-    } catch (err) {
-      set((state) => ({
-        stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
-        error: noteError(errorText(err, 'Failed to stop'), sessionId)
-      }))
-    }
-  },
-
-  compactAgent: async () => {
-    const { draftSelected, activeSessionId, compactingSessionId } = get()
-    if (draftSelected || activeSessionId === null || compactingSessionId === activeSessionId) {
-      return
-    }
-    const sessionId = activeSessionId
-    set({ compactingSessionId: sessionId, error: null })
-    try {
-      await compactSession(sessionId)
-      // The rewrite completes on the actor and arrives as `transcript_compacted`,
-      // which refetches the transcript. Nothing else to do here.
-      set((state) => ({
-        compactingSessionId:
-          state.compactingSessionId === sessionId ? null : state.compactingSessionId
-      }))
-    } catch (err) {
-      set((state) => ({
-        compactingSessionId:
-          state.compactingSessionId === sessionId ? null : state.compactingSessionId,
-        error: noteError(errorText(err, 'Failed to compact the context'), sessionId)
-      }))
-    }
-  },
-
-  decideCall: async (sessionId, callId, decision) => {
-    stampPending(sessionId)
-    set((state) => ({
-      busy: true,
-      error: null,
-      phaseBySession: { ...state.phaseBySession, [sessionId]: 'thinking' },
-      sessions: state.sessions.map((item) =>
-        item.id === sessionId ? { ...item, has_pending_agent: true } : item
-      )
-    }))
-    try {
-      await decideToolCall(sessionId, callId, decision)
-      set({ busy: false })
-    } catch (err) {
-      const fresh = await refreshCallMessage(get, sessionId, callId)
-      const stillOpen = callStillOpen(fresh, callId)
-      if (stillOpen) {
-        stampPending(sessionId)
-      }
-      set((state) => ({
-        busy: false,
-        error: stillOpen
-          ? noteError(errorText(err, 'Failed to settle the tool call'), sessionId)
-          : state.error,
-        phaseBySession: stillOpen
-          ? { ...state.phaseBySession, [sessionId]: 'idle' }
-          : state.phaseBySession,
-        sessions: stillOpen
-          ? state.sessions.map((item) =>
-              item.id === sessionId ? { ...item, has_pending_agent: false } : item
-            )
-          : state.sessions
-      }))
-    }
-  },
-
-  renameSession: async (id, title) => {
-    set({ busy: true, error: null })
-    try {
-      const updated = await updateSession(id, title)
-      stampTitle(id)
-      set((state) => ({
-        busy: false,
-        sessions: state.sessions.map((session) => (session.id === id ? updated : session))
-      }))
-    } catch (err) {
-      set({ busy: false, error: noteError(errorText(err, 'Failed to rename chat session'), id) })
-    }
-  },
-
-  removeSession: async (id) => {
-    set({ busy: true, error: null })
-    try {
-      await deleteSession(id)
-    } catch (err) {
-      set({ busy: false, error: noteError(errorText(err, 'Failed to delete chat session'), id) })
-      return
-    }
-
-    set({ busy: false })
-    await get().forgetSession(id)
-  },
-
-  forgetSession: async (id) => {
-    const epoch = bumpHydrate()
-    const next = get().sessions.filter((session) => session.id !== id)
-    const wasActive = get().activeSessionId === id && !get().draftSelected
-    set((state) => ({
-      sessions: next,
-      messagesBySession: omitRecordKey(state.messagesBySession, id),
-      phaseBySession: omitRecordKey(state.phaseBySession, id),
-      pendingEcho: state.pendingEcho?.sessionId === id ? null : state.pendingEcho,
-      activeSessionId: wasActive ? null : state.activeSessionId,
-      draftSelected: wasActive ? next.length === 0 : state.draftSelected
-    }))
-    if (!wasActive) {
-      return
-    }
-    const fallback = next[0]
-    if (!fallback) {
-      set({ draftSelected: true, activeSessionId: null })
-      return
-    }
-    set({ activeSessionId: fallback.id, draftSelected: false })
-    try {
-      const transcript = await readTranscript(fallback.id)
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      if (transcript) {
-        applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
-      }
-    } catch (err) {
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      set({ error: noteError(errorText(err, 'Failed to load chat session'), fallback.id) })
-    }
-  },
-
-  upsertMessage: (sessionId, message) => {
-    stampMessage(sessionId, message.id)
-    set((state) => {
-      const current = state.messagesBySession[sessionId] ?? []
-      const index = current.findIndex((item) => item.id === message.id)
-      const messages =
-        index >= 0
-          ? current.map((item) => (item.id === message.id ? message : item))
-          : [...current, message]
-      return {
-        messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
-        pendingEcho: withoutEcho(state.pendingEcho, sessionId, current, messages)
-      }
-    })
-  },
-
-  noteRunning: (sessionId, running) => {
-    set((state) => {
-      const phase = state.phaseBySession[sessionId]
-      const nextPhase = running ? (phase === 'responding' ? 'responding' : 'thinking') : 'idle'
-      const phaseSame = running ? phase === nextPhase : phase === undefined || phase === 'idle'
-      const session = state.sessions.find((item) => item.id === sessionId)
-      const flagSame = session === undefined || session.has_pending_agent === running
-      if (phaseSame && flagSame) {
-        return state
-      }
-      if (session && !flagSame) {
-        stampPending(sessionId)
-      }
-      return {
-        phaseBySession: phaseSame
-          ? state.phaseBySession
-          : { ...state.phaseBySession, [sessionId]: nextPhase },
-        sessions:
-          session && !flagSame
-            ? state.sessions.map((item) =>
-                item.id === sessionId ? { ...item, has_pending_agent: running } : item
-              )
-            : state.sessions
-      }
-    })
-  },
-
-  setPhase: (sessionId, phase) => {
-    if (phase === 'thinking' || phase === 'responding') {
-      stampPending(sessionId)
-    }
-    set((state) => {
-      if (state.phaseBySession[sessionId] === phase) {
-        return state
-      }
-      return {
-        phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
-      }
-    })
-  },
-
-  noteDelta: (sessionId, kind) => {
-    if (kind !== 'text' && kind !== 'reasoning') {
-      return
-    }
-    const phase: AgentPhase = kind === 'text' ? 'responding' : 'thinking'
-    stampPending(sessionId)
-    set((state) => {
-      if (state.phaseBySession[sessionId] === phase) {
-        return state
-      }
-      return {
-        phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
-      }
-    })
-  },
-
-  finishTurn: async (sessionId, failedMessage) => {
-    const tick = stopTick
-    const epoch = hydrateEpoch
-    const stopping = get().stoppingSessionId === sessionId
-    if (failedMessage) {
-      noteError(failedMessage, sessionId)
-    }
-    if (!stopping) {
-      set((state) => ({
-        phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' },
-        error: failedMessage ?? state.error
-      }))
-    } else if (failedMessage) {
-      set({ error: failedMessage })
-    }
-    try {
-      const transcript = await readTranscript(sessionId)
-      if (tick !== stopTick || epoch !== hydrateEpoch || !transcript) {
-        return
-      }
-      // The actor clears `running` after it emits `turn_finished`, so this
-      // session can still report `has_pending_agent`. Leave the phase idle.
-      // A `turn_started` during the refetch sets Thinking and is kept.
-      applyTranscript(
-        sessionId,
-        transcript.messages,
-        transcript.session,
-        transcript.seenAt,
-        'preserve'
-      )
-      get().bumpReview(sessionId)
-      if (failedMessage) {
-        set({ error: failedMessage })
-      }
-    } catch (err) {
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      set({ error: noteError(errorText(err, 'Failed to load chat session'), sessionId) })
-    }
-  },
-
-  catchUpTranscript: async (sessionId) => {
-    const epoch = hydrateEpoch
-    const phase = get().phaseBySession[sessionId]
-    if (phase !== 'thinking' && phase !== 'responding') {
-      return
-    }
-    if (get().stoppingSessionId === sessionId) {
-      return
-    }
-    try {
-      const transcript = await readTranscript(sessionId)
-      if (!transcript || epoch !== hydrateEpoch || get().stoppingSessionId === sessionId) {
-        return
-      }
-      const current = get().phaseBySession[sessionId]
-      if (current !== 'thinking' && current !== 'responding') {
-        return
-      }
-      applyTranscript(sessionId, transcript.messages, transcript.session, transcript.seenAt)
-      get().bumpReview(sessionId)
-    } catch (err) {
-      if (epoch !== hydrateEpoch) {
-        return
-      }
-      if (err instanceof ApiError && err.status === 404) {
-        return
-      }
-    }
-  },
-
-  refreshSession: async (sessionId) => {
-    const epoch = hydrateEpoch
-    const seenAt = revisionNow()
-    const generation = startFetch(sessionKey(sessionId))
-    try {
-      const session = await getSession(sessionId)
-      if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
-        return
-      }
-      set((state) => ({
-        sessions: replaceSession(state.sessions, session, seenAt)
-      }))
-    } catch (err) {
-      if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
-        return
-      }
-      if (err instanceof ApiError && err.status === 404) {
-        return
-      }
-      set({ error: noteError(errorText(err, 'Failed to load chat session'), sessionId) })
-    }
-  },
-
-  noteTurnDisplay: (sessionId, turnDisplay) => {
-    turnDisplayRevision.set(sessionId, bumpRevision())
-    set((state) => ({
-      sessions: state.sessions.map((item) =>
-        item.id === sessionId
-          ? {
-              ...item,
-              turn_display: turnDisplay,
-              has_pending_agent:
-                turnDisplay === 'awaiting_approval' ? false : item.has_pending_agent
-            }
-          : item
-      )
-    }))
-  },
-
-  renameSessionLocal: (sessionId, title) => {
-    stampTitle(sessionId)
-    set((state) => ({
-      sessions: state.sessions.map((item) => (item.id === sessionId ? { ...item, title } : item))
-    }))
-  },
-
-  hydrateFromStream: async () => {
-    const epoch = hydrateEpoch
-    const { draftSelected, activeSessionId } = get()
-    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId
-    if (!workspaceId) {
-      return
-    }
-    const seenAt = revisionNow()
-    const listGeneration = startFetch(sessionsListKey(workspaceId))
-    try {
-      const next = await listSessions(workspaceId)
-      if (
-        epoch !== hydrateEpoch ||
-        !fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)
-      ) {
-        return
-      }
-      set((state) => ({ sessions: mergeSessionList(state.sessions, next, seenAt) }))
-      if (draftSelected || !activeSessionId) {
-        return
-      }
-      if (!get().sessions.some((session) => session.id === activeSessionId)) {
+          get().bumpReview(currentId)
+          return
+        }
         const fallback = next[0]
         if (!fallback) {
           set({ draftSelected: true, activeSessionId: null })
@@ -1148,33 +581,658 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (epoch !== hydrateEpoch || !transcript) {
           return
         }
-        applyTranscript(fallback.id, transcript.messages, transcript.session, transcript.seenAt)
+        applyTranscript(
+          set,
+          fallback.id,
+          transcript.messages,
+          transcript.session,
+          transcript.seenAt
+        )
         get().bumpReview(fallback.id)
-        return
+      } catch (err) {
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        if (!fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)) {
+          set({ loading: false, busy: false })
+          return
+        }
+        set({
+          loading: false,
+          busy: false,
+          error: noteError(deps, errorText(err, 'Failed to load chat sessions')),
+          draftSelected: get().activeSessionId ? get().draftSelected : true
+        })
       }
-      const transcript = await readTranscript(activeSessionId)
-      if (epoch !== hydrateEpoch || !transcript) {
-        return
-      }
-      applyTranscript(activeSessionId, transcript.messages, transcript.session, transcript.seenAt)
-      get().bumpReview(activeSessionId)
-    } catch (err) {
-      if (
-        epoch !== hydrateEpoch ||
-        !fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)
-      ) {
-        return
-      }
-      set({ error: noteError(errorText(err, 'Failed to load chat sessions')) })
-    }
-  },
+    },
 
-  bumpReview: (sessionId) => {
-    set((state) => ({
-      reviewTickBySession: {
-        ...state.reviewTickBySession,
-        [sessionId]: (state.reviewTickBySession[sessionId] ?? 0) + 1
+    selectSession: async (id) => {
+      if (get().activeSessionId === id && !get().draftSelected) {
+        return
       }
-    }))
+      const epoch = bumpHydrate()
+      const firstOpen = get().messagesBySession[id] === undefined
+      set({
+        activeSessionId: id,
+        draftSelected: false,
+        error: null,
+        transcriptLoading: firstOpen
+      })
+      // Opening a session reloads its review, so the strip reflects this
+      // session's files instead of whatever the previous one left behind.
+      get().bumpReview(id)
+      try {
+        const transcript = await readTranscript(id)
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        if (transcript) {
+          applyTranscript(set, id, transcript.messages, transcript.session, transcript.seenAt)
+        }
+        set({ transcriptLoading: false })
+      } catch (err) {
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        set({
+          transcriptLoading: false,
+          error: noteError(deps, errorText(err, 'Failed to load chat session'), id)
+        })
+      }
+    },
+
+    selectDraft: () => {
+      if (get().draftSelected) {
+        return
+      }
+      bumpHydrate()
+      set({
+        draftSelected: true,
+        activeSessionId: null,
+        error: null,
+        transcriptLoading: false,
+        draftMode: 'agent',
+        draftModel: null,
+        draftEffort: null
+      })
+    },
+
+    setModeChoice: async (mode) => {
+      const { draftSelected, activeSessionId } = get()
+      if (draftSelected || activeSessionId === null) {
+        set({ draftMode: mode })
+        return
+      }
+      const seenAt = revisionNow()
+      try {
+        const updated = await patchSession(activeSessionId, { mode })
+        set((state) => ({
+          sessions: replaceSession(state.sessions, updated, seenAt),
+          error: null
+        }))
+      } catch (err) {
+        set({
+          error: noteError(deps, errorText(err, 'Failed to update the mode'), activeSessionId)
+        })
+      }
+    },
+
+    setModelChoice: async (model) => {
+      await setChoice(deps, get, set, 'model', model)
+    },
+
+    setEffortChoice: async (effort) => {
+      await setChoice(deps, get, set, 'reasoning_effort', effort)
+    },
+
+    sendInstruction: async (instruction, images, files) => {
+      const text = instruction.trim()
+      const hasImages = (images?.length ?? 0) > 0
+      const hasFiles = (files?.length ?? 0) > 0
+      if ((!text && !hasImages && !hasFiles) || get().busy) {
+        return false
+      }
+      const echoFiles = (files ?? []).map((file) => ({
+        name: file.name,
+        path: file.path ?? file.absolutePath,
+        startLine: file.startLine,
+        endLine: file.endLine
+      }))
+      const fileInputs = hasFiles ? toFileInputs(files!) : undefined
+      const { draftSelected, activeSessionId } = get()
+      const creating = draftSelected || activeSessionId === null
+      if (!creating) {
+        const phase = get().phaseBySession[activeSessionId] ?? 'idle'
+        if (phase !== 'idle') {
+          return false
+        }
+      }
+
+      stopTick += 1
+      set({ busy: true, error: null })
+      try {
+        if (creating) {
+          const workspaceId = deps.activeWorkspaceId()
+          if (!workspaceId) {
+            set({ busy: false, error: noteError(deps, 'Choose a workspace first') })
+            return false
+          }
+          const created = await createSession(workspaceId, undefined, draftConfig(get()))
+          claimComposerDraft(created.id, instruction)
+          stampSessionInserted(created.id)
+          const epoch = bumpHydrate()
+          set((state) => ({
+            sessions: [created, ...state.sessions.filter((session) => session.id !== created.id)],
+            activeSessionId: created.id,
+            draftSelected: false,
+            draftMode: 'agent',
+            draftModel: null,
+            draftEffort: null
+          }))
+          try {
+            await submitInstruction(created.id, text, images, fileInputs)
+          } catch (err) {
+            if (epoch !== hydrateEpoch) {
+              set({ busy: false })
+              return false
+            }
+            set({
+              busy: false,
+              error: noteError(deps, errorText(err, 'Failed to send message'), activeSessionId)
+            })
+            return false
+          }
+          if (epoch !== hydrateEpoch) {
+            set({ busy: false })
+            return false
+          }
+          stampPending(created.id)
+          set((state) => ({
+            busy: false,
+            pendingEcho: { sessionId: created.id, text, files: echoFiles },
+            phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' },
+            sessions: state.sessions.map((item) =>
+              item.id === created.id ? { ...item, has_pending_agent: true } : item
+            )
+          }))
+          writeComposerDraft(created.id, '')
+          return true
+        }
+
+        await submitInstruction(activeSessionId, text, images, fileInputs)
+        stampPending(activeSessionId)
+        set((state) => ({
+          busy: false,
+          pendingEcho: { sessionId: activeSessionId, text, files: echoFiles },
+          phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' },
+          sessions: state.sessions.map((item) =>
+            item.id === activeSessionId ? { ...item, has_pending_agent: true } : item
+          )
+        }))
+        writeComposerDraft(activeSessionId, '')
+        return true
+      } catch (err) {
+        set({
+          busy: false,
+          error: noteError(deps, errorText(err, 'Failed to send message'), activeSessionId)
+        })
+        return false
+      }
+    },
+
+    stopAgent: async () => {
+      const { draftSelected, activeSessionId, stoppingSessionId } = get()
+      if (draftSelected || activeSessionId === null || stoppingSessionId === activeSessionId) {
+        return
+      }
+      const phase = get().phaseBySession[activeSessionId] ?? 'idle'
+      if (phase === 'idle') {
+        return
+      }
+      const sessionId = activeSessionId
+      set({ stoppingSessionId: sessionId, error: null })
+      try {
+        await stopSession(sessionId)
+        stopTick += 1
+        const tick = stopTick
+        const epoch = hydrateEpoch
+        set((state) => ({
+          stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
+          phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
+        }))
+        const transcript = await readTranscript(sessionId)
+        if (tick !== stopTick || epoch !== hydrateEpoch) {
+          return
+        }
+        if (transcript) {
+          applyTranscript(
+            set,
+            sessionId,
+            transcript.messages,
+            transcript.session,
+            transcript.seenAt,
+            'preserve'
+          )
+          get().bumpReview(sessionId)
+        }
+        set((state) => ({
+          pendingEcho: state.pendingEcho?.sessionId === sessionId ? null : state.pendingEcho
+        }))
+      } catch (err) {
+        set((state) => ({
+          stoppingSessionId: state.stoppingSessionId === sessionId ? null : state.stoppingSessionId,
+          error: noteError(deps, errorText(err, 'Failed to stop'), sessionId)
+        }))
+      }
+    },
+
+    compactAgent: async () => {
+      const { draftSelected, activeSessionId, compactingSessionId } = get()
+      if (draftSelected || activeSessionId === null || compactingSessionId === activeSessionId) {
+        return
+      }
+      const sessionId = activeSessionId
+      set({ compactingSessionId: sessionId, error: null })
+      try {
+        await compactSession(sessionId)
+        // The rewrite completes on the actor and arrives as `transcript_compacted`,
+        // which refetches the transcript. Nothing else to do here.
+        set((state) => ({
+          compactingSessionId:
+            state.compactingSessionId === sessionId ? null : state.compactingSessionId
+        }))
+      } catch (err) {
+        set((state) => ({
+          compactingSessionId:
+            state.compactingSessionId === sessionId ? null : state.compactingSessionId,
+          error: noteError(deps, errorText(err, 'Failed to compact the context'), sessionId)
+        }))
+      }
+    },
+
+    decideCall: async (sessionId, callId, decision) => {
+      stampPending(sessionId)
+      set((state) => ({
+        busy: true,
+        error: null,
+        phaseBySession: { ...state.phaseBySession, [sessionId]: 'thinking' },
+        sessions: state.sessions.map((item) =>
+          item.id === sessionId ? { ...item, has_pending_agent: true } : item
+        )
+      }))
+      try {
+        await decideToolCall(sessionId, callId, decision)
+        set({ busy: false })
+      } catch (err) {
+        const fresh = await refreshCallMessage(get, sessionId, callId)
+        const stillOpen = callStillOpen(fresh, callId)
+        if (stillOpen) {
+          stampPending(sessionId)
+        }
+        set((state) => ({
+          busy: false,
+          error: stillOpen
+            ? noteError(deps, errorText(err, 'Failed to settle the tool call'), sessionId)
+            : state.error,
+          phaseBySession: stillOpen
+            ? { ...state.phaseBySession, [sessionId]: 'idle' }
+            : state.phaseBySession,
+          sessions: stillOpen
+            ? state.sessions.map((item) =>
+                item.id === sessionId ? { ...item, has_pending_agent: false } : item
+              )
+            : state.sessions
+        }))
+      }
+    },
+
+    renameSession: async (id, title) => {
+      set({ busy: true, error: null })
+      try {
+        const updated = await updateSession(id, title)
+        stampTitle(id)
+        set((state) => ({
+          busy: false,
+          sessions: state.sessions.map((session) => (session.id === id ? updated : session))
+        }))
+      } catch (err) {
+        set({
+          busy: false,
+          error: noteError(deps, errorText(err, 'Failed to rename chat session'), id)
+        })
+      }
+    },
+
+    removeSession: async (id) => {
+      set({ busy: true, error: null })
+      try {
+        await deleteSession(id)
+      } catch (err) {
+        set({
+          busy: false,
+          error: noteError(deps, errorText(err, 'Failed to delete chat session'), id)
+        })
+        return
+      }
+
+      set({ busy: false })
+      await get().forgetSession(id)
+    },
+
+    forgetSession: async (id) => {
+      const epoch = bumpHydrate()
+      const next = get().sessions.filter((session) => session.id !== id)
+      const wasActive = get().activeSessionId === id && !get().draftSelected
+      set((state) => ({
+        sessions: next,
+        messagesBySession: omitRecordKey(state.messagesBySession, id),
+        phaseBySession: omitRecordKey(state.phaseBySession, id),
+        pendingEcho: state.pendingEcho?.sessionId === id ? null : state.pendingEcho,
+        activeSessionId: wasActive ? null : state.activeSessionId,
+        draftSelected: wasActive ? next.length === 0 : state.draftSelected
+      }))
+      if (!wasActive) {
+        return
+      }
+      const fallback = next[0]
+      if (!fallback) {
+        set({ draftSelected: true, activeSessionId: null })
+        return
+      }
+      set({ activeSessionId: fallback.id, draftSelected: false })
+      try {
+        const transcript = await readTranscript(fallback.id)
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        if (transcript) {
+          applyTranscript(
+            set,
+            fallback.id,
+            transcript.messages,
+            transcript.session,
+            transcript.seenAt
+          )
+        }
+      } catch (err) {
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        set({ error: noteError(deps, errorText(err, 'Failed to load chat session'), fallback.id) })
+      }
+    },
+
+    upsertMessage: (sessionId, message) => {
+      stampMessage(sessionId, message.id)
+      set((state) => {
+        const current = state.messagesBySession[sessionId] ?? []
+        const index = current.findIndex((item) => item.id === message.id)
+        const messages =
+          index >= 0
+            ? current.map((item) => (item.id === message.id ? message : item))
+            : [...current, message]
+        return {
+          messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
+          pendingEcho: withoutEcho(state.pendingEcho, sessionId, current, messages)
+        }
+      })
+    },
+
+    noteRunning: (sessionId, running) => {
+      set((state) => {
+        const phase = state.phaseBySession[sessionId]
+        const nextPhase = running ? (phase === 'responding' ? 'responding' : 'thinking') : 'idle'
+        const phaseSame = running ? phase === nextPhase : phase === undefined || phase === 'idle'
+        const session = state.sessions.find((item) => item.id === sessionId)
+        const flagSame = session === undefined || session.has_pending_agent === running
+        if (phaseSame && flagSame) {
+          return state
+        }
+        if (session && !flagSame) {
+          stampPending(sessionId)
+        }
+        return {
+          phaseBySession: phaseSame
+            ? state.phaseBySession
+            : { ...state.phaseBySession, [sessionId]: nextPhase },
+          sessions:
+            session && !flagSame
+              ? state.sessions.map((item) =>
+                  item.id === sessionId ? { ...item, has_pending_agent: running } : item
+                )
+              : state.sessions
+        }
+      })
+    },
+
+    setPhase: (sessionId, phase) => {
+      if (phase === 'thinking' || phase === 'responding') {
+        stampPending(sessionId)
+      }
+      set((state) => {
+        if (state.phaseBySession[sessionId] === phase) {
+          return state
+        }
+        return {
+          phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
+        }
+      })
+    },
+
+    noteDelta: (sessionId, kind) => {
+      if (kind !== 'text' && kind !== 'reasoning') {
+        return
+      }
+      const phase: AgentPhase = kind === 'text' ? 'responding' : 'thinking'
+      stampPending(sessionId)
+      set((state) => {
+        if (state.phaseBySession[sessionId] === phase) {
+          return state
+        }
+        return {
+          phaseBySession: { ...state.phaseBySession, [sessionId]: phase }
+        }
+      })
+    },
+
+    finishTurn: async (sessionId, failedMessage) => {
+      const tick = stopTick
+      const epoch = hydrateEpoch
+      const stopping = get().stoppingSessionId === sessionId
+      if (failedMessage) {
+        noteError(deps, failedMessage, sessionId)
+      }
+      if (!stopping) {
+        set((state) => ({
+          phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' },
+          error: failedMessage ?? state.error
+        }))
+      } else if (failedMessage) {
+        set({ error: failedMessage })
+      }
+      try {
+        const transcript = await readTranscript(sessionId)
+        if (tick !== stopTick || epoch !== hydrateEpoch || !transcript) {
+          return
+        }
+        // The actor clears `running` after it emits `turn_finished`, so this
+        // session can still report `has_pending_agent`. Leave the phase idle.
+        // A `turn_started` during the refetch sets Thinking and is kept.
+        applyTranscript(
+          set,
+          sessionId,
+          transcript.messages,
+          transcript.session,
+          transcript.seenAt,
+          'preserve'
+        )
+        get().bumpReview(sessionId)
+        if (failedMessage) {
+          set({ error: failedMessage })
+        }
+      } catch (err) {
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        set({ error: noteError(deps, errorText(err, 'Failed to load chat session'), sessionId) })
+      }
+    },
+
+    catchUpTranscript: async (sessionId) => {
+      const epoch = hydrateEpoch
+      const phase = get().phaseBySession[sessionId]
+      if (phase !== 'thinking' && phase !== 'responding') {
+        return
+      }
+      if (get().stoppingSessionId === sessionId) {
+        return
+      }
+      try {
+        const transcript = await readTranscript(sessionId)
+        if (!transcript || epoch !== hydrateEpoch || get().stoppingSessionId === sessionId) {
+          return
+        }
+        const current = get().phaseBySession[sessionId]
+        if (current !== 'thinking' && current !== 'responding') {
+          return
+        }
+        applyTranscript(set, sessionId, transcript.messages, transcript.session, transcript.seenAt)
+        get().bumpReview(sessionId)
+      } catch (err) {
+        if (epoch !== hydrateEpoch) {
+          return
+        }
+        if (err instanceof ApiError && err.status === 404) {
+          return
+        }
+      }
+    },
+
+    refreshSession: async (sessionId) => {
+      const epoch = hydrateEpoch
+      const seenAt = revisionNow()
+      const generation = startFetch(sessionKey(sessionId))
+      try {
+        const session = await getSession(sessionId)
+        if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
+          return
+        }
+        set((state) => ({
+          sessions: replaceSession(state.sessions, session, seenAt)
+        }))
+      } catch (err) {
+        if (epoch !== hydrateEpoch || !fetchStillCurrent(sessionKey(sessionId), generation)) {
+          return
+        }
+        if (err instanceof ApiError && err.status === 404) {
+          return
+        }
+        set({ error: noteError(deps, errorText(err, 'Failed to load chat session'), sessionId) })
+      }
+    },
+
+    noteTurnDisplay: (sessionId, turnDisplay) => {
+      turnDisplayRevision.set(sessionId, bumpRevision())
+      set((state) => ({
+        sessions: state.sessions.map((item) =>
+          item.id === sessionId
+            ? {
+                ...item,
+                turn_display: turnDisplay,
+                has_pending_agent:
+                  turnDisplay === 'awaiting_approval' ? false : item.has_pending_agent
+              }
+            : item
+        )
+      }))
+    },
+
+    renameSessionLocal: (sessionId, title) => {
+      stampTitle(sessionId)
+      set((state) => ({
+        sessions: state.sessions.map((item) => (item.id === sessionId ? { ...item, title } : item))
+      }))
+    },
+
+    hydrateFromStream: async () => {
+      const epoch = hydrateEpoch
+      const { draftSelected, activeSessionId } = get()
+      const workspaceId = deps.activeWorkspaceId()
+      if (!workspaceId) {
+        return
+      }
+      const seenAt = revisionNow()
+      const listGeneration = startFetch(sessionsListKey(workspaceId))
+      try {
+        const next = await listSessions(workspaceId)
+        if (
+          epoch !== hydrateEpoch ||
+          !fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)
+        ) {
+          return
+        }
+        set((state) => ({ sessions: mergeSessionList(state.sessions, next, seenAt) }))
+        if (draftSelected || !activeSessionId) {
+          return
+        }
+        if (!get().sessions.some((session) => session.id === activeSessionId)) {
+          const fallback = next[0]
+          if (!fallback) {
+            set({ draftSelected: true, activeSessionId: null })
+            return
+          }
+          set({ activeSessionId: fallback.id, draftSelected: false })
+          const transcript = await readTranscript(fallback.id)
+          if (epoch !== hydrateEpoch || !transcript) {
+            return
+          }
+          applyTranscript(
+            set,
+            fallback.id,
+            transcript.messages,
+            transcript.session,
+            transcript.seenAt
+          )
+          get().bumpReview(fallback.id)
+          return
+        }
+        const transcript = await readTranscript(activeSessionId)
+        if (epoch !== hydrateEpoch || !transcript) {
+          return
+        }
+        applyTranscript(
+          set,
+          activeSessionId,
+          transcript.messages,
+          transcript.session,
+          transcript.seenAt
+        )
+        get().bumpReview(activeSessionId)
+      } catch (err) {
+        if (
+          epoch !== hydrateEpoch ||
+          !fetchStillCurrent(sessionsListKey(workspaceId), listGeneration)
+        ) {
+          return
+        }
+        set({ error: noteError(deps, errorText(err, 'Failed to load chat sessions')) })
+      }
+    },
+
+    bumpReview: (sessionId) => {
+      set((state) => ({
+        reviewTickBySession: {
+          ...state.reviewTickBySession,
+          [sessionId]: (state.reviewTickBySession[sessionId] ?? 0) + 1
+        }
+      }))
+    }
   }
-}))
+}
+
+export const useChatStore = create<ChatState>((set, get) =>
+  createChatState(set, get, {
+    reportError: (message, sessionId) => useErrorLog.getState().report(message, sessionId ?? null),
+    activeWorkspaceId: () => useWorkspaceStore.getState().activeWorkspaceId
+  })
+)

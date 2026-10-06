@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+import type { StoreSet } from './storeDeps'
+
 /** One error the shell has seen since this page load. Not written to disk. */
 export type ErrorEntry = {
   id: string
@@ -11,7 +13,7 @@ export type ErrorEntry = {
   open: boolean
 }
 
-type ErrorLogState = {
+export type ErrorLogState = {
   entries: ErrorEntry[]
   report: (message: string, sessionId?: string | null) => void
   /** Audit log only. Does not open a shell notice. */
@@ -30,40 +32,44 @@ function isAbortText(message: string): boolean {
   )
 }
 
-export const useErrorLog = create<ErrorLogState>((set) => ({
-  entries: [],
-  report: (message, sessionId = null) => {
-    if (isAbortText(message)) {
-      return
+export function createErrorLog(set: StoreSet<ErrorLogState>): ErrorLogState {
+  return {
+    entries: [],
+    report: (message, sessionId = null) => {
+      if (isAbortText(message)) {
+        return
+      }
+      const entry: ErrorEntry = {
+        id: `error-${++nextId}`,
+        message,
+        sessionId: sessionId ?? null,
+        at: Date.now(),
+        open: true
+      }
+      set((state) => ({ entries: [entry, ...state.entries] }))
+    },
+    record: (message) => {
+      if (isAbortText(message) || message.endsWith('(Fetch is aborted)')) {
+        return
+      }
+      const entry: ErrorEntry = {
+        id: `error-${++nextId}`,
+        message,
+        sessionId: null,
+        at: Date.now(),
+        open: false
+      }
+      set((state) => ({ entries: [entry, ...state.entries] }))
+    },
+    acknowledge: (id) => {
+      set((state) => ({
+        entries: state.entries.map((entry) => (entry.id === id ? { ...entry, open: false } : entry))
+      }))
     }
-    const entry: ErrorEntry = {
-      id: `error-${++nextId}`,
-      message,
-      sessionId: sessionId ?? null,
-      at: Date.now(),
-      open: true
-    }
-    set((state) => ({ entries: [entry, ...state.entries] }))
-  },
-  record: (message) => {
-    if (isAbortText(message) || message.endsWith('(Fetch is aborted)')) {
-      return
-    }
-    const entry: ErrorEntry = {
-      id: `error-${++nextId}`,
-      message,
-      sessionId: null,
-      at: Date.now(),
-      open: false
-    }
-    set((state) => ({ entries: [entry, ...state.entries] }))
-  },
-  acknowledge: (id) => {
-    set((state) => ({
-      entries: state.entries.map((entry) => (entry.id === id ? { ...entry, open: false } : entry))
-    }))
   }
-}))
+}
+
+export const useErrorLog = create<ErrorLogState>((set) => createErrorLog((partial) => set(partial)))
 
 /**
  * Where an open error is drawn. Every open error sits under the window title,

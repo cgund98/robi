@@ -2,12 +2,13 @@ import { create } from 'zustand'
 
 import { getIndexStatus, setIndexState, type IndexStatus } from '../api/codeIndex'
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
+import type { ActiveWorkspace, StoreGet, StoreSet } from './storeDeps'
 import { useWorkspaceStore } from './workspaceStore'
 
 /** Pause or resume has been requested and the task has not caught up. */
 export type IndexPending = 'pause' | 'resume'
 
-type IndexStore = {
+export type IndexStore = {
   workspaceId: string | null
   status: IndexStatus | null
   pending: IndexPending | null
@@ -16,73 +17,82 @@ type IndexStore = {
   setPaused: (paused: boolean) => Promise<void>
 }
 
-export const useIndexStore = create<IndexStore>((set, get) => ({
-  workspaceId: null,
-  status: null,
-  pending: null,
-  refresh: async (workspaceId) => {
-    if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-      return
-    }
-    const key = `index:${workspaceId}`
-    const generation = startFetch(key)
-    try {
-      const status = await getIndexStatus(workspaceId)
-      if (
-        workspaceId === useWorkspaceStore.getState().activeWorkspaceId &&
-        fetchStillCurrent(key, generation)
-      ) {
-        set((state) => ({
-          workspaceId,
-          status,
-          pending: clearPending(state.pending, status.state)
-        }))
-      }
-    } catch {
-      if (fetchStillCurrent(key, generation)) {
-        set({ workspaceId, status: null, pending: null })
-      }
-    }
-  },
-  applyFrame: (workspaceId, data) => {
-    if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-      return false
-    }
-    const status = toStatus(data)
-    if (!status) {
-      return false
-    }
-    set((state) => ({
-      workspaceId,
-      status,
-      pending: clearPending(state.pending, status.state)
-    }))
-    return true
-  },
-  setPaused: async (paused) => {
-    const workspaceId = get().workspaceId ?? useWorkspaceStore.getState().activeWorkspaceId
-    if (!workspaceId || get().pending) {
-      return
-    }
-    const pending: IndexPending = paused ? 'pause' : 'resume'
-    set({ pending })
-    try {
-      const status = await setIndexState(workspaceId, paused ? 'paused' : 'running')
-      if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
+export function createIndexState(
+  set: StoreSet<IndexStore>,
+  get: StoreGet<IndexStore>,
+  deps: ActiveWorkspace
+): IndexStore {
+  return {
+    workspaceId: null,
+    status: null,
+    pending: null,
+    refresh: async (workspaceId) => {
+      if (workspaceId !== deps.activeWorkspaceId()) {
         return
+      }
+      const key = `index:${workspaceId}`
+      const generation = startFetch(key)
+      try {
+        const status = await getIndexStatus(workspaceId)
+        if (workspaceId === deps.activeWorkspaceId() && fetchStillCurrent(key, generation)) {
+          set((state) => ({
+            workspaceId,
+            status,
+            pending: clearPending(state.pending, status.state)
+          }))
+        }
+      } catch {
+        if (fetchStillCurrent(key, generation)) {
+          set({ workspaceId, status: null, pending: null })
+        }
+      }
+    },
+    applyFrame: (workspaceId, data) => {
+      if (workspaceId !== deps.activeWorkspaceId()) {
+        return false
+      }
+      const status = toStatus(data)
+      if (!status) {
+        return false
       }
       set((state) => ({
         workspaceId,
         status,
-        pending: state.pending === pending ? clearPending(pending, status.state) : state.pending
+        pending: clearPending(state.pending, status.state)
       }))
-    } catch {
-      if (workspaceId === useWorkspaceStore.getState().activeWorkspaceId) {
-        set({ pending: null })
+      return true
+    },
+    setPaused: async (paused) => {
+      const workspaceId = get().workspaceId ?? deps.activeWorkspaceId()
+      if (!workspaceId || get().pending) {
+        return
+      }
+      const pending: IndexPending = paused ? 'pause' : 'resume'
+      set({ pending })
+      try {
+        const status = await setIndexState(workspaceId, paused ? 'paused' : 'running')
+        if (workspaceId !== deps.activeWorkspaceId()) {
+          return
+        }
+        set((state) => ({
+          workspaceId,
+          status,
+          pending: state.pending === pending ? clearPending(pending, status.state) : state.pending
+        }))
+      } catch {
+        if (workspaceId === deps.activeWorkspaceId()) {
+          set({ pending: null })
+        }
       }
     }
   }
-}))
+}
+
+export const useIndexStore = create<IndexStore>((set, get) =>
+  createIndexState(set, get, {
+    activeWorkspaceId: () => useWorkspaceStore.getState().activeWorkspaceId
+  })
+)
 
 function clearPending(pending: IndexPending | null, state: string): IndexPending | null {
   if (!pending) {
