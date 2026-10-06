@@ -211,7 +211,11 @@ control. Anything else is `400`. `limit` defaults to 10 and may not exceed
 **Semantic** runs the fused vector-plus-FTS query described in
 [semantic-search.md](../intelligence/semantic-search.md) and keeps only
 markdown hits. The filter runs after fusion, so a code hit cannot hold a
-ranked slot.
+ranked slot. The surviving chunks are then grouped by document: one row per
+document, its `score` is the number of matching chunks, and the best-scoring
+chunk supplies `start_line`, `end_line`, `title`, and `snippet`. A document
+that matches many times outranks one that matches once; ties keep the fusion
+order.
 
 **Text** is a case-insensitive literal scan of markdown. It runs `rg` when
 that binary is on `PATH` (`--fixed-strings`, `--ignore-case`, markdown globs, ripgrep's own
@@ -253,7 +257,7 @@ That notice is only for the semantic engine:
 
 | `state` | Notice |
 |---|---|
-| `indexing` | Indexing `files_done`/`files_total` — results may be incomplete |
+| `indexing` | `Indexing files_done/files_total — results may be incomplete`, or `Preparing search…` before the walk has seen a file |
 | `downloading` | Preparing search… |
 | `paused` | Search index paused, with **Resume** |
 | `failed` | Search index failed, with **Resume** |

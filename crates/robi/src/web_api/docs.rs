@@ -193,7 +193,7 @@ pub struct DocSearchHit {
     pub title: String,
     /// The chunk's opening text, cut at 500 bytes on a character boundary.
     pub snippet: String,
-    /// Reciprocal rank fusion score. Higher is better.
+    /// How many chunks of this document matched. Higher is better.
     pub score: f64,
 }
 
@@ -474,23 +474,56 @@ fn search_args(query: DocSearchQuery) -> Result<(String, usize, SearchEngine), S
     Ok((text, limit, engine))
 }
 
-/// Markdown hits only, best first, capped at `limit`.
+/// One row per markdown document, best first, capped at `limit`.
 ///
-/// The filter runs after fusion so a non-doc hit cannot hold a ranked slot,
-/// and the limit applies after it, so every returned slot is a doc.
+/// The filter runs before ranking so a non-doc hit cannot hold a ranked slot.
+/// Hits arrive best first and several can name the same document, so they are
+/// grouped by path: the document keeps its best-scoring chunk as the
+/// representative hit, and its score becomes the number of matching chunks.
+/// A document that matches many times therefore outranks one that matches
+/// once, and no document appears twice. Equal counts keep the order fusion
+/// gave, so relevance still decides the tie.
 fn doc_hits(hits: Vec<ChunkHit>, limit: usize) -> Vec<DocSearchHit> {
-    hits.into_iter()
-        .filter(|hit| is_markdown(Path::new(&hit.path)))
-        .take(limit)
-        .map(|hit| DocSearchHit {
-            path: hit.path,
-            start_line: hit.start_line,
-            end_line: hit.end_line,
-            title: hit.symbol,
-            snippet: snippet(&hit.body),
-            score: hit.score,
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut best: std::collections::HashMap<String, (f64, DocSearchHit)> =
+        std::collections::HashMap::new();
+    for hit in hits {
+        if !is_markdown(Path::new(&hit.path)) {
+            continue;
+        }
+        *counts.entry(hit.path.clone()).or_insert(0) += 1;
+        // `or_insert_with` keeps the first chunk seen, which is the best one
+        // because fusion returns hits in descending score order.
+        best.entry(hit.path.clone()).or_insert_with(|| {
+            let fused = hit.score;
+            (
+                fused,
+                DocSearchHit {
+                    path: hit.path,
+                    start_line: hit.start_line,
+                    end_line: hit.end_line,
+                    title: hit.symbol,
+                    snippet: snippet(&hit.body),
+                    score: fused,
+                },
+            )
+        });
+    }
+    let mut ranked: Vec<(f64, DocSearchHit)> = best
+        .into_iter()
+        .map(|(path, (fused, mut hit))| {
+            hit.score = f64::from(counts.get(&path).copied().unwrap_or(0));
+            (fused, hit)
         })
-        .collect()
+        .collect();
+    ranked.sort_by(|(left_fused, left), (right_fused, right)| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| right_fused.total_cmp(left_fused))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    ranked.into_iter().take(limit).map(|(_, hit)| hit).collect()
 }
 
 /// The opening of a chunk, cut at [`SNIPPET_BYTES`] on a character boundary
@@ -918,7 +951,7 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
             root.join("README.md"),
-            "# Handbook\n\nThe zephyr protocol keeps sessions warm.\n",
+            "# Handbook\n\nThe zephyr protocol keeps sessions warm.\n\n# Notes\n\nA paused zephyr stops scanning.\n",
         )
         .unwrap();
         fs::write(root.join("src/lib.rs"), "fn zephyr() {}\n").unwrap();
@@ -1103,6 +1136,25 @@ mod tests {
     }
 
     #[test]
+    fn doc_hits_groups_chunks_by_document_and_ranks_by_matches() {
+        // Several chunks of one document must collapse to one row, and the row
+        // with the most matching chunks wins.
+        let hits = vec![
+            hit("docs/a.md", 9.0),
+            hit("docs/a.md", 8.0),
+            hit("README.md", 7.0),
+            hit("docs/b.md", 6.0),
+            hit("docs/b.md", 5.0),
+            hit("docs/a.md", 4.0),
+        ];
+        let ranked = doc_hits(hits, MAX_SEARCH_LIMIT);
+        let paths: Vec<&str> = ranked.iter().map(|hit| hit.path.as_str()).collect();
+        assert_eq!(paths, ["docs/a.md", "docs/b.md", "README.md"]);
+        let scores: Vec<f64> = ranked.iter().map(|hit| hit.score).collect();
+        assert_eq!(scores, [3.0, 2.0, 1.0]);
+    }
+
+    #[test]
     fn a_snippet_stops_at_the_cap_on_a_character_boundary() {
         let short = "opening lines";
         assert_eq!(snippet(short), short);
@@ -1155,10 +1207,40 @@ mod tests {
             result.hits
         );
         assert!(
-            result.hits.iter().any(|hit| hit.title == "Handbook"),
+            result
+                .hits
+                .iter()
+                .any(|hit| hit.title == "Handbook" || hit.title == "Notes"),
             "the section chain is the title: {:?}",
             result.hits
         );
+        // Two sections of README.md match `zephyr`; the document must be one
+        // hit, not one per section.
+        let readme = result
+            .hits
+            .iter()
+            .filter(|hit| hit.path == "README.md")
+            .count();
+        assert_eq!(
+            readme, 1,
+            "a document appeared once per section: {:?}",
+            result.hits
+        );
+        let readme_hit = result
+            .hits
+            .iter()
+            .find(|hit| hit.path == "README.md")
+            .unwrap();
+        assert_eq!(
+            readme_hit.score, 2.0,
+            "the score counts the matching sections: {:?}",
+            result.hits
+        );
+        let mut paths: Vec<&str> = result.hits.iter().map(|hit| hit.path.as_str()).collect();
+        paths.sort_unstable();
+        let before = paths.len();
+        paths.dedup();
+        assert_eq!(before, paths.len(), "duplicate paths: {:?}", result.hits);
 
         // The lease is gone, but the linger keeps the task, so the next query
         // does not restart the scan.

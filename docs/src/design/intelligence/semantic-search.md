@@ -261,11 +261,14 @@ the scan.
 The shell shows this status for the active session's workspace and
 offers pause and resume. Opening the event stream publishes the current
 status, and the index task publishes again whenever that status changes.
-Each `robi.index.v1.progress` frame on the existing `EventSource` makes
-the shell `GET` this route. A successful response is kept for 10 seconds,
-so a burst of frames does not repeat the request, and frames that arrive
-while a request is in flight share that one call. Pause and resume write
-their response into the same cache. The frame is not written into the line.
+Each `robi.index.v1.progress` frame on the existing `EventSource` carries
+the same object as the GET, and the shell applies that object directly to
+its index store, so the terminal `ready` transition is never missed. A
+GET is only the fallback when a frame's `data` is not a status object.
+That change removed the earlier `GET`-per-frame path whose 10-second
+response cache could serve a stale `indexing` status for the last frame
+and leave the line on screen. The frame is not written into the line's
+DOM directly; the store it feeds is.
 
 | Field | Value |
 |---|---|
@@ -283,20 +286,25 @@ page title, for the active workspace only. It is a 22px pill: a 14px
 progress wheel and a short label. The wheel's arc is the share of files
 still remaining (`files_total - files_done` over `files_total`). While
 the total is still zero and the task is busy, the wheel spins a short
-arc instead. Clicking the pill opens a menu: a one-word state, then a counts line
-(`files_done/files_total · remaining remaining`, or `0/0` before the
-walk has seen a file). `failed` adds `error` between those lines.
+arc instead. Clicking the pill opens a menu: a one-word state, then a detail line.
+Before the walk has seen a file the detail is a phrase, not a count — 
+`Preparing the search model…` while downloading, `Scanning the workspace…`
+once indexing starts, and `Paused before the scan started` if it was paused
+first. From the first file the detail is the counts line
+(`files_done/files_total · remaining remaining`), and when the count reaches
+the total while the task is still busy it reads `Finishing up…` until the
+state moves to `ready`. `failed` adds `error` between those lines.
 Pause or Resume sits under the counts. It is not a badge on the transcript, and it is not a
 turn activity line. `ready` draws nothing.
 
 | `state` | Pill | Menu | Control |
 |---|---|---|---|
-| `downloading` | Indexing | Downloading, then `0/0` | Pause |
-| `indexing` | Indexing | Indexing, then `done/total · remaining remaining` | Pause |
-| `paused` | Paused | Paused, then the same counts line | Resume |
-| `failed` | Failed | Failed, then `error`, then the counts line | Resume |
+| `downloading` | Indexing | Downloading, then `Preparing the search model…` | Pause |
+| `indexing` | Indexing | Indexing, then `Scanning the workspace…` or `done/total · remaining remaining` (then `Finishing up…`) | Pause |
+| `paused` | Paused | Paused, then the same detail line | Resume |
+| `failed` | Failed | Failed, then `error`, then the detail line | Resume |
 
-`indexing` stays hidden for the first 5 seconds. If `state` leaves `indexing` before that, the pill never appears. `downloading`, `paused`, and `failed` appear immediately. `indexing` keeps the counts at `0/0` until the walk has seen a file.
+`indexing` stays hidden for the first 5 seconds. If `state` leaves `indexing` before that, the pill never appears. `downloading`, `paused`, and `failed` appear immediately. `indexing` uses the phrase detail until the walk has seen a file.
 Pause and Resume call the `PUT`. The task finishes the current file, or
 the model load, before `state` changes. Until then the control reads
 Pausing or Resuming and the button is disabled. Reduced motion leaves
@@ -342,14 +350,18 @@ a partial index is visible to the model. Empty `hits` with
 
 `GET /api/v1/workspaces/{id}/docs/search` is the other consumer of
 `Index::search`. It runs the same fused query, then drops every non-markdown
-hit **after** fusion, so a code hit cannot occupy a ranked slot, and returns
-the index status beside the hits so a caller can say the corpus was
-incomplete. It holds a lease for the request alone; the linger above keeps
-the task running between queries. A query that lands before the schema
-exists — the task's first status is `indexing` — returns that status and
-no hits. A search error once the index is `ready` is a 500. The shell side of that contract — the
-response shape, the partial-result notice, and the poll — is
-[docs-viewer.md](../shell/docs-viewer.md).
+hit **after** fusion, so a code hit cannot occupy a ranked slot. It then
+groups the surviving chunks by document: one row per document, keeping the
+best-scoring chunk as the representative and setting `score` to the number
+of matching chunks, so a document that matches many times outranks one that
+matches once and no document appears twice. Ties keep the fusion order. The
+response returns the index status beside the hits so a caller can say the
+corpus was incomplete. It holds a lease for the request alone; the linger
+above keeps the task running between queries. A query that lands before the
+schema exists — the task's first status is `indexing` — returns that status
+and no hits. A search error once the index is `ready` is a 500. The shell
+side of that contract — the response shape, the partial-result notice, and
+the poll — is [docs-viewer.md](../shell/docs-viewer.md).
 
 LSP symbol hits are a third ranked list into the same fusion function
 once a language server is running. This page does not spawn one. v1

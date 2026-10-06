@@ -120,7 +120,13 @@ export function useAgentEventsSSE(): void {
     }
     if (envelope.type === 'robi.index.v1.progress') {
       if (envelope.subject) {
-        void useIndexStore.getState().refresh(envelope.subject)
+        // The frame carries the same status object as the GET, so apply it
+        // directly. A GET would be served from a 10-second cache and could
+        // drop the final `ready` transition.
+        const applied = useIndexStore.getState().applyFrame(envelope.subject, envelope.data)
+        if (!applied) {
+          void useIndexStore.getState().refresh(envelope.subject)
+        }
       }
       return
     }

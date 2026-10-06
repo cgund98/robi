@@ -12,6 +12,7 @@ type IndexStore = {
   status: IndexStatus | null
   pending: IndexPending | null
   refresh: (workspaceId: string) => Promise<void>
+  applyFrame: (workspaceId: string, data: unknown) => boolean
   setPaused: (paused: boolean) => Promise<void>
 }
 
@@ -42,6 +43,21 @@ export const useIndexStore = create<IndexStore>((set, get) => ({
         set({ workspaceId, status: null, pending: null })
       }
     }
+  },
+  applyFrame: (workspaceId, data) => {
+    if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
+      return false
+    }
+    const status = toStatus(data)
+    if (!status) {
+      return false
+    }
+    set((state) => ({
+      workspaceId,
+      status,
+      pending: clearPending(state.pending, status.state)
+    }))
+    return true
   },
   setPaused: async (paused) => {
     const workspaceId = get().workspaceId ?? useWorkspaceStore.getState().activeWorkspaceId
@@ -76,4 +92,25 @@ function clearPending(pending: IndexPending | null, state: string): IndexPending
     return state === 'indexing' || state === 'downloading' ? pending : null
   }
   return state === 'paused' ? pending : null
+}
+
+/** The frame `data` is the same object as the GET body. Reject anything else. */
+function toStatus(data: unknown): IndexStatus | null {
+  if (!data || typeof data !== 'object') {
+    return null
+  }
+  const { state, files_done, files_total, error } = data as Record<string, unknown>
+  if (
+    typeof state !== 'string' ||
+    typeof files_done !== 'number' ||
+    typeof files_total !== 'number'
+  ) {
+    return null
+  }
+  return {
+    state,
+    files_done,
+    files_total,
+    error: typeof error === 'string' ? error : null
+  }
 }

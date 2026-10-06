@@ -153,10 +153,15 @@ client does not walk above it to find a Cargo workspace or a
 `go.mod`. The server may walk, inside its own process.
 
 The child inherits the API process environment, then drops the same
-secret names the shell drops. It is not inside the shell sandbox.
-`rust-analyzer` has to run `cargo`, and `gopls` has to run the go
-command. The argv is ours, not the model's. stderr is logged. The
-tool result includes it only when startup fails.
+secret names the shell drops. Its `PATH` is set to the search `PATH`
+the binary was resolved on — the login shell's `PATH` with
+`path_entries` — so a server shipped as a `#!` script (for example
+`typescript-language-server`, whose shebang is `#!/usr/bin/env node`)
+finds its interpreter even when Robi was launched with the minimal GUI
+`PATH`. The child is not inside the shell sandbox. `rust-analyzer` has
+to run `cargo`, and `gopls` has to run the go command. The argv is
+ours, not the model's. stderr is logged. The tool result includes it
+only when startup fails.
 
 Idle for five minutes with no request and no open progress token
 sends `shutdown`, then `exit`, then the process is killed if it is

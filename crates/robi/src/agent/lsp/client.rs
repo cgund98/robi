@@ -749,6 +749,7 @@ pub async fn spawn(
     root: &Path,
     spec: &ServerSpec,
     binary: &Path,
+    search_path: &str,
     timing: Timing,
 ) -> Result<Arc<LspClient>, LspError> {
     let mut command = Command::new(binary);
@@ -756,7 +757,7 @@ pub async fn spawn(
         .args(spec.argv.iter().skip(1))
         .current_dir(root)
         .env_clear()
-        .envs(scrubbed_env())
+        .envs(scrubbed_env(search_path))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1051,10 +1052,19 @@ fn capabilities() -> ClientCapabilities {
     }
 }
 
-fn scrubbed_env() -> Vec<(String, String)> {
-    std::env::vars()
+/// The child environment: this process's variables minus secrets. When
+/// `search_path` is non-empty it replaces `PATH`, so a server with an
+/// interpreter shebang resolves that interpreter on the same `PATH` its binary
+/// was found on (see [`super::LspHub`]).
+fn scrubbed_env(search_path: &str) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = std::env::vars()
         .filter(|(key, _)| !crate::agent::sandbox::secret_name(key))
-        .collect()
+        .collect();
+    if !search_path.is_empty() {
+        env.retain(|(key, _)| key != "PATH");
+        env.push(("PATH".to_string(), search_path.to_string()));
+    }
+    env
 }
 
 #[cfg(test)]
@@ -1210,4 +1220,31 @@ fn fake_router(socket: async_lsp::ClientSocket, root: PathBuf) -> Router<FakeSta
     });
     router.unhandled_notification(|_, _| ControlFlow::Continue(()));
     router
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrubbed_env;
+
+    #[test]
+    fn the_search_path_replaces_the_parent_path() {
+        let env = scrubbed_env("/resolved/bin:/usr/bin");
+        let paths: Vec<&str> = env
+            .iter()
+            .filter(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(paths, ["/resolved/bin:/usr/bin"]);
+    }
+
+    #[test]
+    fn an_empty_search_path_keeps_the_parent_path() {
+        let parent = std::env::var("PATH").ok();
+        let env = scrubbed_env("");
+        let path = env
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.clone());
+        assert_eq!(path, parent);
+    }
 }

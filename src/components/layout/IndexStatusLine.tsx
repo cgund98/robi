@@ -41,18 +41,20 @@ export function IndexStatusLine() {
   const remaining = Math.max(0, total - done)
   const busy = status.state === 'downloading' || status.state === 'indexing'
   const known = total > 0
+  const finishing = busy && known && remaining === 0
   const remainingFill = known ? remaining / total : 0
   const control =
     pending === 'pause' ? 'Pausing' : pending === 'resume' ? 'Resuming' : busy ? 'Pause' : 'Resume'
   const heading = menuHeading(status.state)
-  const progress = known ? `${done}/${total} · ${remaining} remaining` : '0/0'
+  const detail = indexDetail(status.state, done, total, remaining, finishing)
   const error = status.state === 'failed' ? status.error : null
+  const summary = error ? `${heading}. ${error}.` : `${heading}.`
 
   return (
     <Popover.Root>
       <Popover.Trigger
         className={styles.wedge}
-        aria-label={error ? `${heading}. ${error}. ${progress}` : `${heading}. ${progress}`}
+        aria-label={detail ? `${summary} ${detail}` : summary}
         aria-busy={pending ? true : undefined}
       >
         <ProgressWheel fill={remainingFill} indeterminate={!known && (busy || pending !== null)} />
@@ -62,7 +64,7 @@ export function IndexStatusLine() {
         <Popover.Content className={styles.panel} side="bottom" align="start" sideOffset={8}>
           <p className={styles.heading}>{heading}</p>
           {error ? <p className={styles.error}>{error}</p> : null}
-          <p className={styles.progress}>{progress}</p>
+          {detail ? <p className={styles.progress}>{detail}</p> : null}
           <button
             type="button"
             className={styles.action}
@@ -125,5 +127,31 @@ function menuHeading(state: string): string {
       return 'Failed'
     default:
       return 'Indexing files for search'
+  }
+}
+
+/**
+ * The counts line. It stays off until the walk has seen a file, so the menu
+ * never shows a meaningless `0/0` while the model downloads or the scan starts.
+ */
+function indexDetail(
+  state: string,
+  done: number,
+  total: number,
+  remaining: number,
+  finishing: boolean
+): string | null {
+  if (total > 0) {
+    return finishing ? 'Finishing up…' : `${done}/${total} · ${remaining} remaining`
+  }
+  switch (state) {
+    case 'downloading':
+      return 'Preparing the search model…'
+    case 'indexing':
+      return 'Scanning the workspace…'
+    case 'paused':
+      return 'Paused before the scan started'
+    default:
+      return null
   }
 }

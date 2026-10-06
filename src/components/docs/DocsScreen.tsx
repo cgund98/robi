@@ -575,7 +575,9 @@ export function DocsScreen({ workspaceId, onAttachLine }: DocsScreenProps) {
   function noticeText(status: IndexStatus): string {
     switch (status.state) {
       case 'indexing':
-        return `Indexing ${status.files_done}/${status.files_total} — results may be incomplete`
+        return status.files_total > 0
+          ? `Indexing ${status.files_done}/${status.files_total} — results may be incomplete`
+          : 'Preparing search…'
       case 'downloading':
         return 'Preparing search…'
       case 'paused':

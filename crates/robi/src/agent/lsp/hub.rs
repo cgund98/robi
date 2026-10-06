@@ -39,6 +39,10 @@ type Resolve = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 pub struct LspHub {
     slots: Mutex<Slots>,
     resolve: Resolve,
+    /// The `PATH` the resolver searched. The child process runs on the same one,
+    /// so a server with a `#!` interpreter shebang (for example
+    /// `typescript-language-server`) can find its interpreter.
+    search_path: String,
     pub(crate) timing: Timing,
 }
 
@@ -51,18 +55,27 @@ impl LspHub {
     }
 
     /// Build the resolver against `path`, the same `PATH` the MCP host resolves
-    /// a child command on: the login shell's `PATH` with `path_entries`.
+    /// a child command on: the login shell's `PATH` with `path_entries`. The
+    /// resolved server runs with this `PATH` too.
     pub fn with_search_path(path: String) -> Arc<Self> {
-        Self::build(
+        let search = path.clone();
+        Self::build_with_path(
             Timing::default(),
             Arc::new(move |bin| catalog::find_on_path_in(&path, bin)),
+            search,
         )
     }
 
     pub fn build(timing: Timing, resolve: Resolve) -> Arc<Self> {
+        // No search path is named, so the child inherits this process's `PATH`.
+        Self::build_with_path(timing, resolve, String::new())
+    }
+
+    fn build_with_path(timing: Timing, resolve: Resolve, search_path: String) -> Arc<Self> {
         let hub = Arc::new(Self {
             slots: Mutex::new(HashMap::new()),
             resolve,
+            search_path,
             timing,
         });
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -129,7 +142,7 @@ impl LspHub {
                 }
                 return Err(Unavailable::NoServer);
             };
-            match client::spawn(&root, spec, &binary, self.timing).await {
+            match client::spawn(&root, spec, &binary, &self.search_path, self.timing).await {
                 Ok(client) => {
                     slot.crashes = 0;
                     slot.client = Some(Arc::clone(&client));
@@ -455,9 +468,15 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
         let spec = catalog::spec("rust-analyzer").unwrap();
-        let client = client::spawn(&dir, spec, &binary, Timing::default())
-            .await
-            .expect("rust-analyzer initializes");
+        let client = client::spawn(
+            &dir,
+            spec,
+            &binary,
+            &crate::agent::mcp::resolve_path(""),
+            Timing::default(),
+        )
+        .await
+        .expect("rust-analyzer initializes");
         assert!(client.is_running());
         drop(client);
         let _ = std::fs::remove_dir_all(&dir);
