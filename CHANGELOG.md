@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/cgund98/robi/compare/v0.1.6...v0.1.7) (2026-10-06)
+
+
+### Features
+
+* support rejection reason in code review ([5e5bcb5](https://github.com/cgund98/robi/commit/5e5bcb541807273058a54063ec4cb28c068c2ba5))
+
 ## [0.1.6](https://github.com/cgund98/robi/compare/v0.1.5...v0.1.6) (2026-10-06)
 
 
