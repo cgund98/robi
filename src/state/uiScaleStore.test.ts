@@ -7,7 +7,7 @@ import {
   readStoredUiScale,
   stepUiScale,
   UI_SCALE_DEFAULT,
-  useUiScaleStore,
+  uiScale,
   writeStoredUiScale
 } from './uiScaleStore'
 
@@ -76,16 +76,16 @@ describe('uiScaleStore', () => {
   })
 
   it('writes storage and applies the scale through the store', () => {
-    useUiScaleStore.getState().setScale(1.5)
-    expect(useUiScaleStore.getState().scale).toBe(1.5)
+    uiScale.setScale(1.5)
+    expect(uiScale.scale).toBe(1.5)
     expect(localStorage.getItem('robi.uiScale')).toBe('1.5')
     expect(document.documentElement.style.getPropertyValue('zoom')).toBe('1.5')
 
-    useUiScaleStore.getState().zoomOut()
-    expect(useUiScaleStore.getState().scale).toBe(1.25)
+    uiScale.zoomOut()
+    expect(uiScale.scale).toBe(1.25)
 
-    useUiScaleStore.getState().reset()
-    expect(useUiScaleStore.getState().scale).toBe(UI_SCALE_DEFAULT)
+    uiScale.reset()
+    expect(uiScale.scale).toBe(UI_SCALE_DEFAULT)
     expect(document.documentElement.style.getPropertyValue('zoom')).toBe('')
   })
 })

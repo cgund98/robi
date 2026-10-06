@@ -1,18 +1,15 @@
-import { ChevronDown, Folder, FolderOpen } from 'lucide-react'
-import { useState } from 'react'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+/** @jsxImportSource solid-js */
+import { DropdownMenu } from '@kobalte/core/dropdown-menu'
+import { ChevronDown, Folder, FolderOpen } from '../ui/icons'
+import { For } from 'solid-js'
 
 import { pickWorkspaceRoot } from '../../infra/pickWorkspaceRoot'
-import { useWorkspaceStore } from '../../state/workspaceStore'
 import styles from './WorkspaceSwitcher.module.css'
+import { patchWorkspaces, workspaces } from '../../state/workspaceStore'
 
 export function WorkspaceSwitcher() {
-  const [open, setOpen] = useState(false)
-  const workspaces = useWorkspaceStore((state) => state.workspaces)
-  const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
-  const selectWorkspace = useWorkspaceStore((state) => state.selectWorkspace)
-  const addWorkspace = useWorkspaceStore((state) => state.addWorkspace)
-  const active = workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null
+  const active = () =>
+    workspaces.workspaces.find((workspace) => workspace.id === workspaces.activeWorkspaceId) ?? null
 
   async function handleAdd() {
     try {
@@ -20,56 +17,60 @@ export function WorkspaceSwitcher() {
       if (root == null) {
         return
       }
-      await addWorkspace(root)
+      await workspaces.addWorkspace(root)
     } catch (err) {
-      useWorkspaceStore.setState({
+      patchWorkspaces({
         error: err instanceof Error ? err.message : 'Failed to open the folder dialog'
       })
     }
   }
 
   return (
-    <div className={styles.switcher}>
-      <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-        <DropdownMenu.Trigger className={styles.summary}>
-          <FolderIcon open={active !== null} />
-          <span className={styles.name}>{active?.name ?? 'Choose a workspace'}</span>
-          <span className={styles.chevron} aria-hidden>
-            <ChevronDown size={12} strokeWidth={1.5} />
+    <div class={styles.switcher}>
+      <DropdownMenu>
+        <DropdownMenu.Trigger class={styles.summary}>
+          <FolderIcon open={active() !== null} />
+          <span class={styles.name}>{active()?.name ?? 'Choose a workspace'}</span>
+          <span class={styles.chevron} aria-hidden="true">
+            <ChevronDown size={12} />
           </span>
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
-          <DropdownMenu.Content className={styles.panel} side="bottom" align="start" sideOffset={8}>
+          <DropdownMenu.Content class={styles.panel}>
             <DropdownMenu.RadioGroup
-              value={activeWorkspaceId ?? ''}
-              onValueChange={selectWorkspace}
+              value={workspaces.activeWorkspaceId ?? ''}
+              onChange={(id) => void workspaces.selectWorkspace(id)}
             >
-              {workspaces.map((workspace) => (
-                <DropdownMenu.RadioItem
-                  key={workspace.id}
-                  value={workspace.id}
-                  className={styles.item}
-                  title={workspace.root}
-                >
-                  <FolderIcon open={workspace.id === activeWorkspaceId} />
-                  <span className={styles.itemCopy}>
-                    <span className={styles.itemName}>{workspace.name}</span>
-                    <span className={styles.itemRoot}>{workspace.root}</span>
-                  </span>
-                </DropdownMenu.RadioItem>
-              ))}
+              <For each={workspaces.workspaces}>
+                {(workspace) => (
+                  <DropdownMenu.RadioItem
+                    value={workspace.id}
+                    class={styles.item}
+                    title={workspace.root}
+                  >
+                    <FolderIcon open={workspace.id === workspaces.activeWorkspaceId} />
+                    <span class={styles.itemCopy}>
+                      <span class={styles.itemName}>{workspace.name}</span>
+                      <span class={styles.itemRoot}>{workspace.root}</span>
+                    </span>
+                  </DropdownMenu.RadioItem>
+                )}
+              </For>
             </DropdownMenu.RadioGroup>
-            <DropdownMenu.Item className={styles.action} onSelect={() => void handleAdd()}>
+            <DropdownMenu.Item class={styles.action} onSelect={() => void handleAdd()}>
               Add workspace…
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
-      </DropdownMenu.Root>
+      </DropdownMenu>
     </div>
   )
 }
 
-function FolderIcon({ open = false }: { open?: boolean }) {
-  const Icon = open ? FolderOpen : Folder
-  return <Icon className={styles.folder} size={14} strokeWidth={1.75} aria-hidden />
+function FolderIcon(props: { open?: boolean }) {
+  return props.open ? (
+    <FolderOpen class={styles.folder} size={14} aria-hidden="true" />
+  ) : (
+    <Folder class={styles.folder} size={14} aria-hidden="true" />
+  )
 }

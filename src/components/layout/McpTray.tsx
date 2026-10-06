@@ -1,46 +1,48 @@
-import { useEffect } from 'react'
-import { Link } from 'react-router-dom'
+/** @jsxImportSource solid-js */
+import { A } from '@solidjs/router'
+import { createEffect, For, on, Show } from 'solid-js'
 
 import type { McpServer } from '../../api/mcp'
-import { useMcpStore } from '../../state/mcpStore'
-import { useWorkspaceStore } from '../../state/workspaceStore'
 import styles from './McpTray.module.css'
+import { mcp } from '../../state/mcpStore'
+import { workspaces } from '../../state/workspaceStore'
 
 export function McpTray() {
-  const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
-  const loadedId = useMcpStore((state) => state.workspaceId)
-  const servers = useMcpStore((state) => state.servers)
-  const visible = loadedId === workspaceId ? servers : []
+  const visible = () => (mcp.workspaceId === workspaces.activeWorkspaceId ? mcp.servers : [])
 
-  useEffect(() => {
-    if (!workspaceId) {
-      return
-    }
-    void useMcpStore.getState().refresh(workspaceId)
-  }, [workspaceId])
-
-  if (visible.length === 0) {
-    return null
-  }
+  createEffect(
+    on(
+      () => workspaces.activeWorkspaceId,
+      (id) => {
+        if (!id) {
+          return
+        }
+        void mcp.refresh(id)
+      }
+    )
+  )
 
   return (
-    <div className={styles.tray} aria-label="MCP servers">
-      {visible.map((server) => (
-        <Link
-          key={server.id}
-          className={`${styles.mark} ${markClass(server.status)}`}
-          to="/settings/mcp"
-          title={markTitle(server)}
-          aria-label={markTitle(server)}
-        >
-          {server.icon ? (
-            <img src={server.icon} alt="" />
-          ) : (
-            <span aria-hidden>{server.id.slice(0, 1).toUpperCase()}</span>
+    <Show when={visible().length > 0}>
+      <div class={styles.tray} aria-label="MCP servers">
+        <For each={visible()}>
+          {(server) => (
+            <A
+              class={`${styles.mark} ${markClass(server.status)}`}
+              href="/settings/mcp"
+              title={markTitle(server)}
+              aria-label={markTitle(server)}
+            >
+              {server.icon ? (
+                <img src={server.icon} alt="" />
+              ) : (
+                <span aria-hidden="true">{server.id.slice(0, 1).toUpperCase()}</span>
+              )}
+            </A>
           )}
-        </Link>
-      ))}
-    </div>
+        </For>
+      </div>
+    </Show>
   )
 }
 

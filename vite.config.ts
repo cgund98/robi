@@ -1,14 +1,9 @@
-import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vitest/config'
 import solid from 'vite-plugin-solid'
 // @ts-expect-error type error without @types/node package
 import process from 'node:process'
 
 const host = process.env.TAURI_DEV_HOST
-
-// Tauri sets this for `beforeDevCommand` and `beforeBuildCommand`. Desktop builds
-// compile the Solid tree only until the React shell is the one we ship again.
-const solidOnly = Boolean(process.env.TAURI_ENV_PLATFORM)
 
 function solidIndex(): Plugin {
   return {
@@ -28,21 +23,12 @@ function solidIndex(): Plugin {
       )
     },
     // vite-plugin-solid excludes every package that has a `solid` export so it
-    // can compile that JSX. That leaves `export *` files for WebKit. The React
-    // app prebundles its dependencies instead. Drop the exclusion so these
-    // resolve to their prebuilt JS and land in `.vite/deps` too.
+    // can compile that JSX. That leaves `export *` files for WebKit. Drop the
+    // exclusion so these resolve to their prebuilt JS and land in `.vite/deps`.
     configResolved(config) {
       config.optimizeDeps.exclude = (config.optimizeDeps.exclude ?? []).filter((dep) =>
         dep.startsWith('@tauri-apps/')
       )
-    },
-    transformIndexHtml: {
-      order: 'pre',
-      handler(html) {
-        return html
-          .replace('    <div id="solid-root"></div>\n', '')
-          .replace(/src="\/src\/main\.tsx[^"]*"/, 'src="/src/solid/main.tsx"')
-      }
     },
     // WebKit throws "Importing binding name 'default' cannot be resolved by star
     // export entries" when a default import crosses `export *`. Rewrite that
@@ -62,7 +48,7 @@ function solidIndex(): Plugin {
           }
           return `${code}\nexport default { ${names.join(', ')} }\n`
         }
-        if (file.includes('/src/solid/') && (file.endsWith('.tsx') || file.endsWith('.ts'))) {
+        if (file.includes('/src/') && (file.endsWith('.tsx') || file.endsWith('.ts'))) {
           const rewritten = code.replace(
             /import\s+(\w+)\s+from\s+(['"][^'"]+\.module\.css(?:\?[^'"]*)?['"])/g,
             'import * as $1 from $2'
@@ -118,29 +104,23 @@ function webkitRolldownPlugin() {
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: solidOnly
-    ? [solid({ include: /\/src\/solid\/.*\.tsx?$/ }), solidIndex()]
-    : [solid({ include: /\/src\/solid\/.*\.tsx?$/ }), react({ exclude: /\/src\/solid\// })],
-  // Same dep prebundle as the React app: scan from the Solid entry and bundle
-  // packages into `.vite/deps`, so WebKit never links raw `export *` files.
-  optimizeDeps: solidOnly
-    ? {
-        entries: ['src/solid/main.tsx'],
-        include: ['solid-markdown', 'remark-gfm'],
-        exclude: ['@tauri-apps/api', '@tauri-apps/plugin-dialog'],
-        rolldownOptions: { plugins: [webkitRolldownPlugin()] }
-      }
-    : undefined,
+  plugins: [solid({ include: /\/src\/.*\.tsx?$/ }), solidIndex()],
+  // Scan from the app entry and bundle packages into `.vite/deps`, so WebKit
+  // never links raw `export *` files.
+  optimizeDeps: {
+    entries: ['src/main.tsx'],
+    include: ['solid-markdown', 'remark-gfm'],
+    exclude: ['@tauri-apps/api', '@tauri-apps/plugin-dialog'],
+    rolldownOptions: { plugins: [webkitRolldownPlugin()] }
+  },
   // Tauri's macOS webview is WebKit. Same target as
   // https://github.com/riipandi/tauri-start-solid — downlevel the bundle so
   // `export *` plus a default import is not left for WebKit to reject.
-  build: solidOnly
-    ? {
-        target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
-        minify: process.env.TAURI_ENV_DEBUG ? false : 'oxc',
-        sourcemap: !!process.env.TAURI_ENV_DEBUG
-      }
-    : undefined,
+  build: {
+    target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
+    minify: process.env.TAURI_ENV_DEBUG ? false : 'oxc',
+    sourcemap: !!process.env.TAURI_ENV_DEBUG
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

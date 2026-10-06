@@ -88,7 +88,7 @@ is the affordance; the source file is still on disk.
 
 ## The chip
 
-`src/components/chat/AttachmentChip.tsx` is the one widget, used in three
+`src/features/chat/AttachmentChip.tsx` is the one widget, used in three
 places: the composer (with a remove button), the transcript, and the pending
 echo. It reads `filename (start-end)`, or just `filename` when there is no
 range.
@@ -102,7 +102,7 @@ a drop have no notion of a source line, so the composer only ever produces
 whole-file attachments (`filename`, no range). A range is a producer concern. The
 docs viewer is the built producer: hovering a rendered block in `#/docs` shows an
 add-to-chat button, and clicking it slices that block's raw markdown lines
-(`attachmentFromDocument` in `src/components/docs/docAttachment.ts`) and hands the
+(`attachmentFromDocument` in `src/features/docs/docAttachment.ts`) and hands the
 composer a ready `FileAttachment` with `start_line` and `end_line`. The block's
 source range comes from `data-md-lines`, which `AssistantMarkdown`'s document mode
 takes from the mdast `position` react-markdown carries on every element — the file
@@ -112,7 +112,7 @@ line, not a rendered one. See
 The review screen is a second range producer, and it sends directly rather than
 handing off to the composer. **Reject with reason** on a hunk builds one
 attachment from that hunk's `new_start` / `new_count` range
-(`src/components/review/reviewAttachment.ts`), and on a whole file builds a
+(`src/features/review/reviewAttachment.ts`), and on a whole file builds a
 whole-file attachment with no range. It decides the reject, returns to the chat,
 and calls `sendInstruction` with the attachment. See
 [code-review.md](../review/code-review.md).

@@ -1,7 +1,7 @@
 # Robi documentation
 
 Robi is a desktop coding assistant: a Rust core that runs an agent loop against a
-local workspace, and a React front end that renders the conversation.
+local workspace, and a Solid front end that renders the conversation.
 
 New here? Start with the [Quickstart](guides/quickstart.md).
 
@@ -42,7 +42,7 @@ use the app.
 - [Roadmap](roadmap.md) — what Robi ships, in what order, and the open decisions.
 - **Design docs** — one page per subsystem, grouped by the module it describes:
   [Core](design/core/agent-loop.md), [Providers](design/providers/providers-streaming.md),
-  [Shell](design/shell/chat-ui.md), [Persistence](design/persistence/persistence.md),
+  [Shell](design/shell/frontend-layout.md), [Persistence](design/persistence/persistence.md),
   [Tools](design/tools/read-tools.md), [Review](design/review/code-review.md),
   [Intelligence](design/intelligence/lsp.md), [Reach](design/reach/mcp.md),
   [Compression](design/compression/shell-output.md).

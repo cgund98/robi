@@ -1,40 +1,48 @@
+/** @jsxImportSource solid-js */
+import { For, Show } from 'solid-js'
+
 import { sessionDisplayTitle } from '../../api/sessions'
-import { noticePlacement, useErrorLog } from '../../state/errorLog'
-import { useChatStore } from '../../state/chatStore'
 import styles from './AppLayout.module.css'
+import { noticePlacement } from '../../state/errorLog'
+import { chat } from '../../state/chatStore'
+import { errors } from '../../state/errorLog'
 
 export function ErrorNotices() {
-  const entries = useErrorLog((state) => state.entries)
-  const acknowledge = useErrorLog((state) => state.acknowledge)
-  const sessions = useChatStore((state) => state.sessions)
-  const shown = entries.filter((entry) => noticePlacement(entry) === 'top')
-  if (shown.length === 0) {
-    return null
-  }
+  const shown = () => errors.entries.filter((entry) => noticePlacement(entry) === 'top')
 
   return (
-    <div className={styles.noticeStack}>
-      {shown.map((entry) => {
-        const session = entry.sessionId
-          ? sessions.find((item) => item.id === entry.sessionId)
-          : undefined
-        const label = session ? sessionDisplayTitle(session) : null
-        return (
-          <div key={entry.id} className={styles.banner} role="alert">
-            <span>
-              {label ? <span className={styles.noticeSession}>{label}. </span> : null}
-              {entry.message}
-            </span>
-            <button
-              type="button"
-              className={styles.bannerRetry}
-              onClick={() => acknowledge(entry.id)}
-            >
-              Dismiss
-            </button>
-          </div>
-        )
-      })}
-    </div>
+    <Show when={shown().length > 0}>
+      <div class={styles.noticeStack}>
+        <For each={shown()}>
+          {(entry) => {
+            const session = () =>
+              entry.sessionId
+                ? chat.sessions.find((item) => item.id === entry.sessionId)
+                : undefined
+            const label = () => {
+              const match = session()
+              return match ? sessionDisplayTitle(match) : null
+            }
+            return (
+              <div class={styles.banner} role="alert">
+                <span>
+                  <Show when={label()}>
+                    {(text) => <span class={styles.noticeSession}>{text()}. </span>}
+                  </Show>
+                  {entry.message}
+                </span>
+                <button
+                  type="button"
+                  class={styles.bannerRetry}
+                  onClick={() => errors.acknowledge(entry.id)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )
+          }}
+        </For>
+      </div>
+    </Show>
   )
 }

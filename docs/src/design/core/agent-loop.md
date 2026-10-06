@@ -70,7 +70,7 @@ the state contract; this is the interaction contract.
 sequenceDiagram
     autonumber
     actor U as User
-    participant UI as React UI
+    participant UI as Solid UI
     participant A as Agent
     participant S as MessageStore
     participant E as EventSink

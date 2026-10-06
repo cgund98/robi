@@ -35,7 +35,6 @@ button {
 }
 
 * {
-  scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: var(--bg-surface-active) transparent;
 }

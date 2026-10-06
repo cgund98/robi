@@ -1,5 +1,3 @@
-import { create } from 'zustand'
-
 import {
   compactSession,
   decideToolCall,
@@ -13,7 +11,7 @@ import {
   toFileInputs,
   type AttachmentMeta,
   type FileAttachment
-} from '../components/chat/textAttachments'
+} from '../features/chat/textAttachments'
 import {
   ApiError,
   createSession,
@@ -27,10 +25,16 @@ import {
   type ModelConfigBody
 } from '../api/sessions'
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
-import { claimComposerDraft, writeComposerDraft } from './composerDrafts'
-import { useErrorLog } from './errorLog'
-import type { ActiveWorkspace, ErrorReporter, StoreGet, StoreSet } from './storeDeps'
-import { useWorkspaceStore } from './workspaceStore'
+import { dropSentComposerDraft } from './composerDrafts'
+import { errors } from './errorLog'
+import {
+  mountStore,
+  type ActiveWorkspace,
+  type ErrorReporter,
+  type StoreGet,
+  type StoreSet
+} from './storeDeps'
+import { workspaces } from './workspaceStore'
 
 export type ChatDeps = ErrorReporter & ActiveWorkspace
 
@@ -718,7 +722,6 @@ export function createChatState(
             return false
           }
           const created = await createSession(workspaceId, undefined, draftConfig(get()))
-          claimComposerDraft(created.id, instruction)
           stampSessionInserted(created.id)
           const epoch = bumpHydrate()
           set((state) => ({
@@ -744,9 +747,10 @@ export function createChatState(
           }
           if (epoch !== hydrateEpoch) {
             set({ busy: false })
-            return false
+            return true
           }
           stampPending(created.id)
+          dropSentComposerDraft(created.id, instruction)
           set((state) => ({
             busy: false,
             pendingEcho: { sessionId: created.id, text, files: echoFiles },
@@ -755,12 +759,12 @@ export function createChatState(
               item.id === created.id ? { ...item, has_pending_agent: true } : item
             )
           }))
-          writeComposerDraft(created.id, '')
           return true
         }
 
         await submitInstruction(activeSessionId, text, images, fileInputs)
         stampPending(activeSessionId)
+        dropSentComposerDraft(activeSessionId, instruction)
         set((state) => ({
           busy: false,
           pendingEcho: { sessionId: activeSessionId, text, files: echoFiles },
@@ -769,7 +773,6 @@ export function createChatState(
             item.id === activeSessionId ? { ...item, has_pending_agent: true } : item
           )
         }))
-        writeComposerDraft(activeSessionId, '')
         return true
       } catch (err) {
         set({
@@ -1230,9 +1233,15 @@ export function createChatState(
   }
 }
 
-export const useChatStore = create<ChatState>((set, get) =>
+const chatHost = mountStore<ChatState>((set, get) =>
   createChatState(set, get, {
-    reportError: (message, sessionId) => useErrorLog.getState().report(message, sessionId ?? null),
-    activeWorkspaceId: () => useWorkspaceStore.getState().activeWorkspaceId
+    reportError: (message, sessionId) => errors.report(message, sessionId ?? null),
+    activeWorkspaceId: () => workspaces.activeWorkspaceId
   })
 )
+
+export const chat = chatHost.state
+
+export function patchChat(partial: Partial<ChatState>): void {
+  chatHost.set(partial)
+}

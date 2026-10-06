@@ -1,34 +1,24 @@
-import React from 'react'
-import ReactDOM from 'react-dom/client'
+/** @jsxImportSource solid-js */
+import { render } from 'solid-js/web'
 
 import { resolveApiBase } from './api/client'
-import { App } from './app/App'
 import { withoutDocsRoute } from './app/startupRoute'
-import { readUiRenderer } from './app/uiRenderer'
-import { applyUiScale, useUiScaleStore } from './state/uiScaleStore'
+import { applyUiScale, uiScale } from './state/uiScaleStore'
 import './styles/global.css'
+import { SolidApp } from './app/SolidApp'
+
+const root = document.getElementById('root')
+if (!root) {
+  throw new Error('Missing #root')
+}
 
 void resolveApiBase().then(() => {
-  // Apply the remembered UI scale before the first paint so the window does not
-  // flash at 100%.
-  void applyUiScale(useUiScaleStore.getState().scale).catch(() => {
+  void applyUiScale(uiScale.scale).catch(() => {
     // The default scale is close enough to carry on with.
   })
-  // Docs starts off. A `#/docs` hash kept from the last launch would reopen the
-  // viewer; clear it before the router mounts.
   const hash = withoutDocsRoute(window.location.hash)
   if (hash !== window.location.hash) {
     window.history.replaceState(null, '', hash)
   }
-  if (readUiRenderer() === 'solid') {
-    document.getElementById('root')?.setAttribute('hidden', '')
-    void import('./solid/main.tsx')
-    return
-  }
-  document.getElementById('solid-root')?.setAttribute('hidden', '')
-  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
-  )
+  render(() => <SolidApp />, root)
 })

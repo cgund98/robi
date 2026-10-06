@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+/** @jsxImportSource solid-js */
+import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 
 import { apiBaseUrl } from '../../api/client'
 import styles from './ApiStatus.module.css'
@@ -7,9 +8,9 @@ const POLL_MS = 5_000
 const TIMEOUT_MS = 3_000
 
 export function ApiStatus() {
-  const [reason, setReason] = useState<string | null>(null)
+  const [reason, setReason] = createSignal<string | null>(null)
 
-  useEffect(() => {
+  onMount(() => {
     let cancelled = false
 
     const check = async () => {
@@ -18,8 +19,6 @@ export function ApiStatus() {
       const base = apiBaseUrl()
       const url = base ? `${base}/api/v1/health` : '/api/v1/health'
       try {
-        // Direct fetch. The typed client builds a Request that already owns
-        // this signal, and WebKit rejects a second fetch with that signal.
         const response = await fetch(url, { signal: controller.signal })
         if (!cancelled) {
           setReason(failureReason(undefined, response, controller.signal.aborted))
@@ -35,20 +34,20 @@ export function ApiStatus() {
 
     void check()
     const id = window.setInterval(() => void check(), POLL_MS)
-    return () => {
+    onCleanup(() => {
       cancelled = true
       window.clearInterval(id)
-    }
-  }, [])
-
-  if (!reason) {
-    return null
-  }
+    })
+  })
 
   return (
-    <span className={styles.mark} role="status" title={reason} aria-label={reason}>
-      !
-    </span>
+    <Show when={reason()}>
+      {(message) => (
+        <span class={styles.mark} role="status" title={message()} aria-label={message()}>
+          !
+        </span>
+      )}
+    </Show>
   )
 }
 

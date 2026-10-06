@@ -95,7 +95,7 @@ deleted. A hunk reject attaches that hunk's current lines, `start_line` to
 `end_line` from `new_start` and `new_count`; a pure deletion attaches the
 deletion point, and a file emptied by the deletion falls back to the baseline
 lines the hunk removed. The attachment builder is
-`src/components/review/reviewAttachment.ts`. The transport is file-attachments:
+`src/features/review/reviewAttachment.ts`. The transport is file-attachments:
 see [file-attachments.md](../shell/file-attachments.md).
 
 The right pane shows the selected file. The default is the

@@ -29,8 +29,13 @@ export function writeComposerDraft(key: string, value: string): void {
   }
 }
 
-/** Move a new-chat draft onto the session row created by its first send. */
-export function claimComposerDraft(sessionId: string, text: string): void {
-  writeComposerDraft('draft', '')
-  writeComposerDraft(sessionId, text)
+/**
+ * Remove a draft after a successful send. A draft the user typed while the
+ * send was in flight stays; only the text that was sent is dropped.
+ */
+export function dropSentComposerDraft(key: string, sent: string): void {
+  const current = drafts.get(key)
+  if (current === undefined || current === sent) {
+    writeComposerDraft(key, '')
+  }
 }

@@ -1,6 +1,4 @@
-import { create } from 'zustand'
-
-import type { StoreSet } from './storeDeps'
+import { mountStore, type StoreSet } from './storeDeps'
 
 /** One API call from this page load. Not written to disk. */
 export type RequestEntry = {
@@ -39,6 +37,6 @@ export function createRequestLog(set: StoreSet<RequestLogState>): RequestLogStat
   }
 }
 
-export const useRequestLog = create<RequestLogState>((set) =>
-  createRequestLog((partial) => set(partial))
-)
+const requestHost = mountStore<RequestLogState>((set) => createRequestLog(set))
+
+export const requests = requestHost.state

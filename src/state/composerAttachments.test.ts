@@ -5,7 +5,7 @@ import {
   subscribeComposerAttachments,
   takeComposerAttachments
 } from './composerAttachments'
-import type { FileAttachment } from '../components/chat/textAttachments'
+import type { FileAttachment } from '../features/chat/textAttachments'
 
 function file(name: string): FileAttachment {
   return { name, contentBase64: '', size: 0 }

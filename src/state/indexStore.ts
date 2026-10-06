@@ -1,9 +1,9 @@
-import { create } from 'zustand'
+import { mountStore } from './storeDeps'
 
 import { getIndexStatus, setIndexState, type IndexStatus } from '../api/codeIndex'
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
 import type { ActiveWorkspace, StoreGet, StoreSet } from './storeDeps'
-import { useWorkspaceStore } from './workspaceStore'
+import { workspaces } from './workspaceStore'
 
 /** Pause or resume has been requested and the task has not caught up. */
 export type IndexPending = 'pause' | 'resume'
@@ -88,11 +88,17 @@ export function createIndexState(
   }
 }
 
-export const useIndexStore = create<IndexStore>((set, get) =>
+const indexHost = mountStore<IndexStore>((set, get) =>
   createIndexState(set, get, {
-    activeWorkspaceId: () => useWorkspaceStore.getState().activeWorkspaceId
+    activeWorkspaceId: () => workspaces.activeWorkspaceId
   })
 )
+
+export const index = indexHost.state
+
+export function patchIndex(partial: Partial<IndexStore>): void {
+  indexHost.set(partial)
+}
 
 function clearPending(pending: IndexPending | null, state: string): IndexPending | null {
   if (!pending) {

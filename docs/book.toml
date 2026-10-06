@@ -1,6 +1,6 @@
 [book]
 title = "Robi"
-description = "A desktop coding assistant: a Rust core and a React front end."
+description = "A desktop coding assistant: a Rust core and a Solid front end."
 authors = ["Callum Gundlach"]
 src = "src"
 

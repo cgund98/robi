@@ -115,7 +115,9 @@ with the agent in one place.
 **The tray is an overlay, and its width is adjustable.** It is `position:
 absolute` against the main column, pinned to the top, right, and bottom. It
 opens at `min(420px, 42vw)`, clamped to 300–900 px and to a maximum that always
-leaves 320 px of the page visible on the left. A drag handle runs down its left
+leaves 320 px of the main column visible on the left. That width is the column
+beside the sidebar, so the file tree stays outside the tray and can still be
+clicked. A drag handle runs down its left
 edge: dragging left widens it and dragging right narrows it, the cursor over it
 is `col-resize`, and the handle lights up in `--accent` while hovered or
 dragged. The handle is focusable (`role="separator"`,
@@ -311,7 +313,7 @@ case folding never shifts a match.
 **Highlighting does not touch the DOM.** Matches are held as `Range` objects and
 registered with the **CSS Custom Highlight API** (`CSS.highlights`), styled by
 `::highlight(robi-doc-find)` and `::highlight(robi-doc-find-current)` in the
-screen's stylesheet. The React-managed document is never mutated, so a re-render
+screen's stylesheet. The rendered document is never mutated, so a re-render
 of `AssistantMarkdown` — which happens on every screen render, because
 `onDocLink` is a new function each time — cannot corrupt the search state. The
 active-match registry entry is set after the all-matches one, so it paints on
@@ -337,8 +339,8 @@ ranges and the count stay correct.
 
 ### Rejected alternatives
 
-- **Wrapping matches in `<mark>`.** Injecting nodes fights React's
-  reconciliation: `AssistantMarkdown` re-renders on every parent render, so the
+- **Wrapping matches in `<mark>`.** Injecting nodes fights a re-render:
+  `AssistantMarkdown` re-renders on every parent render, so the
   injected nodes would be clobbered or would break the tree.
 - **A rehype plugin that rewrites the tree before render.** It cannot report a
   total count and a current index back to the bar cleanly, and it still cannot
@@ -359,7 +361,7 @@ ranges and the count stay correct.
 - **Persisting the collapsed set.** The default-open tree is small after the
   ignore filter; a stored fold state is a setting nobody asked for.
 - **Injecting the attach button into each rendered block.** It fights the same
-  React reconciliation the find feature avoids (the viewer never mutates the
+  re-render the find feature avoids (the viewer never mutates the
   rendered DOM), it is clipped by a `pre` or a diagram's `overflow`, and it
   cannot sit on a table row. One overlay button positioned from the hovered
   block is simpler.

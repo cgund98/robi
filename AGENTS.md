@@ -1,7 +1,7 @@
 # Project Instructions
 
 Robi is a desktop coding assistant: a Rust core that runs an agent loop against a
-local workspace, and a React front end that renders the conversation.
+local workspace, and a Solid front end that renders the conversation.
 
 Start with [docs/src/roadmap.md](docs/src/roadmap.md) for what ships and in what order.
 The design for the current milestone is
@@ -21,7 +21,7 @@ direction. Promote it to a real crate later only when there is a reason — see
 | `crates/robi-core` | crate | The agent loop: transcript, tool trait and registry, approval state, events. No I/O |
 | `crates/robi` | crate | The implementations that do I/O. Depends on `robi-core` |
 | `src-tauri` | crate | The Tauri app: commands, IPC, wiring. Depends on `robi` |
-| `src` | — | React + TypeScript front end |
+| `src` | — | Solid + TypeScript front end |
 | `docs` | — | The mdBook: guides, concepts, reference, and the internal design docs |
 
 Arrows point at the dependency, and the direction never reverses:
@@ -118,28 +118,31 @@ manifest, so deferring costs little.
 
 ## Frontend
 
-The desktop shell is a React app in `src/` inside the Tauri crate at `src-tauri/`.
+The desktop shell is a Solid app in `src/` inside the Tauri crate at `src-tauri/`.
+Feature slices, shared chrome, and where a new component goes are in
+[docs/src/design/shell/frontend-layout.md](docs/src/design/shell/frontend-layout.md).
+Solid, API, and SSE rules for that tree are in [src/AGENTS.md](src/AGENTS.md).
 The package manager is pnpm. The Vite dev server listens on port **1430**, strict,
 so it does not share a port with other local Tauri apps.
 
 Visual language (dark tokens, shell layout, chat chrome):
 [docs/src/design/shell/visual-style.md](docs/src/design/shell/visual-style.md). Use those CSS
 variables; do not invent one-off hex or import another product's theme.
-Menus and dialogs use Radix primitives, styled with those tokens.
+Menus and dialogs use Kobalte primitives, styled with those tokens.
 
 | Task | Command |
 |------|---------|
 | Web-only Vite dev | `pnpm dev` (port **1430**, strict; proxies `/api` → `127.0.0.1:1431`) |
 | Local API | `cargo run -p robi --bin robi-api` (default `127.0.0.1:1431`) |
-| Desktop app | `pnpm tauri dev` (Solid UI only, for now) |
+| Desktop app | `pnpm tauri dev` |
 | Production web build | `pnpm build` |
 | Lint (ESLint + Prettier) | `pnpm run lint` |
 | Format | `pnpm run format` |
 | Typecheck | `pnpm run typecheck` |
 | Generate API client types | `pnpm run generate:api` (from `openapi/openapi.json`) |
 
-`pnpm dev` serves the web UI alone and can switch renderers. `pnpm tauri dev`
-opens the desktop window on a Solid-only Vite server, not that same page.
+`pnpm dev` serves the web UI alone. `pnpm tauri dev` opens the desktop window
+on that same page.
 Chat-session HTTP goes through the Vite `/api` proxy
 to `robi-api`; run the API alongside the web UI. The shell opens one
 `EventSource` on `/api/v1/events/stream` through that proxy — see

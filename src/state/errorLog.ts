@@ -1,6 +1,4 @@
-import { create } from 'zustand'
-
-import type { StoreSet } from './storeDeps'
+import { mountStore, type StoreSet } from './storeDeps'
 
 /** One error the shell has seen since this page load. Not written to disk. */
 export type ErrorEntry = {
@@ -69,7 +67,9 @@ export function createErrorLog(set: StoreSet<ErrorLogState>): ErrorLogState {
   }
 }
 
-export const useErrorLog = create<ErrorLogState>((set) => createErrorLog((partial) => set(partial)))
+const errorHost = mountStore<ErrorLogState>((set) => createErrorLog(set))
+
+export const errors = errorHost.state
 
 /**
  * Where an open error is drawn. Every open error sits under the window title,

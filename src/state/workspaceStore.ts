@@ -1,9 +1,9 @@
-import { create } from 'zustand'
+import { mountStore } from './storeDeps'
 
 import { focusMcp } from '../api/mcp'
 import { createWorkspace, deleteWorkspace, listWorkspaces, type Workspace } from '../api/workspaces'
 import type { ErrorReporter, StoreGet, StoreSet } from './storeDeps'
-import { useErrorLog } from './errorLog'
+import { errors } from './errorLog'
 
 function noteError(deps: ErrorReporter, message: string): string {
   deps.reportError(message, null)
@@ -142,8 +142,14 @@ export function createWorkspaceState(
   }
 }
 
-export const useWorkspaceStore = create<WorkspaceState>((set, get) =>
+const workspaceHost = mountStore<WorkspaceState>((set, get) =>
   createWorkspaceState(set, get, {
-    reportError: (message) => useErrorLog.getState().report(message, null)
+    reportError: (message) => errors.report(message, null)
   })
 )
+
+export const workspaces = workspaceHost.state
+
+export function patchWorkspaces(partial: Partial<WorkspaceState>): void {
+  workspaceHost.set(partial)
+}

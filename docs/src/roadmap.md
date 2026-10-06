@@ -1,7 +1,7 @@
 # Robi Roadmap
 
 Robi is a desktop coding assistant: a Rust core that runs an agent loop against a
-local workspace, and a React front end that renders the conversation.
+local workspace, and a Solid front end that renders the conversation.
 
 This page is the plan of record for what Robi ships, in what order, and which
 decisions are still open. Each milestone that needs design work links to a
@@ -17,7 +17,7 @@ Robi models its behavior on two existing projects, both of which are **Go**:
 | `../gopi` | A terminal coding agent: a Bubble Tea TUI over `gogent` | Agent modes, tool set and naming, subagents, plan files, prompt assembly, approval model, session store |
 | `../gogent` | The provider and agent-loop library | Loop shape, message model, tool trait, approval lifecycle, event broadcaster |
 
-Robi is Rust + React + Tauri, so neither is a dependency. Treat both as a
+Robi is Rust + Solid + Tauri, so neither is a dependency. Treat both as a
 **behavioral spec**: match the semantics that gopi has already validated, and
 rewrite the implementation. The mapping is in [Porting gopi](#porting-gopi).
 
@@ -506,7 +506,7 @@ made. The fix and its tests are in `robi-core`; see
 
 ### F2.1 Tauri shell and IPC
 
-- React + TypeScript + Vite front end in `src/`. Tauri 2.x is the current stable
+- Solid + TypeScript + Vite front end in `src/`. Tauri 2.x is the current stable
   line ([Tauri](https://v2.tauri.app/)).
 - Commands in, events out: the UI posts a message or settles an approval over
   HTTP, and subscribes to `GET /api/v1/events/stream` for updates. The stream
@@ -1166,7 +1166,7 @@ What to take, what to leave. Names refer to `../gopi`.
 | `internal/session/` | `crates/robi::domain::chat_session`, `crates/robi::adapters` | Port the shape, drop the 50-session cap |
 | `internal/review/` | `crates/robi::agent::review` | Port the diff; the review object is new |
 | `internal/app/` mode wiring | `robi-core::mode` | Port the registry-per-mode idea; drop the TUI coupling |
-| `internal/tui/` | `src/` (React) | Behavior only: what a tool card shows, when approval pauses |
+| `internal/tui/` | `src/` (Solid) | Behavior only: what a tool card shows, when approval pauses |
 | `internal/models/` catalog | `crates/robi::agent::providers::catalog` | Port context windows; they drive the context meter. Prices are deferred to M3's cost display. Tool-less models are not listed at all. That catalog rule is the local "D9" in `providers-streaming.md`, not the sandbox D9 |
 | `docs/` (mdbook, 30 pages) | `docs/` | Adopt the taxonomy: **guides teach, concepts explain, reference states facts.** One job per page |
 | — | new | Streaming, cancellation API, checkpoints, LSP, index, tool-output compression |

@@ -4,8 +4,9 @@
   flex-shrink: 0;
   gap: 1px;
   padding: 2px;
+  border: 1px solid var(--rule);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  background: var(--bg-canvas);
 }
 
 .button {
@@ -17,13 +18,14 @@
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   color: var(--ink-muted);
   cursor: pointer;
 }
 
 .button:hover:not(.buttonOn) {
+  background: var(--bg-surface);
   color: var(--ink);
 }
 

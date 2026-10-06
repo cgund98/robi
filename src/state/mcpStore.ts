@@ -1,9 +1,7 @@
-import { create } from 'zustand'
-
 import { listMcpServers, type McpServer } from '../api/mcp'
 import { fetchStillCurrent, startFetch } from '../app/latestFetch'
-import type { ActiveWorkspace, StoreSet } from './storeDeps'
-import { useWorkspaceStore } from './workspaceStore'
+import { mountStore, type ActiveWorkspace, type StoreSet } from './storeDeps'
+import { workspaces } from './workspaceStore'
 
 export type McpState = {
   workspaceId: string | null
@@ -35,8 +33,14 @@ export function createMcpState(set: StoreSet<McpState>, deps: ActiveWorkspace): 
   }
 }
 
-export const useMcpStore = create<McpState>((set) =>
-  createMcpState((partial) => set(partial), {
-    activeWorkspaceId: () => useWorkspaceStore.getState().activeWorkspaceId
+const mcpHost = mountStore<McpState>((set) =>
+  createMcpState(set, {
+    activeWorkspaceId: () => workspaces.activeWorkspaceId
   })
 )
+
+export const mcp = mcpHost.state
+
+export function patchMcp(partial: Partial<McpState>): void {
+  mcpHost.set(partial)
+}

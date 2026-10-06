@@ -1,7 +1,5 @@
 import js from '@eslint/js'
 import eslintConfigPrettier from 'eslint-config-prettier'
-import reactHooks from 'eslint-plugin-react-hooks'
-import reactRefresh from 'eslint-plugin-react-refresh'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
@@ -14,8 +12,7 @@ export default tseslint.config(
       '.pnpm-store/**',
       'target/**',
       'crates/**',
-      'docs/book/**',
-      'src/solid/**'
+      'docs/book/**'
     ]
   },
   js.configs.recommended,
@@ -26,13 +23,11 @@ export default tseslint.config(
       ecmaVersion: 2020,
       globals: globals.browser
     },
-    plugins: {
-      'react-hooks': reactHooks,
-      'react-refresh': reactRefresh
-    },
     rules: {
-      ...reactHooks.configs.recommended.rules,
-      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }]
+      // Solid reads a signal as a statement to subscribe, and assigns DOM refs
+      // by compiling `ref={name}` against a `let` that has no other write.
+      '@typescript-eslint/no-unused-expressions': 'off',
+      'no-unassigned-vars': 'off'
     }
   },
   {

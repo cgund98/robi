@@ -37,11 +37,11 @@ vi.mock('../api/sessions', async (importOriginal) => {
 })
 
 import { decideToolCall, getMessage } from '../api/messages'
-import { useChatStore } from './chatStore'
+import { chat, patchChat } from './chatStore'
 
 describe('decideCall', () => {
   afterEach(() => {
-    useChatStore.setState({
+    patchChat({
       busy: false,
       error: null,
       sessions: [],
@@ -68,7 +68,7 @@ describe('decideCall', () => {
         }
       ]
     } as never)
-    useChatStore.setState({
+    patchChat({
       sessions: [{ id: 's1', has_pending_agent: false } as never],
       messagesBySession: {
         s1: [
@@ -90,12 +90,12 @@ describe('decideCall', () => {
       }
     })
 
-    await useChatStore.getState().decideCall('s1', 'c1', 'approve')
+    await chat.decideCall('s1', 'c1', 'approve')
 
     expect(getMessage).toHaveBeenCalledWith('s1', 'm1')
-    expect(useChatStore.getState().phaseBySession.s1).toBe('idle')
-    expect(useChatStore.getState().error).toBe('chat session is running')
-    expect(useChatStore.getState().sessions[0]?.has_pending_agent).toBe(false)
+    expect(chat.phaseBySession.s1).toBe('idle')
+    expect(chat.error).toBe('chat session is running')
+    expect(chat.sessions[0]?.has_pending_agent).toBe(false)
   })
 
   it('keeps thinking when the reloaded call is no longer waiting', async () => {
@@ -114,7 +114,7 @@ describe('decideCall', () => {
         }
       ]
     } as never)
-    useChatStore.setState({
+    patchChat({
       messagesBySession: {
         s1: [
           {
@@ -135,19 +135,17 @@ describe('decideCall', () => {
       }
     })
 
-    await useChatStore.getState().decideCall('s1', 'c1', 'reject')
+    await chat.decideCall('s1', 'c1', 'reject')
 
-    expect(useChatStore.getState().phaseBySession.s1).toBe('thinking')
-    expect(useChatStore.getState().error).toBeNull()
-    expect(useChatStore.getState().messagesBySession.s1?.[0]?.tool_calls[0]?.approval_status).toBe(
-      'approved'
-    )
+    expect(chat.phaseBySession.s1).toBe('thinking')
+    expect(chat.error).toBeNull()
+    expect(chat.messagesBySession.s1?.[0]?.tool_calls[0]?.approval_status).toBe('approved')
   })
 })
 
 describe('selectSession', () => {
   afterEach(() => {
-    useChatStore.setState({
+    patchChat({
       activeSessionId: null,
       draftSelected: false,
       messagesBySession: {},
@@ -156,16 +154,16 @@ describe('selectSession', () => {
   })
 
   it('reloads the review so the strip reflects the opened session', async () => {
-    await useChatStore.getState().selectSession('s1')
+    await chat.selectSession('s1')
 
-    expect(useChatStore.getState().activeSessionId).toBe('s1')
-    expect(useChatStore.getState().reviewTickBySession.s1).toBe(1)
+    expect(chat.activeSessionId).toBe('s1')
+    expect(chat.reviewTickBySession.s1).toBe(1)
   })
 
   it('does not reload the review when the session is already open', async () => {
-    await useChatStore.getState().selectSession('s1')
-    await useChatStore.getState().selectSession('s1')
+    await chat.selectSession('s1')
+    await chat.selectSession('s1')
 
-    expect(useChatStore.getState().reviewTickBySession.s1).toBe(1)
+    expect(chat.reviewTickBySession.s1).toBe(1)
   })
 })

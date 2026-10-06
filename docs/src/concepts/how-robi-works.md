@@ -1,7 +1,7 @@
 # How Robi works
 
 Robi is a desktop coding assistant. A Rust core runs an agent loop against a
-local workspace, a Tauri shell hosts it, and a React front end renders the
+local workspace, a Tauri shell hosts it, and a Solid front end renders the
 conversation. The design keeps the interesting part — the loop — in a crate that
 cannot do I/O, so its behavior is provable in a unit test.
 
@@ -24,7 +24,7 @@ Dependencies point one way and never reverse.
   live under `agent`. Each is a module, promoted to its own crate only for a
   real reason.
 - **`src-tauri`** — the Tauri application: commands, IPC, wiring.
-- **`src`** — the React + TypeScript front end.
+- **`src`** — the Solid + TypeScript front end.
 
 The desktop app and `robi-api` share one composition root, `bootstrap`. The
 window serves the API in-process and the webview calls the bound loopback port.

@@ -3,7 +3,7 @@
 The UI learns what the loop did through one Server-Sent Events stream. The loop
 emits a core `Event` on `EventSink`. `crates/robi` wraps that event in a
 CloudEvents envelope, fans it out in process, and writes the envelope as JSON
-on `GET /api/v1/events/stream`. The React shell opens one `EventSource`.
+on `GET /api/v1/events/stream`. The Solid shell opens one `EventSource`.
 
 This page is the design for **event delivery** in **M2** of the
 [roadmap](../../roadmap.md). It settles the "events out" half of decision **D1**:
@@ -191,7 +191,7 @@ screen. Message frames for another session stay filtered out.
 Emit-after-persist still holds. `message_added` and `message_updated` name ids
 the store can return. `message_delta` names the message the model stream
 already fixed, before the finished row exists. The shell does not append that
-text. Those two events are the cue to `GET` the row. See [React](#react).
+text. Those two events are the cue to `GET` the row. See [Solid](#solid).
 
 A reconnect does not replay deltas. On `EventSource` `open`, including the
 first connect, the shell refetches the session list and the active transcript.
@@ -212,14 +212,13 @@ of a token burst.
 `BusEventSink::emit` maps `Event` to `EventEnvelope` and publishes. A
 subscriber that has disconnected is removed; that is not an error for the loop.
 
-## React
+## Solid
 
-One connection for the shell, mounted from `AppLayout`.
+One connection for the shell, mounted from `ChatChrome`.
 
 | Piece | Role |
 |---|---|
-| `src/infra/useReconnectingEventSource.ts` | One `EventSource`, reconnect on error, an epoch so a stale handler cannot apply |
-| `src/app/useAgentEventsSSE.ts` | Builds `/api/v1/events/stream` with the open workspace's `workspace_id` and the agent `event_types`. It does not set `session_id` |
+| `src/features/chat/useAgentEvents.ts` | One `EventSource` on `/api/v1/events/stream`, with the open workspace's `workspace_id` and the agent `event_types`. It does not set `session_id`. Reconnects on error, with an epoch so a stale handler cannot apply |
 | Envelope parse | `JSON.parse(event.data)` as `EventEnvelope`; dispatch on `type` |
 
 Handlers stay thin. They refetch HTTP and update the activity phase. They do

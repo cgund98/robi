@@ -1,10 +1,11 @@
-import { memo, useEffect, useRef, useState } from 'react'
-import { LayoutGrid, Settings, SquarePen } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+/** @jsxImportSource solid-js */
+import { useNavigate } from '@solidjs/router'
+import { Cog, PencilSquare, Squares } from '../ui/icons'
+import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
-import { HistoryNav } from './HistoryNav'
 import styles from './Sidebar.module.css'
+import { HistoryNav } from './HistoryNav'
 import { ViewToggle } from './ViewToggle'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
@@ -14,9 +15,7 @@ type SidebarProps = {
   draftSelected?: boolean
   docsSelected?: boolean
   disabled?: boolean
-  /** Sessions whose agent is still running. */
   runningSessionIds?: ReadonlySet<string>
-  /** Sessions waiting on a tool approval. */
   awaitingSessionIds?: ReadonlySet<string>
   onSelectSession: (id: string) => void
   onNewSession: () => void
@@ -24,19 +23,122 @@ type SidebarProps = {
   onDeleteSession: (id: string) => void
 }
 
-const SessionRow = memo(function SessionRow({
-  id,
-  title,
-  active,
-  running,
-  awaiting,
-  disabled,
-  onSelect,
-  onRename,
-  onDelete
-}: {
+const INITIAL_VISIBLE = 5
+const SHOW_MORE_STEP = 10
+
+export function Sidebar(props: SidebarProps) {
+  const navigate = useNavigate()
+  const [visibleCount, setVisibleCount] = createSignal(INITIAL_VISIBLE)
+  let previousNewestId = props.sessions[0]?.id
+
+  createEffect(() => {
+    const newestId = props.sessions[0]?.id
+    if (previousNewestId === newestId) {
+      return
+    }
+    const previous = previousNewestId
+    previousNewestId = newestId
+    if (previous !== undefined && !props.sessions.some((session) => session.id === previous)) {
+      setVisibleCount(INITIAL_VISIBLE)
+    }
+  })
+
+  const shownCount = createMemo(() => {
+    const activeIndex = props.sessions.findIndex((session) => session.id === props.activeSessionId)
+    return Math.max(visibleCount(), activeIndex + 1)
+  })
+  const visibleSessions = createMemo(() => props.sessions.slice(0, shownCount()))
+  const hiddenCount = () => props.sessions.length - visibleSessions().length
+  const visibleIds = createMemo(() => visibleSessions().map((session) => session.id))
+
+  return (
+    <aside class={styles.sidebar}>
+      <div class={styles.navTools}>
+        <HistoryNav />
+        <ViewToggle docsOpen={props.docsSelected ?? false} />
+      </div>
+
+      <WorkspaceSwitcher />
+
+      <button
+        type="button"
+        class={`${styles.navLink} ${props.draftSelected ? styles.navLinkActive : ''}`}
+        onClick={() => props.onNewSession()}
+        disabled={props.disabled}
+        aria-current={props.draftSelected ? 'page' : undefined}
+      >
+        <span class={styles.navIcon} aria-hidden="true">
+          <PencilSquare size={18} />
+        </span>
+        New chat
+      </button>
+
+      <button
+        type="button"
+        class={styles.navLink}
+        disabled={props.disabled}
+        onClick={() => navigate('/workspaces')}
+      >
+        <span class={styles.navIcon} aria-hidden="true">
+          <Squares size={18} />
+        </span>
+        Workspaces
+      </button>
+
+      <div class={styles.section}>
+        <div class={styles.sectionLabel}>Recents</div>
+        <ul class={styles.sessionList}>
+          <For each={visibleIds()}>
+            {(id) => (
+              <SessionRow
+                id={id}
+                sessions={props.sessions}
+                active={id === props.activeSessionId}
+                running={props.runningSessionIds?.has(id) ?? false}
+                awaiting={
+                  !(props.runningSessionIds?.has(id) ?? false) &&
+                  (props.awaitingSessionIds?.has(id) ?? false)
+                }
+                disabled={props.disabled ?? false}
+                onSelect={props.onSelectSession}
+                onRename={props.onRenameSession}
+                onDelete={props.onDeleteSession}
+              />
+            )}
+          </For>
+        </ul>
+        <Show when={hiddenCount() > 0}>
+          <button
+            type="button"
+            class={styles.showMore}
+            onClick={() => setVisibleCount(shownCount() + SHOW_MORE_STEP)}
+            disabled={props.disabled}
+          >
+            Show more
+          </button>
+        </Show>
+      </div>
+
+      <div class={styles.footer}>
+        <button
+          type="button"
+          class={styles.navLink}
+          disabled={props.disabled}
+          onClick={() => navigate('/settings/providers')}
+        >
+          <span class={styles.navIcon} aria-hidden="true">
+            <Cog size={18} />
+          </span>
+          Settings
+        </button>
+      </div>
+    </aside>
+  )
+}
+
+function SessionRow(props: {
   id: string
-  title: string
+  sessions: ChatSession[]
   active: boolean
   running: boolean
   awaiting: boolean
@@ -45,177 +147,72 @@ const SessionRow = memo(function SessionRow({
   onRename: (id: string) => void
   onDelete: (id: string) => void
 }) {
+  const title = () => sessionDisplayTitle(props.sessions.find((session) => session.id === props.id))
+
   return (
-    <li className={styles.sessionRow}>
+    <li class={styles.sessionRow}>
       <button
         type="button"
-        className={`${styles.sessionButton} ${active ? styles.sessionButtonActive : ''}`}
-        onClick={() => onSelect(id)}
-        title={running ? `${title} (running)` : awaiting ? `${title} (needs approval)` : title}
+        class={`${styles.sessionButton} ${props.active ? styles.sessionButtonActive : ''}`}
+        onClick={() => props.onSelect(props.id)}
+        title={
+          props.running
+            ? `${title()} (running)`
+            : props.awaiting
+              ? `${title()} (needs approval)`
+              : title()
+        }
         aria-label={
-          running
-            ? `${title}, agent running`
-            : awaiting
-              ? `${title}, waiting on approval`
+          props.running
+            ? `${title()}, agent running`
+            : props.awaiting
+              ? `${title()}, waiting on approval`
               : undefined
         }
-        disabled={disabled}
+        disabled={props.disabled}
       >
-        {running ? <RunningSpinner /> : awaiting ? <ApprovalDot /> : null}
-        <span className={styles.sessionTitle}>{title}</span>
+        <Show
+          when={props.running}
+          fallback={
+            <Show when={props.awaiting}>
+              <ApprovalDot />
+            </Show>
+          }
+        >
+          <RunningSpinner />
+        </Show>
+        <span class={styles.sessionTitle}>{title()}</span>
       </button>
-      <div className={styles.sessionActions}>
+      <div class={styles.sessionActions}>
         <button
           type="button"
-          className={styles.sessionAction}
-          onClick={() => onRename(id)}
-          disabled={disabled}
+          class={styles.sessionAction}
+          onClick={() => props.onRename(props.id)}
+          disabled={props.disabled}
           title="Rename"
-          aria-label={`Rename ${title}`}
+          aria-label={`Rename ${title()}`}
         >
           ✎
         </button>
         <button
           type="button"
-          className={styles.sessionAction}
-          onClick={() => onDelete(id)}
-          disabled={disabled}
+          class={styles.sessionAction}
+          onClick={() => props.onDelete(props.id)}
+          disabled={props.disabled}
           title="Delete"
-          aria-label={`Delete ${title}`}
+          aria-label={`Delete ${title()}`}
         >
           ×
         </button>
       </div>
     </li>
   )
-})
+}
 
-/** The ring is its own render. A row update must not reconcile it, or the spin restarts. */
-const RunningSpinner = memo(function RunningSpinner() {
-  return <span className={styles.spinner} aria-hidden />
-})
+function RunningSpinner() {
+  return <span class={styles.spinner} aria-hidden="true" />
+}
 
-const ApprovalDot = memo(function ApprovalDot() {
-  return <span className={styles.approvalDot} aria-hidden />
-})
-
-const INITIAL_VISIBLE = 5
-const SHOW_MORE_STEP = 10
-
-export function Sidebar({
-  sessions,
-  activeSessionId,
-  draftSelected = false,
-  docsSelected = false,
-  disabled = false,
-  runningSessionIds,
-  awaitingSessionIds,
-  onSelectSession,
-  onNewSession,
-  onRenameSession,
-  onDeleteSession
-}: SidebarProps) {
-  const navigate = useNavigate()
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
-  const newestId = sessions[0]?.id
-  const previousNewestId = useRef(newestId)
-
-  useEffect(() => {
-    if (previousNewestId.current === newestId) {
-      return
-    }
-    const previous = previousNewestId.current
-    previousNewestId.current = newestId
-    if (previous !== undefined && !sessions.some((session) => session.id === previous)) {
-      setVisibleCount(INITIAL_VISIBLE)
-    }
-  }, [newestId, sessions])
-
-  const activeIndex = sessions.findIndex((session) => session.id === activeSessionId)
-  const shownCount = Math.max(visibleCount, activeIndex + 1)
-  const visibleSessions = sessions.slice(0, shownCount)
-  const hiddenCount = sessions.length - visibleSessions.length
-
-  return (
-    <aside className={styles.sidebar}>
-      <div className={styles.navTools}>
-        <HistoryNav />
-        <ViewToggle docsOpen={docsSelected} />
-      </div>
-
-      <WorkspaceSwitcher />
-
-      <button
-        type="button"
-        className={`${styles.navLink} ${draftSelected ? styles.navLinkActive : ''}`}
-        onClick={onNewSession}
-        disabled={disabled}
-        aria-current={draftSelected ? 'page' : undefined}
-      >
-        <span className={styles.navIcon} aria-hidden>
-          <SquarePen size={18} strokeWidth={1.75} />
-        </span>
-        New chat
-      </button>
-
-      <button
-        type="button"
-        className={styles.navLink}
-        disabled={disabled}
-        onClick={() => navigate('/workspaces')}
-      >
-        <span className={styles.navIcon} aria-hidden>
-          <LayoutGrid size={18} strokeWidth={1.75} />
-        </span>
-        Workspaces
-      </button>
-
-      <div className={styles.section}>
-        <div className={styles.sectionLabel}>Recents</div>
-        <ul className={styles.sessionList}>
-          {visibleSessions.map((session) => (
-            <SessionRow
-              key={session.id}
-              id={session.id}
-              title={sessionDisplayTitle(session)}
-              active={session.id === activeSessionId}
-              running={runningSessionIds?.has(session.id) ?? false}
-              awaiting={
-                !(runningSessionIds?.has(session.id) ?? false) &&
-                (awaitingSessionIds?.has(session.id) ?? false)
-              }
-              disabled={disabled}
-              onSelect={onSelectSession}
-              onRename={onRenameSession}
-              onDelete={onDeleteSession}
-            />
-          ))}
-        </ul>
-        {hiddenCount > 0 ? (
-          <button
-            type="button"
-            className={styles.showMore}
-            onClick={() => setVisibleCount(shownCount + SHOW_MORE_STEP)}
-            disabled={disabled}
-          >
-            Show more
-          </button>
-        ) : null}
-      </div>
-
-      <div className={styles.footer}>
-        <button
-          type="button"
-          className={styles.navLink}
-          disabled={disabled}
-          onClick={() => navigate('/settings/providers')}
-        >
-          <span className={styles.navIcon} aria-hidden>
-            <Settings size={18} strokeWidth={1.75} />
-          </span>
-          Settings
-        </button>
-      </div>
-    </aside>
-  )
+function ApprovalDot() {
+  return <span class={styles.approvalDot} aria-hidden="true" />
 }

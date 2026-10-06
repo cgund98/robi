@@ -1,105 +1,124 @@
-import { useEffect, useState } from 'react'
-import * as Popover from '@radix-ui/react-popover'
+/** @jsxImportSource solid-js */
+import { Popover } from '@kobalte/core/popover'
+import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
 
-import { useIndexStore } from '../../state/indexStore'
-import { useWorkspaceStore } from '../../state/workspaceStore'
+import type { IndexStatus } from '../../api/codeIndex'
 import styles from './IndexStatusLine.module.css'
+import { index } from '../../state/indexStore'
+import { workspaces } from '../../state/workspaceStore'
 
 const RADIUS = 6
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 
 export function IndexStatusLine() {
-  const workspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
-  const status = useIndexStore((state) => (state.workspaceId === workspaceId ? state.status : null))
-  const pending = useIndexStore((state) => state.pending)
-  const setPaused = useIndexStore((state) => state.setPaused)
+  const status = () => (index.workspaceId === workspaces.activeWorkspaceId ? index.status : null)
+  const indexing = () => status()?.state === 'indexing'
+  const [indexingVisible, setIndexingVisible] = createSignal(false)
 
-  const indexing = status?.state === 'indexing'
-  const [indexingVisible, setIndexingVisible] = useState(false)
-  const [wasIndexing, setWasIndexing] = useState(indexing)
-  if (wasIndexing !== indexing) {
-    setWasIndexing(indexing)
-    if (!indexing) {
-      setIndexingVisible(false)
+  createEffect(() => {
+    if (indexing()) {
+      return
     }
-  }
+    setIndexingVisible(false)
+  })
 
-  useEffect(() => {
-    if (!indexing) {
+  createEffect(() => {
+    if (!indexing()) {
       return
     }
     const timer = window.setTimeout(() => setIndexingVisible(true), 5000)
-    return () => window.clearTimeout(timer)
-  }, [indexing])
+    onCleanup(() => window.clearTimeout(timer))
+  })
 
-  if (!status || status.state === 'ready' || (indexing && !indexingVisible)) {
-    return null
-  }
-
-  const done = status.files_done
-  const total = status.files_total
-  const remaining = Math.max(0, total - done)
-  const busy = status.state === 'downloading' || status.state === 'indexing'
-  const known = total > 0
-  const finishing = busy && known && remaining === 0
-  const remainingFill = known ? remaining / total : 0
-  const control =
-    pending === 'pause' ? 'Pausing' : pending === 'resume' ? 'Resuming' : busy ? 'Pause' : 'Resume'
-  const heading = menuHeading(status.state)
-  const detail = indexDetail(status.state, done, total, remaining, finishing)
-  const error = status.state === 'failed' ? status.error : null
-  const summary = error ? `${heading}. ${error}.` : `${heading}.`
+  const view = createMemo((): IndexStatus | null => {
+    const next = status()
+    if (!next || next.state === 'ready' || (next.state === 'indexing' && !indexingVisible())) {
+      return null
+    }
+    return next
+  })
 
   return (
-    <Popover.Root>
-      <Popover.Trigger
-        className={styles.wedge}
-        aria-label={detail ? `${summary} ${detail}` : summary}
-        aria-busy={pending ? true : undefined}
-      >
-        <ProgressWheel fill={remainingFill} indeterminate={!known && (busy || pending !== null)} />
-        <span className={styles.label}>{wedgeLabel(status.state)}</span>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content className={styles.panel} side="bottom" align="start" sideOffset={8}>
-          <p className={styles.heading}>{heading}</p>
-          {error ? <p className={styles.error}>{error}</p> : null}
-          {detail ? <p className={styles.progress}>{detail}</p> : null}
-          <button
-            type="button"
-            className={styles.action}
-            disabled={pending !== null}
-            onClick={() => {
-              void setPaused(busy)
-            }}
-          >
-            {control}
-          </button>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+    <Show when={view()}>
+      {(ready) => <IndexPopover status={ready()} pending={index.pending} />}
+    </Show>
   )
 }
 
-function ProgressWheel({ fill, indeterminate }: { fill: number; indeterminate: boolean }) {
+function IndexPopover(props: { status: IndexStatus; pending: 'pause' | 'resume' | null }) {
+  const done = () => props.status.files_done
+  const total = () => props.status.files_total
+  const remaining = () => Math.max(0, total() - done())
+  const busy = () => props.status.state === 'downloading' || props.status.state === 'indexing'
+  const known = () => total() > 0
+  const finishing = () => busy() && known() && remaining() === 0
+  const remainingFill = () => (known() ? remaining() / total() : 0)
+  const control = () =>
+    props.pending === 'pause'
+      ? 'Pausing'
+      : props.pending === 'resume'
+        ? 'Resuming'
+        : busy()
+          ? 'Pause'
+          : 'Resume'
+  const heading = () => menuHeading(props.status.state)
+  const detail = () => indexDetail(props.status.state, done(), total(), remaining(), finishing())
+  const error = () => (props.status.state === 'failed' ? props.status.error : null)
+  const summary = () => (error() ? `${heading()}. ${error()}.` : `${heading()}.`)
+
+  return (
+    <Popover>
+      <Popover.Trigger
+        class={styles.wedge}
+        aria-label={detail() ? `${summary()} ${detail()}` : summary()}
+        aria-busy={props.pending ? true : undefined}
+      >
+        <ProgressWheel
+          fill={remainingFill()}
+          indeterminate={!known() && (busy() || props.pending !== null)}
+        />
+        <span class={styles.label}>{wedgeLabel(props.status.state)}</span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content class={styles.panel}>
+          <p class={styles.heading}>{heading()}</p>
+          <Show when={error()}>{(message) => <p class={styles.error}>{message()}</p>}</Show>
+          <Show when={detail()}>{(line) => <p class={styles.progress}>{line()}</p>}</Show>
+          <button
+            type="button"
+            class={styles.action}
+            disabled={props.pending !== null}
+            onClick={() => {
+              void index.setPaused(busy())
+            }}
+          >
+            {control()}
+          </button>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover>
+  )
+}
+
+function ProgressWheel(props: { fill: number; indeterminate: boolean }) {
   return (
     <svg
-      className={indeterminate ? `${styles.wheel} ${styles.spin}` : styles.wheel}
+      class={props.indeterminate ? `${styles.wheel} ${styles.spin}` : styles.wheel}
       viewBox="0 0 16 16"
-      aria-hidden
+      aria-hidden="true"
     >
-      <circle className={styles.track} cx="8" cy="8" r={RADIUS} />
+      <circle class={styles.track} cx="8" cy="8" r={RADIUS} />
       <circle
-        className={styles.arc}
+        class={styles.arc}
         cx="8"
         cy="8"
         r={RADIUS}
-        strokeDasharray={
-          indeterminate
+        stroke-dasharray={
+          props.indeterminate
             ? `${CIRCUMFERENCE * 0.25} ${CIRCUMFERENCE}`
             : `${CIRCUMFERENCE} ${CIRCUMFERENCE}`
         }
-        strokeDashoffset={indeterminate ? 0 : CIRCUMFERENCE * (1 - fill)}
+        stroke-dashoffset={props.indeterminate ? 0 : CIRCUMFERENCE * (1 - props.fill)}
         transform="rotate(-90 8 8)"
       />
     </svg>
@@ -130,10 +149,6 @@ function menuHeading(state: string): string {
   }
 }
 
-/**
- * The counts line. It stays off until the walk has seen a file, so the menu
- * never shows a meaningless `0/0` while the model downloads or the scan starts.
- */
 function indexDetail(
   state: string,
   done: number,

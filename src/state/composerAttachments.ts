@@ -1,4 +1,4 @@
-import type { FileAttachment } from '../components/chat/textAttachments'
+import type { FileAttachment } from '../features/chat/textAttachments'
 
 /**
  * One attachment waiting for a composer to mount, keyed by the composer's

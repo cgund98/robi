@@ -1,6 +1,6 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { isTauri } from '@tauri-apps/api/core'
-import { create } from 'zustand'
+import { mountStore } from './storeDeps'
 
 import type { StoreGet, StoreSet } from './storeDeps'
 
@@ -126,4 +126,6 @@ export function createUiScaleState(
   }
 }
 
-export const useUiScaleStore = create<UiScaleState>((set, get) => createUiScaleState(set, get))
+const scaleHost = mountStore<UiScaleState>((set, get) => createUiScaleState(set, get))
+
+export const uiScale = scaleHost.state

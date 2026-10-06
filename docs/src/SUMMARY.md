@@ -38,6 +38,7 @@
     - [Providers]()
         - [Providers and streaming](design/providers/providers-streaming.md)
     - [Shell]()
+        - [Frontend layout](design/shell/frontend-layout.md)
         - [Visual style](design/shell/visual-style.md)
         - [Chat UI](design/shell/chat-ui.md)
         - [Chat runtime](design/shell/chat-runtime.md)

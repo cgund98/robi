@@ -1,7 +1,7 @@
 import type { Middleware } from 'openapi-fetch'
 
-import { useErrorLog } from '../state/errorLog'
-import { useRequestLog } from '../state/requestLog'
+import { errors } from '../state/errorLog'
+import { requests } from '../state/requestLog'
 
 const HEALTH_PATH = '/api/v1/health'
 
@@ -33,7 +33,7 @@ function recordRequest(
     startedAt.delete(id)
     return
   }
-  useRequestLog.getState().record({
+  requests.record({
     method,
     path: schemaPath,
     status,
@@ -95,9 +95,7 @@ export const auditFailedRequests: Middleware = {
     if (response.ok) {
       return
     }
-    useErrorLog
-      .getState()
-      .record(failureMessage(request.method, schemaPath, String(response.status)))
+    errors.record(failureMessage(request.method, schemaPath, String(response.status)))
   },
   onError({ id, request, schemaPath, error }) {
     const detail = error instanceof Error && error.message ? error.message : 'request failed'
@@ -105,6 +103,6 @@ export const auditFailedRequests: Middleware = {
     if (isClientAbort(error)) {
       return
     }
-    useErrorLog.getState().record(failureMessage(request.method, schemaPath, detail))
+    errors.record(failureMessage(request.method, schemaPath, detail))
   }
 }

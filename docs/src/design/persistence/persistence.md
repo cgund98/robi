@@ -369,7 +369,7 @@ export-openapi` prints the same document.
 
 ### Frontend client
 
-The React shell talks to this API with **openapi-fetch** over types generated
+The Solid shell talks to this API with **openapi-fetch** over types generated
 from `openapi/openapi.json`. Every `fetch` aborts after 10 seconds. The event
 stream is an `EventSource` and stays open.
 

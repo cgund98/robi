@@ -1,25 +1,28 @@
-import { Outlet, useLocation } from 'react-router-dom'
+/** @jsxImportSource solid-js */
+import type { JSX } from 'solid-js'
+import { useLocation } from '@solidjs/router'
 
-import { useMouseHistory } from '../../app/mouseHistory'
-import { useUiScaleShortcuts } from '../../app/useUiScale'
 import styles from './WindowFrame.module.css'
+import { useFrameChrome } from '../../app/useFrameChrome'
 
-export function WindowFrame() {
-  const { pathname } = useLocation()
-  useMouseHistory()
-  useUiScaleShortcuts()
-  const tone = pathname.startsWith('/settings')
-    ? styles.barSettings
-    : pathname === '/' || pathname.startsWith('/sessions/') || pathname === '/docs'
-      ? styles.barChat
-      : styles.barPlain
+export function WindowFrame(props: { children?: JSX.Element }) {
+  const location = useLocation()
+  useFrameChrome()
+  const tone = () => {
+    const pathname = location.pathname
+    if (pathname.startsWith('/settings')) {
+      return styles.barSettings
+    }
+    if (pathname === '/' || pathname.startsWith('/sessions/') || pathname === '/docs') {
+      return styles.barChat
+    }
+    return styles.barPlain
+  }
 
   return (
-    <div className={styles.frame}>
-      <header className={`${styles.bar} ${tone}`} data-tauri-drag-region="deep" />
-      <div className={styles.body}>
-        <Outlet />
-      </div>
+    <div class={styles.frame}>
+      <header class={`${styles.bar} ${tone()}`} data-tauri-drag-region="deep" />
+      <div class={styles.body}>{props.children}</div>
     </div>
   )
 }
