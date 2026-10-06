@@ -47,7 +47,7 @@ pub fn command_env(input: &EnvInput<'_>) -> Vec<(String, String)> {
 
 fn path_value(input: &EnvInput<'_>) -> String {
     if !input.sandboxed {
-        return append_extra(input.parent_path, input);
+        return append_path_extra(input.parent_path, input.home, input.extra_path);
     }
     let mut dirs = Vec::new();
     if !input.path_prefix.is_empty() {
@@ -85,18 +85,20 @@ fn path_value(input: &EnvInput<'_>) -> String {
         .join(":")
 }
 
-fn append_extra(parent: &str, input: &EnvInput<'_>) -> String {
+/// `parent` with the `extra_path` directories appended, `~` expanded against
+/// `home`. The unsandboxed base for the shell, the MCP host, and the LSP hub.
+pub(crate) fn append_path_extra(parent: &str, home: &Path, extra_path: &str) -> String {
     let mut dirs: Vec<PathBuf> = parent
         .split(':')
         .filter(|entry| !entry.is_empty())
         .map(PathBuf::from)
         .collect();
-    for line in input.extra_path.lines() {
+    for line in extra_path.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        push_dir(&mut dirs, expand_tilde(line, input.home));
+        push_dir(&mut dirs, expand_tilde(line, home));
     }
     dirs.iter()
         .map(|path| path.display().to_string())

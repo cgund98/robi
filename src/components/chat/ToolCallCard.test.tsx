@@ -33,6 +33,26 @@ describe('ToolCallCard', () => {
     expect(body?.parentElement?.className).toContain('shell')
   })
 
+  it('opens a search result in the same panel as a read', () => {
+    render(
+      <ToolCallCard
+        call={call({
+          name: 'grep',
+          args: { pattern: 'resume' },
+          result: { matches: [{ path: 'note.txt', line: 1, text: 'resume' }] }
+        })}
+        phase="idle"
+        busy={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.queryByText('note.txt:1: resume')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Grepped/ }))
+    const body = screen.getByText('note.txt:1: resume').closest('pre')
+    expect(body?.className).toContain('shellBody')
+    expect(body?.parentElement?.className).toContain('shell')
+  })
+
   it('shows the requested line window on a read', () => {
     render(
       <ToolCallCard

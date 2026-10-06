@@ -155,10 +155,15 @@ pub fn select(path: &Path, installed: impl Fn(&str) -> bool) -> Option<Choice> {
     })
 }
 
-/// First `PATH` entry that names an executable `bin`.
+/// First entry of the MCP host's resolved `PATH` that names an executable `bin`.
+#[cfg(test)]
 pub fn find_on_path(bin: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
+    find_on_path_in(&crate::agent::mcp::resolve_path(""), bin)
+}
+
+/// First entry of `path` that names an executable `bin`.
+pub fn find_on_path_in(path: &str, bin: &str) -> Option<PathBuf> {
+    for dir in std::env::split_paths(path) {
         let candidate = dir.join(bin);
         if is_executable(&candidate) {
             return Some(candidate);

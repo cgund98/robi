@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMatch, useNavigate } from 'react-router-dom'
+import { useLocation, useMatch, useNavigate, useNavigationType } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 
 import { listModels, type CatalogModel } from '../../api/models'
@@ -96,6 +96,13 @@ export function AppLayout() {
   const navigate = useNavigate()
   const reviewMatch = useMatch('/sessions/:sessionId/review')
   const reviewSessionId = reviewMatch?.params.sessionId ?? null
+  const chatMatch = useMatch('/sessions/:sessionId')
+  const chatSessionId = chatMatch?.params.sessionId ?? null
+  const indexMatch = useMatch('/')
+  const location = useLocation()
+  const { pathname } = location
+  const initialLocationKey = useRef(location.key)
+  const navigationType = useNavigationType()
   const docsMatch = useMatch('/docs')
   const docsOpen = docsMatch !== null
   if (
@@ -145,6 +152,90 @@ export function AppLayout() {
     }
     void selectSession(reviewSessionId)
   }, [reviewSessionId, selectSession])
+
+  // Back and forward move between chats: every chat has its own route, so a
+  // POP selects whatever session the URL names. Pushes and replaces come from
+  // the app itself, which selects the session directly, so they are ignored
+  // here. The initial location is not a back/forward step: a session route in
+  // it is restored, but the index route is left to the load below, which opens
+  // the most recent session. This effect stays above the mirror: on a POP to
+  // the draft route it clears `draftSelected` before the mirror reads the store.
+  useEffect(() => {
+    if (loading) {
+      return
+    }
+    if (reviewSessionId || docsOpen) {
+      return
+    }
+    const initial = location.key === initialLocationKey.current
+    if (!initial && navigationType !== 'POP') {
+      return
+    }
+    if (chatSessionId) {
+      if (!sessions.some((session) => session.id === chatSessionId)) {
+        return
+      }
+      if (activeSessionId !== chatSessionId || draftSelected) {
+        void selectSession(chatSessionId)
+      }
+      return
+    }
+    if (!initial && indexMatch && !draftSelected) {
+      selectDraft()
+    }
+  }, [
+    loading,
+    navigationType,
+    location.key,
+    reviewSessionId,
+    docsOpen,
+    chatSessionId,
+    indexMatch,
+    activeSessionId,
+    draftSelected,
+    sessions,
+    selectSession,
+    selectDraft
+  ])
+
+  // The store changes the active session on its own: app load picks the most
+  // recent, the first send turns the draft into a row, and a delete falls back
+  // to the next session. Keep the URL on that session so the history matches.
+  // It reads the store fresh so it sees the POP effect's selection in the same
+  // commit.
+  useEffect(() => {
+    if (loading || reviewSessionId || docsOpen) {
+      return
+    }
+    const state = useChatStore.getState()
+    if (chatSessionId) {
+      if (state.draftSelected) {
+        navigate('/', { replace: true })
+        return
+      }
+      if (
+        state.activeSessionId &&
+        state.activeSessionId !== chatSessionId &&
+        !sessions.some((session) => session.id === chatSessionId)
+      ) {
+        navigate(`/sessions/${state.activeSessionId}`, { replace: true })
+      }
+      return
+    }
+    if (indexMatch && !state.draftSelected && state.activeSessionId) {
+      navigate(`/sessions/${state.activeSessionId}`, { replace: true })
+    }
+  }, [
+    loading,
+    reviewSessionId,
+    docsOpen,
+    chatSessionId,
+    indexMatch,
+    activeSessionId,
+    draftSelected,
+    sessions,
+    navigate
+  ])
 
   useEffect(() => {
     if (!workspacesLoaded) {
@@ -220,24 +311,30 @@ export function AppLayout() {
   const openSession = useCallback(
     (id: string) => {
       setPlan(null)
-      if (reviewSessionId) {
-        navigate('/')
-      } else if (docsOpen) {
+      if (docsOpen) {
         setTrayOpen(true)
+        void selectSession(id)
+        return
       }
       void selectSession(id)
+      if (pathname !== `/sessions/${id}`) {
+        navigate(`/sessions/${id}`)
+      }
     },
-    [docsOpen, navigate, reviewSessionId, selectSession]
+    [docsOpen, navigate, pathname, selectSession]
   )
   const openDraft = useCallback(() => {
     setPlan(null)
-    if (reviewSessionId) {
-      navigate('/')
-    } else if (docsOpen) {
+    if (docsOpen) {
       setTrayOpen(true)
+      selectDraft()
+      return
     }
     selectDraft()
-  }, [docsOpen, navigate, reviewSessionId, selectDraft])
+    if (pathname !== '/') {
+      navigate('/')
+    }
+  }, [docsOpen, navigate, pathname, selectDraft])
   const askRename = useCallback((id: string) => {
     setRenameError(null)
     setRenameId(id)

@@ -17,7 +17,12 @@ export const appRouter = createHashRouter([
       {
         path: '/',
         element: <AppLayout />,
-        children: [{ index: true }, { path: 'sessions/:sessionId/review' }, { path: 'docs' }]
+        children: [
+          { index: true },
+          { path: 'sessions/:sessionId' },
+          { path: 'sessions/:sessionId/review' },
+          { path: 'docs' }
+        ]
       },
       {
         path: '/workspaces',

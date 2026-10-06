@@ -125,6 +125,15 @@ pub fn resolve_command(command: &str, env: &[(String, String)]) -> Option<std::p
     None
 }
 
+/// The `PATH` the MCP host resolves child commands on: the login shell's
+/// `PATH` with `path_entries` appended. The LSP hub resolves on the same one.
+pub(crate) fn resolve_path(extra_path: &str) -> String {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    crate::agent::sandbox::append_path_extra(&login_path(), &home, extra_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +174,19 @@ mod tests {
         // Never the minimal empty string: either a shell answered or this
         // process's own PATH did.
         assert!(!login_path().is_empty());
+    }
+
+    #[test]
+    fn resolve_path_appends_extra_entries() {
+        let root = std::env::temp_dir().join(format!("robi-mcp-resolve-{}", std::process::id()));
+        let bin = root.join("extra-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = resolve_path(bin.to_str().unwrap());
+        let canonical = bin.canonicalize().unwrap();
+        assert!(path
+            .split(':')
+            .any(|entry| Path::new(entry) == canonical.as_path()));
+        assert!(path.starts_with(&login_path()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -2,6 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { listMessages, type ChatMessage } from '../api/messages'
 import { toolSummary, type ChatToolCall } from '../components/chat/toolCallView'
@@ -106,6 +107,7 @@ export async function postTurnFailedNotice(sessionId: string, message: string): 
 }
 
 export function useApprovalNoticeOpen(): void {
+  const navigate = useNavigate()
   useEffect(() => {
     if (!isTauri()) {
       return
@@ -115,6 +117,7 @@ export function useApprovalNoticeOpen(): void {
     void listen<string>('approval-notice-open', (event) => {
       if (event.payload) {
         void useChatStore.getState().selectSession(event.payload)
+        navigate(`/sessions/${event.payload}`)
       }
     }).then((stop) => {
       if (cancelled) {
@@ -127,7 +130,7 @@ export function useApprovalNoticeOpen(): void {
       cancelled = true
       unlisten?.()
     }
-  }, [])
+  }, [navigate])
 }
 
 async function noticeBody(sessionId: string, callId: string | undefined): Promise<string> {

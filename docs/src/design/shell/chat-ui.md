@@ -35,6 +35,14 @@ the message post.
 App load lists sessions and selects the most recent. An empty list opens the
 draft.
 
+**Each chat has its own route.** A session is `#/sessions/{id}`; the draft is
+the index route. Choosing a session pushes its route, so the window's back and
+forward controls — and the side mouse buttons — walk the chats in the order
+they were opened. A forward entry is dropped once a new chat is pushed. Back or
+forward selects whatever session the route names. App load opens the most
+recent session on its own route; the draft route stays the draft. The route is
+restored on reload, so a reload returns to the same chat.
+
 The window bar shows “New chat” on the draft and the session title once a row exists. MCP server marks sit on the right of that line in both cases. To their right, a mark appears when `GET /api/v1/health` fails or does not answer within 3 seconds. Hovering the mark says whether the check timed out, which HTTP status came back, or the error message. The shell checks every 5 seconds and removes the mark after a successful check. The first click on a session that has not been opened in this window shows a spinner and “Loading conversation” until its transcript loads. A later click on the same session does not. Until a prompt is submitted, a greeting
 sits in the center — **Good morning**, **Good afternoon**, or **Good evening**,
 from the local hour — with the composer in a card under it. The first echo or
@@ -121,8 +129,8 @@ it, and 4 diff lines starting at the first added or removed line. Context above 
 lines, then `N more lines` when the change is longer. A running call shows a spinner.
 A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
 the body: numbered file text, match lines, paths, or the error. The row stays
-closed until that click. An opened read is a bordered panel, the same shape as a shell card: the header sits
-on the panel, and a rule divides it from the numbered file text.
+closed until that click. Every opened body is a bordered panel, the same shape as a shell card: the header sits
+on the panel, and a rule divides it from the body — numbered file text, match lines, paths, or the error.
 
 A finished `write_plan` is a bordered card. The label is **Created Plan**, or
 **Updated Plan** when the result status is `updated`. The title is the first

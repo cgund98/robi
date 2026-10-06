@@ -79,7 +79,7 @@ files and later reads always agree.
 | `tool_timeout_seconds` | no | `120` | Seconds before a `shell` command is killed. A whole number from 1 to 3600. Read when that command starts. |
 | `path_allow_read` | no | none | Newline-separated paths appended to every session's read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_allow_write` | no | none | Newline-separated paths appended to every session's write allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
-| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH` and to an MCP stdio child's `PATH`. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment. |
+| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`, to an MCP stdio child's `PATH`, and to the `PATH` the language-server tools resolve a binary on. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment, and once at startup for the language-server resolver. |
 | `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
 | `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
 

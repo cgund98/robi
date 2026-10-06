@@ -1,14 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { decideReview, getReviewFile, type ReviewFile } from '../../api/review'
+import { decideReview, getReviewFile, type ReviewFile, type ReviewHunk } from '../../api/review'
 import { sessionDisplayTitle } from '../../api/sessions'
 import { useSessionReview } from '../../app/useSessionReview'
 import { useChatStore } from '../../state/chatStore'
+import { useWorkspaceStore } from '../../state/workspaceStore'
+import type { FileAttachment } from '../chat/textAttachments'
 import { DiffList } from './DiffList'
 import type { ReviewView } from './diffView'
 import { buildFileTree, filesInTreeOrder } from './tree'
 import { FileTree } from './FileTree'
+import { RejectReasonDialog } from './RejectReasonDialog'
+import {
+  hunkAttachment,
+  hunkSlice,
+  rejectReasonInstruction,
+  wholeFileAttachment
+} from './reviewAttachment'
 import styles from './ReviewScreen.module.css'
 
 function orderHunks(
@@ -40,11 +49,23 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   const navigate = useNavigate()
   const sessions = useChatStore((state) => state.sessions)
   const session = sessions.find((item) => item.id === sessionId) ?? null
+  const sendInstruction = useChatStore((state) => state.sendInstruction)
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const root = session
+    ? (workspaces.find((item) => item.id === session.workspace_id)?.root ?? null)
+    : null
   const { files: loaded, error, loading } = useSessionReview(sessionId)
   const reviewTick = useChatStore((state) => state.reviewTickBySession[sessionId] ?? 0)
   const [view, setView] = useState<ReviewView>('diff')
   const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [decideError, setDecideError] = useState<string | null>(null)
+  const [reasonTarget, setReasonTarget] = useState<{
+    path: string
+    hunkIds?: string[]
+    range: { start: number; end: number } | null
+  } | null>(null)
+  const [reasonBusy, setReasonBusy] = useState(false)
+  const [reasonError, setReasonError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [hiddenPaths, setHiddenPaths] = useState<string[]>([])
   const [hiddenFor, setHiddenFor] = useState(loaded)
@@ -174,6 +195,68 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
     }
   }
 
+  function openRejectWithReason(path: string, hunkIds?: string[]) {
+    const body = bodies[path]
+    let range: { start: number; end: number } | null = null
+    if (body && hunkIds && hunkIds.length > 0) {
+      const hunk = body.hunks.find((item) => item.id === hunkIds[0])
+      if (hunk) {
+        const slice = hunkSlice(body, hunk)
+        range = { start: slice.startLine, end: slice.endLine }
+      }
+    }
+    setReasonError(null)
+    setReasonBusy(false)
+    setReasonTarget({ path, hunkIds, range })
+  }
+
+  async function submitReason(reason: string) {
+    if (!reasonTarget) {
+      return
+    }
+    const { path, hunkIds } = reasonTarget
+    const body = bodies[path]
+    if (!body) {
+      setReasonError('This change is no longer available.')
+      return
+    }
+    let hunk: ReviewHunk | undefined
+    if (hunkIds && hunkIds.length > 0) {
+      hunk = body.hunks.find((item) => item.id === hunkIds[0])
+      if (!hunk) {
+        setReasonError('This change no longer matches the file.')
+        return
+      }
+    }
+    let attachment: FileAttachment
+    let range: { start: number; end: number } | null = null
+    try {
+      if (hunk) {
+        attachment = hunkAttachment(body, hunk, root)
+        const slice = hunkSlice(body, hunk)
+        range = { start: slice.startLine, end: slice.endLine }
+      } else {
+        attachment = wholeFileAttachment(body, root)
+      }
+    } catch (err: unknown) {
+      setReasonError(err instanceof Error ? err.message : 'Failed to attach the file')
+      return
+    }
+    setReasonBusy(true)
+    setReasonError(null)
+    try {
+      await decideReview(sessionId, path, 'reject', hunk?.id)
+    } catch (err: unknown) {
+      setReasonBusy(false)
+      setReasonError(err instanceof Error ? err.message : 'Failed to update review')
+      return
+    }
+    setReasonBusy(false)
+    setReasonTarget(null)
+    navigate(`/sessions/${sessionId}`)
+    void sendInstruction(rejectReasonInstruction(path, range, reason), undefined, [attachment])
+  }
+
   function selectFile(path: string) {
     setSelected(path)
   }
@@ -181,7 +264,11 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <button type="button" className={styles.back} onClick={() => navigate('/')}>
+        <button
+          type="button"
+          className={styles.back}
+          onClick={() => navigate(`/sessions/${sessionId}`)}
+        >
           ← {sessionDisplayTitle(session)}
         </button>
         <div className={styles.views} role="radiogroup" aria-label="Diff view">
@@ -226,11 +313,30 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
                 onDecide={(path, decision, hunkIds) => {
                   void decide(path, decision, hunkIds)
                 }}
+                onRejectWithReason={openRejectWithReason}
               />
             ) : null}
           </div>
         </div>
       )}
+      {reasonTarget ? (
+        <RejectReasonDialog
+          key={`${reasonTarget.path}:${reasonTarget.hunkIds?.join(',') ?? ''}`}
+          open
+          path={reasonTarget.path}
+          range={reasonTarget.range}
+          busy={reasonBusy}
+          error={reasonError}
+          onCancel={() => {
+            if (reasonBusy) {
+              return
+            }
+            setReasonTarget(null)
+            setReasonError(null)
+          }}
+          onSubmit={(reason) => void submitReason(reason)}
+        />
+      ) : null}
     </div>
   )
 }

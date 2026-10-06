@@ -176,6 +176,10 @@
   color: var(--danger);
 }
 
+.errorText {
+  color: var(--danger);
+}
+
 .codeLine,
 .plainLine {
   display: flex;

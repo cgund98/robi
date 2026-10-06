@@ -183,16 +183,15 @@
 }
 
 .sessionActions {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 1px;
   padding-right: var(--space-1);
-  opacity: 0;
 }
 
 .sessionRow:hover .sessionActions,
 .sessionRow:focus-within .sessionActions {
-  opacity: 1;
+  display: flex;
 }
 
 .sessionAction {

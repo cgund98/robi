@@ -158,16 +158,24 @@ impl AgentFactory {
         })?;
         let registry = ToolRegistry::new();
         let lsp_enabled = self.lsp_enabled().await?;
+        let lsp = match self.lsp.clone() {
+            Some(hub) => hub,
+            None => {
+                let extra = self.path_entries().await?;
+                let path =
+                    crate::agent::blocking::call(move || crate::agent::mcp::resolve_path(&extra))
+                        .await
+                        .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
+                crate::agent::lsp::LspHub::with_search_path(path)
+            }
+        };
         let ctx = Arc::new(crate::agent::tools::ToolContext {
             session_id: session,
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
             index: self.index.clone(),
-            lsp: self
-                .lsp
-                .clone()
-                .unwrap_or_else(crate::agent::lsp::LspHub::new),
+            lsp,
             lsp_enabled,
             originals: self.originals.clone(),
             settings: self.settings.clone(),
@@ -228,6 +236,17 @@ impl AgentFactory {
         Ok(crate::domain::settings::keys::lsp_enabled(
             stored.as_ref().map(|setting| setting.value.as_str()),
         ))
+    }
+
+    /// The `path_entries` setting appended to the LSP resolver's `PATH`.
+    async fn path_entries(&self) -> Result<String, ServiceError> {
+        let Some(settings) = &self.settings else {
+            return Ok(String::new());
+        };
+        let stored = settings
+            .get(crate::domain::settings::keys::PATH_ENTRIES)
+            .await?;
+        Ok(stored.map(|setting| setting.value).unwrap_or_default())
     }
 
     async fn approval_required(&self, key: &str) -> Result<bool, ServiceError> {

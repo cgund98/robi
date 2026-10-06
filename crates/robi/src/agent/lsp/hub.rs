@@ -43,8 +43,20 @@ pub struct LspHub {
 }
 
 impl LspHub {
+    /// Resolve on the login shell's `PATH`. This runs `$SHELL` once, cached for
+    /// the process. An async caller should read that `PATH` through the blocking
+    /// pool and use [`LspHub::with_search_path`] instead.
     pub fn new() -> Arc<Self> {
-        Self::build(Timing::default(), Arc::new(catalog::find_on_path))
+        Self::with_search_path(crate::agent::mcp::resolve_path(""))
+    }
+
+    /// Build the resolver against `path`, the same `PATH` the MCP host resolves
+    /// a child command on: the login shell's `PATH` with `path_entries`.
+    pub fn with_search_path(path: String) -> Arc<Self> {
+        Self::build(
+            Timing::default(),
+            Arc::new(move |bin| catalog::find_on_path_in(&path, bin)),
+        )
     }
 
     pub fn build(timing: Timing, resolve: Resolve) -> Arc<Self> {

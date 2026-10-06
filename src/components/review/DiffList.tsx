@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import { ChevronDown } from 'lucide-react'
 
 import type { ReviewFile, ReviewLine } from '../../api/review'
 import { chunksFor, linesForView, reviewNote, type ReviewView } from './diffView'
@@ -17,9 +19,10 @@ type DiffListProps = {
   view: ReviewView
   pendingKey: string | null
   onDecide: (path: string, decision: 'approve' | 'reject', hunkIds?: string[]) => void
+  onRejectWithReason: (path: string, hunkIds?: string[]) => void
 }
 
-export function DiffList({ files, view, pendingKey, onDecide }: DiffListProps) {
+export function DiffList({ files, view, pendingKey, onDecide, onRejectWithReason }: DiffListProps) {
   const [paint, setPaint] = useState<Record<string, Sides>>({})
   const [openPath, setOpenPath] = useState<string | null>(null)
   const [hoverChunk, setHoverChunk] = useState<string | null>(null)
@@ -74,6 +77,7 @@ export function DiffList({ files, view, pendingKey, onDecide }: DiffListProps) {
                 disabled={pendingKey !== null}
                 busy={filePending}
                 onReject={() => onDecide(file.path, 'reject')}
+                onRejectWithReason={() => onRejectWithReason(file.path)}
                 onApprove={() => onDecide(file.path, 'approve')}
               />
             </header>
@@ -128,6 +132,7 @@ export function DiffList({ files, view, pendingKey, onDecide }: DiffListProps) {
                               disabled={pendingKey !== null}
                               busy={pendingKey === `${file.path}:${hunk.id}`}
                               onReject={() => onDecide(file.path, 'reject', [hunk.id])}
+                              onRejectWithReason={() => onRejectWithReason(file.path, [hunk.id])}
                               onApprove={() => onDecide(file.path, 'approve', [hunk.id])}
                             />
                           </div>
@@ -148,18 +153,38 @@ function DecisionButtons({
   disabled,
   busy,
   onReject,
+  onRejectWithReason,
   onApprove
 }: {
   disabled: boolean
   busy: boolean
   onReject: () => void
+  onRejectWithReason: () => void
   onApprove: () => void
 }) {
   return (
     <span className={styles.actions}>
-      <button type="button" className={styles.reject} disabled={disabled} onClick={onReject}>
-        Reject
-      </button>
+      <span className={styles.rejectSplit}>
+        <button type="button" className={styles.reject} disabled={disabled} onClick={onReject}>
+          Reject
+        </button>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            className={styles.rejectChevron}
+            aria-label="More reject options"
+            disabled={disabled}
+          >
+            <ChevronDown size={12} strokeWidth={1.5} />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content className={styles.menu} side="bottom" align="end" sideOffset={6}>
+              <DropdownMenu.Item className={styles.menuItem} onSelect={onRejectWithReason}>
+                Reject with reason
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      </span>
       <button type="button" className={styles.approve} disabled={disabled} onClick={onApprove}>
         {busy ? '…' : 'Approve'}
       </button>

@@ -109,6 +109,14 @@ takes from the mdast `position` react-markdown carries on every element — the 
 line, not a rendered one. See
 [docs-viewer.md](docs-viewer.md#attach-a-line-to-chat).
 
+The review screen is a second range producer, and it sends directly rather than
+handing off to the composer. **Reject with reason** on a hunk builds one
+attachment from that hunk's `new_start` / `new_count` range
+(`src/components/review/reviewAttachment.ts`), and on a whole file builds a
+whole-file attachment with no range. It decides the reject, returns to the chat,
+and calls `sendInstruction` with the attachment. See
+[code-review.md](../review/code-review.md).
+
 The producer does not pass the attachment down as a prop, because attaching a
 line opens the chat tray and the composer is not mounted until it does. It calls
 `requestComposerAttachment(draftKey, file)` (`src/state/composerAttachments.ts`),

@@ -766,8 +766,9 @@ One `delegate` tool, two child modes. See [subagents.md](design/core/subagents.m
   through the M4 edit path, so it gets a checkpoint like any other edit.
 
 The review screen is [code-review.md](design/review/code-review.md). It can approve
-or reject a file or one hunk. Inline comments and a review tool for the
-assistant stay later.
+or reject a file or one hunk, and **Reject with reason** sends the rejected file
+or hunk to the assistant as a file attachment with the user's note, so it can
+iterate. Inline comments and a review tool for the assistant stay later.
 
 ---
 

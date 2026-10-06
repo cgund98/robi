@@ -8,7 +8,7 @@ that opens it is in [visual-style.md](../shell/visual-style.md).
 
 | Topic | Where it belongs |
 |---|---|
-| Inline comments, and sending a comment to the assistant | Later in M6 |
+| Inline comments anchored to lines | Later in M6 |
 | A tool the assistant uses to read review state | Later in M6 |
 | Git status, a commit range, or a branch | Later. This screen is the session baseline only |
 | Side-by-side columns | Later. This screen is one unified column, with a control that hides one side |
@@ -80,6 +80,23 @@ current lines into the baseline. **Reject** puts that hunk's baseline lines
 back on disk. Either one decides only that hunk and leaves the rest of the
 file in review. A hunk that no longer matches the file is `409`. The header
 pair is the only whole-file decision.
+
+**Reject** carries an inline chevron. The chevron opens a menu with **Reject
+with reason**, on the file header and on every hunk. Choosing it opens a modal
+for a short note; **Reject and send** decides that reject, then returns to the
+chat for this session and sends a message telling the model to iterate on the
+file, with the reason. The reason's target — the whole file, or the one hunk —
+is decided first, so the model never races a revert.
+
+The message carries the rejected change as an API file attachment, so the model
+reads the exact bytes the user rejected. A whole-file reject attaches the file's
+current body with no line range, or the baseline for a file this session
+deleted. A hunk reject attaches that hunk's current lines, `start_line` to
+`end_line` from `new_start` and `new_count`; a pure deletion attaches the
+deletion point, and a file emptied by the deletion falls back to the baseline
+lines the hunk removed. The attachment builder is
+`src/components/review/reviewAttachment.ts`. The transport is file-attachments:
+see [file-attachments.md](../shell/file-attachments.md).
 
 The right pane shows the selected file. The default is the
 unified diff: context, deletions, and insertions. **Current** hides

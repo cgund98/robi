@@ -121,6 +121,7 @@ Do not sprinkle raw hex in components.
 | `--rule` | `#2a2a28` | Hairline separators (use sparingly) |
 | `--danger` | `#e56767` | Destructive / failed tool |
 | `--success` | `#6fbf7a` | Completed tool / applied edit |
+| `--warn` | `#e8c547` | Yellow text for the review **Reject with reason** menu item and its **Reject and send** button |
 | `--mode-ask` | `#6fbf7a` | Ask mode in the composer |
 | `--mode-plan` | `#e39a3c` | Plan mode, and the plan Build and View Plan buttons |
 | `--diff-add` | `#5db27b` | `+N` line counts in edit summaries |
@@ -271,7 +272,7 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. At the right edge of the sidebar's share of that bar, back and forward sit beside a pair of icons for chat and documentation. The icons share one quiet pill. The open view uses `--bg-surface-active` and `--ink-strong`; the other stays `--ink-muted`. A hover names the icon: **Chat** or **Documentation**. Back and forward walk the same history as the side mouse buttons: routes, and each document opened in the docs viewer. A button is quiet when that direction has no entry. While the workspace index is not ready, a small pill sits at the left of the chat column in that bar: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
+The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. At the right edge of the sidebar's share of that bar, back and forward sit beside a pair of icons for chat and documentation. The icons share one quiet pill. The open view uses `--bg-surface-active` and `--ink-strong`; the other stays `--ink-muted`. A hover names the icon: **Chat** or **Documentation**. Back and forward walk the same history as the side mouse buttons: each chat and the draft, and each document opened in the docs viewer. A button is quiet when that direction has no entry. While the workspace index is not ready, a small pill sits at the left of the chat column in that bar: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
 
 The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.

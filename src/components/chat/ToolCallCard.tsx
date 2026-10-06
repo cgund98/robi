@@ -174,7 +174,7 @@ export function ToolCallCard({
   const header = (
     <button
       type="button"
-      className={`${open && detail?.kind === 'code' ? styles.editRow : styles.row} ${status === 'failed' ? styles.rowFailed : ''}`}
+      className={`${open && detail ? styles.editRow : styles.row} ${status === 'failed' ? styles.rowFailed : ''}`}
       aria-expanded={expandable ? open : undefined}
       aria-invalid={status === 'failed' ? true : undefined}
       disabled={!expandable}
@@ -191,7 +191,7 @@ export function ToolCallCard({
     </button>
   )
 
-  if (open && detail?.kind === 'code') {
+  if (open && detail) {
     return (
       <div className={styles.shell}>
         {header}
@@ -200,12 +200,7 @@ export function ToolCallCard({
     )
   }
 
-  return (
-    <div className={styles.call}>
-      {header}
-      {open && detail ? <Detail detail={detail} /> : null}
-    </div>
-  )
+  return <div className={styles.call}>{header}</div>
 }
 
 function statusOf(call: ChatToolCall, phase: AgentPhase): 'running' | 'failed' | null {
@@ -704,12 +699,17 @@ function Detail({
   >
   panel?: boolean
 }) {
+  const body = panel ? styles.shellBody : styles.detail
   if (detail.kind === 'error') {
-    return <pre className={styles.error}>{detail.text}</pre>
+    return (
+      <pre className={panel ? `${styles.shellBody} ${styles.errorText}` : styles.error}>
+        {detail.text}
+      </pre>
+    )
   }
   if (detail.kind === 'code') {
     return (
-      <pre className={panel ? styles.shellBody : styles.detail}>
+      <pre className={body}>
         {detail.lines.map((line, index) => (
           <span key={index} className={styles.codeLine}>
             <span className={styles.lineNo}>{detail.startLine + index}</span>
@@ -720,7 +720,7 @@ function Detail({
     )
   }
   return (
-    <pre className={styles.detail}>
+    <pre className={body}>
       {detail.lines.map((line, index) => (
         <span key={index} className={styles.plainLine}>
           {line}

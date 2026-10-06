@@ -30,7 +30,9 @@ file's text. The shell opens `#/docs`, which keeps the session sidebar like the
 review route. In the window bar, at the right edge of the sidebar and above
 the workspace menu, the sidebar holds back and forward, then a pair of
 icons, **Chat** and **Documentation**. The pressed icon follows
-the route. **Documentation** goes to `#/docs`; **Chat** goes back to `#/`. A
+the route. **Documentation** goes to `#/docs`; **Chat** goes back to the active
+chat's route — `#/sessions/{id}`, or `#/` on the draft, so a chat reopened from
+documentation keeps its session. A
 hover names the icon. **Docs starts off**: a fresh launch lands on the chat route, and
 a `#/docs` hash kept from the last launch is cleared before the router mounts, so
 the viewer never reopens on its own. The window bar uses the same split as chat: sidebar fill

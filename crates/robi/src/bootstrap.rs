@@ -141,6 +141,17 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         config.settings_dir,
         Arc::clone(&event_bus),
     ));
+    let lsp_path_entries = settings
+        .get(crate::domain::settings::keys::PATH_ENTRIES)
+        .await
+        .ok()
+        .flatten()
+        .map(|setting| setting.value)
+        .unwrap_or_default();
+    let lsp_path =
+        crate::agent::blocking::call(move || crate::agent::mcp::resolve_path(&lsp_path_entries))
+            .await
+            .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
         events: Arc::new(BusEventSink::new(Arc::clone(&event_bus))),
@@ -155,7 +166,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         bus: Some(Arc::clone(&event_bus)),
         search,
         index: Some(Arc::clone(&index)),
-        lsp: Some(LspHub::new()),
+        lsp: Some(LspHub::with_search_path(lsp_path)),
         settings: Some(Arc::clone(&settings)),
         mcp: Some(Arc::clone(&mcp)),
         originals: Some(Arc::clone(&originals)),

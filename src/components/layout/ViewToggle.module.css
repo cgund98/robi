@@ -38,6 +38,16 @@
   color: var(--ink-strong);
 }
 
+.buttonAsk.buttonOn,
+.buttonAsk.buttonOn:hover {
+  color: var(--mode-ask);
+}
+
+.buttonPlan.buttonOn,
+.buttonPlan.buttonOn:hover {
+  color: var(--mode-plan);
+}
+
 .button svg {
   width: 15px;
   height: 15px;

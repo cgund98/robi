@@ -84,19 +84,25 @@ diagnostics. It does not answer definition, references, or workspace
 symbols, so those tools return `available: false` while Ruff is the
 process for that workspace.
 
-Discovery looks up the argv's first token on `PATH`. There is no
-download, no version-manager probe, and no read of another editor's
-config. A missing binary is `available: false` with `reason: "no_server"`.
-An extension with no row is `reason: "unsupported"`. Both are a
-successful tool result. The turn continues.
+Discovery looks up the argv's first token on the login shell's `PATH`,
+with the `path_entries` setting appended. That is the same `PATH` the MCP
+host builds for a stdio server. Reading the login shell recovers the
+directories a GUI launch loses: a Finder or desktop launch starts the API
+with the minimal system `PATH`, so `npm`, `nvm`, and Homebrew directories
+would otherwise be invisible. There is no download, no version-manager
+probe, and no read of another editor's config. A missing binary is
+`available: false` with `reason: "no_server"`. An extension with no row is
+`reason: "unsupported"`. Both are a successful tool result. The turn
+continues.
 
 ### Host binaries
 
-The `robi-api` process looks up each binary on the `PATH` it inherited
-when it started. A directory added to the shell afterward is invisible
-until the API is restarted. `node_modules/.bin` is not searched, so a
-package installed as a project dependency is not found unless that
-directory is already on the API's `PATH`.
+The `robi-api` process resolves each binary on the login shell's `PATH`,
+computed once at startup and cached for the process. `node_modules/.bin` is
+not searched, so a package installed as a project dependency is not found
+unless its directory is in the login shell's `PATH` or the `path_entries`
+setting. A directory added to the shell after startup is picked up on the
+next API start.
 
 | Binary | Install |
 |---|---|

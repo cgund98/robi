@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewFile, ReviewLine } from '../../api/review'
 
+const { navigateSpy, sendInstructionMock } = vi.hoisted(() => ({
+  navigateSpy: vi.fn(),
+  sendInstructionMock: vi.fn()
+}))
+
 vi.mock('../../api/review', () => ({
   decideReview: vi.fn(),
   getReviewFile: vi.fn()
@@ -14,11 +19,20 @@ vi.mock('../../app/useSessionReview', () => ({
 
 vi.mock('../../state/chatStore', () => ({
   useChatStore: (selector: (state: unknown) => unknown) =>
-    selector({ sessions: [], reviewTickBySession: {} })
+    selector({
+      sessions: [{ id: 's1', workspace_id: 'w1' }],
+      reviewTickBySession: {},
+      sendInstruction: sendInstructionMock
+    })
+}))
+
+vi.mock('../../state/workspaceStore', () => ({
+  useWorkspaceStore: (selector: (state: unknown) => unknown) =>
+    selector({ workspaces: [{ id: 'w1', root: '/tmp/ws' }] })
 }))
 
 vi.mock('react-router-dom', () => ({
-  useNavigate: () => () => {}
+  useNavigate: () => navigateSpy
 }))
 
 vi.mock('../../api/sessions', () => ({
@@ -111,5 +125,76 @@ describe('ReviewScreen in-line decisions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(decideReviewMock).toHaveBeenCalledWith('s1', 'a.ts', 'approve'))
+  })
+})
+
+describe('ReviewScreen reject with reason', () => {
+  async function openReasonDialog(index: number) {
+    render(<ReviewScreen sessionId="s1" />)
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'More reject options' })).toHaveLength(3)
+    )
+    fireEvent.pointerDown(screen.getAllByRole('button', { name: 'More reject options' })[index], {
+      button: 0
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reject with reason' }))
+  }
+
+  it('rejects the whole file with a reason and sends the whole-file attachment', async () => {
+    decideReviewMock.mockResolvedValue(undefined)
+    sendInstructionMock.mockResolvedValue(true)
+
+    await openReasonDialog(0)
+
+    fireEvent.change(await screen.findByLabelText('Feedback'), {
+      target: { value: 'keep the old name' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject and send' }))
+
+    await waitFor(() =>
+      expect(decideReviewMock).toHaveBeenCalledWith('s1', 'a.ts', 'reject', undefined)
+    )
+    expect(sendInstructionMock).toHaveBeenCalledTimes(1)
+    const [text, images, files] = sendInstructionMock.mock.calls[0]
+    expect(text).toContain('I rejected the change to a.ts.')
+    expect(text).toContain('keep the old name')
+    expect(images).toBeUndefined()
+    expect(files).toHaveLength(1)
+    expect(files[0].name).toBe('a.ts')
+    expect(files[0].path).toBe('a.ts')
+    expect(files[0].absolutePath).toBe('/tmp/ws/a.ts')
+    expect(files[0].startLine).toBeUndefined()
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/sessions/s1'))
+  })
+
+  it('rejects one hunk with a reason and attaches that hunk’s lines', async () => {
+    decideReviewMock.mockResolvedValue(undefined)
+    sendInstructionMock.mockResolvedValue(true)
+
+    await openReasonDialog(1)
+
+    fireEvent.change(await screen.findByLabelText('Feedback'), {
+      target: { value: 'rename this' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject and send' }))
+
+    await waitFor(() =>
+      expect(decideReviewMock).toHaveBeenCalledWith('s1', 'a.ts', 'reject', 'first')
+    )
+    const files = sendInstructionMock.mock.calls[0][2]
+    expect(files).toHaveLength(1)
+    expect(files[0].startLine).toBe(2)
+    expect(files[0].endLine).toBe(2)
+  })
+
+  it('keeps the dialog open and sends nothing for an empty reason', async () => {
+    await openReasonDialog(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reject and send' }))
+
+    expect(await screen.findByText('Add a reason for the model')).toBeTruthy()
+    expect(decideReviewMock).not.toHaveBeenCalled()
+    expect(sendInstructionMock).not.toHaveBeenCalled()
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 })
