@@ -26,7 +26,10 @@ pub enum ServiceError {
 }
 
 impl From<crate::agent::providers::ProviderError> for ServiceError {
-    fn from(_error: crate::agent::providers::ProviderError) -> Self {
+    fn from(error: crate::agent::providers::ProviderError) -> Self {
+        // The HTTP body stays the fixed Unknown sentence. The detail has to be
+        // logged here, because this is the last place that still has it.
+        tracing::error!(error = %error, "provider error returned as an internal error");
         ServiceError::Unknown
     }
 }

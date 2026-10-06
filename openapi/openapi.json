@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.4"
+    "version": "0.1.5"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -335,7 +335,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Files this session has changed",
+            "description": "Paths this session has changed, without file bodies",
             "content": {
               "application/json": {
                 "schema": {
@@ -375,6 +375,49 @@
         "responses": {
           "204": {
             "description": "The file or hunk was approved or rejected"
+          }
+        }
+      }
+    },
+    "/api/v1/chat_sessions/{id}/review/file": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "operationId": "get_review_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Chat session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Workspace-relative path.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One changed file, with its diff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewFileBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "That path has no remaining changes"
           }
         }
       }
@@ -1209,6 +1252,40 @@
           }
         }
       },
+      "ChatFile": {
+        "type": "object",
+        "description": "One text file a user attached. Metadata for the `filename (1-10)` chip; the\nattached text is deliberately not returned.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "end_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "ChatImage": {
         "type": "object",
         "description": "One image a user attached, referenced by id. The bytes live in the store.",
@@ -1240,6 +1317,13 @@
           },
           "content": {
             "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatFile"
+            },
+            "description": "Text files the user attached. Metadata only: the attached text stays in\nthe transcript and is not returned here, so one `GET /messages` does not\ncarry every attachment's bytes."
           },
           "id": {
             "type": "string"
@@ -1743,6 +1827,49 @@
           }
         }
       },
+      "FileAttachmentInput": {
+        "type": "object",
+        "description": "One file attachment as the client sends it. The client sends the file's raw\nbytes base64-encoded; the server decodes them, verifies they are text, and\nstores the decoded text. The server also decides whether the file is inside\nthe workspace, from `absolute_path` — the client does not classify it.",
+        "required": [
+          "name",
+          "content_base64"
+        ],
+        "properties": {
+          "absolute_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file's absolute path on the client, when the picker provided one\n(the desktop native dialog). Absent for a browser upload, which exposes\nonly the basename. The server uses it to decide in-workspace vs outside;\nit is never stored and never opened."
+          },
+          "content_base64": {
+            "type": "string",
+            "description": "The file's bytes, standard base64. The server decodes and checks them."
+          },
+          "end_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1-based last line of the slice, inclusive, when the attach was a range.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name, e.g. `error.rs`."
+          },
+          "start_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1-based first line of the slice, when the attach was a range.",
+            "minimum": 0
+          }
+        }
+      },
       "IndexCommand": {
         "type": "object",
         "required": [
@@ -1993,6 +2120,34 @@
           }
         }
       },
+      "ReviewFileSummary": {
+        "type": "object",
+        "description": "A changed path. Bodies and lines load from `GET .../review/file`.",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReviewStatus"
+          }
+        }
+      },
       "ReviewHunkBody": {
         "type": "object",
         "required": [
@@ -2087,7 +2242,7 @@
           "files": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ReviewFileBody"
+              "$ref": "#/components/schemas/ReviewFileSummary"
             }
           }
         }
@@ -2179,6 +2334,13 @@
           "instruction"
         ],
         "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileAttachmentInput"
+            },
+            "description": "Text files the client read and is attaching. Defaulted so an older client\nthat sends only `instruction` still parses."
+          },
           "instruction": {
             "type": "string"
           }

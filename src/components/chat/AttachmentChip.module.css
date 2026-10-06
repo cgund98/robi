@@ -1,0 +1,46 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.icon {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.range {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+}
+
+.remove {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.remove:hover {
+  color: var(--ink);
+}

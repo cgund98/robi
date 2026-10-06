@@ -13,7 +13,9 @@ import type { ChatMessage } from '../../api/messages'
 import { imageUrl } from '../../api/messages'
 import type { AgentMode } from '../../api/sessions'
 import type { AgentPhase } from '../../state/chatStore'
+import type { AttachmentMeta } from './textAttachments'
 import { AssistantMarkdown } from './AssistantMarkdown'
+import { AttachmentChip } from './AttachmentChip'
 import { CopyMarkdownButton } from './CopyMarkdownButton'
 import styles from './Transcript.module.css'
 import { FinishedTodos, RemainingTodos } from './TodoList'
@@ -28,6 +30,8 @@ type TranscriptProps = {
   /** Current session id, for resolving stored image bytes. */
   sessionId?: string | null
   echo: string | null
+  /** Chips for the pending echo's attachments. */
+  echoFiles?: AttachmentMeta[]
   phase: AgentPhase
   /** Open tasks stay off until a build starts in agent mode. */
   mode: AgentMode
@@ -261,6 +265,19 @@ const TurnView = memo(function TurnView({
               )}
             </div>
           ) : null}
+          {start.files && start.files.length > 0 ? (
+            <div className={styles.files}>
+              {start.files.map((file, index) => (
+                <AttachmentChip
+                  key={`${file.name}-${index}`}
+                  name={file.name}
+                  path={file.path}
+                  startLine={file.start_line}
+                  endLine={file.end_line}
+                />
+              ))}
+            </div>
+          ) : null}
           {start.content}
           {start.skills?.map((skill) => (
             <details key={skill.id} className={styles.skill}>
@@ -437,6 +454,7 @@ export function Transcript({
   messages,
   sessionId,
   echo,
+  echoFiles = [],
   phase,
   mode,
   deciding,
@@ -486,6 +504,19 @@ export function Transcript({
         ))}
         {echo ? (
           <li key="pending-echo" className={styles.user}>
+            {echoFiles.length > 0 ? (
+              <div className={styles.files}>
+                {echoFiles.map((file, index) => (
+                  <AttachmentChip
+                    key={`${file.name}-${index}`}
+                    name={file.name}
+                    path={file.path}
+                    startLine={file.startLine}
+                    endLine={file.endLine}
+                  />
+                ))}
+              </div>
+            ) : null}
             {echo}
           </li>
         ) : null}

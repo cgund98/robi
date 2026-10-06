@@ -375,6 +375,7 @@ mod tests {
             _session: SessionId,
             _instruction: String,
             _images: Vec<robi_core::message::ImageAttachment>,
+            _files: Vec<robi_core::message::FileAttachment>,
         ) -> Result<SubmitOutcome, ServiceError> {
             unreachable!("events stream does not submit")
         }

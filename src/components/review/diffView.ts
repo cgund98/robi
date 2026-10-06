@@ -31,12 +31,22 @@ function trimGaps(lines: ReviewLine[]): ReviewLine[] {
   return out
 }
 
+export type ReviewChunkHunk = {
+  id: string
+  /** Index inside the chunk's lines of that hunk's first changed line. */
+  firstChange: number
+}
+
 export type ReviewChunk = {
-  hunkIds: string[]
+  hunks: ReviewChunkHunk[]
   lines: ReviewLine[]
 }
 
-/** Visual hunks, split on gaps. Each one carries the hunk ids it can approve or reject. */
+/**
+ * Visual blocks, split on gaps. Each block carries every logical hunk that lands
+ * inside it, with the index of that hunk's first changed line, so each hunk can
+ * get its own approve or reject control. A block can hold more than one hunk.
+ */
 export function chunksFor(lines: ReviewLine[], hunks: ReviewHunk[]): ReviewChunk[] {
   const groups: ReviewLine[][] = []
   let current: ReviewLine[] = []
@@ -55,20 +65,21 @@ export function chunksFor(lines: ReviewLine[], hunks: ReviewHunk[]): ReviewChunk
   }
   return groups.map((group) => ({
     lines: group,
-    hunkIds: hunks.filter((hunk) => hunkTouches(hunk, group)).map((hunk) => hunk.id)
+    hunks: hunks.flatMap((hunk) => {
+      const firstChange = group.findIndex((line) => hunkTouchesLine(hunk, line))
+      return firstChange < 0 ? [] : [{ id: hunk.id, firstChange }]
+    })
   }))
 }
 
-function hunkTouches(hunk: ReviewHunk, lines: ReviewLine[]): boolean {
-  return lines.some((line) => {
-    if (line.kind === 'delete' && line.old_line != null && hunk.old_count > 0) {
-      return line.old_line > hunk.old_start && line.old_line <= hunk.old_start + hunk.old_count
-    }
-    if (line.kind === 'insert' && line.new_line != null && hunk.new_count > 0) {
-      return line.new_line > hunk.new_start && line.new_line <= hunk.new_start + hunk.new_count
-    }
-    return false
-  })
+function hunkTouchesLine(hunk: ReviewHunk, line: ReviewLine): boolean {
+  if (line.kind === 'delete' && line.old_line != null && hunk.old_count > 0) {
+    return line.old_line > hunk.old_start && line.old_line <= hunk.old_start + hunk.old_count
+  }
+  if (line.kind === 'insert' && line.new_line != null && hunk.new_count > 0) {
+    return line.new_line > hunk.new_start && line.new_line <= hunk.new_start + hunk.new_count
+  }
+  return false
 }
 
 /**

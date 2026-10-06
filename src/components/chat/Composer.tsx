@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Paperclip } from 'lucide-react'
 
 import { modelDisplayName, type CatalogModel } from '../../api/models'
@@ -14,14 +14,21 @@ import {
   writeComposerDraft
 } from '../../state/composerDrafts'
 import {
+  subscribeComposerAttachments,
+  takeComposerAttachments
+} from '../../state/composerAttachments'
+import {
+  attachmentFromPicked,
   fileAccept,
   filesFromTransfer,
-  instructionWithTextFiles,
   isImageFile,
-  isTextFile,
   MAX_ATTACHMENTS,
-  readTextFile
+  MAX_TEXT_TOTAL_BYTES,
+  readFileAttachment,
+  type FileAttachment
 } from './textAttachments'
+import { AttachmentChip } from './AttachmentChip'
+import { pickAttachmentFiles, type PickedAttachment } from '../../infra/pickAttachmentFiles'
 import styles from './Composer.module.css'
 
 const MODES: { value: AgentMode; label: string; tone: AgentMode }[] = [
@@ -52,7 +59,7 @@ type ComposerProps = {
   /** Stop has been requested and the actor has not exited yet. */
   stopping?: boolean
   onStop?: () => void
-  onSubmit: (text: string, images?: File[]) => Promise<boolean>
+  onSubmit: (text: string, images?: File[], files?: FileAttachment[]) => Promise<boolean>
   /** Centered card on an empty chat. Dock keeps the field at the bottom of a thread. */
   placement?: 'dock' | 'welcome'
   models: CatalogModel[]
@@ -79,6 +86,35 @@ type ComposerProps = {
 
 function hasFiles(data: DataTransfer): boolean {
   return Array.from(data.types).includes('Files')
+}
+
+/**
+ * Add attachments to the composer's list, honouring the count and total caps.
+ *
+ * The one place a new attachment enters the list, so a picker, a drop, and a
+ * request from the docs viewer all enforce the same limits. `errors` collects a
+ * message per dropped attachment; entries that fit are appended in order.
+ */
+function appendAttachments(
+  current: FileAttachment[],
+  imageCount: number,
+  incoming: FileAttachment[],
+  errors: string[]
+): FileAttachment[] {
+  const next = [...current]
+  for (const attachment of incoming) {
+    if (imageCount + next.length >= MAX_ATTACHMENTS) {
+      errors.push(`${attachment.name} was not added: up to ${MAX_ATTACHMENTS} attachments`)
+      continue
+    }
+    const total = next.reduce((sum, file) => sum + file.size, 0) + attachment.size
+    if (total > MAX_TEXT_TOTAL_BYTES) {
+      errors.push(`${attachment.name} would push the attachments over the total limit`)
+      continue
+    }
+    next.push(attachment)
+  }
+  return next
 }
 
 function modelLabel(models: CatalogModel[], id: string | null, fallback: string): string {
@@ -124,13 +160,13 @@ export function Composer({
   const [boundKey, setBoundKey] = useState(draftKey)
   const [caret, setCaret] = useState(0)
   const [images, setImages] = useState<File[]>([])
-  const [textFiles, setTextFiles] = useState<File[]>([])
+  const [files, setFiles] = useState<FileAttachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
   if (draftKey !== boundKey) {
     setBoundKey(draftKey)
     setCaret(0)
     setImages([])
-    setTextFiles([])
+    setFiles([])
     setAttachError(null)
   }
 
@@ -141,9 +177,38 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null)
   const dragDepth = useRef(0)
   const [dragOver, setDragOver] = useState(false)
-  const attachmentCount = images.length + textFiles.length
+  const attachmentCount = images.length + files.length
   const canSend = !disabled && (draft.trim().length > 0 || attachmentCount > 0)
   const welcome = placement === 'welcome'
+
+  // Latest files and images, for the drain effect below to read without listing
+  // them as dependencies (a drain must not re-run when the list changes).
+  const filesRef = useRef(files)
+  const imagesRef = useRef(images)
+  useEffect(() => {
+    filesRef.current = files
+    imagesRef.current = images
+  }, [files, images])
+
+  // A request from the docs viewer's line attach waits here until this composer
+  // is the one for `draftKey` — the tray unmounts the composer while closed, so
+  // the request can arrive before it mounts. Draining on mount and on each
+  // request keeps the field's own state the single source of truth.
+  const [attachSignal, setAttachSignal] = useState(0)
+  useEffect(() => subscribeComposerAttachments(() => setAttachSignal((count) => count + 1)), [])
+  useEffect(() => {
+    const incoming = takeComposerAttachments(draftKey)
+    if (incoming.length === 0) {
+      return
+    }
+    const errors: string[] = []
+    setFiles(appendAttachments(filesRef.current, imagesRef.current.length, incoming, errors))
+    if (errors.length > 0) {
+      setAttachError(errors.join(', '))
+    }
+    // The intent is to write about the line, so put the caret in the field.
+    requestAnimationFrame(() => fieldRef.current?.focus())
+  }, [draftKey, attachSignal])
 
   useLayoutEffect(() => {
     const field = fieldRef.current
@@ -159,50 +224,88 @@ export function Composer({
       return
     }
     setAttachError(null)
-    let text: string
-    try {
-      const read = await Promise.all(
-        textFiles.map(async (file) => ({ name: file.name, text: await readTextFile(file) }))
-      )
-      text = instructionWithTextFiles(draft, read)
-    } catch (error) {
-      setAttachError(error instanceof Error ? error.message : 'Could not read that file')
-      return
-    }
-    const sent = await onSubmit(text, images)
+    const sent = await onSubmit(draft, images, files)
     if (sent) {
       updateDraft('')
       setImages([])
-      setTextFiles([])
+      setFiles([])
     }
   }
 
-  function onPick(files: FileList | File[] | null) {
-    if (!files || disabled) {
+  async function onPick(list: FileList | File[] | null) {
+    if (!list || disabled) {
       return
     }
-    const room = MAX_ATTACHMENTS - images.length - textFiles.length
+    const room = MAX_ATTACHMENTS - images.length - files.length
     if (room <= 0) {
       return
     }
-    const picked = Array.from(files).slice(0, room)
+    const picked = Array.from(list).slice(0, room)
     const nextImages = [...images]
-    const nextText = [...textFiles]
+    const textFiles: FileAttachment[] = []
     const skipped: string[] = []
     for (const file of picked) {
       if (isImageFile(file)) {
         nextImages.push(file)
-      } else if (isTextFile(file)) {
-        nextText.push(file)
-      } else {
-        skipped.push(file.name)
+        continue
+      }
+      // Not an image: the content decides whether it is text. A binary file is
+      // refused here; the server re-checks the same bytes.
+      try {
+        textFiles.push(await readFileAttachment(file))
+      } catch (error) {
+        skipped.push(error instanceof Error ? error.message : `${file.name} could not be read`)
       }
     }
+    const errors: string[] = []
+    const nextFiles = appendAttachments(files, nextImages.length, textFiles, errors)
     setImages(nextImages)
-    setTextFiles(nextText)
+    setFiles(nextFiles)
     setAttachError(
-      skipped.length > 0 ? `${skipped.join(', ')} is not an image or a text file` : null
+      errors.length > 0 ? errors.join(', ') : skipped.length > 0 ? skipped.join(', ') : null
     )
+  }
+
+  /** Attach files the native desktop picker returned, which carry a path. */
+  function addPicked(picked: PickedAttachment[]) {
+    const room = MAX_ATTACHMENTS - images.length - files.length
+    if (room <= 0 || picked.length === 0) {
+      return
+    }
+    const incoming: FileAttachment[] = []
+    const errors: string[] = []
+    for (const item of picked.slice(0, room)) {
+      try {
+        incoming.push(attachmentFromPicked(item))
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : `${item.name} could not be read`)
+      }
+    }
+    setFiles(appendAttachments(files, images.length, incoming, errors))
+    setAttachError(errors.length > 0 ? errors.join(', ') : null)
+  }
+
+  /**
+   * The paperclip. In the desktop app the native dialog runs, because it is the
+   * only picker that returns an absolute path — which the server needs to decide
+   * whether the file is inside the workspace. In a browser it falls back to the
+   * `<input>`, which yields a basename only, so the file is treated as outside.
+   */
+  async function onAttach() {
+    let picked: PickedAttachment[] | null
+    try {
+      picked = await pickAttachmentFiles()
+    } catch (error) {
+      // Surface a failed picker (a missing command, or a shell error) instead of
+      // a click that appears to do nothing.
+      setAttachError(error instanceof Error ? error.message : 'Could not open the file picker')
+      return
+    }
+    if (picked === null) {
+      fileRef.current?.click()
+      return
+    }
+    addPicked(picked)
   }
 
   const resolvedModel = modelId ?? defaultModelId
@@ -219,7 +322,7 @@ export function Composer({
       className={styles.attach}
       disabled={disabled || attachmentCount >= MAX_ATTACHMENTS}
       aria-label="Attach a file"
-      onClick={() => fileRef.current?.click()}
+      onClick={() => void onAttach()}
     >
       <Paperclip size={16} strokeWidth={1.75} />
     </button>
@@ -297,7 +400,7 @@ export function Composer({
             event.preventDefault()
             dragDepth.current = 0
             setDragOver(false)
-            onPick(filesFromTransfer(event.dataTransfer))
+            void onPick(filesFromTransfer(event.dataTransfer))
           }}
         >
           {attachmentCount > 0 ? (
@@ -319,18 +422,15 @@ export function Composer({
                   </button>
                 </div>
               ))}
-              {textFiles.map((file, index) => (
-                <div key={`${file.name}-${index}`} className={styles.fileChip}>
-                  <span className={styles.fileName}>{file.name}</span>
-                  <button
-                    type="button"
-                    className={styles.removeChip}
-                    aria-label={`Remove ${file.name}`}
-                    onClick={() => setTextFiles(textFiles.filter((_, i) => i !== index))}
-                  >
-                    ×
-                  </button>
-                </div>
+              {files.map((file, index) => (
+                <AttachmentChip
+                  key={`${file.name}-${index}`}
+                  name={file.name}
+                  path={file.path ?? file.absolutePath}
+                  startLine={file.startLine}
+                  endLine={file.endLine}
+                  onRemove={() => setFiles(files.filter((_, i) => i !== index))}
+                />
               ))}
             </div>
           ) : null}
@@ -364,7 +464,7 @@ export function Composer({
                   return
                 }
                 event.preventDefault()
-                onPick(files)
+                void onPick(files)
               }}
               aria-label="Message"
             />
@@ -388,7 +488,7 @@ export function Composer({
               multiple
               className={styles.fileInput}
               onChange={(event) => {
-                onPick(event.target.files)
+                void onPick(event.target.files)
                 event.target.value = ''
               }}
               aria-label="Attach files"

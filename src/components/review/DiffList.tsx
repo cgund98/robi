@@ -106,29 +106,33 @@ export function DiffList({ files, view, pendingKey, onDecide }: DiffListProps) {
                 </div>
                 <div className={styles.overlays}>
                   {chunks.map((chunk, chunkIndex) =>
-                    file.status !== 'added' && chunk.hunkIds.length > 0 ? (
-                      <div
-                        key={`${file.path}-${chunkIndex}`}
-                        className={styles.chunkActions}
-                        data-open={hoverChunk === `${file.path}:${chunkIndex}` ? 'true' : undefined}
-                        style={{
-                          top: `calc(${chunkStart(chunks, chunkIndex) + firstChangeLine(chunk.lines)} * var(--review-line))`
-                        }}
-                        onMouseEnter={() => setHoverChunk(`${file.path}:${chunkIndex}`)}
-                        onMouseLeave={() =>
-                          setHoverChunk((current) =>
-                            current === `${file.path}:${chunkIndex}` ? null : current
-                          )
-                        }
-                      >
-                        <DecisionButtons
-                          disabled={pendingKey !== null}
-                          busy={chunk.hunkIds.some((id) => pendingKey === `${file.path}:${id}`)}
-                          onReject={() => onDecide(file.path, 'reject', chunk.hunkIds)}
-                          onApprove={() => onDecide(file.path, 'approve', chunk.hunkIds)}
-                        />
-                      </div>
-                    ) : null
+                    file.status !== 'added' && chunk.hunks.length > 0
+                      ? chunk.hunks.map((hunk) => (
+                          <div
+                            key={`${file.path}-${hunk.id}`}
+                            className={styles.chunkActions}
+                            data-open={
+                              hoverChunk === `${file.path}:${chunkIndex}` ? 'true' : undefined
+                            }
+                            style={{
+                              top: `calc(${chunkStart(chunks, chunkIndex) + hunk.firstChange} * var(--review-line))`
+                            }}
+                            onMouseEnter={() => setHoverChunk(`${file.path}:${chunkIndex}`)}
+                            onMouseLeave={() =>
+                              setHoverChunk((current) =>
+                                current === `${file.path}:${chunkIndex}` ? null : current
+                              )
+                            }
+                          >
+                            <DecisionButtons
+                              disabled={pendingKey !== null}
+                              busy={pendingKey === `${file.path}:${hunk.id}`}
+                              onReject={() => onDecide(file.path, 'reject', [hunk.id])}
+                              onApprove={() => onDecide(file.path, 'approve', [hunk.id])}
+                            />
+                          </div>
+                        ))
+                      : null
                   )}
                 </div>
               </div>
@@ -161,11 +165,6 @@ function DecisionButtons({
       </button>
     </span>
   )
-}
-
-function firstChangeLine(lines: ReviewLine[]): number {
-  const index = lines.findIndex((line) => line.kind === 'insert' || line.kind === 'delete')
-  return index < 0 ? 0 : index
 }
 
 function chunkStart(chunks: { lines: ReviewLine[] }[], index: number): number {

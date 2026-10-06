@@ -3,6 +3,7 @@ import { api, apiBaseUrl, fetchWithTimeout } from './client'
 import type { components } from './schema'
 
 export type ChatMessage = components['schemas']['ChatMessage']
+export type FileAttachmentInput = components['schemas']['FileAttachmentInput']
 
 export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   const result = await api.GET('/api/v1/chat_sessions/{id}/messages', {
@@ -95,9 +96,11 @@ export async function compactSession(sessionId: string): Promise<void> {
 export async function submitInstruction(
   sessionId: string,
   instruction: string,
-  images?: File[]
+  images?: File[],
+  files?: FileAttachmentInput[]
 ): Promise<void> {
   const hasImages = (images?.length ?? 0) > 0
+  const hasFiles = (files?.length ?? 0) > 0
   let response: Response
   if (hasImages) {
     // A message with images goes out as `multipart/form-data`. openapi-fetch's
@@ -107,6 +110,11 @@ export async function submitInstruction(
     form.append('instruction', instruction)
     for (const image of images!) {
       form.append('images', image, image.name)
+    }
+    if (hasFiles) {
+      // The attachments travel as one JSON array; a multipart field cannot carry
+      // a nested object on its own.
+      form.append('files', JSON.stringify(files))
     }
     response = await fetchWithTimeout(
       `${apiBaseUrl()}/api/v1/chat_sessions/${sessionId}/messages`,
@@ -118,7 +126,7 @@ export async function submitInstruction(
   } else {
     const result = await api.POST('/api/v1/chat_sessions/{id}/messages', {
       params: { path: { id: sessionId } },
-      body: { instruction }
+      body: { instruction, files: files ?? [] }
     })
     response = result.response
   }

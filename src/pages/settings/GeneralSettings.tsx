@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { deleteSetting, getSettings, putSetting, SETTING_KEYS } from '../../api/settings'
 import { useWorkspaceStore } from '../../state/workspaceStore'
+import { DisplaySettings } from './DisplaySettings'
 import { ModelDefaults } from './ModelDefaults'
 import styles from './Settings.module.css'
 
@@ -133,6 +134,7 @@ export function GeneralSettings() {
   return (
     <>
       <h1 className={styles.title}>General</h1>
+      <DisplaySettings />
       <ModelDefaults />
       <section className={styles.section}>
         <h2 className={styles.sectionTitle}>Workspace</h2>

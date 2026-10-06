@@ -5246,8 +5246,12 @@ dependencies = [
 name = "robi-app"
 version = "0.1.5"
 dependencies = [
+ "base64 0.22.1",
+ "block2",
  "mac-notification-sys",
  "notify-rust",
+ "objc2",
+ "objc2-app-kit",
  "robi",
  "serde",
  "serde_json",

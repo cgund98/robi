@@ -10,6 +10,11 @@ import {
   type ChatMessage
 } from '../api/messages'
 import {
+  toFileInputs,
+  type AttachmentMeta,
+  type FileAttachment
+} from '../components/chat/textAttachments'
+import {
   ApiError,
   createSession,
   deleteSession,
@@ -42,6 +47,7 @@ export type AgentPhase = 'idle' | 'thinking' | 'responding'
 type PendingEcho = {
   sessionId: string
   text: string
+  files: AttachmentMeta[]
 }
 
 type ChatState = {
@@ -72,7 +78,11 @@ type ChatState = {
   setModeChoice: (mode: AgentMode) => Promise<void>
   setModelChoice: (model: string | null) => Promise<void>
   setEffortChoice: (effort: string | null) => Promise<void>
-  sendInstruction: (instruction: string, images?: File[]) => Promise<boolean>
+  sendInstruction: (
+    instruction: string,
+    images?: File[],
+    files?: FileAttachment[]
+  ) => Promise<boolean>
   stopAgent: () => Promise<void>
   /** Ask the active session to summarize its older prefix. */
   compactAgent: () => Promise<void>
@@ -651,12 +661,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await setChoice(get, set, 'reasoning_effort', effort)
   },
 
-  sendInstruction: async (instruction, images) => {
+  sendInstruction: async (instruction, images, files) => {
     const text = instruction.trim()
     const hasImages = (images?.length ?? 0) > 0
-    if ((!text && !hasImages) || get().busy) {
+    const hasFiles = (files?.length ?? 0) > 0
+    if ((!text && !hasImages && !hasFiles) || get().busy) {
       return false
     }
+    const echoFiles = (files ?? []).map((file) => ({
+      name: file.name,
+      path: file.path ?? file.absolutePath,
+      startLine: file.startLine,
+      endLine: file.endLine
+    }))
+    const fileInputs = hasFiles ? toFileInputs(files!) : undefined
     const { draftSelected, activeSessionId } = get()
     const creating = draftSelected || activeSessionId === null
     if (!creating) {
@@ -688,7 +706,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           draftEffort: null
         }))
         try {
-          await submitInstruction(created.id, text, images)
+          await submitInstruction(created.id, text, images, fileInputs)
         } catch (err) {
           if (epoch !== hydrateEpoch) {
             set({ busy: false })
@@ -707,7 +725,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         stampPending(created.id)
         set((state) => ({
           busy: false,
-          pendingEcho: { sessionId: created.id, text },
+          pendingEcho: { sessionId: created.id, text, files: echoFiles },
           phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' },
           sessions: state.sessions.map((item) =>
             item.id === created.id ? { ...item, has_pending_agent: true } : item
@@ -717,11 +735,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return true
       }
 
-      await submitInstruction(activeSessionId, text, images)
+      await submitInstruction(activeSessionId, text, images, fileInputs)
       stampPending(activeSessionId)
       set((state) => ({
         busy: false,
-        pendingEcho: { sessionId: activeSessionId, text },
+        pendingEcho: { sessionId: activeSessionId, text, files: echoFiles },
         phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' },
         sessions: state.sessions.map((item) =>
           item.id === activeSessionId ? { ...item, has_pending_agent: true } : item

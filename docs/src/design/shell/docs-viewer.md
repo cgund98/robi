@@ -10,7 +10,7 @@ read-only first slice of M10's project navigation. The editor and the docs
 | Topic | Where it belongs |
 |---|---|
 | The `docs` agent mode (its tool set and prompt prefix) | M10 F10.1, `docs/src/roadmap.md` |
-| Editing a page, and the agent editing the same file | M10 F10.3. This page only reads |
+| Editing a page in the viewer | M10 F10.3. The viewer only reads; the chat tray is how the agent changes a page |
 | Widening the filter past markdown and the docs directories | M10 F10.2. This page shows markdown only |
 | The shared path filter and grants | [roadmap](../../roadmap.md) (M3) |
 | Markdown rendering itself (GFM, mermaid, headings) | [chat-ui.md](chat-ui.md) |
@@ -27,7 +27,13 @@ documentation wants the same shape over a different file set.
 **Two workspace routes, one screen.** `GET /api/v1/workspaces/{id}/docs` lists
 the markdown files; `GET /api/v1/workspaces/{id}/docs/{path}` returns one
 file's text. The shell opens `#/docs`, which keeps the session sidebar like the
-review route. The window bar uses the same split as chat: sidebar fill
+review route. In the window bar, at the right edge of the sidebar and above
+the workspace menu, the sidebar holds back and forward, then a pair of
+icons, **Chat** and **Documentation**. The pressed icon follows
+the route. **Documentation** goes to `#/docs`; **Chat** goes back to `#/`. A
+hover names the icon. **Docs starts off**: a fresh launch lands on the chat route, and
+a `#/docs` hash kept from the last launch is cleared before the router mounts, so
+the viewer never reopens on its own. The window bar uses the same split as chat: sidebar fill
 over the sidebar column, canvas over the rest, so the sidebar color
 reaches the window buttons.
 
@@ -65,10 +71,12 @@ document does not fold the tree. A file row selects that path and highlights
 while it is open.
 
 **The document has a measure.** The right pane scrolls, and the sheet inside it
-is `min-width: 640px` and `max-width: 880px`, centered. The floor keeps tables
-and code blocks readable when the window is narrow; the pane scrolls
-horizontally rather than crushing the text. At wide sizes the sheet stays
-centered and does not stretch to a hard-to-read line length.
+is `min-width: 640px` and `max-width: 880px`, pinned to the left of the pane.
+The floor keeps tables and code blocks readable when the window is narrow; the
+pane scrolls horizontally rather than crushing the text. Left rather than
+centered: the chat tray overlays the right edge, so a left-aligned sheet is
+occluded less while the tray is open. At wide sizes the sheet keeps its max
+width and does not stretch to a hard-to-read line length.
 
 The pane is the only scroller on that side of the screen. It is
 `position: relative`, so the hidden source label on a diagram stays inside
@@ -82,17 +90,103 @@ tables, and fenced `mermaid` diagrams. A relative link whose path ends in
 the viewer. A link that would leave the workspace stays a link. Absolute
 URLs and in-page fragments still open as links. No document opens on page load: the
 viewer starts with a centered **Select a document to open it.**, and the tree
-waits for a click. Choosing another session, or **New chat**, leaves the
-viewer for the chat.
+waits for a click. Choosing another session, or **New chat**, keeps the viewer
+open and shows that chat in the tray (below).
 
 **Each open page is a history entry.** Selecting a file, a search hit, or a
 document link sets `file` on `#/docs` and pushes a history entry. The back
 and forward buttons in the window bar walk that history, and so do the side
-mouse buttons: button 3 goes back, button 4 goes forward, through pages and
+mouse buttons: button 3 goes back, button 4 goes forward. On macOS the webview
+never delivers those buttons, so the desktop process watches for them and
+sends the same step. They walk through pages and
 then through the routes that led here. The page remembered
 from the last visit is written with replace, so returning to the viewer does
 not add an extra step. Backing up to an entry with no `file` shows the empty
 prompt again.
+
+## Chat tray
+
+The viewer and a chat share the screen. A tray on the right holds the currently
+selected session's transcript and composer, so a page can be read and revised
+with the agent in one place.
+
+**The tray is an overlay, and its width is adjustable.** It is `position:
+absolute` against the main column, pinned to the top, right, and bottom. It
+opens at `min(420px, 42vw)`, clamped to 300–900 px and to a maximum that always
+leaves 320 px of the page visible on the left. A drag handle runs down its left
+edge: dragging left widens it and dragging right narrows it, the cursor over it
+is `col-resize`, and the handle lights up in `--accent` while hovered or
+dragged. The handle is focusable (`role="separator"`,
+`aria-orientation="vertical"`), and **Left**/**Right** step the width by 24 px
+while **Home** and **End** jump to the minimum and maximum. The width is
+remembered in `localStorage` under `robi.docsTrayWidth`, so it survives a
+reopen, and it is re-clamped when the window shrinks. It does not push the
+document: the sheet keeps its measure and does not gain a horizontal
+scrollbar. The window bar, the sidebar, and the docs search header are
+unchanged, and the bar's title stays **Documentation**.
+
+**It starts closed.** With no tray open, a slim handle sits on the right edge
+of the main column (a **Show chat** button, `aria-expanded="false"`,
+`aria-controls` the tray). Clicking it, choosing a session, or **New chat**,
+opens the tray; the two later actions no longer leave `#/docs`, so the page
+stays open and the tray shows the chat. The panel header carries the session
+title and a **Close chat** button, and **Escape** closes it. Leaving `#/docs`
+closes it, so the next visit starts closed again.
+
+The tray body is the same chat surface as the main column — the transcript, the
+mode and model controls, and the composer — with no pending-edit review strip.
+A session that is still running shows the same activity line and **Stop**
+control as it does in the main column.
+
+**An agent edit refreshes the page.** The store already bumps a per-session
+review tick when a tool call lands and when a turn finishes. The viewer reads
+the active session's tick and re-fetches the open document and the tree listing
+on each change. A fetch that returns the same text leaves the state object
+alone, so a no-op tick does not reset the rendered document or its scroll
+position. A page the agent created appears in the tree on the same tick.
+
+### Attach a line to chat
+
+A line of the open page can be sent to the agent without retyping it. Hovering a
+rendered block — a paragraph, a heading, a list item, a table row, a code fence,
+a blockquote, a rule — shows a small **add to chat** button (a chat bubble with
+a plus) at the right of that block.
+Clicking it adds the block's **raw markdown lines** to the composer as a file
+attachment and opens the tray.
+
+The unit is a rendered block, but the range is a source range.
+`AssistantMarkdown`'s document mode stamps each block's element with
+`data-md-lines`, taken from the mdast `position` react-markdown already carries
+on every component. That is the line in the file the page was rendered from,
+never a count of rendered elements or wrapped visual lines. The hover reads that
+attribute (`target.closest('[data-md-lines]')`), so the innermost block under the
+pointer wins: a paragraph inside a list item carries the paragraph's tighter
+range, and a tight list item falls back to its own. A paragraph that wraps over
+several source lines attaches the whole paragraph (`40-44`); a heading, a table
+row, or a single-line paragraph attaches one line. The button is pinned to the
+hovered block's top inside the sheet (`data-md-attach`, `data-find-ignore`), and
+it clears on the next pointer move that is not over a block and on any scroll.
+
+**The attachment is built client-side, like the paperclip's.** The viewer slices
+the raw lines (`attachmentFromDocument`), sets the chip's `start_line` /
+`end_line`, and hands the composer a ready `FileAttachment` with
+`content_base64`. The document's workspace root becomes the `absolute_path`, so
+the server stores the workspace-relative `path` and the model can re-read the
+page with `read_file`. A slice over the 64 KiB per-file cap is refused with a
+notice in the viewer rather than silently dropped. See
+[file-attachments.md](file-attachments.md).
+
+**A request outlives the closed tray.** Attaching a line opens the tray
+(`setTrayOpen(true)`), which mounts a composer that was not there a moment ago,
+and the request must survive that gap. So `AppLayout` does not pass the
+attachment down as a prop: it calls `requestComposerAttachment(draftKey, file)`,
+a keyed one-shot queue (`src/state/composerAttachments.ts`), and the composer
+drains it on mount and on each request. The key is the composer's `draftKey` —
+the selected session id, or `draft` when no session is selected, so a line
+attached with no chat open lands in a new chat and the first send creates the
+row. The drained attachment goes through the same count and total-size caps as a
+picker or a drop (`appendAttachments`); anything dropped sets the composer's
+error, and the field takes focus so the user can write about the line.
 
 ## Search
 
@@ -258,6 +352,15 @@ ranges and the count stay correct.
   rows toggle instead of sitting still.
 - **Persisting the collapsed set.** The default-open tree is small after the
   ignore filter; a stored fold state is a setting nobody asked for.
+- **Injecting the attach button into each rendered block.** It fights the same
+  React reconciliation the find feature avoids (the viewer never mutates the
+  rendered DOM), it is clipped by a `pre` or a diagram's `overflow`, and it
+  cannot sit on a table row. One overlay button positioned from the hovered
+  block is simpler.
+- **Mapping the hover to a single visual line.** Turning a wrapped line back into
+  a source line needs character-offset reconciliation through markdown rendering,
+  and inline emphasis and entity rewriting shift those offsets. The block's
+  source range is exact and always a coherent slice.
 
 ## Failure modes
 

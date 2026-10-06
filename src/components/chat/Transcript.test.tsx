@@ -241,3 +241,44 @@ describe('Transcript compaction divider', () => {
     expect(screen.getByText('keep going')).toBeTruthy()
   })
 })
+
+describe('Transcript file chips', () => {
+  it('renders a chip for a stored attachment', () => {
+    render(
+      <Transcript
+        messages={[
+          {
+            id: 'user-1',
+            role: 'user',
+            content: 'see this',
+            tool_calls: [],
+            files: [{ name: 'error.rs', start_line: 29, end_line: 34 }]
+          }
+        ]}
+        echo={null}
+        phase="idle"
+        mode="agent"
+        deciding={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('error.rs')).toBeTruthy()
+    expect(screen.getByText('(29-34)')).toBeTruthy()
+  })
+
+  it('renders the pending echo attachments before the stored row exists', () => {
+    render(
+      <Transcript
+        messages={[]}
+        echo="one moment"
+        echoFiles={[{ name: 'notes.txt' }]}
+        phase="thinking"
+        mode="agent"
+        deciding={false}
+        onDecide={() => {}}
+      />
+    )
+    expect(screen.getByText('notes.txt')).toBeTruthy()
+    expect(screen.getByText('one moment')).toBeTruthy()
+  })
+})

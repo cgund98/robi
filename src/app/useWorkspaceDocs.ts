@@ -10,7 +10,11 @@ import { readListing, writeListing } from './docsCache'
  * from the cached listing — no spinner — and refreshes in the background, so the
  * tree only changes when the new listing arrives.
  */
-export function useWorkspaceDocs(workspaceId: string | null): {
+export function useWorkspaceDocs(
+  workspaceId: string | null,
+  /** Bumped to refetch, e.g. when the agent may have changed the tree. */
+  tick = 0
+): {
   files: DocEntry[]
   loading: boolean
   error: string | null
@@ -48,7 +52,7 @@ export function useWorkspaceDocs(workspaceId: string | null): {
     return () => {
       cancelled = true
     }
-  }, [workspaceId])
+  }, [workspaceId, tick])
 
   return { files, loading, error }
 }

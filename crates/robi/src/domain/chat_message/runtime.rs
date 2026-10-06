@@ -25,6 +25,7 @@ pub trait ChatRuntime: Send + Sync {
         session: SessionId,
         instruction: String,
         images: Vec<robi_core::message::ImageAttachment>,
+        files: Vec<robi_core::message::FileAttachment>,
     ) -> Result<SubmitOutcome, ServiceError>;
 
     /// Sessions whose actor is running. Not persisted; idle sessions are absent.

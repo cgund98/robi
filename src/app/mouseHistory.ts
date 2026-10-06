@@ -1,3 +1,5 @@
+import { isTauri } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { useEffect } from 'react'
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 
@@ -42,6 +44,8 @@ export function canGoForward(index: number): boolean {
 
 /**
  * The webview does not map the side buttons onto its history, so the shell does.
+ * On macOS those buttons never reach the page: the desktop process emits
+ * `mouse-history` instead. A browser still delivers them as mouse buttons 3 and 4.
  * Each document the docs viewer opens is its own history entry, and so is every
  * route, which means one gesture walks both.
  */
@@ -61,6 +65,27 @@ export function useMouseHistory() {
       navigate(step)
     }
     window.addEventListener('mousedown', onMouseDown)
-    return () => window.removeEventListener('mousedown', onMouseDown)
+
+    let unlistened = false
+    let unlisten: (() => void) | undefined
+    if (isTauri()) {
+      void listen<number>('mouse-history', (event) => {
+        if (event.payload === -1 || event.payload === 1) {
+          navigate(event.payload)
+        }
+      }).then((stop) => {
+        if (unlistened) {
+          stop()
+        } else {
+          unlisten = stop
+        }
+      })
+    }
+
+    return () => {
+      unlistened = true
+      unlisten?.()
+      window.removeEventListener('mousedown', onMouseDown)
+    }
   }, [navigate])
 }

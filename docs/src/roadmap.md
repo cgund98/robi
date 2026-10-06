@@ -979,6 +979,12 @@ the `docs` mode, and widening the filter are still to come.
 - The agent edits the open file, or another doc, with the existing edit tools.
   The editor shows that change. There is one copy of the file.
 
+The shell side is partly built. The docs view has a right-side chat tray holding
+the selected session's transcript and composer, and the viewer re-fetches the
+open page and the tree when the agent edits a file. See
+[docs-viewer.md](design/shell/docs-viewer.md#chat-tray). The viewer is still
+read-only; the `docs` mode and the in-viewer editor are the rest of F10.3.
+
 **Exit criteria for M10** — open the docs tree, open a page, change a sentence
 by hand, ask the agent to revise another page, and find both changes in the
 tree after a restart.

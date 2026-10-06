@@ -43,6 +43,7 @@
         - [Chat runtime](design/shell/chat-runtime.md)
         - [Events and SSE](design/shell/events-sse.md)
         - [Docs viewer](design/shell/docs-viewer.md)
+        - [File attachments](design/shell/file-attachments.md)
     - [Persistence]()
         - [Persistence](design/persistence/persistence.md)
     - [Tools]()

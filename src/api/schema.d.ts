@@ -84,22 +84,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/chat_sessions/{id}/review/file": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_review_file"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/chat_sessions/{id}/review": {
         parameters: {
             query?: never;
@@ -110,6 +94,22 @@ export interface paths {
         get: operations["get_session_review"];
         put?: never;
         post: operations["decide_session_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat_sessions/{id}/review/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_review_file"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -404,6 +404,18 @@ export interface components {
             display_name: string;
             id: string;
         };
+        /**
+         * @description One text file a user attached. Metadata for the `filename (1-10)` chip; the
+         *     attached text is deliberately not returned.
+         */
+        ChatFile: {
+            /** Format: int32 */
+            end_line?: number | null;
+            name: string;
+            path?: string | null;
+            /** Format: int32 */
+            start_line?: number | null;
+        };
         /** @description One image a user attached, referenced by id. The bytes live in the store. */
         ChatImage: {
             id: string;
@@ -413,6 +425,12 @@ export interface components {
             /** @description `true` on a compaction summary. Omitted on every other message. */
             compaction?: boolean;
             content: string;
+            /**
+             * @description Text files the user attached. Metadata only: the attached text stays in
+             *     the transcript and is not returned here, so one `GET /messages` does not
+             *     carry every attachment's bytes.
+             */
+            files?: components["schemas"]["ChatFile"][];
             id: string;
             /**
              * @description Images the user attached. `id` is an image in the session blob file; fetch the bytes
@@ -574,6 +592,35 @@ export interface components {
         DocsListing: {
             files: components["schemas"]["DocEntry"][];
         };
+        /**
+         * @description One file attachment as the client sends it. The client sends the file's raw
+         *     bytes base64-encoded; the server decodes them, verifies they are text, and
+         *     stores the decoded text. The server also decides whether the file is inside
+         *     the workspace, from `absolute_path` — the client does not classify it.
+         */
+        FileAttachmentInput: {
+            /**
+             * @description The file's absolute path on the client, when the picker provided one
+             *     (the desktop native dialog). Absent for a browser upload, which exposes
+             *     only the basename. The server uses it to decide in-workspace vs outside;
+             *     it is never stored and never opened.
+             */
+            absolute_path?: string | null;
+            /** @description The file's bytes, standard base64. The server decodes and checks them. */
+            content_base64: string;
+            /**
+             * Format: int32
+             * @description 1-based last line of the slice, inclusive, when the attach was a range.
+             */
+            end_line?: number | null;
+            /** @description Display name, e.g. `error.rs`. */
+            name: string;
+            /**
+             * Format: int32
+             * @description 1-based first line of the slice, when the attach was a range.
+             */
+            start_line?: number | null;
+        };
         IndexCommand: {
             /** @description `paused` or `running`. */
             state: string;
@@ -634,14 +681,6 @@ export interface components {
             ask?: null | components["schemas"]["ModeOverridePatch"];
             plan?: null | components["schemas"]["ModeOverridePatch"];
         };
-        ReviewFileSummary: {
-            /** Format: int32 */
-            additions: number;
-            /** Format: int32 */
-            deletions: number;
-            path: string;
-            status: components["schemas"]["ReviewStatus"];
-        };
         ReviewFileBody: {
             /** Format: int32 */
             additions: number;
@@ -653,6 +692,15 @@ export interface components {
             deletions: number;
             hunks: components["schemas"]["ReviewHunkBody"][];
             lines: components["schemas"]["ReviewLineBody"][];
+            path: string;
+            status: components["schemas"]["ReviewStatus"];
+        };
+        /** @description A changed path. Bodies and lines load from `GET .../review/file`. */
+        ReviewFileSummary: {
+            /** Format: int32 */
+            additions: number;
+            /** Format: int32 */
+            deletions: number;
             path: string;
             status: components["schemas"]["ReviewStatus"];
         };
@@ -715,6 +763,11 @@ export interface components {
             status: string;
         };
         SubmitInstruction: {
+            /**
+             * @description Text files the client read and is attaching. Defaulted so an older client
+             *     that sends only `instruction` still parses.
+             */
+            files?: components["schemas"]["FileAttachmentInput"][];
             instruction: string;
         };
         ToolOriginal: {
@@ -1022,6 +1075,31 @@ export interface operations {
             };
         };
     };
+    decide_session_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Chat session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideReview"];
+            };
+        };
+        responses: {
+            /** @description The file or hunk was approved or rejected */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     get_review_file: {
         parameters: {
             query: {
@@ -1048,31 +1126,6 @@ export interface operations {
             };
             /** @description That path has no remaining changes */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    decide_session_review: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Chat session id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DecideReview"];
-            };
-        };
-        responses: {
-            /** @description The file or hunk was approved or rejected */
-            204: {
                 headers: {
                     [name: string]: unknown;
                 };

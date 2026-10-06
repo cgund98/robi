@@ -220,6 +220,41 @@ pub struct ImageAttachment {
     pub media_type: String,
 }
 
+/// A text file the user attached to a user message.
+///
+/// The client reads the bytes and sends them; the server never opens `path`.
+/// That is what makes an attachment outside the workspace safe with no grant —
+/// there is no server-side read to confine.
+///
+/// `path` is the **workspace-relative** path (`src/error.rs`) when the file is
+/// inside the workspace, so the model can re-read it with `read_file`. It is
+/// `None` when the file is outside the workspace (an upload, or a file with no
+/// workspace location); such an attachment carries only its name, and the
+/// provider block notes that it came from outside the workspace.
+///
+/// `start_line` and `end_line` are the 1-based inclusive range the slice came
+/// from in the source, so the chip can read `filename (1-10)`. Both are `None`
+/// for a whole-file attach or an upload. The transcript holds the text, not a
+/// pointer, so a later request rebuilds the same prompt after the file on disk
+/// has changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileAttachment {
+    /// Display name, e.g. `error.rs`.
+    pub name: String,
+    /// Workspace-relative path when the file is inside the workspace, so the
+    /// model can re-fetch it. `None` when the file is outside the workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// 1-based first line of the slice, when the attach was a range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    /// 1-based last line of the slice, inclusive, when the attach was a range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    /// The attached slice: the whole file, or the selected range.
+    pub text: String,
+}
+
 /// The provider's reasoning trace for one assistant turn.
 ///
 /// Most providers drop their reasoning and the loop never sees it again. Anthropic
@@ -261,6 +296,12 @@ pub struct Message {
     /// them. Old rows have no field and deserialize as an empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageAttachment>,
+    /// Text files the user attached to this message. The slice's bytes are held
+    /// here, not referenced by path, so a later request rebuilds the same
+    /// prompt. Only `Role::User` messages carry them. Old rows have no field and
+    /// deserialize as an empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileAttachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     /// Set on a `Role::Tool` message, naming the call it answers.
@@ -296,6 +337,7 @@ impl Message {
             content: content.into(),
             skills: Vec::new(),
             images: Vec::new(),
+            files: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
@@ -326,6 +368,12 @@ impl Message {
         self
     }
 
+    /// Attach text files the user picked. Only meaningful on a user message.
+    pub fn with_files(mut self, files: Vec<FileAttachment>) -> Self {
+        self.files = files;
+        self
+    }
+
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             id: MessageId::new(),
@@ -333,6 +381,7 @@ impl Message {
             content: content.into(),
             skills: Vec::new(),
             images: Vec::new(),
+            files: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             usage: None,
@@ -358,6 +407,7 @@ impl Message {
             content: content.into(),
             skills: Vec::new(),
             images: Vec::new(),
+            files: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id),
             usage: None,
@@ -524,6 +574,70 @@ mod tests {
             json.get("images").is_none(),
             "no images means no images field on the wire"
         );
+    }
+
+    #[test]
+    fn files_round_trip_with_the_message() {
+        let files = vec![
+            FileAttachment {
+                name: "error.rs".to_owned(),
+                path: Some("src/error.rs".to_owned()),
+                start_line: Some(29),
+                end_line: Some(34),
+                text: "the slice".to_owned(),
+            },
+            FileAttachment {
+                name: "notes.txt".to_owned(),
+                path: None,
+                start_line: None,
+                end_line: None,
+                text: "uploaded bytes".to_owned(),
+            },
+        ];
+        let message = Message::user("look at these").with_files(files.clone());
+        let json = serde_json::to_value(&message).expect("a message with files serializes");
+        assert_eq!(
+            json.get("files"),
+            Some(&serde_json::json!([
+                {
+                    "name": "error.rs",
+                    "path": "src/error.rs",
+                    "start_line": 29,
+                    "end_line": 34,
+                    "text": "the slice"
+                },
+                {"name": "notes.txt", "text": "uploaded bytes"}
+            ])),
+            "an upload omits path and range; a ranged attach keeps them"
+        );
+
+        let back: Message = serde_json::from_value(json).expect("it deserializes");
+        assert_eq!(back.files, files);
+    }
+
+    #[test]
+    fn a_message_without_files_omits_the_field() {
+        let json = serde_json::to_value(Message::user("plain")).expect("it serializes");
+        assert!(
+            json.get("files").is_none(),
+            "no files means no files field on the wire"
+        );
+    }
+
+    #[test]
+    fn a_transcript_written_before_files_existed_still_deserializes() {
+        // The shape `Message` had before `files` existed.
+        let old = serde_json::json!({
+            "id": MessageId::new(),
+            "role": "user",
+            "content": "hi",
+            "skills": [],
+            "images": [],
+        });
+
+        let message: Message = serde_json::from_value(old).expect("an older transcript loads");
+        assert!(message.files.is_empty());
+        assert_eq!(message.content, "hi");
     }
 
     #[test]

@@ -7,9 +7,10 @@ planned project navigation.
 
 ## Open the viewer
 
-Click **Documentation** in the sidebar, or go to `#/docs`. The session sidebar
-stays in place and the main column becomes the viewer. Choosing another session,
-or **New chat**, leaves it.
+Choose the **Documentation** icon in the window bar, above the workspace menu, or go to `#/docs`. The
+session sidebar stays in place and the main column becomes the viewer. The
+viewer starts closed: the app opens on the chat, and a docs page left open
+from a previous session does not reopen on launch.
 
 The viewer has two panes:
 
@@ -22,8 +23,9 @@ The viewer has two panes:
 - **Right — the document.** Nothing opens on load; the viewer starts with
   **Select a document to open it.** Click a page in the tree to render it. The
   document renders with the same markdown component as assistant text: GFM,
-  stepped-down headings, tables, and fenced `mermaid` diagrams, in a centered
-  column (640–880px) so wide tables and code stay readable.
+  stepped-down headings, tables, and fenced `mermaid` diagrams, in a column
+  (640–880px) at the left of the pane, so wide tables and code stay readable
+  and the chat tray occludes less of the page.
 
 The tree is cached per workspace, so a return visit paints it instantly and
 refreshes in the background. The page you last opened, the folders you folded,
@@ -34,6 +36,42 @@ the open file and opens that page in the viewer. A link that would leave the
 workspace stays a plain link, and absolute URLs and in-page fragments open as
 usual. Each page you open is a history entry, so the side mouse buttons walk back
 and forward through pages.
+
+## Chat beside the page
+
+You can read a page and revise it with the agent without leaving the viewer. A
+tray on the right holds the current session's conversation and its message box.
+
+- It starts closed. A handle on the right edge of the window — **Show chat** —
+  opens it. Choosing a session, or **New chat**, while the viewer is open also
+  opens it, and keeps you on the documentation page.
+- The tray header names the session and has a close button; **Escape** closes
+  the tray too. Leaving the viewer closes it, so it is closed again next time.
+- The tray is the same chat you get in the main window: the transcript, the mode
+  and model controls, and the message box. It overlays the right of the page
+  rather than pushing it, so the document keeps its width. Drag its left edge to
+  make it wider or narrower — the width is remembered next time.
+- Ask the agent to change the page you have open, or another page, and the
+  viewer refreshes as the edit lands. A new page the agent creates shows up in
+  the tree. You do not have to reopen anything.
+
+## Send a line to the chat
+
+You can point the agent at a specific part of the page without retyping it. Hover
+a block — a paragraph, a heading, a list item, a table row, a code fence — and a
+small **add to chat** button appears at the right of that block. Click it.
+
+The block is added to the message box as an attachment chip, the chat tray opens
+if it was closed, and the caret goes to the message box so you can say what you
+want done. The attachment is the block's **raw markdown lines** — what the file
+actually says, including a table's pipes or a fence's backticks — so the agent
+reads the source and can widen the read if it needs to. A paragraph that wraps
+over several lines attaches the whole paragraph; the chip shows the range, like
+`docs-viewer.md (40-44)`.
+
+If no chat is open the line goes to a new chat, and sending starts it. The usual
+attachment limits apply, and a block too large to attach tells you why instead of
+being added.
 
 ## Search
 

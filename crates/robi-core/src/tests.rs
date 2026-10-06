@@ -274,7 +274,7 @@ async fn text_and_reasoning_deltas_reach_the_sink() {
         .events()
         .into_iter()
         .filter_map(|event| match event {
-            Event::MessageDelta { delta, .. } => Some(delta),
+            Event::MessageDelta { delta, .. } => Some(*delta),
             _ => None,
         })
         .collect();

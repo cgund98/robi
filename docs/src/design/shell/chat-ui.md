@@ -326,18 +326,33 @@ hold the fallback model and effort, and an optional model and effort per
 mode. The mode rules are in [agent-modes.md](../core/agent-modes.md).
 
 Attached images sit as 32px thumbnails in a row at the top left of the field,
-above the text. Text files sit in that same row as name chips. Hovering a
-thumbnail shows its remove control; a chip carries its own remove control.
-The paperclip accepts PNG, JPEG, WebP, and GIF, plus common source and text
-extensions. Pasting those files, or dropping them on the field, adds them
-the same way. A screenshot paste with no filename is named `pasted.png`. A message holds at most eight attachments. A text file larger
-than 256 KB, or one that contains a NUL byte, stays in the field and the
-composer reports why. On send, each text file is read in the browser and
-appended to the instruction as `<file name="…">` … `</file>`, so the model
-sees the contents as ordinary message text. Images still travel as multipart
-file parts. The paperclip sits in the control row beside the context meter.
+above the text. Text files sit in that same row as `filename (1-10)` chips. The
+chip is the same `AttachmentChip` the transcript and the pending echo use.
+Hovering a thumbnail shows its remove control; a chip carries its own remove
+control. The paperclip accepts PNG, JPEG, WebP, and GIF, plus common source and
+text extensions. Pasting those files, or dropping them on the field, adds them
+the same way. A screenshot paste with no filename is named `pasted.png`. A
+message holds at most eight attachments. A text file larger than 64 KB, one that
+contains a NUL byte, or one that would push the attachments past 256 KB in
+total, stays in the field and the composer reports why. On send, an image still
+travels as a multipart file part; a text file travels in the request's `files`
+array as a `FileAttachment`. The paperclip sits in the control row beside the
+context meter. A chip can also arrive without a picker: the docs viewer's
+line attach hands the composer a ranged `FileAttachment` through a keyed request
+queue, which the composer drains into the same list and then focuses the field.
+The two paths share `appendAttachments`, so the caps above apply to both. See
+[file-attachments.md](file-attachments.md) for the attachment model.
+
 A sent message shows images as a row of 32px thumbnails above the message
 text. Each thumbnail loads from
 `GET /api/v1/chat_sessions/{id}/images/{image_id}` on the API origin. In the
 desktop app that origin is `http://127.0.0.1:<port>`, not the webview, so the
-`src` is absolute. The injected file text is part of that message.
+`src` is absolute. A sent message's text attachments show as chips above the
+text, from the message's `files` metadata. The message before it is stored shows
+the same chips through the pending echo.
+
+In the desktop app the paperclip opens the OS file dialog, so a picked file
+carries an absolute path and the server can mark it in-workspace or outside. In a
+browser the `<input>` yields only a name, so a picked file is treated as outside.
+The chip's tooltip names the workspace path, or says the file came from outside
+the workspace. See [file-attachments.md](file-attachments.md).

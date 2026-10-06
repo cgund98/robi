@@ -76,11 +76,11 @@ One composition. Two columns. No third panel in M2.
 └────────────┴──────────────────────────────────────────┘
 ```
 
-The top row is the window bar. It is the same height on every page. On the chat shell its left `--sidebar-width` is `--bg-sidebar` and the rest is `--bg-canvas`, so the row continues the columns under it. The session title sits in that row, over the chat column, and the transcript starts on the next row. On Settings the split follows the settings rail. On Workspaces the whole row is `--bg-canvas`. macOS window buttons sit in that row, inset from the window corner. The workspace dropdown starts just under them. The desktop window uses an overlay title bar so those buttons draw on the app fill instead of a separate system bar.
+The top row is the window bar. It is the same height on every page. On the chat shell its left `--sidebar-width` is `--bg-sidebar` and the rest is `--bg-canvas`, so the row continues the columns under it. The session title sits in that row, over the chat column, and the transcript starts on the next row. On Settings the split follows the settings rail. On Workspaces the whole row is `--bg-canvas`. macOS window buttons sit in that row, inset from the window corner. Back and forward, then the chat and documentation icons, sit at the right edge of the sidebar's share of that row. The workspace dropdown starts on the next row. The desktop window uses an overlay title bar so those buttons draw on the app fill instead of a separate system bar.
 
 | Region | Role | M2 content |
 |---|---|---|
-| **Window bar** | Drag region | macOS window controls, inset from the corner. On a chat, the session title |
+| **Window bar** | Drag region | macOS window controls, inset from the corner. Back, forward, and the chat and documentation icons sit at the right of the sidebar's share of the bar. On a chat, the session title |
 | **Sidebar** | Session navigation | Workspace dropdown at the top, Workspaces link under it, New chat, Recents list, active-session highlight, rename dialog, Settings link |
 | **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards (empty until M3) |
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
@@ -249,7 +249,10 @@ text. Not cards. Tool **results** that need inspection become tool cards
 A full-page shell, not a dialog. Left rail: back to the chat, then the section
 list. Right pane: a title, then one or more sections, in the same centered
 column as the chat (`--chat-column-width`). Each section is a muted
-heading and a bordered card of rows. **General** starts with **Model Defaults**
+heading and a bordered card of rows. **General** starts with **Display**: one row
+with the UI scale stepper (−, the percentage, +, and Reset) and the Cmd/Ctrl `+`,
+`-`, and `0` shortcuts beside it. The level scales the whole window and is
+remembered per device. Then **Model Defaults**
 (one row per Global, Agent, Ask, and Plan: mode name, model menu on the left,
 effort menu on the same row). An unset mode shows Global Default
 in those menus, and that item clears the override. Global effort stays a
@@ -268,7 +271,7 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. At the left of that bar are back and forward buttons. They walk the same history as the side mouse buttons: routes, and each document opened in the docs viewer. A button is quiet when that direction has no entry. While the workspace index is not ready, a small pill sits just to their right: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
+The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. At the right edge of the sidebar's share of that bar, back and forward sit beside a pair of icons for chat and documentation. The icons share one quiet pill. The open view uses `--bg-surface-active` and `--ink-strong`; the other stays `--ink-muted`. A hover names the icon: **Chat** or **Documentation**. Back and forward walk the same history as the side mouse buttons: routes, and each document opened in the docs viewer. A button is quiet when that direction has no entry. While the workspace index is not ready, a small pill sits at the left of the chat column in that bar: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
 
 The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.

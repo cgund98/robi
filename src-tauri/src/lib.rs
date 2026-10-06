@@ -1,4 +1,8 @@
+mod attachments;
 mod notice;
+
+#[cfg(target_os = "macos")]
+mod mouse_nav;
 
 use std::path::Path;
 
@@ -27,10 +31,13 @@ pub fn run() {
                 }
             };
             app.manage(ApiOrigin(origin));
+            #[cfg(target_os = "macos")]
+            mouse_nav::install(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             notice::show_approval_notice,
+            attachments::pick_attachment_files,
             api_base_url
         ])
         .run(tauri::generate_context!())

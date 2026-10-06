@@ -275,9 +275,10 @@ by id. Neither takes the actor lock. A message id that is absent from that
 session is `404`.
 
 `ServiceError` is `BadRequest`, `NotFound`, `Conflict`, or `Unknown`. The web
-layer maps those to 400, 404, 409, and 500. A SQL failure or a failed settings
-sync is logged and returned as `Unknown` with a fixed message, so the client
-never sees driver text. Opening a workspace and creating a chat session are
+layer maps those to 400, 404, 409, and 500. A SQL failure, a failed settings
+sync, or a provider error (including a failed image write) is logged with its
+text and returned as `Unknown` with a fixed message, so the client never sees
+driver text. Opening a workspace and creating a chat session are
 logged at info with their ids. A successful settings write is logged at info
 with the key and without the value.
 

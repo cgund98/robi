@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { Composer } from './Composer'
 import styles from './Composer.module.css'
+import { MAX_ATTACHMENTS } from './textAttachments'
 import type { AgentMode } from '../../api/sessions'
 import { claimComposerDraft, writeComposerDraft } from '../../state/composerDrafts'
+import { requestComposerAttachment } from '../../state/composerAttachments'
 
 function renderComposer(mode: AgentMode) {
   render(
@@ -125,17 +127,107 @@ describe('Composer mode color', () => {
     expect(screen.getByRole('button', { name: 'Remove shot.png' })).toBeTruthy()
   })
 
-  it('adds a dropped text file to the field', () => {
+  it('adds a dropped text file to the field', async () => {
     renderComposer('agent')
     const field = screen.getByRole('textbox', { name: 'Message' })
-    fireEvent.drop(field, {
-      dataTransfer: {
-        types: ['Files'],
-        files: [new File(['fn main() {}'], 'main.rs', { type: 'text/plain' })],
-        items: []
-      }
+    await act(async () => {
+      fireEvent.drop(field, {
+        dataTransfer: {
+          types: ['Files'],
+          files: [new File(['fn main() {}'], 'main.rs', { type: 'text/plain' })],
+          items: []
+        }
+      })
     })
     expect(screen.getByRole('button', { name: 'Remove main.rs' })).toBeTruthy()
+  })
+
+  it('adds a text file through the paperclip and removes it as a chip', async () => {
+    renderComposer('agent')
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, {
+        target: { files: [new File(['fn main() {}'], 'main.rs', { type: 'text/plain' })] }
+      })
+    })
+    const remove = screen.getByRole('button', { name: 'Remove main.rs' })
+    fireEvent.click(remove)
+    expect(screen.queryByRole('button', { name: 'Remove main.rs' })).toBeNull()
+  })
+
+  it('sends the attachments along with the draft', async () => {
+    const seen: { text: string; files?: { name: string }[] }[] = []
+    render(
+      <Composer
+        disabled={false}
+        onSubmit={async (text, _images, files) => {
+          seen.push({ text, files })
+          return true
+        }}
+        models={[]}
+        mode="agent"
+        modelId={null}
+        effort={null}
+        defaultModelId="model"
+        defaultEffort={null}
+        onModeChange={() => {}}
+        onModelChange={() => {}}
+        onEffortChange={() => {}}
+        messages={[]}
+        draftKey="session-a"
+      />
+    )
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, {
+        target: { files: [new File(['fn main() {}'], 'main.rs', { type: 'text/plain' })] }
+      })
+    })
+    fireEvent.change(field, { target: { value: 'look' } })
+    await act(async () => {
+      fireEvent.keyDown(field, { key: 'Enter' })
+    })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].text).toBe('look')
+    expect(seen[0].files?.[0].name).toBe('main.rs')
+  })
+
+  it('drains an attachment requested for the current draft key', async () => {
+    renderComposer('agent')
+    await act(async () => {
+      requestComposerAttachment('session-a', {
+        name: 'guide.md',
+        contentBase64: '',
+        size: 0,
+        startLine: 3,
+        endLine: 4
+      })
+    })
+    expect(screen.getByRole('button', { name: 'Remove guide.md' })).toBeTruthy()
+  })
+
+  it('holds requests for another key until that composer is shown', async () => {
+    renderComposer('agent')
+    await act(async () => {
+      requestComposerAttachment('session-b', { name: 'other.md', contentBase64: '', size: 0 })
+    })
+    expect(screen.queryByRole('button', { name: 'Remove other.md' })).toBeNull()
+  })
+
+  it('drops requests past the attachment cap and explains why', async () => {
+    renderComposer('agent')
+    await act(async () => {
+      for (let index = 0; index < MAX_ATTACHMENTS + 1; index += 1) {
+        requestComposerAttachment('session-a', {
+          name: `f${index}.md`,
+          contentBase64: '',
+          size: 0
+        })
+      }
+    })
+    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(MAX_ATTACHMENTS)
+    expect(screen.getByRole('alert').textContent).toContain('up to')
   })
 
   it('marks ask and plan with their colors', () => {

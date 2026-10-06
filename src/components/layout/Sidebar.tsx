@@ -1,9 +1,11 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { BookOpen, LayoutGrid, Settings, SquarePen } from 'lucide-react'
+import { LayoutGrid, Settings, SquarePen } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
+import { HistoryNav } from './HistoryNav'
 import styles from './Sidebar.module.css'
+import { ViewToggle } from './ViewToggle'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 type SidebarProps = {
@@ -136,6 +138,11 @@ export function Sidebar({
 
   return (
     <aside className={styles.sidebar}>
+      <div className={styles.navTools}>
+        <HistoryNav />
+        <ViewToggle docsOpen={docsSelected} />
+      </div>
+
       <WorkspaceSwitcher />
 
       <button
@@ -161,19 +168,6 @@ export function Sidebar({
           <LayoutGrid size={18} strokeWidth={1.75} />
         </span>
         Workspaces
-      </button>
-
-      <button
-        type="button"
-        className={`${styles.navLink} ${docsSelected ? styles.navLinkActive : ''}`}
-        disabled={disabled}
-        onClick={() => navigate('/docs')}
-        aria-current={docsSelected ? 'page' : undefined}
-      >
-        <span className={styles.navIcon} aria-hidden>
-          <BookOpen size={18} strokeWidth={1.75} />
-        </span>
-        Documentation
       </button>
 
       <div className={styles.section}>

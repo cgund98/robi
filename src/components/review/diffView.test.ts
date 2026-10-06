@@ -90,6 +90,30 @@ describe('chunksFor', () => {
       { id: 'second', old_start: 19, old_count: 0, new_start: 19, new_count: 1 }
     ]
     const chunks = chunksFor(lines, hunks)
-    expect(chunks.map((chunk) => chunk.hunkIds)).toEqual([['first'], ['second']])
+    expect(chunks.map((chunk) => chunk.hunks.map((hunk) => hunk.id))).toEqual([
+      ['first'],
+      ['second']
+    ])
+  })
+
+  it('keeps one hunk per change when several land in a single block', () => {
+    const lines: ReviewLine[] = [
+      { kind: 'delete', text: 'b', old_line: 2, new_line: null },
+      { kind: 'insert', text: 'B', old_line: null, new_line: 2 },
+      { kind: 'context', text: 'c', old_line: 3, new_line: 3 },
+      { kind: 'context', text: 'd', old_line: 4, new_line: 4 },
+      { kind: 'delete', text: 'h', old_line: 8, new_line: null },
+      { kind: 'insert', text: 'H', old_line: null, new_line: 8 }
+    ]
+    const hunks: ReviewHunk[] = [
+      { id: 'first', old_start: 1, old_count: 1, new_start: 1, new_count: 1 },
+      { id: 'second', old_start: 7, old_count: 1, new_start: 7, new_count: 1 }
+    ]
+    const chunks = chunksFor(lines, hunks)
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].hunks).toEqual([
+      { id: 'first', firstChange: 0 },
+      { id: 'second', firstChange: 4 }
+    ])
   })
 })

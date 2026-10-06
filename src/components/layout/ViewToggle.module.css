@@ -1,0 +1,44 @@
+.toggle {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 1px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.button:hover:not(.buttonOn) {
+  color: var(--ink);
+}
+
+.button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.buttonOn,
+.buttonOn:hover {
+  background: var(--bg-surface-active);
+  color: var(--ink-strong);
+}
+
+.button svg {
+  width: 15px;
+  height: 15px;
+}

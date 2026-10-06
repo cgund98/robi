@@ -133,14 +133,18 @@ pub fn wire_call_ids(transcript: &[Message]) -> HashMap<ToolCallId, String> {
     ids
 }
 
-/// The text content of a user message, including any `@id` skill bodies.
+/// The text content of a user message, including any `@id` skill bodies and
+/// attached file blocks.
 fn user_text(message: &Message) -> String {
-    if message.skills.is_empty() {
+    if message.skills.is_empty() && message.files.is_empty() {
         return message.content.clone();
     }
     let mut content = message.content.clone();
     for skill in &message.skills {
         content.push_str(&crate::agent::skills::skill_block(skill));
+    }
+    for file in &message.files {
+        content.push_str(&crate::agent::files::file_block(file));
     }
     content
 }
@@ -450,6 +454,27 @@ mod tests {
             request.messages[0].content,
             WireContent::Text("answer".to_owned())
         );
+    }
+
+    #[test]
+    fn a_file_attachment_becomes_a_file_block_in_the_text() {
+        let message =
+            Message::user("please").with_files(vec![robi_core::message::FileAttachment {
+                name: "error.rs".to_owned(),
+                path: Some("src/error.rs".to_owned()),
+                start_line: Some(29),
+                end_line: Some(34),
+                text: "boom".to_owned(),
+            }]);
+        let request = req(&settings(), &[message]);
+        let WireContent::Text(text) = &request.messages[0].content else {
+            panic!("a message with no images stays a string");
+        };
+        assert!(
+            text.contains("<file name=\"error.rs\" path=\"src/error.rs\" lines=\"29-34\">"),
+            "the file block carries its attributes: {text}"
+        );
+        assert!(text.contains("boom"), "the attached text is present");
     }
 
     #[test]

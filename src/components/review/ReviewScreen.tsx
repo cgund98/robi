@@ -97,37 +97,64 @@ export function ReviewScreen({ sessionId }: ReviewScreenProps) {
   }, [sessionId, active, reviewTick])
 
   async function decide(path: string, decision: 'approve' | 'reject', hunkIds?: string[]) {
-    const file = bodies[path]
-    const ordered = orderHunks(file?.hunks ?? [], hunkIds, decision)
-    if (decision === 'approve' && ordered.length === 0) {
-      await approveFile(path)
+    if (!hunkIds || hunkIds.length === 0) {
+      await decideWholeFile(path, decision)
       return
     }
-    setPendingKey(hunkIds ? `${path}:${hunkIds[0]}` : path)
+    const ordered = orderHunks(bodies[path]?.hunks ?? [], hunkIds, decision)
+    if (ordered.length === 0) {
+      // The body is stale and no longer carries this hunk. Never fall back to a
+      // whole-file decision from an in-line control.
+      setDecideError('This change no longer matches the file.')
+      try {
+        await reload(path)
+      } catch (err: unknown) {
+        setDecideError(err instanceof Error ? err.message : 'Failed to update review')
+      }
+      return
+    }
+    setPendingKey(`${path}:${ordered[0]}`)
     setDecideError(null)
     try {
-      if (ordered.length === 0) {
-        await decideReview(sessionId, path, decision)
-      } else {
-        for (const id of ordered) {
-          await decideReview(sessionId, path, decision, id)
-        }
+      for (const id of ordered) {
+        await decideReview(sessionId, path, decision, id)
       }
-      const next = await getReviewFile(sessionId, path)
-      if (!next) {
-        setHiddenPaths((current) => (current.includes(path) ? current : [...current, path]))
-        setBodies((current) => {
-          const copy = { ...current }
-          delete copy[path]
-          return copy
-        })
-      } else {
-        setBodies((current) => ({ ...current, [path]: next }))
-      }
+      await reload(path)
     } catch (err: unknown) {
       setDecideError(err instanceof Error ? err.message : 'Failed to update review')
     } finally {
       setPendingKey(null)
+    }
+  }
+
+  async function decideWholeFile(path: string, decision: 'approve' | 'reject') {
+    if (decision === 'approve') {
+      await approveFile(path)
+      return
+    }
+    setPendingKey(path)
+    setDecideError(null)
+    try {
+      await decideReview(sessionId, path, decision)
+      await reload(path)
+    } catch (err: unknown) {
+      setDecideError(err instanceof Error ? err.message : 'Failed to update review')
+    } finally {
+      setPendingKey(null)
+    }
+  }
+
+  async function reload(path: string) {
+    const next = await getReviewFile(sessionId, path)
+    if (!next) {
+      setHiddenPaths((current) => (current.includes(path) ? current : [...current, path]))
+      setBodies((current) => {
+        const copy = { ...current }
+        delete copy[path]
+        return copy
+      })
+    } else {
+      setBodies((current) => ({ ...current, [path]: next }))
     }
   }
 

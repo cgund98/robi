@@ -16,6 +16,7 @@ export function HistoryNav() {
         type="button"
         className={styles.button}
         aria-label="Back"
+        title="Back"
         disabled={index <= 0}
         onClick={() => navigate(-1)}
       >
@@ -25,6 +26,7 @@ export function HistoryNav() {
         type="button"
         className={styles.button}
         aria-label="Forward"
+        title="Forward"
         disabled={!canGoForward(index)}
         onClick={() => navigate(1)}
       >

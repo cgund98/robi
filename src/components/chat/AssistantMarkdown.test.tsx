@@ -56,4 +56,25 @@ describe('AssistantMarkdown', () => {
     expect(screen.getByText('{ "a": 1 }').closest('pre')).toBeTruthy()
     expect(renderMermaidMock).not.toHaveBeenCalled()
   })
+
+  it('stamps document-mode blocks with their raw source lines', () => {
+    const source = '# Title\n\nfirst line\nsecond line\n\n- item one\n- item two\n'
+    const { container } = render(<AssistantMarkdown text={source} document />)
+    // Heading is one line; the paragraph spans its two lines; each list item is
+    // its own line. These are file lines, not rendered line counts.
+    expect(screen.getByRole('heading', { name: 'Title' }).getAttribute('data-md-lines')).toBe('1')
+    expect(container.querySelector('p[data-md-lines="3-4"]')?.textContent).toBe(
+      'first line\nsecond line'
+    )
+    expect(
+      Array.from(container.querySelectorAll('li[data-md-lines]')).map((item) =>
+        item.getAttribute('data-md-lines')
+      )
+    ).toEqual(['6', '7'])
+  })
+
+  it('leaves chat mode without line stamps', () => {
+    const { container } = render(<AssistantMarkdown text={'# Title\n\nbody\n'} />)
+    expect(container.querySelector('[data-md-lines]')).toBeNull()
+  })
 })

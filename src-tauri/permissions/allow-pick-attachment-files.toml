@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-pick-attachment-files"
+description = "Open the OS file dialog and read the chosen files for a chat attachment."
+commands.allow = ["pick_attachment_files"]

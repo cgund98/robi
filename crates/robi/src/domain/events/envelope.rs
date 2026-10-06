@@ -127,7 +127,7 @@ impl EventEnvelope {
                 delta,
             } => (MESSAGE_DELTA, session.to_string(), {
                 let mut data = message_ref(session, message);
-                data["delta"] = delta_json(delta);
+                data["delta"] = delta_json(*delta);
                 data
             }),
             Event::ToolCallUpdated {
@@ -330,7 +330,7 @@ mod tests {
                 Event::MessageDelta {
                     session,
                     message,
-                    delta: Delta::Text("hi".into()),
+                    delta: Box::new(Delta::Text("hi".into())),
                 },
                 MESSAGE_DELTA,
                 json!({
@@ -437,7 +437,7 @@ mod tests {
             let envelope = EventEnvelope::from_core_event(Event::MessageDelta {
                 session,
                 message,
-                delta,
+                delta: Box::new(delta),
             });
             assert_eq!(envelope.data["delta"], expected);
             assert!(!envelope.data.to_string().contains(finished_body));

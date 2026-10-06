@@ -7,17 +7,19 @@ import { sessionDisplayTitle, type AgentMode, type ChatSession } from '../../api
 import { getSettings, SETTING_KEYS } from '../../api/settings'
 import { useApprovalNoticeOpen } from '../../app/approvalNotice'
 import { useAgentEventsSSE } from '../../app/useAgentEventsSSE'
+import { requestComposerAttachment } from '../../state/composerAttachments'
 import { sessionMode, useChatStore, type AgentPhase } from '../../state/chatStore'
 import { useWorkspaceStore } from '../../state/workspaceStore'
 import { ChatHeader } from '../chat/ChatHeader'
+import { ChatPanel, type ChatPanelProps } from '../chat/ChatPanel'
+import { ChatTray } from '../chat/ChatTray'
 import { Composer } from '../chat/Composer'
-import { EditReviewStrip } from '../chat/EditReviewStrip'
 import { EmptyGreeting } from '../chat/EmptyGreeting'
 import { RenameSessionDialog } from '../chat/RenameSessionDialog'
 import { DeleteSessionDialog } from '../chat/DeleteSessionDialog'
 import { PlanPage } from '../chat/PlanPage'
 import { planBuildInstruction, type PlanView } from '../chat/toolCallView'
-import { Transcript } from '../chat/Transcript'
+import type { FileAttachment } from '../chat/textAttachments'
 import { DocsScreen } from '../docs/DocsScreen'
 import { ReviewScreen } from '../review/ReviewScreen'
 import { ErrorNotices } from './ErrorNotices'
@@ -90,6 +92,7 @@ export function AppLayout() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [plan, setPlan] = useState<{ view: PlanView; sessionId: string | null } | null>(null)
+  const [trayOpen, setTrayOpen] = useState(false)
   const navigate = useNavigate()
   const reviewMatch = useMatch('/sessions/:sessionId/review')
   const reviewSessionId = reviewMatch?.params.sessionId ?? null
@@ -100,6 +103,10 @@ export function AppLayout() {
     (draftSelected || reviewSessionId !== null || docsOpen || plan.sessionId !== activeSessionId)
   ) {
     setPlan(null)
+  }
+  // Leaving the docs view resets the tray, so it starts closed on the next visit.
+  if (!docsOpen && trayOpen) {
+    setTrayOpen(false)
   }
   const selectSession = useChatStore((state) => state.selectSession)
   const selectDraft = useChatStore((state) => state.selectDraft)
@@ -159,33 +166,16 @@ export function AppLayout() {
     activeSessionId && !draftSelected && pendingEcho?.sessionId === activeSessionId
       ? pendingEcho.text
       : null
+  const echoFiles =
+    activeSessionId && !draftSelected && pendingEcho?.sessionId === activeSessionId
+      ? pendingEcho.files
+      : []
   const agentRunning = phase !== 'idle'
   const composerLocked = loading || busy || agentRunning
   const composerDraftKey = draftSelected || !activeSessionId ? 'draft' : activeSessionId
   const stopping =
     !draftSelected && activeSessionId !== null && stoppingSessionId === activeSessionId
   const fresh = messages.length === 0 && echo === null
-  const threadRef = useRef<HTMLDivElement>(null)
-  const dockRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const dock = dockRef.current
-    const thread = threadRef.current
-    if (!dock || !thread) {
-      return
-    }
-    const apply = () => {
-      thread.style.setProperty('--dock-height', `${dock.offsetHeight}px`)
-      const composer = dock.lastElementChild
-      if (composer instanceof HTMLElement) {
-        thread.style.setProperty('--composer-height', `${composer.offsetHeight}px`)
-      }
-    }
-    apply()
-    const observer = new ResizeObserver(apply)
-    observer.observe(dock)
-    return () => observer.disconnect()
-  }, [fresh, reviewSessionId, activeSessionId, plan])
 
   const renameTarget = renameId
     ? (sessions.find((session) => session.id === renameId) ?? null)
@@ -230,8 +220,10 @@ export function AppLayout() {
   const openSession = useCallback(
     (id: string) => {
       setPlan(null)
-      if (reviewSessionId || docsOpen) {
+      if (reviewSessionId) {
         navigate('/')
+      } else if (docsOpen) {
+        setTrayOpen(true)
       }
       void selectSession(id)
     },
@@ -239,8 +231,10 @@ export function AppLayout() {
   )
   const openDraft = useCallback(() => {
     setPlan(null)
-    if (reviewSessionId || docsOpen) {
+    if (reviewSessionId) {
       navigate('/')
+    } else if (docsOpen) {
+      setTrayOpen(true)
     }
     selectDraft()
   }, [docsOpen, navigate, reviewSessionId, selectDraft])
@@ -252,6 +246,58 @@ export function AppLayout() {
     setDeleteError(null)
     setDeleteId(id)
   }, [])
+
+  // Attaching a line opens the tray and hands the composer a ready attachment
+  // for the current draft key — the selected session, or `draft` when none is
+  // selected, so the first send creates the row.
+  const attachLine = useCallback(
+    (file: FileAttachment) => {
+      setTrayOpen(true)
+      requestComposerAttachment(composerDraftKey, file)
+    },
+    [composerDraftKey]
+  )
+
+  const chat: ChatPanelProps = {
+    messages,
+    sessionId: activeSessionId,
+    echo,
+    echoFiles,
+    phase,
+    mode,
+    deciding: busy,
+    buildDisabled: composerLocked,
+    onDecide: (callId, decision) => {
+      if (activeSessionId) {
+        void decideCall(activeSessionId, callId, decision)
+      }
+    },
+    onBuild: (path) => {
+      void buildPlan(path)
+    },
+    onViewPlan: (next) => {
+      setPlan({ view: next, sessionId: activeSessionId })
+    },
+    disabled: composerLocked,
+    pending: busy,
+    running: agentRunning,
+    stopping,
+    onStop: () => void stopAgent(),
+    onSubmit: sendInstruction,
+    models,
+    modelId,
+    effort,
+    defaultModelId,
+    defaultEffort,
+    onModeChange: (next) => void setModeChoice(next),
+    onModelChange: (model) => void setModelChoice(model),
+    onEffortChange: (next) => void setEffortChoice(next),
+    draftKey: composerDraftKey,
+    pendingText: echo,
+    workspaceId: activeWorkspaceId,
+    onCompact: () => void compactAgent(),
+    compacting: compactingSessionId === activeSessionId
+  }
 
   return (
     <div className={styles.shell}>
@@ -274,7 +320,11 @@ export function AppLayout() {
         {reviewSessionId ? (
           <ReviewScreen key={reviewSessionId} sessionId={reviewSessionId} />
         ) : docsOpen ? (
-          <DocsScreen key={activeWorkspaceId ?? 'none'} workspaceId={activeWorkspaceId} />
+          <DocsScreen
+            key={activeWorkspaceId ?? 'none'}
+            workspaceId={activeWorkspaceId}
+            onAttachLine={attachLine}
+          />
         ) : plan ? (
           <PlanPage
             plan={plan.view}
@@ -318,59 +368,17 @@ export function AppLayout() {
             />
           </div>
         ) : (
-          <div className={styles.chat}>
-            <div className={styles.thread} ref={threadRef}>
-              <Transcript
-                messages={messages}
-                sessionId={activeSessionId}
-                echo={echo}
-                phase={phase}
-                mode={mode}
-                deciding={busy}
-                buildDisabled={composerLocked}
-                onDecide={(callId, decision) => {
-                  if (activeSessionId) {
-                    void decideCall(activeSessionId, callId, decision)
-                  }
-                }}
-                onBuild={(path) => {
-                  void buildPlan(path)
-                }}
-                onViewPlan={(next) => {
-                  setPlan({ view: next, sessionId: activeSessionId })
-                }}
-              />
-              <div className={styles.dock} ref={dockRef}>
-                {activeSessionId ? (
-                  <EditReviewStrip key={activeSessionId} sessionId={activeSessionId} />
-                ) : null}
-                <Composer
-                  disabled={composerLocked}
-                  pending={busy}
-                  running={agentRunning}
-                  stopping={stopping}
-                  onStop={() => void stopAgent()}
-                  onSubmit={sendInstruction}
-                  models={models}
-                  mode={mode}
-                  modelId={modelId}
-                  effort={effort}
-                  defaultModelId={defaultModelId}
-                  defaultEffort={defaultEffort}
-                  onModeChange={(next) => void setModeChoice(next)}
-                  onModelChange={(model) => void setModelChoice(model)}
-                  onEffortChange={(next) => void setEffortChoice(next)}
-                  messages={messages}
-                  draftKey={composerDraftKey}
-                  pendingText={echo}
-                  workspaceId={activeWorkspaceId}
-                  onCompact={() => void compactAgent()}
-                  compacting={compactingSessionId === activeSessionId}
-                />
-              </div>
-            </div>
-          </div>
+          <ChatPanel {...chat} showReviewStrip />
         )}
+        {docsOpen ? (
+          <ChatTray
+            {...chat}
+            open={trayOpen}
+            onOpen={() => setTrayOpen(true)}
+            onClose={() => setTrayOpen(false)}
+            title={sessionTitle}
+          />
+        ) : null}
       </div>
       {renameTarget ? (
         <RenameSessionDialog

@@ -26,10 +26,14 @@ pub enum Event {
     },
     /// A partial message. Carries the id of the message being assembled, which
     /// `ModelStream` fixes before the first delta arrives.
+    ///
+    /// `delta` is boxed because `Delta::Finished` carries a whole `Message`, and
+    /// every other event is small. The box keeps `Event` from growing to fit the
+    /// one large payload.
     MessageDelta {
         session: SessionId,
         message: MessageId,
-        delta: Delta,
+        delta: Box<Delta>,
     },
     ToolCallUpdated {
         session: SessionId,

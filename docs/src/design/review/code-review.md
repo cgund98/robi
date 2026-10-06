@@ -70,11 +70,16 @@ back and the error is shown. A hunk decision reloads that file only.
 **Reject** writes the
 baseline back. A file this session created, fully rejected, is removed.
 
-Each block between gaps is a hunk. Hovering it shows **Reject** and
-**Approve** on the top right of that block's first changed line, except on a file this session
-created: that file only has the buttons on its header. **Approve** folds that hunk's
+Each block between gaps can hold more than one logical hunk, because the
+backend only inserts a gap where two changes are more than two context
+runs (six lines) apart. Every hunk in a block gets its own **Reject** and **Approve**
+on the top right of that hunk's first changed line, except on a file this
+session created: that file only has the buttons on its header. Hovering a
+block reveals one pair per hunk it holds. **Approve** folds that hunk's
 current lines into the baseline. **Reject** puts that hunk's baseline lines
-back on disk. A hunk that no longer matches the file is `409`.
+back on disk. Either one decides only that hunk and leaves the rest of the
+file in review. A hunk that no longer matches the file is `409`. The header
+pair is the only whole-file decision.
 
 The right pane shows the selected file. The default is the
 unified diff: context, deletions, and insertions. **Current** hides

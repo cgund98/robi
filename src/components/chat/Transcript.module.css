@@ -64,6 +64,17 @@
   margin-bottom: 0;
 }
 
+.files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--space-2);
+}
+
+.files:last-child {
+  margin-bottom: 0;
+}
+
 .bubble {
   width: 32px;
   height: 32px;

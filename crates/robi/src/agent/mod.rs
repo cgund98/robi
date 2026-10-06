@@ -6,11 +6,13 @@
 //! the files on disk. `prompt` assembles the system prompt from the built-in
 //! text, user settings, and instruction files. `compress` shortens tool
 //! output. `web` fetches and searches pages. `skills` and `mcp` load extra
-//! instructions and remote tools. `lsp` and `index` answer code questions.
+//! instructions and remote tools. `files` renders a user's attachments for the
+//! provider. `lsp` and `index` answer code questions.
 
 pub mod blocking;
 pub mod compact;
 pub mod compress;
+pub mod files;
 pub mod index;
 pub mod lsp;
 pub mod mcp;

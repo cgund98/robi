@@ -28,15 +28,16 @@ impl ChatMessageService {
         session: SessionId,
         instruction: &str,
         images: Vec<robi_core::message::ImageAttachment>,
+        files: Vec<robi_core::message::FileAttachment>,
     ) -> Result<SubmitOutcome, ServiceError> {
-        if instruction.trim().is_empty() && images.is_empty() {
+        if instruction.trim().is_empty() && images.is_empty() && files.is_empty() {
             return Err(ServiceError::BadRequest(
                 "instruction must not be empty".into(),
             ));
         }
         self.sessions.get_chat_session(session).await?;
         self.runtime
-            .submit(session, instruction.to_owned(), images)
+            .submit(session, instruction.to_owned(), images, files)
             .await
     }
 
@@ -254,6 +255,7 @@ mod tests {
             session: SessionId,
             instruction: String,
             _images: Vec<robi_core::message::ImageAttachment>,
+            _files: Vec<robi_core::message::FileAttachment>,
         ) -> Result<SubmitOutcome, ServiceError> {
             self.seen
                 .lock()
@@ -384,7 +386,7 @@ mod tests {
         sessions.insert(session);
 
         let error = service
-            .submit_instruction(session, "   ", Vec::new())
+            .submit_instruction(session, "   ", Vec::new(), Vec::new())
             .await
             .unwrap_err();
         assert_eq!(
@@ -401,7 +403,7 @@ mod tests {
 
         assert_eq!(
             service
-                .submit_instruction(session, "hello", Vec::new())
+                .submit_instruction(session, "hello", Vec::new(), Vec::new())
                 .await
                 .unwrap_err(),
             ServiceError::NotFound(session.to_string())
@@ -431,7 +433,7 @@ mod tests {
 
         assert_eq!(
             service
-                .submit_instruction(session, "do the thing", Vec::new())
+                .submit_instruction(session, "do the thing", Vec::new(), Vec::new())
                 .await
                 .unwrap(),
             SubmitOutcome::Accepted

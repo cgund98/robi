@@ -258,6 +258,7 @@ enum Work {
     Instruction {
         instruction: String,
         images: Vec<robi_core::message::ImageAttachment>,
+        files: Vec<robi_core::message::FileAttachment>,
     },
     Decision {
         call: ToolCallId,
@@ -322,13 +323,14 @@ impl SerializedChatRuntime {
         session: SessionId,
         instruction: String,
         images: Vec<robi_core::message::ImageAttachment>,
+        files: Vec<robi_core::message::FileAttachment>,
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
     ) -> Result<SubmitOutcome, ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
-            replace_pending(slot, session, instruction, images);
+            replace_pending(slot, session, instruction, images, files);
             return Ok(SubmitOutcome::Accepted);
         }
         slot.running = true;
@@ -336,6 +338,7 @@ impl SerializedChatRuntime {
         slot.pending = Some(Work::Instruction {
             instruction,
             images,
+            files,
         });
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
@@ -439,8 +442,17 @@ impl ChatRuntime for SerializedChatRuntime {
         session: SessionId,
         instruction: String,
         images: Vec<robi_core::message::ImageAttachment>,
+        files: Vec<robi_core::message::FileAttachment>,
     ) -> Result<SubmitOutcome, ServiceError> {
-        if interrupt_if_running(&self.slots, session, &instruction, images.clone()).await {
+        if interrupt_if_running(
+            &self.slots,
+            session,
+            &instruction,
+            images.clone(),
+            files.clone(),
+        )
+        .await
+        {
             self.note_turn_display(session, TurnDisplay::Pending).await;
             return Ok(SubmitOutcome::Accepted);
         }
@@ -455,7 +467,7 @@ impl ChatRuntime for SerializedChatRuntime {
             let mut slots = self.slots.map.lock().await;
             let slot = slots.entry(session).or_default();
             if slot.running {
-                replace_pending(slot, session, instruction, images);
+                replace_pending(slot, session, instruction, images, files);
                 drop(slots);
                 self.note_turn_display(session, TurnDisplay::Pending).await;
                 return Ok(SubmitOutcome::Accepted);
@@ -474,7 +486,7 @@ impl ChatRuntime for SerializedChatRuntime {
             }
         };
         let outcome = self
-            .start_actor(session, instruction, images, model, tools)
+            .start_actor(session, instruction, images, files, model, tools)
             .await?;
         self.note_turn_display(session, TurnDisplay::Pending).await;
         Ok(outcome)
@@ -594,6 +606,7 @@ async fn interrupt_if_running(
     session: SessionId,
     instruction: &str,
     images: Vec<robi_core::message::ImageAttachment>,
+    files: Vec<robi_core::message::FileAttachment>,
 ) -> bool {
     let mut slots = slots.map.lock().await;
     let Some(slot) = slots.get_mut(&session) else {
@@ -602,7 +615,7 @@ async fn interrupt_if_running(
     if !slot.running {
         return false;
     }
-    replace_pending(slot, session, instruction.to_owned(), images);
+    replace_pending(slot, session, instruction.to_owned(), images, files);
     true
 }
 
@@ -611,6 +624,7 @@ fn replace_pending(
     session: SessionId,
     instruction: String,
     images: Vec<robi_core::message::ImageAttachment>,
+    files: Vec<robi_core::message::FileAttachment>,
 ) {
     tracing::info!(%session, "replaced the pending instruction");
     if let Some(cancel) = &slot.cancel {
@@ -619,6 +633,7 @@ fn replace_pending(
     slot.pending = Some(Work::Instruction {
         instruction,
         images,
+        files,
     });
 }
 
@@ -708,11 +723,12 @@ async fn run_actor(
             Work::Instruction {
                 instruction,
                 images,
+                files,
             } => {
                 tracing::info!(%session, "session actor started a turn");
                 let skills = skill_loads(sessions.as_ref(), session, &instruction).await;
                 agent
-                    .user_input_with_skills(session, &instruction, skills, images, cancel)
+                    .user_input_with_skills(session, &instruction, skills, images, files, cancel)
                     .await
             }
             Work::Decision { call, reject } => {
@@ -993,7 +1009,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .submit(session, "first".into(), Vec::new())
+                .submit(session, "first".into(), Vec::new(), Vec::new())
                 .await
                 .unwrap(),
             SubmitOutcome::Accepted
@@ -1006,7 +1022,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .submit(session, "second".into(), Vec::new())
+                .submit(session, "second".into(), Vec::new(), Vec::new())
                 .await
                 .unwrap(),
             SubmitOutcome::Accepted
@@ -1058,7 +1074,7 @@ mod tests {
         );
 
         runtime
-            .submit(session, "first".into(), Vec::new())
+            .submit(session, "first".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
@@ -1116,7 +1132,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .submit(session, "hello".into(), Vec::new())
+                .submit(session, "hello".into(), Vec::new(), Vec::new())
                 .await
                 .unwrap(),
             SubmitOutcome::Accepted
@@ -1181,7 +1197,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .submit(session, "hello".into(), Vec::new())
+                .submit(session, "hello".into(), Vec::new(), Vec::new())
                 .await
                 .unwrap(),
             SubmitOutcome::Accepted
@@ -1276,7 +1292,7 @@ mod tests {
         assert!(runtime.running_session_ids().await.is_empty());
 
         runtime
-            .submit(first, "one".into(), Vec::new())
+            .submit(first, "one".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
@@ -1287,7 +1303,7 @@ mod tests {
         assert_eq!(runtime.running_session_ids().await, vec![first]);
 
         runtime
-            .submit(second, "two".into(), Vec::new())
+            .submit(second, "two".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         let started = tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
@@ -1354,7 +1370,7 @@ mod tests {
         });
 
         let error = runtime
-            .submit(session, "hello".into(), Vec::new())
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
             .await
             .unwrap_err();
         assert_eq!(
@@ -1468,7 +1484,7 @@ mod tests {
         });
 
         runtime
-            .submit(session, "hello".into(), Vec::new())
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         assert_eq!(
@@ -1525,7 +1541,7 @@ mod tests {
         });
 
         runtime
-            .submit(session, "hello".into(), Vec::new())
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         let names = names.lock().expect("names").clone();
@@ -1622,7 +1638,7 @@ mod tests {
         );
 
         runtime
-            .submit(session, "rename the parser".into(), Vec::new())
+            .submit(session, "rename the parser".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
 
@@ -1702,7 +1718,7 @@ mod tests {
         );
 
         runtime
-            .submit(session, "hello".into(), Vec::new())
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1754,7 +1770,7 @@ mod tests {
         );
 
         runtime
-            .submit(session, "hello".into(), Vec::new())
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1871,7 +1887,7 @@ mod tests {
         );
 
         runtime
-            .submit(session, "go".into(), Vec::new())
+            .submit(session, "go".into(), Vec::new(), Vec::new())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), started_rx.recv())

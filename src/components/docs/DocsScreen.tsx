@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent
+} from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { MessageSquarePlus } from 'lucide-react'
 
 import { getIndexStatus, type IndexStatus } from '../../api/codeIndex'
 import { getDoc, searchDocs, type DocSearchEngine, type DocSearchResult } from '../../api/docs'
+import { useChatStore } from '../../state/chatStore'
 import { useIndexStore } from '../../state/indexStore'
+import { useWorkspaceStore } from '../../state/workspaceStore'
 import {
   lastValidPath,
   readCollapsed,
@@ -16,9 +26,11 @@ import {
 } from '../../app/docsCache'
 import { useWorkspaceDocs } from '../../app/useWorkspaceDocs'
 import { AssistantMarkdown } from '../chat/AssistantMarkdown'
+import type { FileAttachment } from '../chat/textAttachments'
 import { buildFileTree } from '../review/tree'
 import { DocFindBar } from './DocFindBar'
 import { DocTree } from './DocTree'
+import { attachmentFromDocument } from './docAttachment'
 import {
   applyHighlights,
   clearHighlights,
@@ -29,6 +41,12 @@ import styles from './DocsScreen.module.css'
 
 type DocsScreenProps = {
   workspaceId: string | null
+  /**
+   * Attach a raw line range of the open document to the chat composer. Absent
+   * on screens that have no composer (the find and refresh tests), which turns
+   * the hover affordance off.
+   */
+  onAttachLine?: (file: FileAttachment) => void
 }
 
 type DocError = {
@@ -36,8 +54,13 @@ type DocError = {
   message: string
 }
 
-export function DocsScreen({ workspaceId }: DocsScreenProps) {
-  const { files, loading, error } = useWorkspaceDocs(workspaceId)
+export function DocsScreen({ workspaceId, onAttachLine }: DocsScreenProps) {
+  // An agent edit lands as a review tick on the active session, so a change to
+  // the open page or the tree refreshes here without a manual reload.
+  const refreshTick = useChatStore((state) =>
+    state.activeSessionId ? (state.reviewTickBySession[state.activeSessionId] ?? 0) : 0
+  )
+  const { files, loading, error } = useWorkspaceDocs(workspaceId, refreshTick)
   const [searchParams, setSearchParams] = useSearchParams()
   const urlFile = searchParams.get('file')
   const [selected, setSelected] = useState<string | null>(
@@ -75,15 +98,85 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
   )
   const [contentPath, setContentPath] = useState(selected)
   const [contentError, setContentError] = useState<DocError | null>(null)
+  // Hover state for the attach-line affordance. Declared here so opening a new
+  // document clears it in the same render-time reset the content uses; an effect
+  // would be a cascading render.
+  const [lineHover, setLineHover] = useState<{ start: number; end: number; top: number } | null>(
+    null
+  )
+  const [attachNotice, setAttachNotice] = useState<string | null>(null)
   if (contentPath !== selected) {
     setContentPath(selected)
     setContent(workspaceId && selected ? (readContent(workspaceId, selected) ?? null) : null)
+    setLineHover(null)
+    setAttachNotice(null)
   }
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
     workspaceId ? new Set(readCollapsed(workspaceId)) : new Set()
   )
   const viewerRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef(0)
+
+  // Attach a line. The rendered document carries one `data-md-lines` span per
+  // block (see AssistantMarkdown's document mode); the hover reads it back to a
+  // raw source range, and the button attaches that slice of the file.
+  const sheetRef = useRef<HTMLDivElement>(null)
+  const root = useWorkspaceStore(
+    (state) => state.workspaces.find((workspace) => workspace.id === workspaceId)?.root
+  )
+
+  function onViewerMouseMove(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!onAttachLine) {
+      return
+    }
+    const target = event.target as HTMLElement
+    // Ignore the button itself so the pointer can travel onto it without the
+    // hover collapsing first.
+    if (target.closest('[data-md-attach]')) {
+      return
+    }
+    const block = target.closest<HTMLElement>('[data-md-lines]')
+    const sheet = sheetRef.current
+    const span = block?.dataset.mdLines
+    if (!block || !sheet || !span) {
+      setLineHover(null)
+      return
+    }
+    const [startRaw, endRaw] = span.split('-')
+    const start = Number(startRaw)
+    const end = Number(endRaw ?? startRaw)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      setLineHover(null)
+      return
+    }
+    // Both rects move with the scroll, so the delta is scroll-invariant.
+    const top = block.getBoundingClientRect().top - sheet.getBoundingClientRect().top
+    setLineHover((current) =>
+      current && current.start === start && current.end === end && current.top === top
+        ? current
+        : { start, end, top }
+    )
+  }
+
+  function attachLine(range: { start: number; end: number }) {
+    setLineHover(null)
+    if (!onAttachLine || content === null || selected === null) {
+      return
+    }
+    try {
+      const file = attachmentFromDocument({
+        content,
+        path: selected,
+        root,
+        startLine: range.start,
+        endLine: range.end
+      })
+      setAttachNotice(null)
+      onAttachLine(file)
+    } catch (error) {
+      setAttachNotice(error instanceof Error ? error.message : 'Could not attach the line')
+    }
+  }
 
   // Find in the open document. The rendered DOM is never mutated: matches are
   // held as ranges and painted with the CSS Custom Highlight API.
@@ -251,11 +344,14 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
     let cancelled = false
     void getDoc(workspaceId, selected)
       .then((doc) => {
-        if (!cancelled) {
-          writeContent(workspaceId, selected, doc.content)
-          setContent(doc.content)
-          setContentError(null)
+        if (cancelled) {
+          return
         }
+        writeContent(workspaceId, selected, doc.content)
+        // Return the same reference when the text is unchanged, so a refresh
+        // tick does not reset the painted document or its scroll position.
+        setContent((current) => (current === doc.content ? current : doc.content))
+        setContentError(null)
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -268,7 +364,7 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
     return () => {
       cancelled = true
     }
-  }, [workspaceId, selected])
+  }, [workspaceId, selected, refreshTick])
 
   // Restore the saved scroll offset after the document paints.
   useLayoutEffect(() => {
@@ -289,6 +385,9 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
     const path = selected
     const onScroll = () => {
       scrollRef.current = viewer.scrollTop
+      // A block that scrolls under the pointer is no longer where the button
+      // was; drop it rather than leave a stale target.
+      setLineHover(null)
     }
     viewer.addEventListener('scroll', onScroll, { passive: true })
     return () => {
@@ -624,7 +723,17 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
                 inputRef={findInputRef}
               />
             ) : null}
-            <div className={styles.viewer} ref={viewerRef}>
+            {attachNotice ? (
+              <p className={styles.attachNotice} role="alert">
+                {attachNotice}
+              </p>
+            ) : null}
+            <div
+              className={styles.viewer}
+              ref={viewerRef}
+              onMouseMove={onViewerMouseMove}
+              onMouseLeave={() => setLineHover(null)}
+            >
               {selectedError ? (
                 <p className={styles.message} role="alert">
                   {selectedError}
@@ -632,13 +741,32 @@ export function DocsScreen({ workspaceId }: DocsScreenProps) {
               ) : selected === null || content === null ? (
                 <div className={styles.placeholder}>Select a document to open it.</div>
               ) : (
-                <div className={styles.sheet}>
+                <div className={styles.sheet} ref={sheetRef}>
                   <AssistantMarkdown
                     text={content}
                     document
                     docPath={selected}
                     onDocLink={openDocument}
                   />
+                  {onAttachLine && lineHover ? (
+                    <button
+                      type="button"
+                      className={styles.lineAttach}
+                      style={{ top: `${lineHover.top}px` }}
+                      data-md-attach
+                      data-find-ignore
+                      aria-label={`Add ${
+                        lineHover.start === lineHover.end
+                          ? `line ${lineHover.start}`
+                          : `lines ${lineHover.start} to ${lineHover.end}`
+                      } to chat`}
+                      title="Add to chat"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => attachLine(lineHover)}
+                    >
+                      <MessageSquarePlus size={16} strokeWidth={1.75} aria-hidden />
+                    </button>
+                  ) : null}
                 </div>
               )}
             </div>

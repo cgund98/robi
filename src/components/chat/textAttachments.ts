@@ -1,45 +1,56 @@
-/** Text files the paperclip will read and fold into the instruction. */
-const TEXT_EXTENSIONS = new Set([
-  'c',
-  'cc',
-  'cpp',
-  'css',
-  'csv',
-  'env',
-  'go',
-  'h',
-  'hpp',
-  'html',
-  'ini',
-  'java',
-  'js',
-  'json',
-  'jsx',
-  'kt',
-  'less',
-  'lock',
-  'md',
-  'php',
-  'py',
-  'rb',
-  'rs',
-  'scss',
-  'sh',
-  'sql',
-  'svelte',
-  'swift',
-  'toml',
-  'ts',
-  'tsx',
-  'txt',
-  'vue',
-  'xml',
-  'yaml',
-  'yml'
-])
+/** What an attachment chip needs: the name and, for a range, the lines. */
+export type AttachmentMeta = {
+  name: string
+  /** Workspace-relative or absolute path, for display. Absent for an upload. */
+  path?: string | null
+  /** 1-based first line of the slice, when it was a range. */
+  startLine?: number | null
+  /** 1-based last line of the slice, inclusive, when it was a range. */
+  endLine?: number | null
+}
 
-/** One text file, matching the 10 MiB image cap would swamp a context window. */
-export const MAX_TEXT_FILE_BYTES = 256 * 1024
+/** `base64` decoded to bytes. Standard alphabet. */
+export function base64ToBytes(encoded: string): Uint8Array {
+  const binary = atob(encoded)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+/**
+ * One file the user attached, as the client holds it before sending.
+ *
+ * `contentBase64` is the file's raw bytes; the server decodes them, verifies
+ * they are text, and decides from `absolutePath` whether the file is inside the
+ * workspace. The client sniffs the bytes and checks the size for feedback, but
+ * the server is the authority. `absolutePath` is set only by the desktop picker.
+ */
+export type FileAttachment = {
+  name: string
+  /**
+   * The workspace-relative path, for display (the chip's tooltip). Set by a
+   * producer that knows it, such as the docs viewer's line attach. Absent for a
+   * picker or drop, whose chip falls back to `absolutePath`.
+   */
+  path?: string
+  /** The file's absolute path, when the desktop picker provided one. */
+  absolutePath?: string
+  /** 1-based first line of the slice, when it was a range. */
+  startLine?: number
+  /** 1-based last line of the slice, inclusive, when it was a range. */
+  endLine?: number
+  contentBase64: string
+  /** Decoded byte length, for the client's total-size check. */
+  size: number
+}
+
+/** One file, matching the server's per-file cap. */
+export const MAX_TEXT_FILE_BYTES = 64 * 1024
+
+/** The sum of every attachment's bytes, matching the server's total cap. */
+export const MAX_TEXT_TOTAL_BYTES = 256 * 1024
 
 export const MAX_ATTACHMENTS = 8
 
@@ -67,8 +78,34 @@ export function isImageFile(file: File): boolean {
   return IMAGE_EXTENSIONS.has(extension(file.name))
 }
 
-export function isTextFile(file: File): boolean {
-  return TEXT_EXTENSIONS.has(extension(file.name))
+/**
+ * Whether `bytes` look like text, decided from content, not the name.
+ *
+ * The same rule the server and the read tools use: a NUL byte marks binary, and
+ * the bytes must be valid UTF-8. There is no extension list — a `.log`, a
+ * `.conf`, or an extensionless file is text if its bytes are. The server
+ * re-checks; this is for immediate feedback at attach time.
+ */
+export function looksLikeText(bytes: Uint8Array): boolean {
+  if (bytes.includes(0)) {
+    return false
+  }
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** `bytes` as standard base64, chunked so a large file does not blow the stack. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunk = 0x8000
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk))
+  }
+  return btoa(binary)
 }
 
 /**
@@ -102,36 +139,79 @@ function nameClipboardFile(file: File): File {
 }
 
 export function fileAccept(): string {
-  const extensions = [...TEXT_EXTENSIONS].map((ext) => `.${ext}`).join(',')
-  return `image/png,image/jpeg,image/webp,image/gif,${extensions}`
-}
-
-/** Read a text attachment. Rejects oversized files and files that contain a NUL. */
-export async function readTextFile(file: File): Promise<string> {
-  if (file.size > MAX_TEXT_FILE_BYTES) {
-    throw new Error(`${file.name} is larger than 256 KB`)
-  }
-  const text = await file.text()
-  if (text.includes('\0')) {
-    throw new Error(`${file.name} is not a text file`)
-  }
-  return text
+  // A hint for the picker, not a gate: the content decides. `text/*` covers the
+  // files the OS labels, and a picker can still be switched to any file.
+  return 'image/png,image/jpeg,image/webp,image/gif,text/*'
 }
 
 /**
- * Append each file after the draft so the model sees the bytes as text.
- * A message that is only attachments still has a body.
+ * Read one picked or dropped file into an attachment.
+ *
+ * An HTML file input exposes only the basename, so an attachment built here has
+ * no `absolutePath` and the server treats it as outside the workspace. The
+ * desktop picker (`attachmentFromPicked`) is the path-aware source. The bytes
+ * are sniffed here so a binary file fails at attach time; the server re-checks.
  */
-export function instructionWithTextFiles(
-  draft: string,
-  files: { name: string; text: string }[]
-): string {
-  if (files.length === 0) {
-    return draft
+export async function readFileAttachment(file: File): Promise<FileAttachment> {
+  if (file.size > MAX_TEXT_FILE_BYTES) {
+    throw new Error(`${file.name} is larger than ${Math.round(MAX_TEXT_FILE_BYTES / 1024)} KB`)
   }
-  const blocks = files
-    .map((file) => `<file name="${file.name}">\n${file.text}\n</file>`)
-    .join('\n\n')
-  const trimmed = draft.trim()
-  return trimmed.length > 0 ? `${trimmed}\n\n${blocks}` : blocks
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  if (!looksLikeText(bytes)) {
+    throw new Error(`${file.name} is not a text file`)
+  }
+  return { name: file.name, contentBase64: bytesToBase64(bytes), size: bytes.length }
+}
+
+/**
+ * An attachment from one file the native desktop picker returned.
+ *
+ * The bytes are already read by the shell; this sniffs them for feedback and
+ * keeps the absolute path, which the server turns into a workspace-relative path
+ * or drops (outside).
+ */
+export function attachmentFromPicked(picked: {
+  name: string
+  absolutePath: string
+  contentBase64: string
+}): FileAttachment {
+  const bytes = base64ToBytes(picked.contentBase64)
+  if (!looksLikeText(bytes)) {
+    throw new Error(`${picked.name} is not a text file`)
+  }
+  return {
+    name: picked.name,
+    absolutePath: picked.absolutePath,
+    contentBase64: picked.contentBase64,
+    size: bytes.length
+  }
+}
+
+/** The `files` array for `POST /messages`, in the server's shape. */
+export function toFileInputs(files: FileAttachment[]): {
+  name: string
+  absolute_path?: string
+  start_line?: number
+  end_line?: number
+  content_base64: string
+}[] {
+  return files.map((file) => {
+    const input: {
+      name: string
+      absolute_path?: string
+      start_line?: number
+      end_line?: number
+      content_base64: string
+    } = { name: file.name, content_base64: file.contentBase64 }
+    if (file.absolutePath != null) {
+      input.absolute_path = file.absolutePath
+    }
+    if (file.startLine != null) {
+      input.start_line = file.startLine
+    }
+    if (file.endLine != null) {
+      input.end_line = file.endLine
+    }
+    return input
+  })
 }
