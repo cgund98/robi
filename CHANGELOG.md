@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/cgund98/robi/compare/v0.1.7...v0.1.8) (2026-10-06)
+
+
+### Bug Fixes
+
+* use ubuntu 24 for releases ([802bf6e](https://github.com/cgund98/robi/commit/802bf6e237fc52e0ce9f81f4721f8ccbd65b03f4))
+
 ## [0.1.7](https://github.com/cgund98/robi/compare/v0.1.6...v0.1.7) (2026-10-06)
 
 
