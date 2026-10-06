@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/cgund98/robi/compare/v0.1.5...v0.1.6) (2026-10-06)
+
+
+### Features
+
+* file uploads, attach docs to chat ([4b99f4d](https://github.com/cgund98/robi/commit/4b99f4d5b7fc21592585dbddad05acd18321dfd8))
+* mcp logs, document search, mcp skill ([b3b3db1](https://github.com/cgund98/robi/commit/b3b3db1f7c809e9d6ef4a46ef427775492fc7aa0))
+
 ## [0.1.5](https://github.com/cgund98/robi/compare/v0.1.4...v0.1.5) (2026-10-05)
 
 
