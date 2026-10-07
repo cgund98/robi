@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.9](https://github.com/cgund98/robi/compare/v0.1.8...v0.1.9) (2026-10-06)
+
+
+### Features
+
+* add solid UI ([1d63f8b](https://github.com/cgund98/robi/commit/1d63f8ba85a055cfbfb798552118bd73796912a7))
+
+
+### Bug Fixes
+
+* composer not resetting, doc navigation ([a0cbcfc](https://github.com/cgund98/robi/commit/a0cbcfc68cd7ca8764874c02838d2b74e2174d3b))
+* remove duplicate search entries for semantic ([fade985](https://github.com/cgund98/robi/commit/fade9858b3f2257c147146e57c68c17a405b9383))
+
 ## [0.1.8](https://github.com/cgund98/robi/compare/v0.1.7...v0.1.8) (2026-10-06)
 
 
