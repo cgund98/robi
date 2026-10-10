@@ -50,7 +50,7 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `agent/review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
 | `agent/lsp/` | M7 | Language server client |
 | `agent/index/` | M7 | AST chunking, embeddings, vector search |
-| `agent/skills/` | M8 | Skill scan, catalog, and `@id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
+| `agent/skills/` | M8 | Skill scan, catalog, and `/id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
 | `agent/mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
 | `agent/compress/` | M9 | Tool-output compression and the original store |
 

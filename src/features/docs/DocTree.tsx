@@ -1,11 +1,11 @@
 /** @jsxImportSource solid-js */
 import { For, Show } from 'solid-js'
 
-import type { TreeNode } from '../review/tree'
+import type { DocTreeNode } from './docsTree'
 import styles from './DocTree.module.css'
 
 export function DocTree(props: {
-  nodes: TreeNode[]
+  nodes: DocTreeNode[]
   selected: string | null
   collapsed: ReadonlySet<string>
   onSelect: (path: string) => void
@@ -26,7 +26,7 @@ export function DocTree(props: {
 }
 
 function TreeLevel(props: {
-  nodes: TreeNode[]
+  nodes: DocTreeNode[]
   depth: number
   selected: string | null
   collapsed: ReadonlySet<string>
@@ -58,7 +58,7 @@ function TreeLevel(props: {
               <li>
                 <button
                   type="button"
-                  class={styles.dir}
+                  class={dirClass(node, props.collapsed.has(node.path))}
                   style={indent}
                   aria-expanded={!props.collapsed.has(node.path)}
                   onClick={() => props.onToggle(node.path)}
@@ -68,9 +68,9 @@ function TreeLevel(props: {
                   </span>
                   {node.name}
                 </button>
-                <Show when={!props.collapsed.has(node.path) && node.kind === 'dir'}>
+                <Show when={!props.collapsed.has(node.path)}>
                   <TreeLevel
-                    nodes={node.kind === 'dir' ? node.children : []}
+                    nodes={node.children}
                     depth={props.depth + 1}
                     selected={props.selected}
                     collapsed={props.collapsed}
@@ -85,4 +85,11 @@ function TreeLevel(props: {
       </For>
     </ul>
   )
+}
+
+function dirClass(node: DocTreeNode, closed: boolean): string {
+  if (node.ignored) {
+    return closed ? styles.dirIgnoredClosed : styles.dirIgnoredOpen
+  }
+  return closed ? styles.dirClosed : styles.dirOpen
 }

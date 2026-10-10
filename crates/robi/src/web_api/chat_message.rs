@@ -737,7 +737,7 @@ pub struct ChatFile {
     pub end_line: Option<u32>,
 }
 
-/// A skill loaded because the user wrote `@id`.
+/// A skill loaded because the user wrote `/id`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChatSkill {
     pub id: String,

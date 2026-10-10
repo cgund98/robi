@@ -12,9 +12,18 @@ export type DocSearchResult = components['schemas']['DocSearchResult']
 export type DocSearchHit = components['schemas']['DocSearchHit']
 export type DocSearchEngine = 'semantic' | 'ripgrep'
 
-export async function listDocs(workspaceId: string): Promise<DocsListing> {
+export async function listDocs(
+  workspaceId: string,
+  options?: { path?: string; recursive?: boolean }
+): Promise<DocsListing> {
   const result = await api.GET('/api/v1/workspaces/{id}/docs', {
-    params: { path: { id: workspaceId } }
+    params: {
+      path: { id: workspaceId },
+      query: {
+        path: options?.path,
+        recursive: options?.recursive
+      }
+    }
   })
   if (result.data) {
     return result.data

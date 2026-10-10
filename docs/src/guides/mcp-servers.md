@@ -12,7 +12,7 @@ This guide is the walkthrough. For how the host behaves under the hood, see
 [MCP](../concepts/mcp.md).
 
 If you would rather be walked through it, load the bundled `configure-mcp`
-skill (`@configure-mcp`, or just ask to add an MCP server). It asks where the
+skill (`/configure-mcp`, or just ask to add an MCP server). It asks where the
 config belongs — global or this workspace — which tool you want to connect, the
 transport and its settings, and any secret references, then writes the entry
 and tells you to restart the app.

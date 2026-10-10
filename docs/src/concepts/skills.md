@@ -20,7 +20,7 @@ single hyphens (1–64 characters). A category folder is allowed: the skill at
 | `description` | The catalog text. When absent, the first non-empty paragraph is used (cut at 1024 characters); if neither exists, the skill is skipped. |
 | `name` | The display label in the composer. The id stays the directory name. |
 | `disable-model-invocation: true` | Hidden from the model's catalog but still loadable when you mention it. |
-| `user-invocable: false` | Hidden from the `@` menu but the model can still load it. |
+| `user-invocable: false` | Hidden from the `/` menu but the model can still load it. |
 
 Other frontmatter is ignored. A `` !`command` `` line is treated as markdown;
 nothing in a skill is executed at load time.
@@ -41,9 +41,10 @@ next message.
 
 ## Using a skill
 
-- **You** type `@` at the start of the composer (or after a space) to open the
-  menu, and pick a skill. Selecting inserts `@id `. On send, every `@id` is
-  resolved and loaded; an unknown `@word` stays as plain text.
+- **You** type `/` at the start of the composer (or after a space) to open the
+  menu, and pick a skill. Selecting inserts `/id `. On send, every `/id` is
+  resolved and loaded; an unknown `/word` stays as plain text. A slash inside
+  a path or a URL is not a mention.
 - **The model** loads a skill with the `skill` tool, taking the id. It is
   registered in every mode and needs no approval.
 
@@ -61,7 +62,7 @@ untrusted, like any loaded content.
 
 ## Bundled skills
 
-Two skills ship in the binary and appear in the catalog and the `@` menu on
+Two skills ship in the binary and appear in the catalog and the `/` menu on
 every session, ahead of the home roots, so a file with the same id replaces
 them.
 

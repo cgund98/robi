@@ -479,7 +479,7 @@ export interface components {
             updated_at: string;
             workspace_id: string;
         };
-        /** @description A skill loaded because the user wrote `@id`. */
+        /** @description A skill loaded because the user wrote `/id`. */
         ChatSkill: {
             body: string;
             description: string;
@@ -568,9 +568,22 @@ export interface components {
             version: string;
         };
         DocEntry: {
+            /**
+             * @description Set on directories. `true` when this response includes that directory's
+             *     children. Absent on files.
+             */
+            children_fetched?: boolean | null;
+            /**
+             * @description A gitignore rule excludes this path. An ignored directory is listed
+             *     without its descendants until a one-level listing reads it.
+             */
+            ignored: boolean;
+            kind: components["schemas"]["DocKind"];
             /** @description Workspace-relative, `/` separated. */
             path: string;
         };
+        /** @enum {string} */
+        DocKind: "file" | "directory";
         DocSearchHit: {
             /** Format: int32 */
             end_line: number;
@@ -636,7 +649,11 @@ export interface components {
             version: string;
         };
         DocsListing: {
-            files: components["schemas"]["DocEntry"][];
+            /** @description This response includes the children of `path`. */
+            children_fetched: boolean;
+            entries: components["schemas"]["DocEntry"][];
+            /** @description Workspace-relative directory that was listed. Empty for the workspace root. */
+            path: string;
         };
         /**
          * @description One file attachment as the client sends it. The client sends the file's raw
@@ -1546,7 +1563,12 @@ export interface operations {
     };
     list_docs: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace-relative directory to list. Absent lists the workspace root. */
+                path?: string;
+                /** @description When true (default), walk the whole scannable hierarchy under path. When false, list one level, including ignored markdown and directories. */
+                recursive?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Workspace id */
@@ -1556,7 +1578,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Markdown files in this workspace, gitignore respected */
+            /** @description Markdown entries under the directory. Ignored directories are included unfetched when the walk is recursive. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1564,6 +1586,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DocsListing"];
                 };
+            };
+            /** @description No such directory, or a path outside the workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

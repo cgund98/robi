@@ -1,46 +1,89 @@
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 
 import { listDocs, type DocEntry } from '../../api/docs'
-import { readListing, writeListing } from './docsCache'
+import { readExpanded, readListing, recordExpanded, writeListing } from './docsCache'
+import { markFetched, mergeLevel, mergeRecursive, sameEntries } from './docsTree'
 
 /** The markdown listing for a workspace, cached across visits. */
 export function useWorkspaceDocs(
   workspaceId: () => string | null,
   tick: () => number
 ): {
-  files: () => DocEntry[]
+  entries: () => DocEntry[]
   loading: () => boolean
   error: () => string | null
+  loadDirectory: (path: string) => void
 } {
   const initial = workspaceId()
   const cached = initial ? (readListing(initial) ?? null) : null
-  const [files, setFiles] = createSignal<DocEntry[]>(cached ?? [])
+  const [entries, setEntries] = createSignal<DocEntry[]>(cached ?? [])
   const [loading, setLoading] = createSignal(initial !== null && cached === null)
   const [error, setError] = createSignal<string | null>(null)
+  /**
+   * Directories the user expanded. Stored with the viewer so leaving docs and
+   * coming back does not fold them when the root listing arrives.
+   */
+  const expanded = new Set<string>(initial ? readExpanded(initial) : [])
+  const levelToken = new Map<string, number>()
+
+  function apply(id: string, produce: (current: DocEntry[]) => DocEntry[]) {
+    setEntries((current) => {
+      const next = produce(current)
+      if (sameEntries(current, next)) {
+        return current
+      }
+      writeListing(id, next)
+      return next
+    })
+  }
+
+  function loadDirectory(path: string) {
+    expanded.add(path)
+    const id = untrack(workspaceId)
+    if (id) {
+      recordExpanded(id, expanded)
+    }
+    if (!id) {
+      return
+    }
+    const token = (levelToken.get(path) ?? 0) + 1
+    levelToken.set(path, token)
+    void listDocs(id, { path, recursive: false })
+      .then((listing) => {
+        if (levelToken.get(path) !== token) {
+          return
+        }
+        apply(id, (current) =>
+          markFetched(mergeLevel(current, listing.path, listing.entries, expanded), listing.path)
+        )
+        setError(null)
+      })
+      .catch(() => {
+        // A failed refresh keeps the cached children.
+      })
+  }
 
   createEffect(() => {
     const id = workspaceId()
     tick()
     if (!id) {
-      setFiles([])
+      setEntries([])
       setLoading(false)
       return
     }
     const stored = readListing(id)
-    // `files` must not be a dependency. Tracking it retriggers this effect on
-    // every listing write, so the tree is rebuilt in a loop and clicks never land.
-    if (stored && untrack(files).length === 0) {
-      setFiles(stored)
+    if (stored && untrack(entries).length === 0) {
+      setEntries(stored)
       setLoading(false)
     }
     let cancelled = false
-    void listDocs(id)
+    const expandedNow = [...expanded]
+    void listDocs(id, { recursive: true })
       .then((listing) => {
         if (cancelled) {
           return
         }
-        writeListing(id, listing.files)
-        setFiles((current) => (samePaths(current, listing.files) ? current : listing.files))
+        apply(id, (current) => mergeRecursive(current, listing.entries, expanded))
         setError(null)
       })
       .catch((err: unknown) => {
@@ -54,22 +97,24 @@ export function useWorkspaceDocs(
           setLoading(false)
         }
       })
+    for (const path of expandedNow) {
+      const token = (levelToken.get(path) ?? 0) + 1
+      levelToken.set(path, token)
+      void listDocs(id, { path, recursive: false })
+        .then((listing) => {
+          if (cancelled || levelToken.get(path) !== token) {
+            return
+          }
+          apply(id, (current) =>
+            markFetched(mergeLevel(current, listing.path, listing.entries, expanded), listing.path)
+          )
+        })
+        .catch(() => {})
+    }
     onCleanup(() => {
       cancelled = true
     })
   })
 
-  return { files, loading, error }
-}
-
-function samePaths(current: DocEntry[], next: DocEntry[]): boolean {
-  if (current.length !== next.length) {
-    return false
-  }
-  for (let i = 0; i < current.length; i++) {
-    if (current[i].path !== next[i].path) {
-      return false
-    }
-  }
-  return true
+  return { entries, loading, error, loadDirectory }
 }

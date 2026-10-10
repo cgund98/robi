@@ -18,7 +18,7 @@ that runs the child is [agent-loop.md](agent-loop.md). The card is
 | The sandbox a general child's shell uses | [shell-tool.md](../tools/shell-tool.md) |
 | A separate explore model | Later. The child uses the session's current model |
 | MCP tools on the child | [mcp.md](../reach/mcp.md). Neither child mode receives them |
-| Skill files, `@id`, and the `skill` tool | [skills.md](../reach/skills.md) |
+| Skill files, `/id`, and the `skill` tool | [skills.md](../reach/skills.md) |
 
 ## Problem
 

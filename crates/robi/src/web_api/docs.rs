@@ -2,9 +2,11 @@
 //! `GET` natural language search over the indexed markdown.
 //!
 //! The docs viewer is a workspace-scoped tree of markdown pages. The listing is
-//! paths only; the content is fetched per selection. The walk respects
-//! `.gitignore` and skips hidden entries, so `node_modules/` and `target/` stay
-//! out without a special case.
+//! paths only; the content is fetched per selection. A recursive listing walks
+//! the scannable tree and includes ignored directories as unfetched nodes. A
+//! one-level listing returns the immediate children of one directory, including
+//! ignored markdown. Hidden entries stay out, so `node_modules/` and `target/`
+//! stay out of the recursive walk without a special case when they are ignored.
 //!
 //! Search runs against one of two engines, chosen by `engine`. `semantic`
 //! uses the workspace index and starts it when nothing else has: the request
@@ -13,6 +15,8 @@
 //! response names the engine and carries the index status, so a caller can
 //! say that a partial index gave partial semantic hits.
 
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -74,13 +78,43 @@ pub fn router(state: AppState) -> Router {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct DocsListing {
-    pub files: Vec<DocEntry>,
+    /// Workspace-relative directory that was listed. Empty for the workspace root.
+    pub path: String,
+    /// This response includes the children of `path`.
+    pub children_fetched: bool,
+    pub entries: Vec<DocEntry>,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DocEntry {
     /// Workspace-relative, `/` separated.
     pub path: String,
+    pub kind: DocKind,
+    /// A gitignore rule excludes this path. An ignored directory is listed
+    /// without its descendants until a one-level listing reads it.
+    pub ignored: bool,
+    /// Set on directories. `true` when this response includes that directory's
+    /// children. Absent on files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children_fetched: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub enum DocKind {
+    #[serde(rename = "file")]
+    File,
+    #[serde(rename = "directory")]
+    Directory,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DocsListQuery {
+    /// Workspace-relative directory to list. Absent lists the workspace root.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// `true` (default) walks the whole scannable hierarchy. `false` lists one level.
+    #[serde(default)]
+    pub recursive: Option<bool>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -96,24 +130,31 @@ pub struct DocContent {
 #[utoipa::path(
     get,
     path = "/api/v1/workspaces/{id}/docs",
-    params(("id" = String, Path, description = "Workspace id")),
+    params(
+        ("id" = String, Path, description = "Workspace id"),
+        ("path" = Option<String>, Query, description = "Workspace-relative directory to list. Absent lists the workspace root."),
+        ("recursive" = Option<bool>, Query, description = "When true (default), walk the whole scannable hierarchy under path. When false, list one level, including ignored markdown and directories.")
+    ),
     responses(
-        (status = 200, description = "Markdown files in this workspace, gitignore respected", body = DocsListing)
+        (status = 200, description = "Markdown entries under the directory. Ignored directories are included unfetched when the walk is recursive.", body = DocsListing),
+        (status = 404, description = "No such directory, or a path outside the workspace")
     )
 )]
 pub async fn list_docs(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
+    Query(query): Query<DocsListQuery>,
 ) -> Result<Json<DocsListing>, ServiceError> {
     let id = parse_workspace_id(&id)?;
     let workspace = state.workspace_service.get_workspace(id).await?;
     let root = PathBuf::from(&workspace.root);
-    let files = tokio::task::spawn_blocking(move || list_markdown_files(&root))
-        .await
-        .map_err(|_| ServiceError::Unknown)??;
-    Ok(Json(DocsListing {
-        files: files.into_iter().map(|path| DocEntry { path }).collect(),
-    }))
+    let relative = query.path.unwrap_or_default();
+    let recursive = query.recursive.unwrap_or(true);
+    let listing =
+        tokio::task::spawn_blocking(move || list_doc_entries(&root, &relative, recursive))
+            .await
+            .map_err(|_| ServiceError::Unknown)??;
+    Ok(Json(listing))
 }
 
 #[axum::debug_handler]
@@ -800,7 +841,72 @@ fn snippet(body: &str) -> String {
 /// Hidden entries and gitignored paths are skipped. Symlinks are not followed.
 /// The result stops at [`MAX_FILES`].
 pub fn list_markdown_files(root: &Path) -> Result<Vec<String>, ServiceError> {
-    let mut builder = WalkBuilder::new(root);
+    let listing = list_doc_entries(root, "", true)?;
+    let mut files = listing
+        .entries
+        .into_iter()
+        .filter(|entry| entry.kind == DocKind::File)
+        .map(|entry| entry.path)
+        .collect::<Vec<_>>();
+    files.truncate(MAX_FILES);
+    Ok(files)
+}
+
+/// List markdown under `relative`, which is workspace-relative and empty at the root.
+///
+/// `recursive` walks the scannable tree and adds each ignored directory it did
+/// not enter, with `children_fetched: false` and no descendants. One level
+/// lists immediate children, including ignored markdown and directories, and
+/// marks every child directory unfetched.
+pub fn list_doc_entries(
+    root: &Path,
+    relative: &str,
+    recursive: bool,
+) -> Result<DocsListing, ServiceError> {
+    let root = root
+        .canonicalize()
+        .map_err(|_| ServiceError::NotFound(relative.to_owned()))?;
+    let start = resolve_list_dir(&root, relative)?;
+    let listed = workspace_relative(&root, &start);
+    if listed.starts_with("..") {
+        return Err(ServiceError::NotFound(relative.to_owned()));
+    }
+    let mut entries = if recursive {
+        list_recursive(&root, &start)?
+    } else {
+        list_one_level(&root, &start)?
+    };
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(DocsListing {
+        path: listed,
+        children_fetched: true,
+        entries,
+    })
+}
+
+fn resolve_list_dir(root: &Path, relative: &str) -> Result<PathBuf, ServiceError> {
+    if relative.is_empty() || relative == "." {
+        return Ok(root.to_path_buf());
+    }
+    if relative.contains('\0') {
+        return Err(ServiceError::NotFound(relative.to_owned()));
+    }
+    let joined = root.join(relative);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| ServiceError::NotFound(relative.to_owned()))?;
+    if !canonical.is_dir() {
+        return Err(ServiceError::NotFound(relative.to_owned()));
+    }
+    let inside = workspace_relative(root, &canonical);
+    if inside.starts_with("..") {
+        return Err(ServiceError::NotFound(relative.to_owned()));
+    }
+    Ok(canonical)
+}
+
+fn ignore_walk(dir: &Path) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(dir);
     builder
         .hidden(true)
         .follow_links(false)
@@ -809,25 +915,201 @@ pub fn list_markdown_files(root: &Path) -> Result<Vec<String>, ServiceError> {
         .git_exclude(true)
         .ignore(true)
         .parents(true);
+    builder
+}
+
+fn list_recursive(root: &Path, start: &Path) -> Result<Vec<DocEntry>, ServiceError> {
     let mut files = Vec::new();
-    for entry in builder.build() {
+    let mut dirs: Vec<(String, bool)> = Vec::new();
+    let mut seen_dirs = HashSet::new();
+    for entry in ignore_walk(start).build() {
         if files.len() >= MAX_FILES {
             break;
         }
         let Ok(entry) = entry else {
             continue;
         };
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
         let path = entry.path();
-        if !is_markdown(path) {
+        let file_type = entry.file_type();
+        if file_type.is_some_and(|kind| kind.is_dir()) {
+            if seen_dirs.insert(path.to_path_buf()) {
+                let relative = workspace_relative(root, path);
+                if !relative.is_empty() && !relative.starts_with("..") {
+                    dirs.push((relative, false));
+                }
+                dirs.extend(ignored_child_dirs(root, path)?);
+            }
             continue;
         }
-        files.push(workspace_relative(root, path));
+        if !file_type.is_some_and(|kind| kind.is_file()) || !is_markdown(path) {
+            continue;
+        }
+        let relative = workspace_relative(root, path);
+        if relative.starts_with("..") || relative.is_empty() {
+            continue;
+        }
+        files.push(relative);
     }
-    files.sort();
-    Ok(files)
+    let stubs: HashSet<String> = dirs
+        .iter()
+        .filter(|(_, ignored)| *ignored)
+        .map(|(path, _)| path.clone())
+        .collect();
+    let mut entries: Vec<DocEntry> = files
+        .iter()
+        .map(|path| DocEntry {
+            path: path.clone(),
+            kind: DocKind::File,
+            ignored: false,
+            children_fetched: None,
+        })
+        .collect();
+    for (path, ignored) in dirs {
+        if !directory_belongs(&path, &files, &stubs) {
+            continue;
+        }
+        entries.push(DocEntry {
+            path,
+            kind: DocKind::Directory,
+            ignored,
+            children_fetched: Some(!ignored),
+        });
+    }
+    Ok(entries)
+}
+
+/// A directory stays in the tree when it holds a listed file or an ignored stub.
+fn directory_belongs(path: &str, files: &[String], stubs: &HashSet<String>) -> bool {
+    let prefix = format!("{path}/");
+    stubs.contains(path)
+        || files.iter().any(|file| file.starts_with(&prefix))
+        || stubs.iter().any(|stub| stub.starts_with(&prefix))
+}
+
+fn list_one_level(root: &Path, start: &Path) -> Result<Vec<DocEntry>, ServiceError> {
+    let yielded = direct_yielded(start);
+    // A walk rooted inside an ignored directory still yields its children.
+    // Those children stay ignored because the directory itself is.
+    let parent_ignored = is_ignored_dir(root, start);
+    let mut entries = Vec::new();
+    let mut files = 0usize;
+    let read = std::fs::read_dir(start).map_err(|_| ServiceError::Unknown)?;
+    for child in read {
+        let Ok(child) = child else {
+            continue;
+        };
+        let name = child.file_name();
+        if is_hidden_name(&name) {
+            continue;
+        }
+        let path = child.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let relative = workspace_relative(root, &path);
+        if relative.starts_with("..") || relative.is_empty() {
+            continue;
+        }
+        let ignored = parent_ignored || !yielded.contains(&name);
+        if meta.is_dir() {
+            entries.push(DocEntry {
+                path: relative,
+                kind: DocKind::Directory,
+                ignored,
+                children_fetched: Some(false),
+            });
+            continue;
+        }
+        if meta.is_file() && is_markdown(&path) {
+            if files >= MAX_FILES {
+                continue;
+            }
+            files += 1;
+            entries.push(DocEntry {
+                path: relative,
+                kind: DocKind::File,
+                ignored,
+                children_fetched: None,
+            });
+        }
+    }
+    Ok(entries)
+}
+
+/// Names a depth-1 ignore walk yields directly under `dir`.
+fn direct_yielded(dir: &Path) -> HashSet<OsString> {
+    let mut builder = ignore_walk(dir);
+    builder.max_depth(Some(1));
+    let mut names = HashSet::new();
+    for entry in builder.build() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        names.insert(entry.file_name().to_os_string());
+    }
+    names
+}
+
+/// Ignored real directories directly inside `dir`. Hidden names and symlinks are skipped.
+fn ignored_child_dirs(root: &Path, dir: &Path) -> Result<Vec<(String, bool)>, ServiceError> {
+    let yielded = direct_yielded(dir);
+    let mut stubs = Vec::new();
+    let read = std::fs::read_dir(dir).map_err(|_| ServiceError::Unknown)?;
+    for child in read {
+        let Ok(child) = child else {
+            continue;
+        };
+        let name = child.file_name();
+        if is_hidden_name(&name) || yielded.contains(&name) {
+            continue;
+        }
+        let path = child.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            continue;
+        }
+        let relative = workspace_relative(root, &path);
+        if relative.starts_with("..") || relative.is_empty() {
+            continue;
+        }
+        stubs.push((relative, true));
+    }
+    Ok(stubs)
+}
+
+fn is_hidden_name(name: &OsString) -> bool {
+    name.to_str().is_some_and(|text| text.starts_with('.'))
+}
+
+/// Whether `dir` is excluded by the ignore rules that apply from `root`.
+///
+/// A directory is ignored when its own name is skipped from its parent, or
+/// when an ancestor is. The workspace root is not ignored.
+fn is_ignored_dir(root: &Path, dir: &Path) -> bool {
+    if dir == root {
+        return false;
+    }
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    if parent != root && !parent.starts_with(root) {
+        return false;
+    }
+    let Some(name) = dir.file_name() else {
+        return false;
+    };
+    if parent != root && is_ignored_dir(root, parent) {
+        return true;
+    }
+    !direct_yielded(parent).contains(name)
 }
 
 /// The text of one markdown file under `root`.
@@ -909,9 +1191,9 @@ mod tests {
     };
 
     use super::{
-        doc_hits, list_markdown_files, literal_markdown_hits, read_markdown, search_args,
-        search_docs, snippet, DocSearchQuery, DocSearchResult, SearchEngine, MAX_SEARCH_LIMIT,
-        SNIPPET_BYTES, SNIPPET_MARK,
+        doc_hits, list_doc_entries, list_markdown_files, literal_markdown_hits, read_markdown,
+        search_args, search_docs, snippet, DocKind, DocSearchQuery, DocSearchResult, SearchEngine,
+        MAX_SEARCH_LIMIT, SNIPPET_BYTES, SNIPPET_MARK,
     };
 
     fn unique() -> u64 {
@@ -926,12 +1208,15 @@ mod tests {
         fs::create_dir_all(root.join("docs/nested")).unwrap();
         fs::create_dir_all(root.join(".hidden")).unwrap();
         fs::create_dir_all(root.join(".git")).unwrap();
-        fs::write(root.join(".gitignore"), "secret.md\ntarget/\n").unwrap();
+        fs::create_dir_all(root.join("scratch/nested")).unwrap();
+        fs::write(root.join(".gitignore"), "secret.md\ntarget/\nscratch/\n").unwrap();
         fs::write(root.join("README.md"), "# Readme\n").unwrap();
         fs::write(root.join("docs/a.md"), "# A\n\nbody\n").unwrap();
         fs::write(root.join("docs/nested/b.markdown"), "b\n").unwrap();
         fs::write(root.join("docs/a.txt"), "not markdown\n").unwrap();
         fs::write(root.join("secret.md"), "ignored\n").unwrap();
+        fs::write(root.join("scratch/note.md"), "# note\n").unwrap();
+        fs::write(root.join("scratch/nested/deep.md"), "deep\n").unwrap();
         fs::write(root.join(".hidden/x.md"), "hidden\n").unwrap();
         root.canonicalize().unwrap()
     }
@@ -948,6 +1233,74 @@ mod tests {
                 "docs/nested/b.markdown".to_owned()
             ]
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_includes_ignored_directories_unfetched() {
+        let root = workspace();
+        let listing = list_doc_entries(&root, "", true).unwrap();
+        assert!(listing.children_fetched);
+        assert_eq!(listing.path, "");
+        let scratch = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "scratch")
+            .unwrap();
+        assert_eq!(scratch.kind, DocKind::Directory);
+        assert!(scratch.ignored);
+        assert_eq!(scratch.children_fetched, Some(false));
+        assert!(listing.entries.iter().any(|entry| {
+            entry.path == "README.md" && !entry.ignored && entry.kind == DocKind::File
+        }));
+        assert!(listing.entries.iter().any(|entry| {
+            entry.path == "docs"
+                && !entry.ignored
+                && entry.children_fetched == Some(true)
+                && entry.kind == DocKind::Directory
+        }));
+        assert!(!listing
+            .entries
+            .iter()
+            .any(|entry| entry.path == "scratch/note.md" || entry.path == "secret.md"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_level_of_an_ignored_directory_lists_markdown_not_grandchildren() {
+        let root = workspace();
+        let listing = list_doc_entries(&root, "scratch", false).unwrap();
+        assert_eq!(listing.path, "scratch");
+        assert!(listing.children_fetched);
+        let note = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "scratch/note.md")
+            .unwrap();
+        assert_eq!(note.kind, DocKind::File);
+        assert!(note.ignored);
+        let nested = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "scratch/nested")
+            .unwrap();
+        assert_eq!(nested.kind, DocKind::Directory);
+        assert!(nested.ignored);
+        assert_eq!(nested.children_fetched, Some(false));
+        assert!(!listing
+            .entries
+            .iter()
+            .any(|entry| entry.path.contains("deep")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_listing_path_outside_the_workspace_is_not_found() {
+        let root = workspace();
+        assert!(matches!(
+            list_doc_entries(&root, "../elsewhere", true),
+            Err(ServiceError::NotFound(_))
+        ));
         let _ = fs::remove_dir_all(&root);
     }
 

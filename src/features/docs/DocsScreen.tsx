@@ -8,10 +8,12 @@ import {
   lastValidPath,
   readCollapsed,
   readContent,
+  readExpanded,
   readMode,
   readScroll,
   readVersion,
   recordCollapsed,
+  recordExpanded,
   recordMode,
   recordPath,
   recordScroll,
@@ -23,7 +25,7 @@ import { chat } from '../../state/chatStore'
 import { docs as docsEvents } from '../../state/docsStore'
 import { index } from '../../state/indexStore'
 import { workspaces } from '../../state/workspaceStore'
-import { buildFileTree } from '../review/tree'
+import { buildDocTree } from './docsTree'
 import type { FileAttachment } from '../chat/textAttachments'
 import styles from './DocsScreen.module.css'
 import { attachmentFromDocument } from './docAttachment'
@@ -133,6 +135,23 @@ export function DocsScreen(props: {
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(
     props.workspaceId ? new Set(readCollapsed(props.workspaceId)) : new Set()
   )
+  const [opened, setOpened] = createSignal<ReadonlySet<string>>(
+    props.workspaceId ? new Set(readExpanded(props.workspaceId)) : new Set()
+  )
+  const collapsedView = createMemo(() => {
+    const next = new Set(collapsed())
+    const openedNow = opened()
+    for (const entry of docs.entries()) {
+      if (
+        entry.kind === 'directory' &&
+        entry.children_fetched !== true &&
+        !openedNow.has(entry.path)
+      ) {
+        next.add(entry.path)
+      }
+    }
+    return next
+  })
   let viewer: HTMLDivElement | undefined
   let sheet: HTMLDivElement | undefined
   let scrollTop = 0
@@ -280,6 +299,12 @@ export function DocsScreen(props: {
   createEffect(() => {
     if (props.workspaceId) {
       recordCollapsed(props.workspaceId, collapsed())
+    }
+  })
+
+  createEffect(() => {
+    if (props.workspaceId) {
+      recordExpanded(props.workspaceId, opened())
     }
   })
 
@@ -601,7 +626,7 @@ export function DocsScreen(props: {
     })
   })
 
-  const tree = createMemo(() => buildFileTree(docs.files().map((file) => file.path)))
+  const tree = createMemo(() => buildDocTree(docs.entries()))
   const selectedError = () => (contentError()?.path === selected() ? contentError()!.message : null)
   const notice = createMemo(() => {
     const found = result()
@@ -631,13 +656,28 @@ export function DocsScreen(props: {
   }
 
   function toggle(path: string) {
+    if (collapsedView().has(path)) {
+      setCollapsed((current) => {
+        const next = new Set(current)
+        next.delete(path)
+        return next
+      })
+      setOpened((current) => {
+        const next = new Set(current)
+        next.add(path)
+        return next
+      })
+      docs.loadDirectory(path)
+      return
+    }
     setCollapsed((current) => {
       const next = new Set(current)
-      if (next.has(path)) {
-        next.delete(path)
-      } else {
-        next.add(path)
-      }
+      next.add(path)
+      return next
+    })
+    setOpened((current) => {
+      const next = new Set(current)
+      next.delete(path)
       return next
     })
   }
@@ -724,7 +764,7 @@ export function DocsScreen(props: {
 
   return (
     <div class={styles.page}>
-      <Show when={docs.files().length > 0}>
+      <Show when={docs.entries().length > 0}>
         <header class={styles.header}>
           <div class={styles.searchWrap}>
             <input
@@ -771,7 +811,7 @@ export function DocsScreen(props: {
         >
           <Show when={!docs.loading()} fallback={<p class={styles.message}>Loading docs…</p>}>
             <Show
-              when={docs.files().length > 0}
+              when={docs.entries().length > 0}
               fallback={<p class={styles.message}>No markdown files in this workspace.</p>}
             >
               <div class={styles.body}>
@@ -781,7 +821,7 @@ export function DocsScreen(props: {
                     <DocTree
                       nodes={tree()}
                       selected={selected()}
-                      collapsed={collapsed()}
+                      collapsed={collapsedView()}
                       onSelect={openDocument}
                       onToggle={toggle}
                     />

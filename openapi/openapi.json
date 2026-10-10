@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.8"
+    "version": "0.1.9"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -895,11 +895,29 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Workspace-relative directory to list. Absent lists the workspace root.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "recursive",
+            "in": "query",
+            "description": "When true (default), walk the whole scannable hierarchy under path. When false, list one level, including ignored markdown and directories.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Markdown files in this workspace, gitignore respected",
+            "description": "Markdown entries under the directory. Ignored directories are included unfetched when the walk is recursive.",
             "content": {
               "application/json": {
                 "schema": {
@@ -907,6 +925,9 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "No such directory, or a path outside the workspace"
           }
         }
       }
@@ -1545,7 +1566,7 @@
       },
       "ChatSkill": {
         "type": "object",
-        "description": "A skill loaded because the user wrote `@id`.",
+        "description": "A skill loaded because the user wrote `/id`.",
         "required": [
           "id",
           "description",
@@ -1824,14 +1845,37 @@
       "DocEntry": {
         "type": "object",
         "required": [
-          "path"
+          "path",
+          "kind",
+          "ignored"
         ],
         "properties": {
+          "children_fetched": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Set on directories. `true` when this response includes that directory's\nchildren. Absent on files."
+          },
+          "ignored": {
+            "type": "boolean",
+            "description": "A gitignore rule excludes this path. An ignored directory is listed\nwithout its descendants until a one-level listing reads it."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DocKind"
+          },
           "path": {
             "type": "string",
             "description": "Workspace-relative, `/` separated."
           }
         }
+      },
+      "DocKind": {
+        "type": "string",
+        "enum": [
+          "file",
+          "directory"
+        ]
       },
       "DocSearchHit": {
         "type": "object",
@@ -1984,14 +2028,24 @@
       "DocsListing": {
         "type": "object",
         "required": [
-          "files"
+          "path",
+          "children_fetched",
+          "entries"
         ],
         "properties": {
-          "files": {
+          "children_fetched": {
+            "type": "boolean",
+            "description": "This response includes the children of `path`."
+          },
+          "entries": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/DocEntry"
             }
+          },
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative directory that was listed. Empty for the workspace root."
           }
         }
       },

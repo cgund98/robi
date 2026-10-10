@@ -153,9 +153,7 @@ function quoteReservedActors(source: string): string {
         (_, arrow: string, space: string, name: string) => arrow + space + quoteActor(name)
       )
       next = next.replace(/^(\s*note\s+over\s+)([^:\n]*)/i, (_, prefix: string, actors: string) => {
-        return (
-          prefix + actors.replace(/\b([A-Za-z_][\w]*)\b/g, (word) => quoteActor(word))
-        )
+        return prefix + actors.replace(/\b([A-Za-z_][\w]*)\b/g, (word) => quoteActor(word))
       })
       return next + tail
     })

@@ -16,6 +16,8 @@ type ViewerState = {
   path: string | null
   scroll: Record<string, number>
   collapsed: string[]
+  /** Ignored directories the user expanded. A root refresh must not fold these. */
+  expanded: string[]
   mode: DocViewMode
   versions: Record<string, string>
 }
@@ -53,7 +55,7 @@ export function lastValidPath(workspaceId: string | null): string | null {
     return null
   }
   const listing = readListing(workspaceId)
-  if (listing && !listing.some((file) => file.path === path)) {
+  if (listing && !listing.some((entry) => entry.kind === 'file' && entry.path === path)) {
     return null
   }
   return path
@@ -80,6 +82,16 @@ export function readCollapsed(workspaceId: string): string[] {
 export function recordCollapsed(workspaceId: string, collapsed: Iterable<string>): void {
   const state = viewer(workspaceId)
   viewers.set(workspaceId, { ...state, collapsed: [...collapsed] })
+}
+
+/** Ignored directories the user expanded. Remembered across leaving the docs view. */
+export function readExpanded(workspaceId: string): string[] {
+  return viewers.get(workspaceId)?.expanded ?? []
+}
+
+export function recordExpanded(workspaceId: string, expanded: Iterable<string>): void {
+  const state = viewer(workspaceId)
+  viewers.set(workspaceId, { ...state, expanded: [...expanded] })
 }
 
 /** The remembered Rendered|Edit choice for this workspace. Default rendered. */
@@ -110,6 +122,7 @@ function viewer(workspaceId: string): ViewerState {
       path: null,
       scroll: {},
       collapsed: [],
+      expanded: [],
       mode: 'rendered',
       versions: {}
     }

@@ -12,7 +12,10 @@
   padding: 0;
 }
 
-.dir,
+.dirOpen,
+.dirClosed,
+.dirIgnoredOpen,
+.dirIgnoredClosed,
 .file,
 .fileActive {
   display: block;
@@ -28,28 +31,43 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.dir {
   border: 0;
   background: transparent;
-  color: var(--ink-muted);
-}
-
-.dir:hover {
-  color: var(--ink);
-  background: var(--bg-surface-hover);
 }
 
 .caret {
   display: inline-block;
-  width: 12px;
+  width: 14px;
+  font-size: 11px;
+}
+
+.dirOpen {
+  color: var(--ink);
+}
+
+.dirClosed {
+  color: var(--ink-muted);
+}
+
+.dirIgnoredOpen,
+.dirIgnoredClosed {
+  color: var(--ink-faint);
+}
+
+.dirOpen:hover,
+.dirClosed:hover,
+.dirIgnoredOpen:hover,
+.dirIgnoredClosed:hover {
+  background: var(--bg-surface-hover);
+}
+
+.dirOpen:hover,
+.dirClosed:hover {
+  color: var(--ink);
 }
 
 .file,
 .fileActive {
-  border: 0;
-  background: transparent;
   color: var(--ink);
 }
 

@@ -44,7 +44,7 @@ server is not up yet. Restart the app if you want the change picked up right
 away.
 
 The bundled `configure-mcp` skill walks you through adding an entry — ask to add
-an MCP server, or type `@configure-mcp`. It asks which tool you want to connect,
+an MCP server, or type `/configure-mcp`. It asks which tool you want to connect,
 whether the config is global or for this workspace, the transport and its
 settings, and any secret references.
 

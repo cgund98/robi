@@ -7,7 +7,7 @@ import styles from './SkillMenu.module.css'
 
 function mentionQuery(draft: string, caret: number): string | null {
   const before = draft.slice(0, caret)
-  const match = /(^|\s)@([a-z0-9-]*)$/.exec(before)
+  const match = /(^|\s)\/([a-z0-9-]*)$/.exec(before)
   if (!match) {
     return null
   }
@@ -57,7 +57,7 @@ export function SkillMenu(props: {
   function choose(skill: SkillEntry) {
     const before = props.draft.slice(0, props.caret)
     const after = props.draft.slice(props.caret)
-    const replaced = before.replace(/(^|\s)@([a-z0-9-]*)$/, `$1@${skill.id} `)
+    const replaced = before.replace(/(^|\s)\/([a-z0-9-]*)$/, `$1/${skill.id} `)
     props.onInsert(replaced + after, replaced.length)
   }
 

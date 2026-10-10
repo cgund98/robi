@@ -12,7 +12,7 @@ uses. The loop in `robi-core` does not know the mode.
 | How search and fetch behave | [web-tools.md](../tools/web-tools.md) |
 | `delegate` | [subagents.md](subagents.md) |
 | How the prompt is assembled aside from the mode block | [instructions.md](instructions.md) |
-| Skill files, the catalog, and `@id` | [skills.md](../reach/skills.md) |
+| Skill files, the catalog, and `/id` | [skills.md](../reach/skills.md) |
 | Approval and path rules | [read-tools.md](../tools/read-tools.md) |
 | MCP servers, trust, and remote tool calls | [mcp.md](../reach/mcp.md). Their tools join Agent when that milestone is built |
 

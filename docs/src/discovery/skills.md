@@ -2,7 +2,7 @@
 
 Notes for the skills work in [M8](../roadmap.md). This page is the research.
 The decisions are in [design/skills.md](../design/reach/skills.md): which directories
-are read, how `@id` loads a skill, and how the model loads one with the
+are read, how `/id` loads a skill, and how the model loads one with the
 `skill` tool.
 
 Sources were read on 2 October 2026: the [Agent Skills
@@ -20,7 +20,7 @@ CLI](https://geminicli.com/docs/cli/skills/).
 | Modes and which tools they register | [agent-modes.md](../design/core/agent-modes.md) |
 | MCP servers | [mcp.md](../design/reach/mcp.md) |
 | Plugins | [roadmap](../roadmap.md) M8, still open |
-| The settled format, tool, and `@id` behavior | [design/skills.md](../design/reach/skills.md) |
+| The settled format, tool, and `/id` behavior | [design/skills.md](../design/reach/skills.md) |
 
 ## What a skill is, across these products
 
@@ -165,8 +165,8 @@ injection does not.
 ## A solid UX for Robi
 
 The design in [design/skills.md](../design/reach/skills.md) takes the directory list,
-the `@id` mention, and a bundled `create-skill` procedure from this section.
-It leaves the settings page and the slash menu for later.
+the `/id` mention, and a bundled `create-skill` procedure from this section.
+It leaves the settings page for later.
 
 Four surfaces, with files as the only store. A form that becomes the source
 of truth will drift from the directory the agent reads, and it will not

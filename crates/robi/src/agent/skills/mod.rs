@@ -134,7 +134,7 @@ pub fn catalog_block(skills: &[Skill]) -> Option<String> {
     }
 }
 
-/// `@id` tokens in `text`, in order, loaded once each.
+/// `/id` tokens in `text`, in order, loaded once each.
 ///
 /// An unknown word stays in the text and is not a load.
 pub fn loads_for_text(text: &str, skills: &[Skill]) -> Vec<SkillLoad> {
@@ -174,7 +174,7 @@ pub fn skill_block(load: &SkillLoad) -> String {
 }
 
 pub fn mention_ids(text: &str) -> Vec<String> {
-    let pattern = Regex::new(r"(^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)").expect("mention pattern");
+    let pattern = Regex::new(r"(^|\s)/([a-z0-9]+(?:-[a-z0-9]+)*)").expect("mention pattern");
     pattern
         .captures_iter(text)
         .filter_map(|caps| caps.get(2).map(|id| id.as_str().to_owned()))
@@ -641,7 +641,7 @@ mod tests {
         let block = catalog_block(&skills).unwrap();
         assert!(!block.contains("ship-it"));
         assert!(block.contains("create-skill"));
-        let loads = loads_for_text("please @ship-it now", &skills);
+        let loads = loads_for_text("please /ship-it now", &skills);
         assert_eq!(loads.len(), 1);
         assert_eq!(loads[0].id, "ship-it");
         assert_eq!(loads[0].body, "steps");
@@ -671,8 +671,9 @@ mod tests {
     #[test]
     fn an_unknown_mention_is_not_a_load() {
         let skills = scan(None, None);
-        assert!(loads_for_text("see @not-a-skill", &skills).is_empty());
-        assert_eq!(mention_ids("see @not-a-skill").len(), 1);
+        assert!(loads_for_text("see /not-a-skill", &skills).is_empty());
+        assert_eq!(mention_ids("see /not-a-skill").len(), 1);
+        assert!(mention_ids("see docs/src and https://example.com").is_empty());
     }
 
     #[test]

@@ -14,7 +14,7 @@ delivery stays in [events-sse.md](events-sse.md).
 | Mermaid diagrams | This page. A fenced `mermaid` block renders as a diagram in assistant text, on a plan page, and in the markdown file preview |
 | Grant and session-allow editing | `docs/src/design/workspace/permissions.md` (M3) |
 | Creating the session row | [persistence.md](../persistence/persistence.md). The shell delays that call |
-| `@id` skill mentions and the **Using** row | [skills.md](../reach/skills.md) |
+| `/id` skill mentions and the **Using** row | [skills.md](../reach/skills.md) |
 | A shell card showing the uncompressed command output | [shell-output.md](../compression/shell-output.md). The transcript body the model sees may be the compressed view |
 | An MCP card showing the bounded server text | [mcp-output.md](../compression/mcp-output.md). The transcript body the model sees may be the compressed view |
 

@@ -27,7 +27,7 @@ impl Tool for Skill {
     }
 
     fn description(&self) -> &str {
-        "Load a skill by id before following a procedure listed in <skills>. An @id already in the user message is already loaded. name is the skill id. A skill marked manual-only must be requested by the user with @id."
+        "Load a skill by id before following a procedure listed in <skills>. A /id already in the user message is already loaded. name is the skill id. A skill marked manual-only must be requested by the user with /id."
     }
 
     fn parameters(&self) -> Value {
@@ -65,7 +65,7 @@ impl Tool for Skill {
         };
         if !skill.model_invocable {
             return Err(ToolError::Failed(format!(
-                "skill `{name}` is manual-only. Ask the user to mention @{name}. Do not carry the procedure out on your own."
+                "skill `{name}` is manual-only. Ask the user to mention /{name}. Do not carry the procedure out on your own."
             )));
         }
         let load = skill.load();

@@ -270,7 +270,7 @@ pub struct ReasoningTrace {
     pub signature: Option<String>,
 }
 
-/// A skill the host loaded because the user wrote `@id`.
+/// A skill the host loaded because the user wrote `/id`.
 ///
 /// The typed text stays in [`Message::content`]. The provider appends one
 /// block per load. An old row has no field and deserializes as an empty list.

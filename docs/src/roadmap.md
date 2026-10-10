@@ -822,7 +822,7 @@ Lower priority. Sequence by user demand, not by this order.
   ([rust-sdk](https://github.com/modelcontextprotocol/rust-sdk)).
 - **Skills** — implemented. Markdown instruction files with frontmatter,
   catalogued in the prompt and loaded on demand. The user names one with
-  `@id`. The model may load one with the `skill` tool. A bundled
+  `/id`. The model may load one with the `skill` tool. A bundled
   `create-skill` writes a new one.
 Discovery roots include `.robi/skills`,
   `.agents/skills`, and the Claude, Codex, Cursor, and OpenCode directories,

@@ -9,7 +9,7 @@ The composer and the transcript draw each one as a `filename (1-10)` chip.
 | Topic | Where it belongs |
 |---|---|
 | Uploaded images | [persistence.md](../persistence/persistence.md), the image store |
-| `@id` skill loads | [skills.md](../reach/skills.md) |
+| `/id` skill loads | [skills.md](../reach/skills.md) |
 | The `read_file` tool and its path rules | [read-tools.md](../tools/read-tools.md) |
 | The composer and transcript chrome | [chat-ui.md](chat-ui.md) |
 

@@ -1,7 +1,7 @@
 # Skills
 
 A skill is a directory with a `SKILL.md`. The prompt lists the name and
-description. The body loads when the user names it with `@id` in the composer,
+description. The body loads when the user names it with `/id` in the composer,
 or when the model calls the `skill` tool. A bundled `create-skill` procedure
 interviews the user and writes the directory. This page is the design for skills
 in [M8](../../roadmap.md). The research behind it is
@@ -74,10 +74,10 @@ fails that check is skipped.
 | Field | Effect |
 |---|---|
 | `description` | Catalog text. Required in the usual file. When it is absent, the first non-empty markdown paragraph is used, cut at 1,024 characters. A file with neither is skipped |
-| `name` | Display label in the composer menu. The id stays the directory name. `@` uses the id |
-| `disable-model-invocation: true` | Left out of the model catalog. `@id` still loads it |
+| `name` | Display label in the composer menu. The id stays the directory name. `/` uses the id |
+| `disable-model-invocation: true` | Left out of the model catalog. `/id` still loads it |
 | `metadata.opencode/autoinvoke: false` | Same as `disable-model-invocation: true`. Either one is enough |
-| `user-invocable: false` | Left out of the composer menu. The model can still load it. A typed `@id` still loads it |
+| `user-invocable: false` | Left out of the composer menu. The model can still load it. A typed `/id` still loads it |
 
 Other frontmatter is kept in the file and ignored. That includes
 `allowed-tools`, `disallowed-tools`, `hooks`, `context`, `model`, `effort`,
@@ -109,7 +109,7 @@ Loading a skill does not add a tool, change a path rule, or approve a later
 call.
 
 The `skill` tool description says to call `skill` before following a listed
-id, and that an `@id` already in the user message is loaded.
+id, and that an `/id` already in the user message is loaded.
 
 ### The `skill` tool
 
@@ -137,7 +137,7 @@ that, the head is kept and the result says the tail was cut.
 
 An unknown id, or an id with `disable-model-invocation`, is a tool error.
 The error for a manual-only id tells the model to ask the user to mention
-`@id`, and not to carry the procedure out on its own.
+`/id`, and not to carry the procedure out on its own.
 
 Supporting reads use `read_file`. Each scanned skill directory is a read
 allow for the session, including a directory outside the workspace. The
@@ -145,14 +145,15 @@ allow covers that directory and its children. It does not cover writes, and
 it does not cover a sibling of the directory. The `..` deny still applies
 everywhere else.
 
-### `@id` in the composer
+### `/id` in the composer
 
-`@` at the start of the composer, or after whitespace, opens a menu of
-user-invocable skills. The filter is the text after `@`, matched against the
+`/` at the start of the composer, or after whitespace, opens a menu of
+user-invocable skills. The filter is the text after `/`, matched against the
 id, the display label, and the description. A row shows the label (or the id
 when they are the same), the description, and whether it comes from home or
 this workspace. A manual-only skill is in that menu and marked so. Choosing a
-row inserts `@id` and a trailing space. The draft is plain text. The menu is
+row inserts `/id` and a trailing space. The draft is plain text. A slash
+inside a path or a URL does not open the menu and does not load a skill. The menu is
 a Radix popover, styled with the same tokens as the mode menu.
 
 The list comes from `GET /api/v1/workspaces/{id}/skills`. Each entry is `id`,
@@ -160,7 +161,7 @@ The list comes from `GET /api/v1/workspaces/{id}/skills`. Each entry is `id`,
 `path`. The scan is the same one the actor uses.
 
 On send, the instruction string is unchanged. The handler resolves every
-`@id` token that names a skill, including one hidden from the menu. Each
+`/id` token that names a skill, including one hidden from the menu. Each
 match is loaded once, in order of appearance. The user message stores the
 typed text in `content` and the loads on `skills`:
 
@@ -189,21 +190,21 @@ Files: scripts/changelog.ts
 
 The transcript shows the typed text, then one quiet row per load: **Using
 git-release**. The row opens onto the description, the path, and the body.
-An unknown `@word` stays in the text. The send still succeeds. A skill that
+An unknown `/word` stays in the text. The send still succeeds. A skill that
 fails to read is omitted from `skills` and a warning is logged. The mention
 stays in the text.
 
-Headless input is the same string. There is no menu. `@id` still loads.
+Headless input is the same string. There is no menu. `/id` still loads.
 
 ### Creating a skill
 
 Robi ships two bundled skills, `create-skill` and `configure-mcp`. Both are in
-the catalog and in the `@` menu on every session, ahead of the home roots, so a
+the catalog and in the `/` menu on every session, ahead of the home roots, so a
 file with the same id in `~/.robi/skills` or the workspace replaces one. Their
 bodies are compiled into the binary. Nothing is written until the user agrees to
 a draft.
 
-The user starts `create-skill` with `@create-skill`, or by asking for a skill. The
+The user starts `create-skill` with `/create-skill`, or by asking for a skill. The
 description tells the model to load it when the user wants to create or
 update one. The procedure is:
 
@@ -226,7 +227,7 @@ update one. The procedure is:
    tools already use. A workspace path follows the same write rules as any
    other project file.
 
-The reply names the path and says `@id` works on the next message. The scan
+The reply names the path and says `/id` works on the next message. The scan
 for the current turn already ran.
 
 Updating a skill is the same procedure. The model reads the existing
@@ -260,12 +261,13 @@ control, and links the MCP servers guide. Details are in
 ## Rejected alternatives
 
 - **Catalog only, and `read_file` for the body.** gopi does this. The load
-  is a generic read, the path has to be in the prompt, and `@id` cannot load
+  is a generic read, the path has to be in the prompt, and `/id` cannot load
   a manual-only skill the model is forbidden to open.
-- **`/` as the mention.** Claude and Cursor use it. This composer uses `@`,
-  which is the mention OpenCode and ChatGPT already teach, and it leaves `/`
-  free for a later command.
-- **Hoping the model calls `skill` when it sees `@id`.** A mention the model
+- **`@` as the mention.** OpenCode and ChatGPT use it. This composer uses `/`,
+  which is the mention Claude and Cursor already teach. A mention is `/` at
+  the start of the composer or after whitespace, so a path or a URL is left
+  alone.
+- **Hoping the model calls `skill` when it sees `/id`.** A mention the model
   ignores never loads. The host loads it while accepting the message.
 - **Putting the body into `content`.** The stored user text would no longer
   be what was typed, and copying the message would copy the skill.
@@ -298,7 +300,7 @@ control, and links the MCP servers guide. Details are in
 - A root that does not exist is skipped.
 - A `SKILL.md` that cannot be read or whose frontmatter does not parse is
   skipped. A warning is logged. The turn still starts.
-- A catalog over 8 KiB drops entries and says how many. `@id` can still name
+- A catalog over 8 KiB drops entries and says how many. `/id` can still name
   a dropped skill, and `skill` can still load it. The budget limits the
   prompt, not the set of ids.
 - A body over 32 KiB is cut. The tool result and the `<skill>` block both say
@@ -316,7 +318,7 @@ control, and links the MCP servers guide. Details are in
 scanner live in `crates/robi` and use a temporary directory. Tests cover
 precedence (home loses to the workspace, `.claude` loses to `.agents`,
 `.agents` loses to `.robi`), a manual-only id absent from `<skills>` and
-present for `@`, a `user-invocable: false` id absent from the menu route and
-present in `<skills>`, a typed `@id` stored on `Message.skills`, an
-unknown `@word` left as text, and a bundled `create-skill` that a home or
+present for `/`, a `user-invocable: false` id absent from the menu route and
+present in `<skills>`, a typed `/id` stored on `Message.skills`, an
+unknown `/word` left as text, and a bundled `create-skill` that a home or
 workspace file of the same id replaces.

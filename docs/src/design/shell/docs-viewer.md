@@ -40,16 +40,31 @@ the viewer never reopens on its own. The window bar uses the same split as chat:
 over the sidebar column, canvas over the rest, so the sidebar color
 reaches the window buttons.
 
-**The scan is a gitignore walk.** The listing uses the same
-`ignore::WalkBuilder` defaults as `grep`: hidden entries are skipped, and
-`.gitignore`, `.git/info/exclude`, and parent ignore files are respected.
-`node_modules/`, `target/`, and `dist/` therefore stay out without a special
-case. Symlinks are not followed. A file counts when its extension is `md` or
+**The scan is a gitignore walk, with ignored directories left closed.**
+`GET /api/v1/workspaces/{id}/docs` takes `path` (workspace-relative; absent is
+the workspace root) and `recursive` (`true` by default). A recursive listing
+walks the scannable tree with the same `ignore::WalkBuilder` defaults as
+`grep`: hidden entries are skipped, and `.gitignore`, `.git/info/exclude`, and
+parent ignore files are respected. `node_modules/`, `target/`, and `dist/`
+therefore stay out of that walk without a special case when they are ignored.
+Symlinks are not followed. A file counts when its extension is `md` or
 `markdown`, case-insensitively. The walk stops at 500 files. Paths come back
 workspace-relative with `/` separators, sorted.
 
+Each entry is a file or a directory. A directory carries `children_fetched`:
+`true` when this response includes that directory's children. A recursive
+listing includes every ignored directory it did not enter as
+`children_fetched: false` and `ignored: true`, with no descendants. Ignored
+files inside a directory the walk entered stay omitted, so the scannable tree
+is unchanged aside from those closed directories. `recursive=false` lists one
+level of `path`: markdown files, including gitignored ones, and real
+directories, including gitignored ones. Every child directory is
+`children_fetched: false`. Hidden names stay omitted. A path outside the
+workspace is `404`.
+
 The listing is paths only. The client fetches content per selection, so opening
-one page does not pull the whole set over the wire.
+one page does not pull the whole set over the wire. Opening a closed directory
+requests that path with `recursive=false`.
 
 **The content route confines itself.** The handler joins the relative path
 against the canonical root, then canonicalizes and checks the result is still
@@ -58,20 +73,32 @@ missing file. A non-markdown name is `400`. A file that is not UTF-8 is `400`,
 matching the review route. The text is capped at 512 KiB; a larger file ends
 with `[The tail of this file was cut.]`.
 
-**The tree is cached per workspace.** The listing is remembered by workspace
-id across visits. The first visit for a workspace shows the loading state; a
-later visit paints the cached tree straight away and refreshes in the
-background, so the tree appears instantly and only changes when the new
-listing arrives. A failed refresh keeps the cached tree rather than replacing
-it with an error.
+**The tree is cached per workspace.** The merged listing is remembered by
+workspace id across visits. The first visit for a workspace shows the loading
+state; a later visit paints the cached tree straight away and refreshes in the
+background. A refresh does not clear the listing: the last children stay on
+screen until the new response arrives, and the signal keeps the same array
+when nothing changed. A one-level response replaces that directory's direct
+children. A child directory the response marks unfetched keeps grandchildren
+already cached, so refreshing one level cannot wipe a deeper tree. A root
+refresh leaves a directory expanded when the user had opened it and it is still
+in the listing. That open set is remembered for the workspace, so leaving the
+docs view and coming back does not fold those directories. A directory the
+listing no longer contains is removed with its descendants. A failed
+refresh keeps the cached tree rather than replacing it with an error. The
+`file_changed` tick refreshes the root listing and each directory the user has
+opened, the same way.
 
-**The tree is collapsible.** The left pane is a tree of markdown paths built
-from `buildFileTree`, so only directories that contain a page appear.
-Directories sort before files, each group alphabetical and case-insensitive.
-A directory row is a button that folds its children; the default is expanded.
-The open state is held by the screen, not the tree, so fetching the next
-document does not fold the tree. A file row selects that path and highlights
-while it is open.
+**The tree is collapsible.** The left pane is built from the listing entries,
+so a directory appears when it contains a page or when it is an unfetched
+ignored directory. Directories sort before files, each group alphabetical and
+case-insensitive. A directory row is a button that folds its children. Fetched
+directories start expanded. Unfetched directories start closed, and opening
+one fetches that level. The open state is held by the screen, not the tree, so
+fetching the next document does not fold the tree. An open directory name is
+`--ink` and a closed one is `--ink-muted`, with `▾` and `▸`. An ignored
+directory uses `--ink-faint` either way. A file row selects that path and
+highlights while it is open.
 
 **The document has a measure.** The right pane scrolls, and the sheet inside it
 is `min-width: 640px` and `max-width: 880px`, pinned to the left of the pane.
@@ -384,9 +411,10 @@ ranges and the count stay correct.
   at a time; shipping all of it makes the first paint wait on the largest file.
 - **A new markdown parser or renderer.** `AssistantMarkdown` already renders
   GFM and mermaid; a second renderer would drift.
-- **A separate tree type.** `buildFileTree` is already a generic path-to-tree
-  helper. The docs tree reuses it and only forks the row component, because its
-  rows toggle instead of sitting still.
+- **Reusing the review path tree for docs.** `buildFileTree` only knows file
+  paths. The docs tree is built from listing entries so an ignored directory
+  can sit closed before any of its pages have been fetched. The review tree
+  stays a path list.
 - **Persisting the collapsed set.** The default-open tree is small after the
   ignore filter; a stored fold state is a setting nobody asked for.
 - **Injecting the attach button into each rendered block.** It fights the same

@@ -135,6 +135,7 @@ async fn health_check() -> &'static str {
         code_index::IndexCommand,
         docs::DocsListing,
         docs::DocEntry,
+        docs::DocKind,
         docs::DocContent,
         docs::DocWriteRequest,
         docs::DocWriteResponse,

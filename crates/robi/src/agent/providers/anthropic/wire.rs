@@ -133,7 +133,7 @@ pub fn wire_call_ids(transcript: &[Message]) -> HashMap<ToolCallId, String> {
     ids
 }
 
-/// The text content of a user message, including any `@id` skill bodies and
+/// The text content of a user message, including any `/id` skill bodies and
 /// attached file blocks.
 fn user_text(message: &Message) -> String {
     if message.skills.is_empty() && message.files.is_empty() {
