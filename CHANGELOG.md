@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/cgund98/robi/compare/v0.1.10...v0.1.11) (2026-10-10)
+
+
+### Bug Fixes
+
+* load directory as closed if no children found ([93519ce](https://github.com/cgund98/robi/commit/93519ce4d9778c1aa8c5ff7ae329b0050b7537b7))
+
 ## [0.1.10](https://github.com/cgund98/robi/compare/v0.1.9...v0.1.10) (2026-10-10)
 
 
