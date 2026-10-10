@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildDocTree,
+  directoryLacksMarkdown,
   markFetched,
   mergeLevel,
   mergeRecursive,
@@ -76,6 +77,19 @@ describe('markFetched', () => {
   it('records that a directory listing arrived', () => {
     const marked = markFetched([scratch], 'scratch')
     expect(marked[0]?.children_fetched).toBe(true)
+  })
+})
+
+describe('directoryLacksMarkdown', () => {
+  it('is true when the only children are ignored directories', () => {
+    const entries: DocTreeEntry[] = [
+      { path: 'pkg', kind: 'directory', ignored: false, children_fetched: true },
+      { path: 'pkg/__pycache__', kind: 'directory', ignored: true, children_fetched: false },
+      docsDir,
+      page
+    ]
+    expect(directoryLacksMarkdown('pkg', entries)).toBe(true)
+    expect(directoryLacksMarkdown('docs', entries)).toBe(false)
   })
 })
 

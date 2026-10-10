@@ -92,9 +92,11 @@ opened, the same way.
 **The tree is collapsible.** The left pane is built from the listing entries,
 so a directory appears when it contains a page or when it is an unfetched
 ignored directory. Directories sort before files, each group alphabetical and
-case-insensitive. A directory row is a button that folds its children. Fetched
-directories start expanded. Unfetched directories start closed, and opening
-one fetches that level. The open state is held by the screen, not the tree, so
+case-insensitive. A directory row is a button that folds its children. A fetched directory
+starts expanded when a markdown file was found under it. It starts closed when
+the scan found none, so a package that only contains an ignored directory such
+as `__pycache__` is folded until opened. Unfetched directories start closed,
+and opening one fetches that level. The open state is held by the screen, not the tree, so
 fetching the next document does not fold the tree. An open directory name is
 `--ink` and a closed one is `--ink-muted`, with `▾` and `▸`. An ignored
 directory uses `--ink-faint` either way. A file row selects that path and

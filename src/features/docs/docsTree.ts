@@ -27,6 +27,11 @@ export function parentPath(path: string): string {
   return index === -1 ? '' : path.slice(0, index)
 }
 
+/** A directory whose fetched tree contains no markdown file. */
+export function directoryLacksMarkdown(path: string, entries: DocTreeEntry[]): boolean {
+  return !entries.some((entry) => entry.kind === 'file' && isStrictDescendant(entry.path, path))
+}
+
 export function isStrictDescendant(path: string, dir: string): boolean {
   if (dir === '') {
     return path.length > 0

@@ -25,7 +25,7 @@ import { chat } from '../../state/chatStore'
 import { docs as docsEvents } from '../../state/docsStore'
 import { index } from '../../state/indexStore'
 import { workspaces } from '../../state/workspaceStore'
-import { buildDocTree } from './docsTree'
+import { buildDocTree, directoryLacksMarkdown } from './docsTree'
 import type { FileAttachment } from '../chat/textAttachments'
 import styles from './DocsScreen.module.css'
 import { attachmentFromDocument } from './docAttachment'
@@ -141,12 +141,12 @@ export function DocsScreen(props: {
   const collapsedView = createMemo(() => {
     const next = new Set(collapsed())
     const openedNow = opened()
-    for (const entry of docs.entries()) {
-      if (
-        entry.kind === 'directory' &&
-        entry.children_fetched !== true &&
-        !openedNow.has(entry.path)
-      ) {
+    const entries = docs.entries()
+    for (const entry of entries) {
+      if (entry.kind !== 'directory' || openedNow.has(entry.path)) {
+        continue
+      }
+      if (entry.children_fetched !== true || directoryLacksMarkdown(entry.path, entries)) {
         next.add(entry.path)
       }
     }
