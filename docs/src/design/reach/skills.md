@@ -154,7 +154,9 @@ when they are the same), the description, and whether it comes from home or
 this workspace. A manual-only skill is in that menu and marked so. Choosing a
 row inserts `/id` and a trailing space. The draft is plain text. A slash
 inside a path or a URL does not open the menu and does not load a skill. The menu is
-a Radix popover, styled with the same tokens as the mode menu.
+a Kobalte popover, styled with the same tokens as the mode menu. Opening it
+does not move focus, so the composer keeps the caret and the filter updates
+as the user types.
 
 The list comes from `GET /api/v1/workspaces/{id}/skills`. Each entry is `id`,
 `label`, `description`, `scope` (`user` or `project`), `model_invocable`, and

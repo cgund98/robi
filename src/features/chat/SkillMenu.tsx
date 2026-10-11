@@ -63,10 +63,14 @@ export function SkillMenu(props: {
 
   return (
     <Show when={asking() && rows().length > 0}>
-      <Popover open>
+      <Popover open modal={false}>
         <Popover.Anchor class={styles.anchor} />
         <Popover.Portal>
-          <Popover.Content class={styles.menu}>
+          <Popover.Content
+            class={styles.menu}
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => event.preventDefault()}
+          >
             <For each={rows()}>
               {(skill) => (
                 <button type="button" class={styles.row} onClick={() => choose(skill)}>
