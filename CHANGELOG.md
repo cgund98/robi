@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.11](https://github.com/cgund98/robi/compare/v0.1.10...v0.1.11) (2026-10-15)
+
+
+### Features
+
+* add setting for custom file opener ([45c658f](https://github.com/cgund98/robi/commit/45c658fa76fe66650660208514f155777cfeb837))
+* support opening files externally ([37bf84b](https://github.com/cgund98/robi/commit/37bf84b6d9727f939457589ee26d9e29f6bcf107))
+
+
+### Bug Fixes
+
+* keep focus on composer when opening skills ([713256d](https://github.com/cgund98/robi/commit/713256dc7b2425044e4cc0d62c8612eb9ac0107f))
+* load directory as closed if no children found ([93519ce](https://github.com/cgund98/robi/commit/93519ce4d9778c1aa8c5ff7ae329b0050b7537b7))
+* remove optimistic card, scroll with tool card approvals ([a7cc119](https://github.com/cgund98/robi/commit/a7cc119868c3cf1f86beb1127a856760d459e303))
+
 ## [0.1.10](https://github.com/cgund98/robi/compare/v0.1.9...v0.1.10) (2026-10-10)
 
 
