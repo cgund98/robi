@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { DropdownMenu } from '@kobalte/core/dropdown-menu'
 import { ChevronDown, ChevronRight } from '../../components/ui/icons'
 import { For } from 'solid-js'

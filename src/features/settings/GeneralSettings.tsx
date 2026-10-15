@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
 
 import { deleteSetting, getSettings, putSetting, SETTING_KEYS } from '../../api/settings'
@@ -14,6 +13,7 @@ export function GeneralSettings() {
   const [readPaths, setReadPaths] = createSignal('')
   const [writePaths, setWritePaths] = createSignal('')
   const [pathEntries, setPathEntries] = createSignal('')
+  const [openPatterns, setOpenPatterns] = createSignal('')
   const [maxIterations, setMaxIterations] = createSignal('50')
   const [subagentIterations, setSubagentIterations] = createSignal('50')
   const [subagentTimeout, setSubagentTimeout] = createSignal('120')
@@ -23,6 +23,7 @@ export function GeneralSettings() {
     read: '',
     write: '',
     entries: '',
+    openPatterns: '',
     iterations: '50',
     subagentIterations: '50',
     subagentTimeout: '120',
@@ -47,7 +48,8 @@ export function GeneralSettings() {
           iterations,
           subagent,
           subagentTimeoutSetting,
-          toolTimeoutSetting
+          toolTimeoutSetting,
+          openPatternsSetting
         ] = await getSettings([
           SETTING_KEYS.lsp,
           SETTING_KEYS.pathAllowRead,
@@ -56,7 +58,8 @@ export function GeneralSettings() {
           SETTING_KEYS.maxIterations,
           SETTING_KEYS.subagentMaxIterations,
           SETTING_KEYS.subagentTimeoutSeconds,
-          SETTING_KEYS.toolTimeoutSeconds
+          SETTING_KEYS.toolTimeoutSeconds,
+          SETTING_KEYS.fileOpenPatterns
         ])
         if (cancelled) {
           return
@@ -69,6 +72,7 @@ export function GeneralSettings() {
         const childTurns = subagent.value ?? '50'
         const childTimeout = subagentTimeoutSetting.value ?? '120'
         const shellTimeout = toolTimeoutSetting.value ?? '120'
+        const patterns = openPatternsSetting.value ?? ''
         saved.read = read
         saved.write = write
         saved.entries = entries
@@ -76,6 +80,7 @@ export function GeneralSettings() {
         saved.subagentIterations = childTurns
         saved.subagentTimeout = childTimeout
         saved.toolTimeout = shellTimeout
+        saved.openPatterns = patterns
         setReadPaths(read)
         setWritePaths(write)
         setPathEntries(entries)
@@ -83,6 +88,7 @@ export function GeneralSettings() {
         setSubagentIterations(childTurns)
         setSubagentTimeout(childTimeout)
         setToolTimeout(shellTimeout)
+        setOpenPatterns(patterns)
       } catch (err: unknown) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load settings')
@@ -127,7 +133,6 @@ export function GeneralSettings() {
       saved[savedKey] = trimmed
       restore(trimmed)
     } catch (err: unknown) {
-      restore(saved[savedKey])
       setError(err instanceof Error ? err.message : 'Failed to save setting')
     }
   }
@@ -154,6 +159,30 @@ export function GeneralSettings() {
               aria-label="Workspace"
             />
           </div>
+        </div>
+      </section>
+      <section class={styles.section}>
+        <h2 class={styles.sectionTitle}>Files</h2>
+        <p class={styles.sectionHint}>
+          A path that matches a line opens in the app your system uses for that file. Every other
+          path opens in the file viewer. One glob per line. `*` matches any run of characters.
+        </p>
+        <div class={styles.card}>
+          <PathBlock
+            label="Open externally"
+            hint="Matched against the whole workspace-relative path, such as *.rs. An empty list opens every file in the viewer."
+            ariaLabel="External open patterns"
+            value={openPatterns()}
+            onInput={setOpenPatterns}
+            onBlur={() =>
+              void savePaths(
+                SETTING_KEYS.fileOpenPatterns,
+                openPatterns(),
+                'openPatterns',
+                setOpenPatterns
+              )
+            }
+          />
         </div>
       </section>
       <section class={styles.section}>

@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { DocumentText } from '../../components/ui/icons'
 import { Show } from 'solid-js'
 

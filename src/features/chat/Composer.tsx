@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { PaperClip } from '../../components/ui/icons'
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 
@@ -527,7 +526,7 @@ function SendOrStop(props: {
       fallback={<span class={styles.pending} role="status" aria-label="Sending" />}
     >
       <Show
-        when={props.running}
+        when={props.running && !props.canSend}
         fallback={
           <button
             type="button"

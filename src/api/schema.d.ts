@@ -324,6 +324,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_workspace_file"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{id}/index": {
         parameters: {
             query?: never;
@@ -372,6 +388,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/path": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["resolve_workspace_path"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{id}/skills": {
         parameters: {
             query?: never;
@@ -392,6 +424,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description The canonical absolute path of a file inside the workspace. */
+        AbsolutePath: {
+            absolute: string;
+        };
         AcceptedInstruction: {
             status: string;
         };
@@ -869,6 +905,11 @@ export interface components {
             id: string;
             name: string;
             root: string;
+        };
+        /** @description The text of one file inside the workspace. */
+        WorkspaceFile: {
+            content: string;
+            path: string;
         };
     };
     responses: never;
@@ -1731,6 +1772,32 @@ export interface operations {
             };
         };
     };
+    read_workspace_file: {
+        parameters: {
+            query: {
+                /** @description Workspace-relative path. A path that leaves the workspace is 400. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description UTF-8 text of the file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFile"];
+                };
+            };
+        };
+    };
     get_index: {
         parameters: {
             query?: never;
@@ -1851,6 +1918,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["McpConfig"];
+                };
+            };
+        };
+    };
+    resolve_workspace_path: {
+        parameters: {
+            query: {
+                /** @description Workspace-relative path. A path that leaves the workspace is 400. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical absolute path inside the workspace */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AbsolutePath"];
                 };
             };
         };

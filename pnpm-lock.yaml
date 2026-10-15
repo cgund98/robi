@@ -38,6 +38,9 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: ^2
         version: 2.8.1
+      '@tauri-apps/plugin-opener':
+        specifier: ^2
+        version: 2.7.2
       mermaid:
         specifier: ^12.1.0
         version: 12.1.0
@@ -658,6 +661,9 @@ packages:
 
   '@tauri-apps/plugin-dialog@2.8.1':
     resolution: {integrity: sha512-/DtE3B62JgpYuWFL5ATXM6KOXUq7pca7cJWOgSqULhZsgyjLk0PWKek1dbRDvhNBW6flNsOfWphsKnb+738Dmw==}
+
+  '@tauri-apps/plugin-opener@2.7.2':
+    resolution: {integrity: sha512-LyybP1VSzTMQiaFYcsbAse47KpivlyXdLZMQzGLEnkgQacGESnpjAfFoQ6h5sqWgAdZDH9szYjPzHMpv0Sz+TQ==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -2837,6 +2843,10 @@ snapshots:
       '@tauri-apps/cli-win32-x64-msvc': 2.12.1
 
   '@tauri-apps/plugin-dialog@2.8.1':
+    dependencies:
+      '@tauri-apps/api': 2.12.1
+
+  '@tauri-apps/plugin-opener@2.7.2':
     dependencies:
       '@tauri-apps/api': 2.12.1
 

@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
 
 import { renderMermaid } from './mermaid'

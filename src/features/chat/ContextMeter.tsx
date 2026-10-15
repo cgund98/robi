@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { Popover } from '@kobalte/core/popover'
 import { Show } from 'solid-js'
 

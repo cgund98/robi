@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { For, Show } from 'solid-js'
 
 import type { MockFileEdit } from '../../mock/chat'

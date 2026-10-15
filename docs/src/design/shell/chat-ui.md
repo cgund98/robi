@@ -127,8 +127,8 @@ shows no window. A finished `write_file`, `edit_file`, or
 `delete_file` is a bordered card: the path the tool was called with
 (`scratch/test.md`, `../gopi/test.md`, `/tmp/test.md`), the `+` / `−` counts beside
 it, and 4 diff lines starting at the first added or removed line. Context above that change stays out of the closed card. Added and removed lines carry a left accent in
-`--diff-add` or `--diff-del`. Clicking the name opens the rest, at most 24
-lines, then `N more lines` when the change is longer. A running call shows a spinner.
+`--diff-add` or `--diff-del`. Clicking the `+` / `−` counts while the card is closed opens the rest, at most 24
+lines, then `N more lines` when the change is longer. Clicking the name follows **Open externally** in General (`file_open_patterns`), whether the card is open or closed. A workspace-relative path that matches one line opens in the system app, in the desktop window, through `GET /api/v1/workspaces/{id}/path`. Any other path opens in the file viewer on **Current**. **Diff** and **Previous** are there when this session still has a change for that path. A path with no change is the file on disk, from `GET /api/v1/workspaces/{id}/file`, and those two controls stay off. A running call shows a spinner.
 A failed call shows the verb and target in `--danger`. Clicking a row that has a result or an error opens
 the body: numbered file text, match lines, paths, or the error. The row stays
 closed until that click. Every opened body is a bordered panel, the same shape as a shell card: the header sits
@@ -294,14 +294,17 @@ receives `robi.agent.v1.transcript_compacted` refetches the message list.
 Unsent text stays with the chat it was typed in. Switching sessions, or moving between the greeting card and the bottom field, restores that chat's draft. A successful send clears it. The new-chat draft is its own slot until the first send creates a row.
 
 The textarea stays editable while a turn runs and while a send is in flight.
-Enter does not submit during session load, a send that has not returned, or
-while the phase is not `idle`. Until that send returns, the send slot is a
-spinner. After it returns, the control becomes **Stop**. A transcript read
-already in flight does not clear that phase: the read started before the
-local running mark. **Stop** is a filled circle with a rounded square cut out, in the same
-slot as the return mark. Stop posts `POST /chat_sessions/{id}/stop` and stays
-in that slot until the call returns, which is after the actor has exited. The
-client does not send a second instruction while the phase is not `idle`.
+Enter does not submit during session load, while a stop has not returned, or
+while a send has not returned. Until that send returns, the send slot is a
+spinner when the phase is `idle`. After it returns and the phase is not
+`idle`, the control is **Stop** while the field is empty, and the return mark
+when there is text or an attachment to send. Sending then posts the
+instruction. The runtime cancels the in-flight turn and runs this one next.
+A transcript read already in flight does not clear that phase: the read
+started before the local running mark. **Stop** is a filled circle with a
+rounded square cut out, in the same slot as the return mark. Stop posts
+`POST /chat_sessions/{id}/stop` and stays in that slot until the call returns,
+which is after the actor has exited.
 Another session can still be running; the lock follows the session on screen.
 Selecting it again refetches, and `has_pending_agent` restores the phase when
 the actor is still running.

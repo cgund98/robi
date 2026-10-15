@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { Dialog } from '@kobalte/core/dialog'
 import { Show } from 'solid-js'
 

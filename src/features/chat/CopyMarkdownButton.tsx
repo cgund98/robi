@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { Tooltip } from '@kobalte/core/tooltip'
 import { Check, Clipboard } from '../../components/ui/icons'
 import { createSignal, Show } from 'solid-js'

@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { A } from '@solidjs/router'
 import type { JSX } from 'solid-js'
 import { For } from 'solid-js'

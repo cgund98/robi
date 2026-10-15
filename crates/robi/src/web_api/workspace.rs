@@ -1,5 +1,7 @@
+use std::path::{Path as FsPath, PathBuf};
+
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::get,
     Json, Router,
@@ -30,6 +32,8 @@ pub fn router(state: AppState) -> Router {
             get(list_mcp_servers).post(focus_mcp),
         )
         .route("/api/v1/workspaces/{id}/mcp/config", get(get_mcp_config))
+        .route("/api/v1/workspaces/{id}/path", get(resolve_workspace_path))
+        .route("/api/v1/workspaces/{id}/file", get(read_workspace_file))
         .with_state(state)
 }
 
@@ -280,6 +284,126 @@ fn rfc3339(timestamp: DateTime<Utc>) -> String {
     timestamp.to_rfc3339()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PathQuery {
+    /// Workspace-relative path. `..` and a path that resolves outside the root are refused.
+    pub path: String,
+}
+
+/// The canonical absolute path of a file inside the workspace.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AbsolutePath {
+    pub absolute: String,
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/path",
+    params(
+        ("id" = String, Path, description = "Workspace id"),
+        ("path" = String, Query, description = "Workspace-relative path. A path that leaves the workspace is 400.")
+    ),
+    responses(
+        (status = 200, description = "Canonical absolute path inside the workspace", body = AbsolutePath)
+    )
+)]
+pub async fn resolve_workspace_path(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<PathQuery>,
+) -> Result<Json<AbsolutePath>, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let root = PathBuf::from(&workspace.root);
+    let relative = query.path;
+    let absolute = crate::agent::blocking::call(move || absolute_inside(&root, &relative))
+        .await
+        .map_err(ServiceError::BadRequest)??;
+    Ok(Json(AbsolutePath {
+        absolute: absolute.display().to_string(),
+    }))
+}
+
+/// Canonical absolute path of `relative` under `root`.
+///
+/// A blank path, the workspace root itself, and any path that resolves outside
+/// the root are [`ServiceError::BadRequest`].
+fn absolute_inside(root: &FsPath, relative: &str) -> Result<PathBuf, ServiceError> {
+    let relative = relative.trim();
+    if relative.is_empty() {
+        return Err(ServiceError::BadRequest(
+            "path must name a file in the workspace".into(),
+        ));
+    }
+    let home = crate::agent::workspace::user_home().unwrap_or_else(|_| root.to_path_buf());
+    let resolved = crate::agent::workspace::resolve_path(root, relative, &home)
+        .map_err(|err| ServiceError::BadRequest(err.to_string()))?;
+    if resolved.relative.is_empty()
+        || resolved.relative == ".."
+        || resolved.relative.starts_with("../")
+    {
+        return Err(ServiceError::BadRequest(
+            "path is outside the workspace".into(),
+        ));
+    }
+    Ok(resolved.absolute)
+}
+
+/// UTF-8 text the file viewer can show. Larger files are refused.
+const MAX_VIEW_BYTES: u64 = 1024 * 1024;
+
+/// The text of one file inside the workspace.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct WorkspaceFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/file",
+    params(
+        ("id" = String, Path, description = "Workspace id"),
+        ("path" = String, Query, description = "Workspace-relative path. A path that leaves the workspace is 400.")
+    ),
+    responses(
+        (status = 200, description = "UTF-8 text of the file", body = WorkspaceFile)
+    )
+)]
+pub async fn read_workspace_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<PathQuery>,
+) -> Result<Json<WorkspaceFile>, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let root = PathBuf::from(&workspace.root);
+    let relative = query.path.trim().to_owned();
+    let path = relative.clone();
+    let content = crate::agent::blocking::call(move || read_inside(&root, &relative))
+        .await
+        .map_err(ServiceError::BadRequest)??;
+    Ok(Json(WorkspaceFile { path, content }))
+}
+
+/// Read `relative` when it is a UTF-8 file under `root` no larger than [`MAX_VIEW_BYTES`].
+fn read_inside(root: &FsPath, relative: &str) -> Result<String, ServiceError> {
+    let absolute = absolute_inside(root, relative)?;
+    let meta = std::fs::metadata(&absolute)
+        .map_err(|_| ServiceError::NotFound(relative.trim().to_owned()))?;
+    if !meta.is_file() {
+        return Err(ServiceError::BadRequest("path is not a file".into()));
+    }
+    if meta.len() > MAX_VIEW_BYTES {
+        return Err(ServiceError::BadRequest("file is larger than 1 MiB".into()));
+    }
+    let bytes =
+        std::fs::read(&absolute).map_err(|_| ServiceError::NotFound(relative.trim().to_owned()))?;
+    String::from_utf8(bytes).map_err(|_| ServiceError::BadRequest("file is not UTF-8".into()))
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkspace {
     /// Absolute or relative directory. Stored as its canonical path.
@@ -330,4 +454,52 @@ pub struct Workspace {
     pub name: String,
     pub root: String,
     pub created_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{absolute_inside, read_inside};
+
+    fn workspace() -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("robi-abs-{}-{}", std::process::id(), unique()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src").join("main.rs"), "fn main() {}").unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    fn unique() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[test]
+    fn a_relative_path_becomes_absolute() {
+        let root = workspace();
+        let absolute = absolute_inside(&root, "src/main.rs").unwrap();
+        assert_eq!(absolute, root.join("src").join("main.rs"));
+    }
+
+    #[test]
+    fn a_path_outside_the_workspace_is_refused() {
+        let root = workspace();
+        let err = absolute_inside(&root, "../secret").unwrap_err();
+        assert!(err.to_string().contains("outside"));
+    }
+
+    #[test]
+    fn a_blank_path_is_refused() {
+        let root = workspace();
+        assert!(absolute_inside(&root, "  ").is_err());
+    }
+
+    #[test]
+    fn a_file_inside_the_workspace_is_read() {
+        let root = workspace();
+        let content = read_inside(&root, "src/main.rs").unwrap();
+        assert_eq!(content, "fn main() {}");
+    }
 }

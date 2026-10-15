@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 
 import type { ChatMessage } from '../../api/messages'
@@ -309,6 +308,7 @@ function TurnView(props: {
             {(id) => (
               <AssistantBlock
                 message={assistantById().get(id)!}
+                sessionId={props.sessionId}
                 phase={props.phase}
                 deciding={props.deciding}
                 buildDisabled={props.buildDisabled}
@@ -327,6 +327,7 @@ function TurnView(props: {
 
 function AssistantBlock(props: {
   message: ChatMessage
+  sessionId?: string | null
   phase: AgentPhase
   deciding: boolean
   buildDisabled: boolean
@@ -358,6 +359,7 @@ function AssistantBlock(props: {
               fallback={
                 <ToolCallCard
                   call={call()}
+                  sessionId={props.sessionId}
                   phase={props.phase}
                   busy={props.deciding}
                   buildDisabled={props.buildDisabled}

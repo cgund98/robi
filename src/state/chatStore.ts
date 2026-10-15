@@ -705,12 +705,8 @@ export function createChatState(
       const fileInputs = hasFiles ? toFileInputs(files!) : undefined
       const { draftSelected, activeSessionId } = get()
       const creating = draftSelected || activeSessionId === null
-      if (!creating) {
-        const phase = get().phaseBySession[activeSessionId] ?? 'idle'
-        if (phase !== 'idle') {
-          return false
-        }
-      }
+      // A submit while the actor is running is the interrupt: the runtime
+      // cancels the in-flight turn and queues this instruction.
 
       stopTick += 1
       set({ busy: true, error: null })

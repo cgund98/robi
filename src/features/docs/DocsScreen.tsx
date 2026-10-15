@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 

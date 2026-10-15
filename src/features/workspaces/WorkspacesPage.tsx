@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { useNavigate } from '@solidjs/router'
 import { Folder, MagnifyingGlass } from '../../components/ui/icons'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'

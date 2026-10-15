@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import styles from './Settings.module.css'
 import { formatUiScale, UI_SCALE_DEFAULT, uiScale } from '../../state/uiScaleStore'
 

@@ -1,8 +1,13 @@
-/** @jsxImportSource solid-js */
 import { BarsBottomLeft, CommandLine, Document, MagnifyingGlass } from '../../components/ui/icons'
 import { createEffect, createSignal, For, onCleanup, Show, type JSX } from 'solid-js'
 
+import { isTauri } from '@tauri-apps/api/core'
+
 import { getToolOriginal } from '../../api/messages'
+import { getSetting, SETTING_KEYS } from '../../api/settings'
+import { openWorkspaceFile } from '../../infra/openWorkspaceFile'
+import { OpenedFile } from './OpenedFile'
+import { matchesOpenPattern } from './openFile'
 import { type AgentPhase } from '../../state/chatStore'
 import { chat } from '../../state/chatStore'
 import styles from './ToolCallCard.module.css'
@@ -49,7 +54,9 @@ export function ToolCallCard(props: {
   onDecide: (decision: 'approve' | 'reject') => void
   onBuild?: (path: string) => void
   onViewPlan?: (plan: PlanView) => void
+  sessionId?: string | null
 }) {
+  const [viewPath, setViewPath] = createSignal<string | null>(null)
   const summary = () => toolSummary(props.call)
   const decision = () => needsDecision(props.call, props.phase)
   const preview = () => editPreview(props.call)
@@ -68,126 +75,138 @@ export function ToolCallCard(props: {
   }
 
   return (
-    <Show
-      when={!decision()}
-      fallback={
-        <ApprovalBody
-          call={props.call}
-          summary={summary()}
-          detail={detail()}
-          busy={props.busy}
-          onDecide={props.onDecide}
-        />
-      }
-    >
-      <Show when={props.call.name === 'delegate'} fallback={null}>
-        <DelegateCard call={props.call} status={status()} />
-      </Show>
-      <Show when={props.call.name !== 'delegate' && planView(props.call)}>
-        {(saved) => (
-          <PlanCard
-            plan={saved()}
-            buildDisabled={(props.buildDisabled ?? false) || saved().path.length === 0}
-            onBuild={() => {
-              if (saved().path && props.onBuild) {
-                props.onBuild(saved().path)
-              }
-            }}
-            onView={() => props.onViewPlan?.(saved())}
+    <>
+      <OpenedFile
+        sessionId={props.sessionId ?? null}
+        path={viewPath()}
+        onClose={() => setViewPath(null)}
+      />
+      <Show
+        when={!decision()}
+        fallback={
+          <ApprovalBody
+            call={props.call}
+            summary={summary()}
+            detail={detail()}
+            busy={props.busy}
+            onDecide={props.onDecide}
+            onOpenPath={(path) => void openSelectedFile(path, setViewPath)}
           />
-        )}
-      </Show>
-      <Show
-        when={
-          props.call.name !== 'delegate' &&
-          !planView(props.call) &&
-          preview() &&
-          status() !== 'failed'
         }
       >
-        <EditDiff expansionKey={props.call.id} preview={preview()!} />
+        <Show when={props.call.name === 'delegate'} fallback={null}>
+          <DelegateCard call={props.call} status={status()} />
+        </Show>
+        <Show when={props.call.name !== 'delegate' && planView(props.call)}>
+          {(saved) => (
+            <PlanCard
+              plan={saved()}
+              buildDisabled={(props.buildDisabled ?? false) || saved().path.length === 0}
+              onBuild={() => {
+                if (saved().path && props.onBuild) {
+                  props.onBuild(saved().path)
+                }
+              }}
+              onView={() => props.onViewPlan?.(saved())}
+            />
+          )}
+        </Show>
+        <Show
+          when={
+            props.call.name !== 'delegate' &&
+            !planView(props.call) &&
+            preview() &&
+            status() !== 'failed'
+          }
+        >
+          <EditDiff
+            expansionKey={props.call.id}
+            preview={preview()!}
+            onOpenPath={(path) => void openSelectedFile(path, setViewPath)}
+          />
+        </Show>
+        <Show
+          when={
+            props.call.name !== 'delegate' &&
+            !planView(props.call) &&
+            !(preview() && status() !== 'failed') &&
+            detail()?.kind === 'shell'
+              ? detail()
+              : null
+          }
+        >
+          <ShellCard
+            expansionKey={props.call.id}
+            summary={summary()}
+            command={shellDetail()?.command ?? ''}
+            output={shellDetail()?.output ?? ''}
+            originalId={props.call.original_id}
+            status={<StatusMark status={status()} />}
+          />
+        </Show>
+        <Show
+          when={
+            detail()?.kind === 'retrieve' && props.call.name !== 'delegate' && !planView(props.call)
+          }
+        >
+          <RetrieveCard
+            expansionKey={props.call.id}
+            summary={summary()}
+            view={(detail() as { kind: 'retrieve'; view: RetrieveView }).view}
+            status={<StatusMark status={status()} />}
+          />
+        </Show>
+        <Show
+          when={
+            detail()?.kind === 'mcp' && !decision() && props.call.name !== 'delegate'
+              ? detail()
+              : null
+          }
+        >
+          <McpCard
+            expansionKey={props.call.id}
+            summary={summary()}
+            args={mcpDetail()?.args ?? ''}
+            output={mcpDetail()?.output ?? ''}
+            originalId={props.call.original_id}
+            status={<StatusMark status={status()} />}
+          />
+        </Show>
+        <Show
+          when={
+            props.call.name !== 'delegate' &&
+            !planView(props.call) &&
+            !(preview() && status() !== 'failed') &&
+            detail()?.kind !== 'shell' &&
+            detail()?.kind !== 'retrieve' &&
+            detail()?.kind !== 'mcp'
+          }
+        >
+          <div class={open() && detail() ? styles.shell : styles.call}>
+            <button
+              type="button"
+              class={`${open() && detail() ? styles.editRow : styles.row} ${status() === 'failed' ? styles.rowFailed : ''}`}
+              aria-expanded={expandable() ? open() : undefined}
+              aria-invalid={status() === 'failed' ? true : undefined}
+              disabled={!expandable()}
+              onClick={() => {
+                if (expandable()) {
+                  setOpen((current) => !current)
+                }
+              }}
+            >
+              <ToolIcon name={props.call.name} />
+              <span class={styles.verb}>{summary().verb}</span>
+              <SummaryLabel summary={summary()} />
+              <StatusMark status={status()} />
+            </button>
+            <Show when={open() && detail()}>
+              <Detail detail={detail()!} panel />
+            </Show>
+          </div>
+        </Show>
       </Show>
-      <Show
-        when={
-          props.call.name !== 'delegate' &&
-          !planView(props.call) &&
-          !(preview() && status() !== 'failed') &&
-          detail()?.kind === 'shell'
-            ? detail()
-            : null
-        }
-      >
-        <ShellCard
-          expansionKey={props.call.id}
-          summary={summary()}
-          command={shellDetail()?.command ?? ''}
-          output={shellDetail()?.output ?? ''}
-          originalId={props.call.original_id}
-          status={<StatusMark status={status()} />}
-        />
-      </Show>
-      <Show
-        when={
-          detail()?.kind === 'retrieve' && props.call.name !== 'delegate' && !planView(props.call)
-        }
-      >
-        <RetrieveCard
-          expansionKey={props.call.id}
-          summary={summary()}
-          view={(detail() as { kind: 'retrieve'; view: RetrieveView }).view}
-          status={<StatusMark status={status()} />}
-        />
-      </Show>
-      <Show
-        when={
-          detail()?.kind === 'mcp' && !decision() && props.call.name !== 'delegate'
-            ? detail()
-            : null
-        }
-      >
-        <McpCard
-          expansionKey={props.call.id}
-          summary={summary()}
-          args={mcpDetail()?.args ?? ''}
-          output={mcpDetail()?.output ?? ''}
-          originalId={props.call.original_id}
-          status={<StatusMark status={status()} />}
-        />
-      </Show>
-      <Show
-        when={
-          props.call.name !== 'delegate' &&
-          !planView(props.call) &&
-          !(preview() && status() !== 'failed') &&
-          detail()?.kind !== 'shell' &&
-          detail()?.kind !== 'retrieve' &&
-          detail()?.kind !== 'mcp'
-        }
-      >
-        <div class={open() && detail() ? styles.shell : styles.call}>
-          <button
-            type="button"
-            class={`${open() && detail() ? styles.editRow : styles.row} ${status() === 'failed' ? styles.rowFailed : ''}`}
-            aria-expanded={expandable() ? open() : undefined}
-            aria-invalid={status() === 'failed' ? true : undefined}
-            disabled={!expandable()}
-            onClick={() => {
-              if (expandable()) {
-                setOpen((current) => !current)
-              }
-            }}
-          >
-            <ToolIcon name={props.call.name} />
-            <span class={styles.verb}>{summary().verb}</span>
-            <SummaryLabel summary={summary()} />
-            <StatusMark status={status()} />
-          </button>
-          <Show when={open() && detail()}>
-            <Detail detail={detail()!} panel />
-          </Show>
-        </div>
-      </Show>
-    </Show>
+    </>
   )
 }
 
@@ -197,13 +216,21 @@ function ApprovalBody(props: {
   detail: ReturnType<typeof toolDetail>
   busy: boolean
   onDecide: (decision: 'approve' | 'reject') => void
+  onOpenPath: (path: string) => void
 }) {
   const suggestion = () => editSuggestion(props.call)
   const actions = <ApprovalActions busy={props.busy} onDecide={props.onDecide} />
   return (
     <Show
       when={!suggestion()}
-      fallback={<EditDiff expansionKey={props.call.id} preview={suggestion()!} actions={actions} />}
+      fallback={
+        <EditDiff
+          expansionKey={props.call.id}
+          preview={suggestion()!}
+          actions={actions}
+          onOpenPath={props.onOpenPath}
+        />
+      }
     >
       <Show
         when={props.detail?.kind !== 'shell'}
@@ -454,7 +481,25 @@ function ApprovalActions(props: {
   )
 }
 
-function EditDiff(props: { expansionKey: string; preview: EditPreview; actions?: JSX.Element }) {
+async function openSelectedFile(path: string, openInApp: (path: string) => void) {
+  try {
+    const setting = await getSetting(SETTING_KEYS.fileOpenPatterns)
+    if (isTauri() && matchesOpenPattern(path, setting.value ?? '')) {
+      await openWorkspaceFile(path)
+      return
+    }
+  } catch {
+    // A missing setting, or an opener that fails, still opens the file here.
+  }
+  openInApp(path)
+}
+
+function EditDiff(props: {
+  expansionKey: string
+  preview: EditPreview
+  actions?: JSX.Element
+  onOpenPath: (path: string) => void
+}) {
   const [open, setOpen] = createOpen(`${props.expansionKey}:diff`)
   const canExpand = () =>
     props.preview.lines.length > EDIT_VISIBLE_LINES || props.preview.hidden > 0
@@ -469,25 +514,30 @@ function EditDiff(props: { expansionKey: string; preview: EditPreview; actions?:
   return (
     <div class={styles.edit}>
       <div class={styles.editHead}>
-        <button
-          type="button"
-          class={styles.editRow}
-          aria-expanded={canExpand() ? open() : undefined}
-          disabled={!canExpand()}
-          onClick={() => {
-            if (canExpand()) {
-              setOpen((current) => !current)
-            }
-          }}
-        >
-          <span class={styles.editPath} title={props.preview.path}>
+        <div class={styles.editRow}>
+          <button
+            type="button"
+            class={`${styles.editPath} ${styles.editPathOpen}`}
+            title={`Open ${props.preview.path}`}
+            onClick={() => props.onOpenPath(props.preview.path)}
+          >
             {props.preview.path}
-          </span>
-          <span class={styles.editCounts}>
+          </button>
+          <button
+            type="button"
+            class={styles.editCounts}
+            aria-expanded={canExpand() ? open() : undefined}
+            disabled={!canExpand()}
+            onClick={() => {
+              if (canExpand()) {
+                setOpen((current) => !current)
+              }
+            }}
+          >
             <span class={styles.add}>+{props.preview.additions}</span>
             <span class={styles.del}>-{props.preview.deletions}</span>
-          </span>
-        </button>
+          </button>
+        </div>
         {props.actions}
       </div>
       <DiffView lines={visible()} hidden={open() ? props.preview.hidden : 0} />

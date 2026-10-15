@@ -30,6 +30,9 @@ path_allow_write = """
 path_entries = """
 ~/pnpm
 """
+file_open_patterns = """
+*.png
+"""
 web_search_approval = "on"
 web_fetch_approval = "on"
 ```
@@ -80,6 +83,7 @@ files and later reads always agree.
 | `path_allow_read` | no | none | Newline-separated paths appended to every session's read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_allow_write` | no | none | Newline-separated paths appended to every session's write allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`, to an MCP stdio child's `PATH`, and to the `PATH` the language-server tools resolve a binary on. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment, and once at startup for the language-server resolver. |
+| `file_open_patterns` | no | none | Newline-separated globs. `*` matches any run of characters, including `/`, and `?` matches one character. A workspace-relative path that matches one opens in the system app when its name is clicked on an open edit card. Anything else opens in the file viewer. Absent matches nothing. |
 | `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
 | `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
 

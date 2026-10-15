@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.9"
+    "version": "0.1.10"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -1107,6 +1107,46 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/file": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "read_workspace_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Workspace-relative path. A path that leaves the workspace is 400.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "UTF-8 text of the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceFile"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/index": {
       "get": {
         "tags": [
@@ -1267,6 +1307,46 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/path": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "resolve_workspace_path",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Workspace-relative path. A path that leaves the workspace is 400.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canonical absolute path inside the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbsolutePath"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/skills": {
       "get": {
         "tags": [
@@ -1304,6 +1384,18 @@
   },
   "components": {
     "schemas": {
+      "AbsolutePath": {
+        "type": "object",
+        "description": "The canonical absolute path of a file inside the workspace.",
+        "required": [
+          "absolute"
+        ],
+        "properties": {
+          "absolute": {
+            "type": "string"
+          }
+        }
+      },
       "AcceptedInstruction": {
         "type": "object",
         "required": [
@@ -2724,6 +2816,22 @@
             "type": "string"
           },
           "root": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkspaceFile": {
+        "type": "object",
+        "description": "The text of one file inside the workspace.",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
             "type": "string"
           }
         }

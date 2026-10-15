@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { useNavigate } from '@solidjs/router'
 import { BookOpen, ChatBubble } from '../ui/icons'
 

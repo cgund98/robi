@@ -122,6 +122,11 @@ pub const PATH_ALLOW_WRITE: &str = "path_allow_write";
 /// Each one is also a read allow. A line may start with `~/`. Not a secret.
 pub const PATH_ENTRIES: &str = "path_entries";
 
+/// Newline-separated globs. `*` matches any run of characters, including `/`.
+/// A workspace-relative path that matches one is opened in the system app.
+/// Anything else opens in the file viewer. Not a secret. Absent matches nothing.
+pub const FILE_OPEN_PATTERNS: &str = "file_open_patterns";
+
 /// Model turns allowed in one primary-agent run. Not a secret.
 pub const MAX_ITERATIONS: &str = "max_iterations";
 
@@ -223,7 +228,8 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
         | REASONING_EFFORT_AGENT
         | PATH_ALLOW_READ
         | PATH_ALLOW_WRITE
-        | PATH_ENTRIES => Some(KnownSetting {
+        | PATH_ENTRIES
+        | FILE_OPEN_PATTERNS => Some(KnownSetting {
             secret: false,
             default_value: None,
         }),

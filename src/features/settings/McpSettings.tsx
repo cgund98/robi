@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 
 import { getMcpConfig, type McpConfig, type McpServer } from '../../api/mcp'

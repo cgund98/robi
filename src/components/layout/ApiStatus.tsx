@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 
 import { apiBaseUrl } from '../../api/client'

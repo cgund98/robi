@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { useLocation, useNavigate } from '@solidjs/router'
 import { ChevronLeft, ChevronRight } from '../ui/icons'
 

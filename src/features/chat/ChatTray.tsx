@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { ChatBubble, XMark } from '../../components/ui/icons'
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
 

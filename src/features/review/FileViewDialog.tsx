@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { Dialog } from '@kobalte/core/dialog'
 import { createSignal, For, Show } from 'solid-js'
 
@@ -33,6 +32,10 @@ export function FileViewDialog(props: {
   file: ReviewFile | null
   baseline: PaintedToken[][]
   current: PaintedToken[][]
+  /** Which version is showing when the dialog opens. The review screen uses Diff. */
+  initialView?: FileMode
+  /** Diff and Previous stay available when this session has a change for the file. */
+  allowDiff?: boolean
   onClose: () => void
 }) {
   return (
@@ -48,7 +51,15 @@ export function FileViewDialog(props: {
         <Dialog.Overlay class={styles.overlay} />
         <Dialog.Content class={styles.panel}>
           <Show when={props.file} keyed>
-            {(file) => <FileView file={file} baseline={props.baseline} current={props.current} />}
+            {(file) => (
+              <FileView
+                file={file}
+                baseline={props.baseline}
+                current={props.current}
+                initialView={props.initialView ?? 'diff'}
+                allowDiff={props.allowDiff ?? true}
+              />
+            )}
           </Show>
         </Dialog.Content>
       </Dialog.Portal>
@@ -60,10 +71,17 @@ function FileView(props: {
   file: ReviewFile
   baseline: PaintedToken[][]
   current: PaintedToken[][]
+  initialView: FileMode
+  allowDiff: boolean
 }) {
-  const [view, setView] = createSignal<FileMode>('diff')
+  const [view, setView] = createSignal<FileMode>(props.initialView)
   const markdown = () => isMarkdown(props.file.path)
-  const modes = () => (markdown() ? VIEWS : VIEWS.filter((item) => item.id !== 'preview'))
+  const modes = () => {
+    const views = props.allowDiff
+      ? VIEWS
+      : VIEWS.filter((item) => item.id === 'current' || item.id === 'preview')
+    return markdown() ? views : views.filter((item) => item.id !== 'preview')
+  }
   const sides = () => ({ baseline: props.baseline, current: props.current })
   const diffLines = () =>
     expandReviewLines(props.file.lines, props.file.baseline, props.file.current)

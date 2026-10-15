@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { DropdownMenu } from '@kobalte/core/dropdown-menu'
 import { Show } from 'solid-js'
 

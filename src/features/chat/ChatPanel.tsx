@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { createEffect, onCleanup, Show } from 'solid-js'
 
 import type { ChatMessage } from '../../api/messages'

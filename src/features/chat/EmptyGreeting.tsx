@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { greetingLabel } from './greeting'
 import styles from './EmptyGreeting.module.css'
 

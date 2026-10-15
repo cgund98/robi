@@ -107,6 +107,9 @@ impl SettingsService {
         {
             return Err(ServiceError::BadRequest(format!("{key} must be on or off")));
         }
+        if key == keys::FILE_OPEN_PATTERNS {
+            validate_open_patterns(&value)?;
+        }
         if let Some(limit) = bounded_limit(key) {
             if keys::parse_bounded(Some(&value), 0, limit) == 0 {
                 return Err(ServiceError::BadRequest(format!(
@@ -146,6 +149,38 @@ fn validate_value(value: &str) -> Result<(), ServiceError> {
         return Err(ServiceError::BadRequest("value must not be empty".into()));
     }
     Ok(())
+}
+
+/// Each non-blank line is a glob matched against the whole workspace-relative path.
+///
+/// `*` is any run of characters, including `/`. `?` is one character. Everything
+/// else is literal.
+fn validate_open_patterns(value: &str) -> Result<(), ServiceError> {
+    for line in value.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Err(err) = regex::Regex::new(&glob_to_regex(line)) {
+            return Err(ServiceError::BadRequest(format!(
+                "file_open_patterns has an invalid pattern: {err}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut out = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            other => out.push_str(&regex::escape(&other.to_string())),
+        }
+    }
+    out.push('$');
+    out
 }
 
 #[cfg(test)]
@@ -346,5 +381,14 @@ mod tests {
             error,
             ServiceError::BadRequest("max_iterations must be a whole number from 1 to 500".into())
         );
+    }
+
+    #[tokio::test]
+    async fn file_open_patterns_accept_a_glob() {
+        let service = service();
+        service
+            .set(keys::FILE_OPEN_PATTERNS, "*.rs\n*.png".into(), false)
+            .await
+            .unwrap();
     }
 }

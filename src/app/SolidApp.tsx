@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { HashRouter, Navigate, Route } from '@solidjs/router'
 
 import { ChatChrome } from '../components/layout/ChatChrome'

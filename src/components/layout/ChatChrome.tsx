@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { useIsRouting, useLocation, useNavigate } from '@solidjs/router'
 import { isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -266,7 +265,7 @@ export function ChatChrome() {
       ? chat.draftEffort
       : sessionEffort(activeSession(), mode())
   const agentRunning = () => phase() !== 'idle'
-  const composerLocked = () => chat.loading || chat.busy || agentRunning()
+  const composerLocked = () => chat.loading || chat.busy || stopping()
   const composerDraftKey = () =>
     chat.draftSelected || !chat.activeSessionId ? 'draft' : chat.activeSessionId!
   const stopping = () =>
@@ -315,7 +314,7 @@ export function ChatChrome() {
     phase: phase(),
     mode: mode(),
     deciding: chat.busy,
-    buildDisabled: composerLocked(),
+    buildDisabled: chat.loading || chat.busy || agentRunning() || stopping(),
     onDecide: (callId: string, decision: 'approve' | 'reject') => {
       const id = chat.activeSessionId
       if (id) {
@@ -396,7 +395,9 @@ export function ChatChrome() {
         <Show when={!reviewSessionId() && plan()}>
           <PlanPage
             plan={plan()!.view}
-            buildDisabled={composerLocked() || plan()!.view.path.length === 0}
+            buildDisabled={
+              chat.loading || chat.busy || agentRunning() || stopping() || plan()!.view.path.length === 0
+            }
             onBack={() => setPlan(null)}
             onBuild={() => {
               const path = plan()!.view.path

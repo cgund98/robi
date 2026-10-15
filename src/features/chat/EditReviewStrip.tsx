@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { useNavigate } from '@solidjs/router'
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
 

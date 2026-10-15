@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { DropdownMenu } from '@kobalte/core/dropdown-menu'
 import { useNavigate } from '@solidjs/router'
 import { ChevronDown, Folder, FolderOpen } from '../ui/icons'

@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { A } from '@solidjs/router'
 import { createEffect, For, on, Show } from 'solid-js'
 

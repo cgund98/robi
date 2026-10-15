@@ -1,5 +1,5 @@
 import { api } from './client'
-import { ApiError } from './sessions'
+import { ApiError, errorMessage, statusOf } from './sessions'
 
 export const SETTING_KEYS = {
   apiKey: 'opencode_go_api_key',
@@ -20,6 +20,7 @@ export const SETTING_KEYS = {
   pathAllowRead: 'path_allow_read',
   pathAllowWrite: 'path_allow_write',
   pathEntries: 'path_entries',
+  fileOpenPatterns: 'file_open_patterns',
   maxIterations: 'max_iterations',
   subagentMaxIterations: 'subagent_max_iterations',
   subagentTimeoutSeconds: 'subagent_timeout_seconds',
@@ -77,7 +78,10 @@ export async function putSetting(key: string, value: string, secret: boolean): P
     body: { value, secret }
   })
   if (!result.response.ok) {
-    throw new ApiError(result.response.status, 'Failed to save setting')
+    throw new ApiError(
+      statusOf(result.response),
+      errorMessage(result.error, 'Failed to save setting')
+    )
   }
 }
 
@@ -86,6 +90,9 @@ export async function deleteSetting(key: string): Promise<void> {
     params: { path: { key } }
   })
   if (!result.response.ok) {
-    throw new ApiError(result.response.status, 'Failed to clear setting')
+    throw new ApiError(
+      statusOf(result.response),
+      errorMessage(result.error, 'Failed to clear setting')
+    )
   }
 }

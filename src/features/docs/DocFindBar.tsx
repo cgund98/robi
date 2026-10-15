@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { ChevronDown, ChevronUp, Language, XMark } from '../../components/ui/icons'
 
 import styles from './DocFindBar.module.css'

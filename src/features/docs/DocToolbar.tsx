@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { For, Show, type Component } from 'solid-js'
 
 import { CodeBracket, Eye } from '../../components/ui/icons'

@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { CheckCircle } from '../../components/ui/icons'
 import { For, Show } from 'solid-js'
 

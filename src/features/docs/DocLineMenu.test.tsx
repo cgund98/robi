@@ -1,4 +1,3 @@
-/** @jsxImportSource solid-js */
 import { render } from 'solid-js/web'
 import { describe, expect, it, vi } from 'vitest'
 
