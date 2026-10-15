@@ -41,8 +41,9 @@ next message.
 
 ## Using a skill
 
-- **You** type `/` at the start of the composer (or after a space) to open the
-  menu, and pick a skill. Selecting inserts `/id `. On send, every `/id` is
+- **You** type `/` at the start of the composer to open the menu, and pick a
+  skill. The menu stays open only while that first token has no whitespace.
+  Selecting inserts `/id `. On send, every `/id` is
   resolved and loaded; an unknown `/word` stays as plain text. A slash inside
   a path or a URL is not a mention.
 - **The model** loads a skill with the `skill` tool, taking the id. It is

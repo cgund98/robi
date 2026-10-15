@@ -247,6 +247,10 @@
   -webkit-user-select: none;
 }
 
+.codeCol {
+  grid-column: 2;
+}
+
 .gutterLine,
 .codeLine {
   box-sizing: border-box;

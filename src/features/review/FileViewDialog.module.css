@@ -149,6 +149,10 @@
   background: var(--code-bg);
 }
 
+.codeCol {
+  grid-column: 2;
+}
+
 .num,
 .code {
   box-sizing: border-box;

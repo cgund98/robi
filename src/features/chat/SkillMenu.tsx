@@ -5,13 +5,14 @@ import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { listSkills, type SkillEntry } from '../../api/skills'
 import styles from './SkillMenu.module.css'
 
+/** Query after a leading `/` while the caret is still in that first token. */
 function mentionQuery(draft: string, caret: number): string | null {
   const before = draft.slice(0, caret)
-  const match = /(^|\s)\/([a-z0-9-]*)$/.exec(before)
+  const match = /^\/([a-z0-9-]*)$/.exec(before)
   if (!match) {
     return null
   }
-  return match[2] ?? ''
+  return match[1] ?? ''
 }
 
 export function SkillMenu(props: {
@@ -57,7 +58,7 @@ export function SkillMenu(props: {
   function choose(skill: SkillEntry) {
     const before = props.draft.slice(0, props.caret)
     const after = props.draft.slice(props.caret)
-    const replaced = before.replace(/(^|\s)\/([a-z0-9-]*)$/, `$1/${skill.id} `)
+    const replaced = before.replace(/^\/([a-z0-9-]*)$/, `/${skill.id} `)
     props.onInsert(replaced + after, replaced.length)
   }
 

@@ -27,6 +27,20 @@ import {
   type PlanView,
   type SubagentStepView
 } from './toolCallView'
+
+/** Survives a transcript refresh. A tool update replaces message objects, and Solid remounts the cards. */
+const expandedToolCalls = new Map<string, boolean>()
+
+function createOpen(key: string, initial = false) {
+  const [open, setOpenState] = createSignal(expandedToolCalls.get(key) ?? initial)
+  const setOpen = (value: boolean | ((current: boolean) => boolean)) => {
+    const next = typeof value === 'function' ? value(open()) : value
+    expandedToolCalls.set(key, next)
+    setOpenState(next)
+  }
+  return [open, setOpen] as const
+}
+
 export function ToolCallCard(props: {
   call: ChatToolCall
   phase: AgentPhase
@@ -42,7 +56,7 @@ export function ToolCallCard(props: {
   const detail = () => toolDetail(props.call)
   const expandable = () =>
     (preview() != null || hasDetail(props.call) || detail()?.kind === 'shell') && !decision()
-  const [open, setOpen] = createSignal(false)
+  const [open, setOpen] = createOpen(props.call.id)
   const status = () => statusOf(props.call, props.phase)
   const shellDetail = () => {
     const next = detail()
@@ -91,7 +105,7 @@ export function ToolCallCard(props: {
           status() !== 'failed'
         }
       >
-        <EditDiff preview={preview()!} />
+        <EditDiff expansionKey={props.call.id} preview={preview()!} />
       </Show>
       <Show
         when={
@@ -104,6 +118,7 @@ export function ToolCallCard(props: {
         }
       >
         <ShellCard
+          expansionKey={props.call.id}
           summary={summary()}
           command={shellDetail()?.command ?? ''}
           output={shellDetail()?.output ?? ''}
@@ -117,6 +132,7 @@ export function ToolCallCard(props: {
         }
       >
         <RetrieveCard
+          expansionKey={props.call.id}
           summary={summary()}
           view={(detail() as { kind: 'retrieve'; view: RetrieveView }).view}
           status={<StatusMark status={status()} />}
@@ -130,6 +146,7 @@ export function ToolCallCard(props: {
         }
       >
         <McpCard
+          expansionKey={props.call.id}
           summary={summary()}
           args={mcpDetail()?.args ?? ''}
           output={mcpDetail()?.output ?? ''}
@@ -184,11 +201,15 @@ function ApprovalBody(props: {
   const suggestion = () => editSuggestion(props.call)
   const actions = <ApprovalActions busy={props.busy} onDecide={props.onDecide} />
   return (
-    <Show when={!suggestion()} fallback={<EditDiff preview={suggestion()!} actions={actions} />}>
+    <Show
+      when={!suggestion()}
+      fallback={<EditDiff expansionKey={props.call.id} preview={suggestion()!} actions={actions} />}
+    >
       <Show
         when={props.detail?.kind !== 'shell'}
         fallback={
           <ShellCard
+            expansionKey={props.call.id}
             summary={props.summary}
             command={props.detail?.kind === 'shell' ? props.detail.command : ''}
             output={props.detail?.kind === 'shell' ? props.detail.output : ''}
@@ -202,6 +223,7 @@ function ApprovalBody(props: {
           when={props.detail?.kind !== 'mcp'}
           fallback={
             <McpCard
+              expansionKey={props.call.id}
               summary={props.summary}
               args={props.detail?.kind === 'mcp' ? props.detail.args : ''}
               output={props.detail?.kind === 'mcp' ? props.detail.output : ''}
@@ -292,8 +314,8 @@ function DelegateCard(props: { call: ChatToolCall; status: 'running' | 'failed' 
   const view = () => subagentView(props.call)
   const summary = () => toolSummary(props.call)
   const mode = () => view()?.mode ?? 'explore'
-  const [open, setOpen] = createSignal(false)
-  const [answerOpen, setAnswerOpen] = createSignal(false)
+  const [open, setOpen] = createOpen(props.call.id)
+  const [answerOpen, setAnswerOpen] = createOpen(`${props.call.id}:answer`)
   return (
     <div class={styles.call}>
       <button
@@ -432,8 +454,8 @@ function ApprovalActions(props: {
   )
 }
 
-function EditDiff(props: { preview: EditPreview; actions?: JSX.Element }) {
-  const [open, setOpen] = createSignal(false)
+function EditDiff(props: { expansionKey: string; preview: EditPreview; actions?: JSX.Element }) {
+  const [open, setOpen] = createOpen(`${props.expansionKey}:diff`)
   const canExpand = () =>
     props.preview.lines.length > EDIT_VISIBLE_LINES || props.preview.hidden > 0
   const visible = () => {
@@ -536,6 +558,7 @@ function useCappedOutput(
 }
 
 function ShellCard(props: {
+  expansionKey: string
   summary: { verb: string; target: string }
   command: string
   output: string
@@ -549,7 +572,7 @@ function ShellCard(props: {
     () => props.originalId,
     () => props.output
   )
-  const [open, setOpen] = createSignal(props.defaultOpen ?? false)
+  const [open, setOpen] = createOpen(props.expansionKey, props.defaultOpen ?? false)
   return (
     <Show
       when={open()}
@@ -592,6 +615,7 @@ function ShellCard(props: {
 }
 
 function McpCard(props: {
+  expansionKey: string
   summary: { verb: string; target: string }
   args: string
   output: string
@@ -605,7 +629,7 @@ function McpCard(props: {
     () => props.originalId,
     () => props.output
   )
-  const [open, setOpen] = createSignal(props.defaultOpen ?? false)
+  const [open, setOpen] = createOpen(props.expansionKey, props.defaultOpen ?? false)
   return (
     <div class={open() ? styles.shell : styles.call}>
       <div class={styles.editHead}>
@@ -631,8 +655,13 @@ function McpCard(props: {
   )
 }
 
-function RetrieveCard(props: { summary: ToolSummary; view: RetrieveView; status?: JSX.Element }) {
-  const [open, setOpen] = createSignal(false)
+function RetrieveCard(props: {
+  expansionKey: string
+  summary: ToolSummary
+  view: RetrieveView
+  status?: JSX.Element
+}) {
+  const [open, setOpen] = createOpen(props.expansionKey)
   const facts = () => {
     const view = props.view
     const page =

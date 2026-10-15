@@ -278,7 +278,7 @@ The workspace dropdown is the top of the sidebar, in place of a product title.
 The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
 Both are styled with these tokens. The active workspace uses an open folder. The others use a closed folder. The closed control matches the sidebar, with a
 chevron. A border appears on hover and while the list is open. The open list is the darker canvas color, with a stronger
-edge. The chevron opens the list of workspaces, plus add. Add opens the system folder dialog in the
+edge. The chevron opens the list of workspaces, most recently selected first, plus add. The menu shows at most eight workspaces. When more exist, **All workspaces…** links to the Workspaces page. A workspace with no recorded selection stays in the order the API returned it. Add opens the system folder dialog in the
 desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses Lucide `SquarePen`. Workspaces sits under the dropdown and opens the full list. Settings sits at the bottom of the sidebar.
 
 ### Workspaces page

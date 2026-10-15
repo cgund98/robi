@@ -1,13 +1,18 @@
 /** @jsxImportSource solid-js */
 import { DropdownMenu } from '@kobalte/core/dropdown-menu'
+import { useNavigate } from '@solidjs/router'
 import { ChevronDown, Folder, FolderOpen } from '../ui/icons'
-import { For } from 'solid-js'
+import { For, Show } from 'solid-js'
 
 import { pickWorkspaceRoot } from '../../infra/pickWorkspaceRoot'
 import styles from './WorkspaceSwitcher.module.css'
-import { patchWorkspaces, workspaces } from '../../state/workspaceStore'
+import { orderByRecentUse, patchWorkspaces, workspaces } from '../../state/workspaceStore'
+
+const MENU_LIMIT = 8
 
 export function WorkspaceSwitcher() {
+  const navigate = useNavigate()
+  const ordered = () => orderByRecentUse(workspaces.workspaces, workspaces.recentWorkspaceIds)
   const active = () =>
     workspaces.workspaces.find((workspace) => workspace.id === workspaces.activeWorkspaceId) ?? null
 
@@ -41,7 +46,7 @@ export function WorkspaceSwitcher() {
               value={workspaces.activeWorkspaceId ?? ''}
               onChange={(id) => void workspaces.selectWorkspace(id)}
             >
-              <For each={workspaces.workspaces}>
+              <For each={ordered().slice(0, MENU_LIMIT)}>
                 {(workspace) => (
                   <DropdownMenu.RadioItem
                     value={workspace.id}
@@ -57,6 +62,16 @@ export function WorkspaceSwitcher() {
                 )}
               </For>
             </DropdownMenu.RadioGroup>
+            <Show when={ordered().length > MENU_LIMIT}>
+              <DropdownMenu.Item
+                class={styles.action}
+                as="a"
+                href="#/workspaces"
+                onSelect={() => navigate('/workspaces')}
+              >
+                All workspaces…
+              </DropdownMenu.Item>
+            </Show>
             <DropdownMenu.Item class={styles.action} onSelect={() => void handleAdd()}>
               Add workspace…
             </DropdownMenu.Item>

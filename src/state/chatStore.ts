@@ -730,7 +730,11 @@ export function createChatState(
             draftSelected: false,
             draftMode: 'agent',
             draftModel: null,
-            draftEffort: null
+            draftEffort: null,
+            // Set before the request returns. An image upload can outlast the
+            // SSE that stores the user message; the echo has to be visible so
+            // that arrival can clear it.
+            pendingEcho: { sessionId: created.id, text, files: echoFiles }
           }))
           try {
             await submitInstruction(created.id, text, images, fileInputs)
@@ -739,10 +743,12 @@ export function createChatState(
               set({ busy: false })
               return false
             }
-            set({
+            set((state) => ({
               busy: false,
+              pendingEcho:
+                state.pendingEcho?.sessionId === created.id ? null : state.pendingEcho,
               error: noteError(deps, errorText(err, 'Failed to send message'), activeSessionId)
-            })
+            }))
             return false
           }
           if (epoch !== hydrateEpoch) {
@@ -753,7 +759,6 @@ export function createChatState(
           dropSentComposerDraft(created.id, instruction)
           set((state) => ({
             busy: false,
-            pendingEcho: { sessionId: created.id, text, files: echoFiles },
             phaseBySession: { ...state.phaseBySession, [created.id]: 'thinking' },
             sessions: state.sessions.map((item) =>
               item.id === created.id ? { ...item, has_pending_agent: true } : item
@@ -762,12 +767,14 @@ export function createChatState(
           return true
         }
 
+        set({
+          pendingEcho: { sessionId: activeSessionId, text, files: echoFiles }
+        })
         await submitInstruction(activeSessionId, text, images, fileInputs)
         stampPending(activeSessionId)
         dropSentComposerDraft(activeSessionId, instruction)
         set((state) => ({
           busy: false,
-          pendingEcho: { sessionId: activeSessionId, text, files: echoFiles },
           phaseBySession: { ...state.phaseBySession, [activeSessionId]: 'thinking' },
           sessions: state.sessions.map((item) =>
             item.id === activeSessionId ? { ...item, has_pending_agent: true } : item
@@ -775,10 +782,12 @@ export function createChatState(
         }))
         return true
       } catch (err) {
-        set({
+        set((state) => ({
           busy: false,
+          pendingEcho:
+            state.pendingEcho?.sessionId === activeSessionId ? null : state.pendingEcho,
           error: noteError(deps, errorText(err, 'Failed to send message'), activeSessionId)
-        })
+        }))
         return false
       }
     },

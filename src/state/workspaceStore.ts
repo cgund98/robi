@@ -11,9 +11,12 @@ function noteError(deps: ErrorReporter, message: string): string {
 }
 
 const ACTIVE_WORKSPACE_KEY = 'robi.activeWorkspaceId'
+const RECENT_WORKSPACES_KEY = 'robi.recentWorkspaceIds'
 
 export type WorkspaceState = {
   workspaces: Workspace[]
+  /** Workspace ids, most recently selected first. The navbar menu uses this order. */
+  recentWorkspaceIds: string[]
   activeWorkspaceId: string | null
   loaded: boolean
   error: string | null
@@ -29,6 +32,56 @@ function readActiveId(): string | null {
   } catch {
     return null
   }
+}
+
+function readRecentIds(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_WORKSPACES_KEY)
+    if (!raw) {
+      return []
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === 'string')) {
+      return []
+    }
+    return parsed
+  } catch {
+    return []
+  }
+}
+
+function writeRecentIds(ids: string[]) {
+  try {
+    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(ids))
+  } catch {
+    // The menu still works for this page load when storage is blocked.
+  }
+}
+
+/** Most recently selected first. Ids with no recorded use keep their incoming order. */
+export function orderByRecentUse(list: Workspace[], recentIds: readonly string[]): Workspace[] {
+  const rank = new Map(recentIds.map((id, index) => [id, index]))
+  return list
+    .map((workspace, index) => ({ workspace, index }))
+    .sort((left, right) => {
+      const leftRank = rank.get(left.workspace.id)
+      const rightRank = rank.get(right.workspace.id)
+      if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) {
+        return leftRank - rightRank
+      }
+      if (leftRank !== undefined) {
+        return -1
+      }
+      if (rightRank !== undefined) {
+        return 1
+      }
+      return left.index - right.index
+    })
+    .map((entry) => entry.workspace)
+}
+
+function rememberUse(recentIds: readonly string[], id: string): string[] {
+  return [id, ...recentIds.filter((item) => item !== id)]
 }
 
 function writeActiveId(id: string | null) {
@@ -70,6 +123,7 @@ export function createWorkspaceState(
 ): WorkspaceState {
   return {
     workspaces: [],
+    recentWorkspaceIds: readRecentIds(),
     activeWorkspaceId: readActiveId(),
     loaded: false,
     error: null,
@@ -82,7 +136,11 @@ export function createWorkspaceState(
           readActiveId() ?? get().activeWorkspaceId
         )
         writeActiveId(activeWorkspaceId)
-        set({ workspaces, activeWorkspaceId, loaded: true, error: null })
+        const recentWorkspaceIds = activeWorkspaceId
+          ? rememberUse(get().recentWorkspaceIds, activeWorkspaceId)
+          : get().recentWorkspaceIds
+        writeRecentIds(recentWorkspaceIds)
+        set({ workspaces, recentWorkspaceIds, activeWorkspaceId, loaded: true, error: null })
         focusOpenWorkspace(activeWorkspaceId)
       } catch (err) {
         set({
@@ -100,7 +158,9 @@ export function createWorkspaceState(
         return
       }
       writeActiveId(id)
-      set({ activeWorkspaceId: id, error: null })
+      const recentWorkspaceIds = rememberUse(get().recentWorkspaceIds, id)
+      writeRecentIds(recentWorkspaceIds)
+      set({ activeWorkspaceId: id, recentWorkspaceIds, error: null })
       focusOpenWorkspace(id)
     },
 
@@ -110,8 +170,11 @@ export function createWorkspaceState(
         const workspace = await createWorkspace(root)
         const rest = get().workspaces.filter((item) => item.id !== workspace.id)
         writeActiveId(workspace.id)
+        const recentWorkspaceIds = rememberUse(get().recentWorkspaceIds, workspace.id)
+        writeRecentIds(recentWorkspaceIds)
         set({
           workspaces: [workspace, ...rest],
+          recentWorkspaceIds,
           activeWorkspaceId: workspace.id,
           loaded: true,
           error: null

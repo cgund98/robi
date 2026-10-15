@@ -70,7 +70,9 @@ a per-session phase: `idle`, `thinking`, or `responding`.
 
 The list keeps the latest row in view while the reader is at the bottom.
 Scrolling up, including a trackpad or wheel gesture upward, releases that
-follow so a message update does not pull the view back down. Returning to
+follow so a message update does not pull the view back down. A tool request
+or other growth at the end does not release it: the view moves to the new
+bottom, including when that block is taller than the screen. Returning to
 the bottom resumes it. Switching chats starts at the bottom again. A repeated
 `message_delta` that does not change the phase does not render the list again.
 

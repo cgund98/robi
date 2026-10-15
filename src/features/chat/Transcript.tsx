@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 
 import type { ChatMessage } from '../../api/messages'
 import { imageUrl } from '../../api/messages'
@@ -8,7 +8,7 @@ import type { AgentPhase } from '../../state/chatStore'
 import type { AttachmentMeta } from './textAttachments'
 import { finishedTodos, remainingTodos } from './todoProgress'
 import type { PlanView } from './toolCallView'
-import { distanceFromBottom } from './transcriptFollow'
+import { pinnedAfterScroll } from './transcriptFollow'
 import { formatElapsed, pendingSeconds, workedLabel } from './turnDuration'
 import styles from './Transcript.module.css'
 import { AssistantMarkdown } from './AssistantMarkdown'
@@ -72,11 +72,32 @@ export function Transcript(props: {
   let pinned = true
   let adjusting = 0
   let lastTop = 0
+  let lastHeight = 0
   let headId = ''
-  const turns = () => groupTurns(props.messages)
+  const turns = createMemo(() => groupTurns(props.messages))
+  const turnById = createMemo(() => {
+    const map = new Map<string, ChatMessage[]>()
+    for (const group of turns()) {
+      const id = group[0]?.id
+      if (id) {
+        map.set(id, group)
+      }
+    }
+    return map
+  })
+  const turnIds = createMemo(() =>
+    turns().flatMap((group) => {
+      const id = group[0]?.id
+      return id ? [id] : []
+    })
+  )
+  const lastTurnId = createMemo(() => {
+    const groups = turns()
+    return groups[groups.length - 1]?.[0]?.id
+  })
   const anchorId = () => (props.echo ? undefined : props.messages[props.messages.length - 1]?.id)
 
-  const follow = () => {
+  const follow = (retry = true) => {
     const node = scroller
     if (!node) {
       return
@@ -96,8 +117,12 @@ export function Transcript(props: {
     adjusting += 1
     node.scrollTop = next
     lastTop = node.scrollTop
+    lastHeight = node.scrollHeight
     window.requestAnimationFrame(() => {
       adjusting = Math.max(0, adjusting - 1)
+      if (retry) {
+        follow(false)
+      }
     })
   }
 
@@ -108,17 +133,27 @@ export function Transcript(props: {
     }
     const onScroll = () => {
       const top = node.scrollTop
-      const previous = lastTop
+      const height = node.scrollHeight
+      const previousTop = lastTop
+      const previousHeight = lastHeight
       lastTop = top
+      lastHeight = height
       if (adjusting > 0) {
         return
       }
-      const nearBottom = distanceFromBottom(node) <= FOLLOW_THRESHOLD
-      if (top < previous - 1 && !nearBottom) {
-        pinned = false
-        return
+      const stay = pinnedAfterScroll({
+        pinned,
+        scrollTop: top,
+        previousScrollTop: previousTop,
+        scrollHeight: height,
+        previousScrollHeight: previousHeight,
+        clientHeight: node.clientHeight,
+        threshold: FOLLOW_THRESHOLD
+      })
+      pinned = stay
+      if (stay && height > previousHeight + 1) {
+        follow()
       }
-      pinned = nearBottom
     }
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY >= 0) {
@@ -151,12 +186,12 @@ export function Transcript(props: {
   return (
     <div class={styles.transcript} ref={scroller}>
       <ul class={styles.list}>
-        <For each={turns()}>
-          {(group, index) => (
+        <For each={turnIds()}>
+          {(id) => (
             <TurnView
-              group={group}
+              group={turnById().get(id) ?? []}
               sessionId={props.sessionId}
-              last={index() === turns().length - 1}
+              last={id === lastTurnId()}
               phase={props.phase}
               deciding={props.deciding}
               buildDisabled={props.buildDisabled ?? false}
@@ -203,10 +238,13 @@ function TurnView(props: {
   onBuild?: (path: string) => void
   onViewPlan?: (plan: PlanView) => void
 }) {
+  const assistant = createMemo(() => props.group.filter((message) => message.role === 'assistant'))
+  const assistantById = createMemo(
+    () => new Map(assistant().map((message) => [message.id, message]))
+  )
   const start = () => props.group.find((message) => message.role === 'user')
   const end = () => props.group[props.group.length - 1]
   const open = () => turnStillOpen(props.group, props.last, props.phase)
-  const assistant = () => props.group.filter((message) => message.role === 'assistant')
   const worked = () => {
     const first = start()
     const last = end()
@@ -267,10 +305,10 @@ function TurnView(props: {
       </Show>
       <Show when={assistant().length > 0}>
         <li class={styles.turn}>
-          <For each={assistant()}>
-            {(message) => (
+          <For each={assistant().map((message) => message.id)}>
+            {(id) => (
               <AssistantBlock
-                message={message}
+                message={assistantById().get(id)!}
                 phase={props.phase}
                 deciding={props.deciding}
                 buildDisabled={props.buildDisabled}
@@ -297,6 +335,9 @@ function AssistantBlock(props: {
   onViewPlan?: (plan: PlanView) => void
 }) {
   const text = () => props.message.content.trim()
+  const callById = createMemo(
+    () => new Map(props.message.tool_calls.map((call) => [call.id, call]))
+  )
   return (
     <Show
       when={props.message.role === 'assistant' && (text() || props.message.tool_calls.length > 0)}
@@ -306,25 +347,30 @@ function AssistantBlock(props: {
           <AssistantMarkdown text={props.message.content} />
         </div>
       </Show>
-      <For each={props.message.tool_calls}>
-        {(call) => (
-          <Show
-            when={call.name === 'todos' && !call.error && call.execution_status === 'succeeded'}
-            fallback={
-              <ToolCallCard
-                call={call}
-                phase={props.phase}
-                busy={props.deciding}
-                buildDisabled={props.buildDisabled}
-                onDecide={(decision) => props.onDecide(call.id, decision)}
-                onBuild={props.onBuild}
-                onViewPlan={props.onViewPlan}
-              />
-            }
-          >
-            <FinishedTodos items={finishedTodos(call)} />
-          </Show>
-        )}
+      <For each={props.message.tool_calls.map((call) => call.id)}>
+        {(id) => {
+          const call = () => callById().get(id)!
+          return (
+            <Show
+              when={
+                call().name === 'todos' && !call().error && call().execution_status === 'succeeded'
+              }
+              fallback={
+                <ToolCallCard
+                  call={call()}
+                  phase={props.phase}
+                  busy={props.deciding}
+                  buildDisabled={props.buildDisabled}
+                  onDecide={(decision) => props.onDecide(call().id, decision)}
+                  onBuild={props.onBuild}
+                  onViewPlan={props.onViewPlan}
+                />
+              }
+            >
+              <FinishedTodos items={finishedTodos(call())} />
+            </Show>
+          )
+        }}
       </For>
     </Show>
   )

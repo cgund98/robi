@@ -147,8 +147,9 @@ everywhere else.
 
 ### `/id` in the composer
 
-`/` at the start of the composer, or after whitespace, opens a menu of
-user-invocable skills. The filter is the text after `/`, matched against the
+`/` at the start of the composer opens a menu of user-invocable skills, and
+only while the caret is still in that first token. A `/` after any text, or
+after whitespace, does not open it. The filter is the text after `/`, matched against the
 id, the display label, and the description. A row shows the label (or the id
 when they are the same), the description, and whether it comes from home or
 this workspace. A manual-only skill is in that menu and marked so. Choosing a
@@ -266,9 +267,9 @@ control, and links the MCP servers guide. Details are in
   is a generic read, the path has to be in the prompt, and `/id` cannot load
   a manual-only skill the model is forbidden to open.
 - **`@` as the mention.** OpenCode and ChatGPT use it. This composer uses `/`,
-  which is the mention Claude and Cursor already teach. A mention is `/` at
-  the start of the composer or after whitespace, so a path or a URL is left
-  alone.
+  which is the mention Claude and Cursor already teach. The menu opens only
+  for a `/` that starts the message, so a path or a URL later in the draft is
+  left alone.
 - **Hoping the model calls `skill` when it sees `/id`.** A mention the model
   ignores never loads. The host loads it while accepting the message.
 - **Putting the body into `content`.** The stored user text would no longer
