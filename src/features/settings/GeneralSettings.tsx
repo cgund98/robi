@@ -14,6 +14,7 @@ export function GeneralSettings() {
   const [writePaths, setWritePaths] = createSignal('')
   const [pathEntries, setPathEntries] = createSignal('')
   const [openPatterns, setOpenPatterns] = createSignal('')
+  const [openCommand, setOpenCommand] = createSignal('')
   const [maxIterations, setMaxIterations] = createSignal('50')
   const [subagentIterations, setSubagentIterations] = createSignal('50')
   const [subagentTimeout, setSubagentTimeout] = createSignal('120')
@@ -24,6 +25,7 @@ export function GeneralSettings() {
     write: '',
     entries: '',
     openPatterns: '',
+    openCommand: '',
     iterations: '50',
     subagentIterations: '50',
     subagentTimeout: '120',
@@ -49,7 +51,8 @@ export function GeneralSettings() {
           subagent,
           subagentTimeoutSetting,
           toolTimeoutSetting,
-          openPatternsSetting
+          openPatternsSetting,
+          openCommandSetting
         ] = await getSettings([
           SETTING_KEYS.lsp,
           SETTING_KEYS.pathAllowRead,
@@ -59,7 +62,8 @@ export function GeneralSettings() {
           SETTING_KEYS.subagentMaxIterations,
           SETTING_KEYS.subagentTimeoutSeconds,
           SETTING_KEYS.toolTimeoutSeconds,
-          SETTING_KEYS.fileOpenPatterns
+          SETTING_KEYS.fileOpenPatterns,
+          SETTING_KEYS.fileOpenCommand
         ])
         if (cancelled) {
           return
@@ -73,6 +77,7 @@ export function GeneralSettings() {
         const childTimeout = subagentTimeoutSetting.value ?? '120'
         const shellTimeout = toolTimeoutSetting.value ?? '120'
         const patterns = openPatternsSetting.value ?? ''
+        const command = openCommandSetting.value ?? ''
         saved.read = read
         saved.write = write
         saved.entries = entries
@@ -81,6 +86,7 @@ export function GeneralSettings() {
         saved.subagentTimeout = childTimeout
         saved.toolTimeout = shellTimeout
         saved.openPatterns = patterns
+        saved.openCommand = command
         setReadPaths(read)
         setWritePaths(write)
         setPathEntries(entries)
@@ -89,6 +95,7 @@ export function GeneralSettings() {
         setSubagentTimeout(childTimeout)
         setToolTimeout(shellTimeout)
         setOpenPatterns(patterns)
+        setOpenCommand(command)
       } catch (err: unknown) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load settings')
@@ -164,8 +171,8 @@ export function GeneralSettings() {
       <section class={styles.section}>
         <h2 class={styles.sectionTitle}>Files</h2>
         <p class={styles.sectionHint}>
-          A path that matches a line opens in the app your system uses for that file. Every other
-          path opens in the file viewer. One glob per line. `*` matches any run of characters.
+          A path that matches a line opens outside the file viewer. Every other path opens in the
+          file viewer. One glob per line. `*` matches any run of characters.
         </p>
         <div class={styles.card}>
           <PathBlock
@@ -183,6 +190,30 @@ export function GeneralSettings() {
               )
             }
           />
+          <div class={styles.row}>
+            <div class={styles.copy}>
+              <div class={styles.label}>Open command</div>
+              <div class={styles.hint}>
+                {`Used for a path that matches. {file_path} is the file and {line} is the line. Empty uses the app the system uses for that file.`}
+              </div>
+            </div>
+            <input
+              class={`${styles.input} ${styles.control}`}
+              spellcheck={false}
+              aria-label="External open command"
+              placeholder="zed {file_path}:{line}"
+              value={openCommand()}
+              onInput={(event) => setOpenCommand(event.currentTarget.value)}
+              onBlur={() =>
+                void savePaths(
+                  SETTING_KEYS.fileOpenCommand,
+                  openCommand(),
+                  'openCommand',
+                  setOpenCommand
+                )
+              }
+            />
+          </div>
         </div>
       </section>
       <section class={styles.section}>

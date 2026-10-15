@@ -741,8 +741,7 @@ export function createChatState(
             }
             set((state) => ({
               busy: false,
-              pendingEcho:
-                state.pendingEcho?.sessionId === created.id ? null : state.pendingEcho,
+              pendingEcho: state.pendingEcho?.sessionId === created.id ? null : state.pendingEcho,
               error: noteError(deps, errorText(err, 'Failed to send message'), activeSessionId)
             }))
             return false
@@ -780,8 +779,7 @@ export function createChatState(
       } catch (err) {
         set((state) => ({
           busy: false,
-          pendingEcho:
-            state.pendingEcho?.sessionId === activeSessionId ? null : state.pendingEcho,
+          pendingEcho: state.pendingEcho?.sessionId === activeSessionId ? null : state.pendingEcho,
           error: noteError(deps, errorText(err, 'Failed to send message'), activeSessionId)
         }))
         return false

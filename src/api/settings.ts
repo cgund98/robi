@@ -21,6 +21,7 @@ export const SETTING_KEYS = {
   pathAllowWrite: 'path_allow_write',
   pathEntries: 'path_entries',
   fileOpenPatterns: 'file_open_patterns',
+  fileOpenCommand: 'file_open_command',
   maxIterations: 'max_iterations',
   subagentMaxIterations: 'subagent_max_iterations',
   subagentTimeoutSeconds: 'subagent_timeout_seconds',

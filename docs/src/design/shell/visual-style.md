@@ -261,7 +261,7 @@ segmented control. **OpenCode Go** and **Anthropic** are each their own card:
 an enabled switch, on by default, then that provider's API key. OpenCode Go also
 has the optional base URL. A switch that is off disables that card's key field. **Permissions** is a single card: switches for
 web search approval and web fetch approval, both on by default. Below model
-defaults, **General** has the workspace, **Files** (newline-separated globs for paths that open in the system app; everything else opens in the file viewer), a language-server switch, then max
+defaults, **General** has the workspace, **Files** (newline-separated globs for paths that open outside the viewer, and an optional command such as `zed {file_path}:{line}`; an empty command uses the system app; a command that fails shows its error on the edit card; everything else opens in the file viewer), a language-server switch, then max
 iterations and subagent max iterations, a subagent timeout, and a tool timeout.
 **Audit log**
 lists the last 250 API calls in a table (time, method, path, status, duration), 50 per page. Clicking a row shows that response body. Errors from this run of the app follow, newest first. Health checks are omitted. It is not saved. Use the same tokens;

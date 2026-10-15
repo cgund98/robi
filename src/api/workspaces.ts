@@ -41,6 +41,24 @@ export async function readWorkspaceFile(id: string, path: string): Promise<strin
   )
 }
 
+export async function openWorkspaceFileCommand(
+  id: string,
+  path: string,
+  line?: number
+): Promise<void> {
+  const result = await api.POST('/api/v1/workspaces/{id}/open', {
+    params: { path: { id } },
+    body: line === undefined ? { path } : { path, line }
+  })
+  if (result.response.ok) {
+    return
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to open file')
+  )
+}
+
 export async function resolveWorkspacePath(id: string, path: string): Promise<string> {
   const result = await api.GET('/api/v1/workspaces/{id}/path', {
     params: { path: { id }, query: { path } }

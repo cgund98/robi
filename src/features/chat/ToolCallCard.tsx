@@ -5,7 +5,7 @@ import { isTauri } from '@tauri-apps/api/core'
 
 import { getToolOriginal } from '../../api/messages'
 import { getSetting, SETTING_KEYS } from '../../api/settings'
-import { openWorkspaceFile } from '../../infra/openWorkspaceFile'
+import { OpenCommandError, openWorkspaceFile } from '../../infra/openWorkspaceFile'
 import { OpenedFile } from './OpenedFile'
 import { matchesOpenPattern } from './openFile'
 import { type AgentPhase } from '../../state/chatStore'
@@ -57,6 +57,7 @@ export function ToolCallCard(props: {
   sessionId?: string | null
 }) {
   const [viewPath, setViewPath] = createSignal<string | null>(null)
+  const [openError, setOpenError] = createSignal<string | null>(null)
   const summary = () => toolSummary(props.call)
   const decision = () => needsDecision(props.call, props.phase)
   const preview = () => editPreview(props.call)
@@ -90,7 +91,10 @@ export function ToolCallCard(props: {
             detail={detail()}
             busy={props.busy}
             onDecide={props.onDecide}
-            onOpenPath={(path) => void openSelectedFile(path, setViewPath)}
+            onOpenPath={(path, line) =>
+              void openSelectedFile(path, line, setViewPath, setOpenError)
+            }
+            openError={openError()}
           />
         }
       >
@@ -122,7 +126,10 @@ export function ToolCallCard(props: {
           <EditDiff
             expansionKey={props.call.id}
             preview={preview()!}
-            onOpenPath={(path) => void openSelectedFile(path, setViewPath)}
+            onOpenPath={(path, line) =>
+              void openSelectedFile(path, line, setViewPath, setOpenError)
+            }
+            openError={openError()}
           />
         </Show>
         <Show
@@ -216,7 +223,8 @@ function ApprovalBody(props: {
   detail: ReturnType<typeof toolDetail>
   busy: boolean
   onDecide: (decision: 'approve' | 'reject') => void
-  onOpenPath: (path: string) => void
+  onOpenPath: (path: string, line?: number) => void
+  openError: string | null
 }) {
   const suggestion = () => editSuggestion(props.call)
   const actions = <ApprovalActions busy={props.busy} onDecide={props.onDecide} />
@@ -229,6 +237,7 @@ function ApprovalBody(props: {
           preview={suggestion()!}
           actions={actions}
           onOpenPath={props.onOpenPath}
+          openError={props.openError}
         />
       }
     >
@@ -481,14 +490,24 @@ function ApprovalActions(props: {
   )
 }
 
-async function openSelectedFile(path: string, openInApp: (path: string) => void) {
+async function openSelectedFile(
+  path: string,
+  line: number | undefined,
+  openInApp: (path: string) => void,
+  setOpenError: (message: string | null) => void
+) {
+  setOpenError(null)
   try {
     const setting = await getSetting(SETTING_KEYS.fileOpenPatterns)
     if (isTauri() && matchesOpenPattern(path, setting.value ?? '')) {
-      await openWorkspaceFile(path)
+      await openWorkspaceFile(path, line)
       return
     }
-  } catch {
+  } catch (err: unknown) {
+    if (err instanceof OpenCommandError) {
+      setOpenError(err.message)
+      return
+    }
     // A missing setting, or an opener that fails, still opens the file here.
   }
   openInApp(path)
@@ -498,7 +517,8 @@ function EditDiff(props: {
   expansionKey: string
   preview: EditPreview
   actions?: JSX.Element
-  onOpenPath: (path: string) => void
+  onOpenPath: (path: string, line?: number) => void
+  openError?: string | null
 }) {
   const [open, setOpen] = createOpen(`${props.expansionKey}:diff`)
   const canExpand = () =>
@@ -519,7 +539,10 @@ function EditDiff(props: {
             type="button"
             class={`${styles.editPath} ${styles.editPathOpen}`}
             title={`Open ${props.preview.path}`}
-            onClick={() => props.onOpenPath(props.preview.path)}
+            onClick={() => {
+              const line = props.preview.lines.find((entry) => entry.kind !== 'context')
+              props.onOpenPath(props.preview.path, line?.lineNo)
+            }}
           >
             {props.preview.path}
           </button>
@@ -540,6 +563,9 @@ function EditDiff(props: {
         </div>
         {props.actions}
       </div>
+      <Show when={props.openError}>
+        <p class={styles.editOpenError}>{props.openError}</p>
+      </Show>
       <DiffView lines={visible()} hidden={open() ? props.preview.hidden : 0} />
     </div>
   )

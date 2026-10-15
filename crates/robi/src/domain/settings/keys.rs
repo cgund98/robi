@@ -127,6 +127,12 @@ pub const PATH_ENTRIES: &str = "path_entries";
 /// Anything else opens in the file viewer. Not a secret. Absent matches nothing.
 pub const FILE_OPEN_PATTERNS: &str = "file_open_patterns";
 
+/// Command that opens a path matched by [`FILE_OPEN_PATTERNS`].
+///
+/// `{file_path}` is the absolute path and `{line}` is a 1-based line.
+/// Not a secret. Absent uses the system opener.
+pub const FILE_OPEN_COMMAND: &str = "file_open_command";
+
 /// Model turns allowed in one primary-agent run. Not a secret.
 pub const MAX_ITERATIONS: &str = "max_iterations";
 
@@ -229,7 +235,8 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
         | PATH_ALLOW_READ
         | PATH_ALLOW_WRITE
         | PATH_ENTRIES
-        | FILE_OPEN_PATTERNS => Some(KnownSetting {
+        | FILE_OPEN_PATTERNS
+        | FILE_OPEN_COMMAND => Some(KnownSetting {
             secret: false,
             default_value: None,
         }),

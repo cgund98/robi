@@ -123,7 +123,7 @@ export function Sidebar(props: SidebarProps) {
           type="button"
           class={styles.navLink}
           disabled={props.disabled}
-          onClick={() => navigate('/settings/providers')}
+          onClick={() => navigate('/settings/general')}
         >
           <span class={styles.navIcon} aria-hidden="true">
             <Cog size={18} />

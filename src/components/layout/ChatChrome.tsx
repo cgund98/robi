@@ -396,7 +396,11 @@ export function ChatChrome() {
           <PlanPage
             plan={plan()!.view}
             buildDisabled={
-              chat.loading || chat.busy || agentRunning() || stopping() || plan()!.view.path.length === 0
+              chat.loading ||
+              chat.busy ||
+              agentRunning() ||
+              stopping() ||
+              plan()!.view.path.length === 0
             }
             onBack={() => setPlan(null)}
             onBuild={() => {

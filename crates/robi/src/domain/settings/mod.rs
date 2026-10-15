@@ -4,6 +4,7 @@
 //! live in `web_api`.
 
 pub mod keys;
+pub mod open_command;
 pub mod service;
 pub mod store;
 

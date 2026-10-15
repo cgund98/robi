@@ -47,6 +47,7 @@ handler that takes 2 seconds or longer is logged at warning with its duration.
 | `PUT` | `/api/v1/workspaces/{id}/docs/{path}` | Save the open page. The body is a CodeMirror change set (`base_version` + `changes`) or the whole buffer (`content`). Reconciles against the disk and returns `{path, content, version, outcome}`. A base version the server no longer has is `409` with `{content, version}`. |
 | `GET` | `/api/v1/workspaces/{id}/docs/search` | Markdown search. `engine` is `semantic` (default, the index) or `ripgrep` (a literal scan that does not start the index). |
 | `GET` | `/api/v1/workspaces/{id}/path` | `{"absolute"}`. Query `path` is workspace-relative. A blank path, the workspace root, or a path that resolves outside the root is `400`. |
+| `POST` | `/api/v1/workspaces/{id}/open` | Body `{"path", "line?"}`. Runs `file_open_command` for that file. `204` when the program is still running after 10 seconds or exits 0 sooner. `400` with `{"error"}` when it cannot start or exits non-zero inside that window. `404` when the command is unset. |
 | `GET` | `/api/v1/workspaces/{id}/file` | `{"path","content"}`. UTF-8 text of that file, at most 1 MiB. A directory, a larger file, or a non-UTF-8 file is `400`. A missing file is `404`. |
 
 ## Chat sessions

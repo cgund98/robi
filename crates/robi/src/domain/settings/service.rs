@@ -110,6 +110,9 @@ impl SettingsService {
         if key == keys::FILE_OPEN_PATTERNS {
             validate_open_patterns(&value)?;
         }
+        if key == keys::FILE_OPEN_COMMAND {
+            super::open_command::validate_open_command(&value).map_err(ServiceError::BadRequest)?;
+        }
         if let Some(limit) = bounded_limit(key) {
             if keys::parse_bounded(Some(&value), 0, limit) == 0 {
                 return Err(ServiceError::BadRequest(format!(
@@ -390,5 +393,26 @@ mod tests {
             .set(keys::FILE_OPEN_PATTERNS, "*.rs\n*.png".into(), false)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_open_command_requires_a_path_placeholder() {
+        let service = service();
+        service
+            .set(
+                keys::FILE_OPEN_COMMAND,
+                "zed {file_path}:{line}".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let error = service
+            .set(keys::FILE_OPEN_COMMAND, "zed".into(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("file_open_command must contain {file_path}".into())
+        );
     }
 }

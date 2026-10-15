@@ -47,7 +47,7 @@ switcher (**Add workspace…**).
 
 ## 3. Set up model providers
 
-Open **Settings → Model Providers** (the sidebar **Settings** button lands here).
+Open **Settings** (it opens on **General**), then **Model Providers**.
 Each provider has an **Enabled** switch and an **API key** field. Type a key and
 it saves when the field loses focus; the status line reads **Saved**. The server
 never returns the value, so a saved key shows as `••••••••` with the hint **A key

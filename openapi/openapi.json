@@ -1307,6 +1307,46 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/open": {
+      "post": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "open_workspace_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWorkspaceFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The editor was started, or it was still running after 10 seconds"
+          },
+          "400": {
+            "description": "The command failed to start or exited within 10 seconds"
+          },
+          "404": {
+            "description": "file_open_command is not set"
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/path": {
       "get": {
         "tags": [
@@ -2380,6 +2420,28 @@
                 "$ref": "#/components/schemas/ModeOverridePatch"
               }
             ]
+          }
+        }
+      },
+      "OpenWorkspaceFile": {
+        "type": "object",
+        "description": "Open one workspace file with the stored `file_open_command`.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1-based line. Omitted when the click has no line.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative path. `..` and a path that resolves outside the root are refused."
           }
         }
       },

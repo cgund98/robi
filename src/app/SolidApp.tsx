@@ -19,7 +19,7 @@ export function SolidApp() {
       />
       <Route path="/workspaces" component={WorkspacesPage} />
       <Route path="/settings" component={SettingsLayout}>
-        <Route path="/" component={() => <Navigate href="/settings/providers" />} />
+        <Route path="/" component={() => <Navigate href="/settings/general" />} />
         <Route path="/providers" component={ModelProvidersSettings} />
         <Route path="/mcp" component={McpSettings} />
         <Route path="/permissions" component={PermissionsSettings} />

@@ -33,6 +33,7 @@ path_entries = """
 file_open_patterns = """
 *.png
 """
+file_open_command = "zed {file_path}:{line}"
 web_search_approval = "on"
 web_fetch_approval = "on"
 ```
@@ -83,7 +84,8 @@ files and later reads always agree.
 | `path_allow_read` | no | none | Newline-separated paths appended to every session's read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_allow_write` | no | none | Newline-separated paths appended to every session's write allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`, to an MCP stdio child's `PATH`, and to the `PATH` the language-server tools resolve a binary on. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment, and once at startup for the language-server resolver. |
-| `file_open_patterns` | no | none | Newline-separated globs. `*` matches any run of characters, including `/`, and `?` matches one character. A workspace-relative path that matches one opens in the system app when its name is clicked on an open edit card. Anything else opens in the file viewer. Absent matches nothing. |
+| `file_open_patterns` | no | none | Newline-separated globs. `*` matches any run of characters, including `/`, and `?` matches one character. A workspace-relative path that matches one opens outside the file viewer when its name is clicked on an edit card. Anything else opens in the file viewer. Absent matches nothing. |
+| `file_open_command` | no | none | One line. `{file_path}` is the absolute path and `{line}` is the 1-based line of the first change. A click with no line drops `{line}` and a colon before it. The line is split on whitespace into arguments; double quotes group one argument. It is not a shell command. Absent uses the system app. The desktop app posts the path to `POST /api/v1/workspaces/{id}/open` and waits up to 10 seconds. A program still running then has started. A failure to start, or a non-zero exit inside that window, is shown on the edit card. |
 | `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
 | `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
 

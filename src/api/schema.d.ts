@@ -388,6 +388,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{id}/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["open_workspace_file"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{id}/path": {
         parameters: {
             query?: never;
@@ -779,6 +795,16 @@ export interface components {
             agent?: null | components["schemas"]["ModeOverridePatch"];
             ask?: null | components["schemas"]["ModeOverridePatch"];
             plan?: null | components["schemas"]["ModeOverridePatch"];
+        };
+        /** @description Open one workspace file with the stored `file_open_command`. */
+        OpenWorkspaceFile: {
+            /**
+             * Format: int32
+             * @description 1-based line. Omitted when the click has no line.
+             */
+            line?: number | null;
+            /** @description Workspace-relative path. `..` and a path that resolves outside the root are refused. */
+            path: string;
         };
         ReviewFileBody: {
             /** Format: int32 */
@@ -1919,6 +1945,45 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["McpConfig"];
                 };
+            };
+        };
+    };
+    open_workspace_file: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenWorkspaceFile"];
+            };
+        };
+        responses: {
+            /** @description The editor was started, or it was still running after 10 seconds */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The command failed to start or exited within 10 seconds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description file_open_command is not set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

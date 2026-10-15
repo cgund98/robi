@@ -3,7 +3,7 @@ use std::path::{Path as FsPath, PathBuf};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/workspaces/{id}/mcp/config", get(get_mcp_config))
         .route("/api/v1/workspaces/{id}/path", get(resolve_workspace_path))
+        .route("/api/v1/workspaces/{id}/open", post(open_workspace_file))
         .route("/api/v1/workspaces/{id}/file", get(read_workspace_file))
         .with_state(state)
 }
@@ -323,6 +324,135 @@ pub async fn resolve_workspace_path(
     Ok(Json(AbsolutePath {
         absolute: absolute.display().to_string(),
     }))
+}
+
+/// Open one workspace file with the stored `file_open_command`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct OpenWorkspaceFile {
+    /// Workspace-relative path. `..` and a path that resolves outside the root are refused.
+    pub path: String,
+    /// 1-based line. Omitted when the click has no line.
+    #[serde(default)]
+    pub line: Option<u32>,
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{id}/open",
+    params(("id" = String, Path, description = "Workspace id")),
+    request_body = OpenWorkspaceFile,
+    responses(
+        (status = 204, description = "The editor was started, or it was still running after 10 seconds"),
+        (status = 400, description = "The command failed to start or exited within 10 seconds"),
+        (status = 404, description = "file_open_command is not set")
+    )
+)]
+pub async fn open_workspace_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<OpenWorkspaceFile>,
+) -> Result<StatusCode, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let setting = state
+        .settings_service
+        .get(crate::domain::settings::keys::FILE_OPEN_COMMAND)
+        .await?;
+    let Some(template) = setting.value.filter(|value| !value.trim().is_empty()) else {
+        return Err(ServiceError::NotFound(
+            crate::domain::settings::keys::FILE_OPEN_COMMAND.into(),
+        ));
+    };
+    let root = PathBuf::from(&workspace.root);
+    let relative = body.path;
+    let line = body.line;
+    crate::agent::blocking::call(move || open_with_command(&root, &relative, line, &template))
+        .await
+        .map_err(ServiceError::BadRequest)??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resolve `relative`, render the template, and start the program off the async runtime.
+fn open_with_command(
+    root: &FsPath,
+    relative: &str,
+    line: Option<u32>,
+    template: &str,
+) -> Result<(), ServiceError> {
+    let absolute = absolute_inside(root, relative)?;
+    let argv = crate::domain::settings::open_command::render_open_command(
+        template,
+        &absolute.display().to_string(),
+        line,
+    )
+    .map_err(ServiceError::BadRequest)?;
+    let program = argv[0].clone();
+    let args = &argv[1..];
+    spawn_opener(&program, args).map_err(ServiceError::BadRequest)
+}
+
+/// Start `program` and wait up to 10 seconds.
+///
+/// A process still running at the deadline is left running. A thread reaps it
+/// later so it does not stay a zombie, and drains stderr so a full pipe cannot
+/// stall the editor. A non-zero exit inside the window is an error.
+fn spawn_opener(program: &str, args: &[String]) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| io_message(&err, program))?;
+    let deadline = Duration::from_secs(crate::domain::settings::open_command::OPEN_TIMEOUT_SECONDS);
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                return Err(exit_message(program, status.code(), &stderr));
+            }
+            Ok(None) if started.elapsed() >= deadline => {
+                std::thread::spawn(move || {
+                    if let Some(mut pipe) = child.stderr.take() {
+                        let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+                    }
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(err) => return Err(io_message(&err, program)),
+        }
+    }
+}
+
+fn io_message(err: &std::io::Error, program: &str) -> String {
+    let text = err.to_string();
+    let text = text.split(" (os error").next().unwrap_or(&text);
+    format!("{text}: {program}")
+}
+
+fn exit_message(program: &str, code: Option<i32>, stderr: &str) -> String {
+    let code = code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".into());
+    let stderr = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+    let stderr: String = stderr.chars().take(400).collect();
+    if stderr.is_empty() {
+        format!("{program} exited {code}")
+    } else {
+        format!("{program} exited {code}: {stderr}")
+    }
 }
 
 /// Canonical absolute path of `relative` under `root`.
