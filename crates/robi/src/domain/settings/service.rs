@@ -96,14 +96,13 @@ impl SettingsService {
         }
         if matches!(
             key,
-            keys::LSP
-                | keys::WEB_SEARCH_APPROVAL
+            keys::WEB_SEARCH_APPROVAL
                 | keys::WEB_FETCH_APPROVAL
                 | keys::PROVIDER_OPENCODE_GO
                 | keys::PROVIDER_ANTHROPIC
                 | keys::PROVIDER_DEEPSEEK
-        ) && value != keys::LSP_ON
-            && value != keys::LSP_OFF
+        ) && value != keys::PROVIDER_ON
+            && value != keys::PROVIDER_OFF
         {
             return Err(ServiceError::BadRequest(format!("{key} must be on or off")));
         }
@@ -324,30 +323,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lsp_defaults_to_on_and_rejects_other_values() {
-        let store = Arc::new(MemorySettingsStore::new());
+    async fn the_removed_lsp_key_is_no_longer_known() {
+        // S4 removed the setting along with the tools it gated. A client that
+        // still writes it gets the same 400 an unknown key always gets.
         let service = SettingsService {
-            store: Arc::clone(&store) as Arc<dyn SettingsStore>,
+            store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
         };
-
-        let setting = service.get(keys::LSP).await.unwrap();
-        assert_eq!(setting.value.as_deref(), Some(keys::LSP_ON));
-        assert!(keys::lsp_enabled(setting.value.as_deref()));
-
-        service
-            .set(keys::LSP, keys::LSP_OFF.into(), false)
-            .await
-            .unwrap();
-        let off = service.get(keys::LSP).await.unwrap();
-        assert!(!keys::lsp_enabled(off.value.as_deref()));
-
-        let error = service
-            .set(keys::LSP, "true".into(), false)
-            .await
-            .unwrap_err();
+        let error = service.set("lsp", "on".into(), false).await.unwrap_err();
         assert_eq!(
             error,
-            ServiceError::BadRequest("lsp must be on or off".into())
+            ServiceError::BadRequest("unknown setting: lsp".into())
         );
     }
 

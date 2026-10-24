@@ -8,11 +8,9 @@ use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::change::{
-    change_diff, diff_json, lock_path, publish_file_changed, read_text, record_baseline,
-    status_outcome, write_approval,
-};
+use super::change::{change_diff, diff_json, publish_file_changed, status_outcome, write_approval};
 use super::context::{display_path, ToolContext};
+use super::fs_write::{lock_path, read_text, record_baseline};
 
 pub struct DeleteFile {
     ctx: Arc<ToolContext>,

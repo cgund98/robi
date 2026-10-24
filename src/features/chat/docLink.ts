@@ -1,6 +1,10 @@
 /**
  * Workspace-relative markdown path a relative link points at, or null when
  * the href is absolute, a fragment, or not a markdown file.
+ *
+ * A chat message that links to another markdown page uses this to route the
+ * link inside the app. It was in the docs viewer before S5 and is not specific
+ * to it: the transcript is the only caller now.
  */
 export function resolveMarkdownLink(fromPath: string, href: string): string | null {
   const trimmed = href.trim()

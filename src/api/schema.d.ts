@@ -84,38 +84,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/chat_sessions/{id}/review": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_session_review"];
-        put?: never;
-        post: operations["decide_session_review"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/chat_sessions/{id}/review/file": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_review_file"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/chat_sessions/{id}/stop": {
         parameters: {
             query?: never;
@@ -276,54 +244,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/workspaces/{id}/docs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_docs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/workspaces/{id}/docs/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["search_docs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/workspaces/{id}/docs/{path}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_doc"];
-        put: operations["put_doc"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/workspaces/{id}/file": {
         parameters: {
             query?: never;
@@ -333,22 +253,6 @@ export interface paths {
         };
         get: operations["read_workspace_file"];
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/workspaces/{id}/index": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_index"];
-        put: operations["put_index"];
         post?: never;
         delete?: never;
         options?: never;
@@ -455,17 +359,6 @@ export interface components {
             context_window: number;
             display_name: string;
             id: string;
-        };
-        /**
-         * @description One change: replace the base range `from..to` with `insert`.
-         *
-         *     `from` and `to` count UTF-16 code units into the base text, matching
-         *     CodeMirror's `ChangeSet.iterChanges`. Ranges are ordered and do not overlap.
-         */
-        ChangeRange: {
-            from: number;
-            insert?: string;
-            to: number;
         };
         /**
          * @description One text file a user attached. Metadata for the `filename (1-10)` chip; the
@@ -597,115 +490,11 @@ export interface components {
             /** @description Absolute or relative directory. Stored as its canonical path. */
             root: string;
         };
-        DecideReview: {
-            /** @description `approve` keeps the change. `reject` puts the baseline lines back. */
-            decision: string;
-            /** @description One hunk. Omitted applies `decision` to the whole file. */
-            hunk_id?: string | null;
-            path: string;
-        };
         DecideToolCall: {
             /** @description `approve` runs the call. `reject` refuses it. */
             decision: string;
             /** @description Shown to the model when `decision` is `reject`. Omitted uses a default. */
             reason?: string | null;
-        };
-        DocContent: {
-            content: string;
-            path: string;
-            /**
-             * @description The content hash of `content`. The editor sends this back as
-             *     `base_version` on a save.
-             */
-            version: string;
-        };
-        DocEntry: {
-            /**
-             * @description Set on directories. `true` when this response includes that directory's
-             *     children. Absent on files.
-             */
-            children_fetched?: boolean | null;
-            /**
-             * @description A gitignore rule excludes this path. An ignored directory is listed
-             *     without its descendants until a one-level listing reads it.
-             */
-            ignored: boolean;
-            kind: components["schemas"]["DocKind"];
-            /** @description Workspace-relative, `/` separated. */
-            path: string;
-        };
-        /** @enum {string} */
-        DocKind: "file" | "directory";
-        DocSearchHit: {
-            /** Format: int32 */
-            end_line: number;
-            /** @description Workspace-relative, `/` separated. */
-            path: string;
-            /**
-             * Format: double
-             * @description How many chunks of this document matched. Higher is better.
-             */
-            score: number;
-            /** @description The chunk's opening text, cut at 500 bytes on a character boundary. */
-            snippet: string;
-            /** Format: int32 */
-            start_line: number;
-            /**
-             * @description The heading chain of the section this chunk belongs to, joined by `.`
-             *     (`Install.Overview`). Empty when the page did not parse into sections.
-             */
-            title: string;
-        };
-        DocSearchResult: {
-            /** @description `semantic` or `ripgrep`. */
-            engine: string;
-            /** @description Ranked markdown hits, best first. */
-            hits: components["schemas"]["DocSearchHit"][];
-            /**
-             * @description The index state the hits were taken from. For `semantic`, anything but
-             *     `ready` means the corpus was incomplete, so the hits may be too.
-             *     `ripgrep` does not start the index and does not treat this as partial.
-             */
-            index: components["schemas"]["IndexStatusBody"];
-            /** @description The trimmed query that was run. */
-            query: string;
-        };
-        /**
-         * @description A `409` body: the change set named a base that is no longer cached. The
-         *     client re-sends the whole buffer against this `version`.
-         */
-        DocWriteConflict: {
-            content: string;
-            version: string;
-        };
-        DocWriteRequest: {
-            /** @description The version the change set was built from. Absent on a create. */
-            base_version?: string | null;
-            /** @description CodeMirror change ranges against `base_version`. The autosave path. */
-            changes?: components["schemas"]["ChangeRange"][] | null;
-            /** @description The whole buffer. Sent on a create and after a 409. */
-            content?: string | null;
-            /**
-             * @description The open chat session, for the checkpoint. Absent when the docs view
-             *     has no session; the save still lands, without a baseline.
-             */
-            session_id?: string | null;
-        };
-        DocWriteResponse: {
-            /** @description The reconciled text, which may differ from the buffer when it merged. */
-            content: string;
-            /** @description `applied`, `merged`, `created`, or `unchanged`. */
-            outcome: string;
-            path: string;
-            /** @description The content hash to use as the next save's `base_version`. */
-            version: string;
-        };
-        DocsListing: {
-            /** @description This response includes the children of `path`. */
-            children_fetched: boolean;
-            entries: components["schemas"]["DocEntry"][];
-            /** @description Workspace-relative directory that was listed. Empty for the workspace root. */
-            path: string;
         };
         /**
          * @description One file attachment as the client sends it. The client sends the file's raw
@@ -735,18 +524,6 @@ export interface components {
              * @description 1-based first line of the slice, when the attach was a range.
              */
             start_line?: number | null;
-        };
-        IndexCommand: {
-            /** @description `paused` or `running`. */
-            state: string;
-        };
-        IndexStatusBody: {
-            error?: string | null;
-            /** Format: int64 */
-            files_done: number;
-            /** Format: int64 */
-            files_total: number;
-            state: string;
         };
         /** @description The MCP JSON files for one workspace. Text is the file on disk. Secrets are not resolved. */
         McpConfig: {
@@ -805,61 +582,6 @@ export interface components {
             line?: number | null;
             /** @description Workspace-relative path. `..` and a path that resolves outside the root are refused. */
             path: string;
-        };
-        ReviewFileBody: {
-            /** Format: int32 */
-            additions: number;
-            /** @description Body before this session's first change of the path. */
-            baseline: string;
-            /** @description Body on disk now. Empty when the file is gone. */
-            current: string;
-            /** Format: int32 */
-            deletions: number;
-            hunks: components["schemas"]["ReviewHunkBody"][];
-            lines: components["schemas"]["ReviewLineBody"][];
-            path: string;
-            status: components["schemas"]["ReviewStatus"];
-        };
-        /** @description A changed path. Bodies and lines load from `GET .../review/file`. */
-        ReviewFileSummary: {
-            /** Format: int32 */
-            additions: number;
-            /** Format: int32 */
-            deletions: number;
-            path: string;
-            status: components["schemas"]["ReviewStatus"];
-        };
-        ReviewHunkBody: {
-            id: string;
-            /** Format: int32 */
-            new_count: number;
-            /**
-             * Format: int32
-             * @description 0-based index of the first current line.
-             */
-            new_start: number;
-            /** Format: int32 */
-            old_count: number;
-            /**
-             * Format: int32
-             * @description 0-based index of the first baseline line.
-             */
-            old_start: number;
-        };
-        ReviewLineBody: {
-            kind: components["schemas"]["ReviewLineStatus"];
-            /** Format: int32 */
-            new_line?: number | null;
-            /** Format: int32 */
-            old_line?: number | null;
-            text: string;
-        };
-        /** @enum {string} */
-        ReviewLineStatus: "context" | "delete" | "insert" | "gap";
-        /** @enum {string} */
-        ReviewStatus: "added" | "deleted" | "modified";
-        SessionReview: {
-            files: components["schemas"]["ReviewFileSummary"][];
         };
         SetSetting: {
             /**
@@ -1174,87 +896,6 @@ export interface operations {
                 };
             };
             /** @description Chat session or message is missing */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    get_session_review: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Chat session id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paths this session has changed, without file bodies */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionReview"];
-                };
-            };
-        };
-    };
-    decide_session_review: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Chat session id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DecideReview"];
-            };
-        };
-        responses: {
-            /** @description The file or hunk was approved or rejected */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    get_review_file: {
-        parameters: {
-            query: {
-                /** @description Workspace-relative path. */
-                path: string;
-            };
-            header?: never;
-            path: {
-                /** @description Chat session id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description One changed file, with its diff */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReviewFileBody"];
-                };
-            };
-            /** @description That path has no remaining changes */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1628,176 +1269,6 @@ export interface operations {
             };
         };
     };
-    list_docs: {
-        parameters: {
-            query?: {
-                /** @description Workspace-relative directory to list. Absent lists the workspace root. */
-                path?: string;
-                /** @description When true (default), walk the whole scannable hierarchy under path. When false, list one level, including ignored markdown and directories. */
-                recursive?: boolean;
-            };
-            header?: never;
-            path: {
-                /** @description Workspace id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Markdown entries under the directory. Ignored directories are included unfetched when the walk is recursive. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocsListing"];
-                };
-            };
-            /** @description No such directory, or a path outside the workspace */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    search_docs: {
-        parameters: {
-            query: {
-                /** @description A natural language question, or a literal string when engine is ripgrep. Required, non-blank. */
-                q: string;
-                /** @description How many hits to return. Default 10, maximum 20. */
-                limit?: number;
-                /** @description semantic (default) or ripgrep. Anything else is 400. */
-                engine?: string;
-            };
-            header?: never;
-            path: {
-                /** @description Workspace id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Ranked markdown hits with the engine and the index state they came from */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocSearchResult"];
-                };
-            };
-            /** @description `q` is missing or blank, `limit` is out of range, or `engine` is unknown */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such workspace */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    get_doc: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id */
-                id: string;
-                /** @description Workspace-relative path to a markdown file */
-                path: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The file's text */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocContent"];
-                };
-            };
-            /** @description Not a markdown file, or not UTF-8 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such file, or a path outside the workspace */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    put_doc: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id */
-                id: string;
-                /** @description Workspace-relative path to a markdown file */
-                path: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DocWriteRequest"];
-            };
-        };
-        responses: {
-            /** @description The reconciled text and its new version */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocWriteResponse"];
-                };
-            };
-            /** @description Not markdown, not UTF-8, a malformed change set, or neither content nor changes */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such file, or a path outside the workspace */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The base version is gone; re-send the whole buffer */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocWriteConflict"];
-                };
-            };
-        };
-    };
     read_workspace_file: {
         parameters: {
             query: {
@@ -1821,63 +1292,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WorkspaceFile"];
                 };
-            };
-        };
-    };
-    get_index: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Index status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IndexStatusBody"];
-                };
-            };
-        };
-    };
-    put_index: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["IndexCommand"];
-            };
-        };
-        responses: {
-            /** @description Index status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IndexStatusBody"];
-                };
-            };
-            /** @description state is not paused or running */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

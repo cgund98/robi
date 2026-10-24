@@ -163,8 +163,12 @@ the bytes for the UI's message bubbles. There is no DTO, because the transcript'
 `images` list already carries the reference.
 
 `session_file_baselines` is the pre-edit body of each path a chat session has
-written or deleted. The edit tools insert it. Review reads it. See
-[checkpoints.md](../tools/checkpoints.md).
+written or deleted. The edit tools insert it, so in the default build — where the
+shell is the editor — nothing writes it and nothing reads it. The table stays
+because the `edit-tools` restore path still uses it, and because dropping it is a
+migration that should ride with the code that stopped reading it. See
+[checkpoints.md](../tools/checkpoints.md) and
+[feature-switches.md](../core/feature-switches.md).
 
 | Column | Type | Notes |
 |---|---|---|

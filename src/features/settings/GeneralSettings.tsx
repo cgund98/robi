@@ -9,7 +9,6 @@ import { ModelDefaults } from './ModelDefaults'
 export function GeneralSettings() {
   const active = () =>
     workspaces.workspaces.find((workspace) => workspace.id === workspaces.activeWorkspaceId) ?? null
-  const [lsp, setLsp] = createSignal(true)
   const [readPaths, setReadPaths] = createSignal('')
   const [writePaths, setWritePaths] = createSignal('')
   const [pathEntries, setPathEntries] = createSignal('')
@@ -43,7 +42,6 @@ export function GeneralSettings() {
     void (async () => {
       try {
         const [
-          lspSetting,
           readSetting,
           writeSetting,
           entriesSetting,
@@ -54,7 +52,6 @@ export function GeneralSettings() {
           openPatternsSetting,
           openCommandSetting
         ] = await getSettings([
-          SETTING_KEYS.lsp,
           SETTING_KEYS.pathAllowRead,
           SETTING_KEYS.pathAllowWrite,
           SETTING_KEYS.pathEntries,
@@ -68,7 +65,6 @@ export function GeneralSettings() {
         if (cancelled) {
           return
         }
-        setLsp(lspSetting.value !== 'off')
         const read = readSetting.value ?? ''
         const write = writeSetting.value ?? ''
         const entries = entriesSetting.value ?? ''
@@ -106,18 +102,6 @@ export function GeneralSettings() {
       cancelled = true
     })
   })
-
-  async function toggleLsp() {
-    const next = !lsp()
-    setLsp(next)
-    setError(null)
-    try {
-      await putSetting(SETTING_KEYS.lsp, next ? 'on' : 'off', false)
-    } catch (err: unknown) {
-      setLsp(!next)
-      setError(err instanceof Error ? err.message : 'Failed to save setting')
-    }
-  }
 
   async function savePaths(
     key: string,
@@ -218,29 +202,8 @@ export function GeneralSettings() {
       </section>
       <section class={styles.section}>
         <h2 class={styles.sectionTitle}>Agent</h2>
-        <p class={styles.sectionHint}>
-          Language tools and the turn budget for the main conversation.
-        </p>
+        <p class={styles.sectionHint}>The turn budget for the main conversation.</p>
         <div class={styles.card}>
-          <div class={styles.row}>
-            <div class={styles.copy}>
-              <div class={styles.label}>Language server</div>
-              <div class={styles.hint}>
-                Diagnostics, definition, references, hover, and workspace symbols. The next turn
-                uses this.
-              </div>
-            </div>
-            <button
-              type="button"
-              class={styles.switch}
-              role="switch"
-              aria-checked={lsp()}
-              aria-label="Language server"
-              onClick={() => void toggleLsp()}
-            >
-              <span class={styles.knob} />
-            </button>
-          </div>
           <NumberRow
             label="Max iterations"
             hint="Model turns in one reply. Tool calls inside a turn do not count. The next turn uses this. From 1 to 500."

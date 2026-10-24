@@ -1,12 +1,9 @@
 import { useNavigate } from '@solidjs/router'
-import { Show } from 'solid-js'
 
 import type { ChatSession } from '../../api/sessions'
 import type { AgentPhase } from '../../state/chatStore'
-import { showSurface } from '../../app/surfaces'
 import { Cog, PencilSquare } from '../ui/icons'
 import { HistoryNav } from './HistoryNav'
-import { IndexStatusLine } from './IndexStatusLine'
 import { OverflowMenu } from './OverflowMenu'
 import { RecentsMenu } from './RecentsMenu'
 import styles from './TopBar.module.css'
@@ -56,9 +53,6 @@ export function TopBar(props: TopBarProps) {
         />
       </div>
       <div class={styles.actions}>
-        <Show when={showSurface('indexStatus')}>
-          <IndexStatusLine />
-        </Show>
         <button
           type="button"
           class={styles.iconButton}

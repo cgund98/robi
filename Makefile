@@ -10,8 +10,10 @@ help:
 	@echo "  make api           - run the local API"
 	@echo "  make dev-api       - run the local API and restart it on Rust changes"
 	@echo "  make lint          - check Rust and frontend formatting and lints"
+	@echo "  make lint-restore  - same checks against --all-features (restore path)"
 	@echo "  make fix           - format and apply lint fixes"
 	@echo "  make test          - run the Rust workspace tests"
+	@echo "  make test-restore  - run them against --all-features (restore path)"
 	@echo "  make openapi-spec  - write $(OPENAPI_SPEC)"
 	@echo "  make docs          - build the mdBook documentation"
 	@echo "  make docs-serve    - serve the docs locally and open a browser"
@@ -42,9 +44,20 @@ fix:
 	$(CARGO) fmt --all
 	pnpm run lint:fix
 
+# The restore path: every feature in `crates/robi/Cargo.toml` turned on. This is
+# where a missing feature-graph edge shows up, because the default build compiles
+# no gated module at all.
+.PHONY: lint-restore
+lint-restore:
+	$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings
+
 .PHONY: test
 test:
 	$(CARGO) test --workspace
+
+.PHONY: test-restore
+test-restore:
+	$(CARGO) test --workspace --all-features
 
 .PHONY: openapi-spec
 openapi-spec:

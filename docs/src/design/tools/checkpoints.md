@@ -1,10 +1,21 @@
 # Checkpoints
 
+> **Not recorded in M11.** A shell-first session produces no automatic journal:
+> a `shell` command is opaque, so the harness cannot know which paths it
+> touched, and pretending to keep a journal without intercepting writes would be
+> worse than removing it. Git is the undo: the prompt tells the agent to verify
+> with `git diff` and offers `git stash` or a branch as the way to keep a
+> snapshot. The baseline table stays because the `edit-tools` restore path still
+> writes it. This page describes that path. See
+> [streamlining.md](../../streamlining.md#s1--shell-first-editing) and
+> [feature-switches.md](../core/feature-switches.md).
+
 This page defines the edit journal for **F4.2** in the
 [roadmap](../../roadmap.md). The tools that write the journal are in
 [editing-tools.md](editing-tools.md). The table is in
 [persistence.md](../persistence/persistence.md). Putting a hunk back is
-`docs/src/design/review/code-review.md` (M6).
+`docs/src/design/review/code-review.md` (M6), which is also off: review happens
+in an editor or with `git diff`.
 
 ## What this page does not cover
 

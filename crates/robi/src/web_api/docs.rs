@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::docs::{apply_changes, merge3, version_hash, ChangeRange},
-    agent::tools::change::{atomic_write, lock_path, record_baseline},
+    agent::tools::fs_write::{atomic_write, lock_path, record_baseline},
     agent::workspace::workspace_relative,
     domain::error::ServiceError,
     domain::events::EventEnvelope,

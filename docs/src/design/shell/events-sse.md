@@ -225,7 +225,7 @@ One connection for the shell, mounted from `ChatChrome`.
 Handlers stay thin. They refetch HTTP and update the activity phase. They do
 not write message text from a frame. Two refetches of the same URL can be in
 flight together; only the one that started later is applied. A slower earlier
-`GET` of that message, session, session list, or index status is dropped. The
+`GET` of that message, session, or session list is dropped. The
 behavior is specified in [chat-ui.md](chat-ui.md).
 
 | `type` | Shell |
@@ -238,7 +238,7 @@ behavior is specified in [chat-ui.md](chat-ui.md).
 | `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. A title carried on the frame is applied immediately. A frame that carries `turn_display` applies that value to the row immediately and still refetches. A fetch that started before the frame does not overwrite `turn_display` or put the running spinner back on an `awaiting_approval` row. A title-only frame does not refetch. A fetch that started before a title, or before a local insert, does not wipe them. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
 | `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
-| `robi.index.v1.progress` | Ignored while the index status surface is off (`showSurface('indexStatus')`), which is the shipping default: no frame starts a `GET /workspaces/{id}/index`. With it on, `GET /workspaces/{id}/index` for `subject` when that workspace is active. A successful GET is reused for 10 seconds, and concurrent frames share one request. The stream publishes once when it opens, then again as the index changes |
+| `robi.index.v1.progress` | Dropped. The default build publishes none, because nothing takes an index lease, and no client reads it. `--features semantic-index` restores the frames; a client that wants them must add its own reader |
 | `robi.mcp.v1.status` | `GET /workspaces/{id}/mcp` for `subject` when that workspace is active. The stream publishes once when it opens, then again as a server's status changes. The tray does not poll |
 | `robi.workspace.v1.file_changed` | Record the path, source, and outcome in the docs store. The viewer refreshes the tree, and refetches the open page unless it holds unsaved edits — see [docs-mode.md](docs-mode.md). No fetch of its own |
 

@@ -227,7 +227,7 @@ pub struct ImageAttachment {
 /// there is no server-side read to confine.
 ///
 /// `path` is the **workspace-relative** path (`src/error.rs`) when the file is
-/// inside the workspace, so the model can re-read it with `read_file`. It is
+/// inside the workspace, so the model can re-read it through the shell. It is
 /// `None` when the file is outside the workspace (an upload, or a file with no
 /// workspace location); such an attachment carries only its name, and the
 /// provider block notes that it came from outside the workspace.

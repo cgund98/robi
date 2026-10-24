@@ -30,9 +30,10 @@ use crate::{
         settings::TomlSettingsStore,
         sqlite,
         workspace::repo::SqliteWorkspaceRepository,
+        workspace_assets::WorkspaceIndexAssets,
     },
     agent::providers::ImageSource,
-    agent::{compress::OriginalStore, index::IndexHub, lsp::LspHub, mcp::McpHub, web::BraveSearch},
+    agent::{compress::OriginalStore, lsp::LspHub, mcp::McpHub, web::BraveSearch},
     domain::{
         chat_message::service::ChatMessageService,
         chat_session::service::ChatSessionService,
@@ -43,6 +44,9 @@ use crate::{
     },
     web_api::{self, state::AppState},
 };
+
+#[cfg(feature = "semantic-index")]
+use crate::agent::index::IndexHub;
 
 /// Default listen port. Vite owns `1430`.
 pub const DEFAULT_PORT: u16 = 1431;
@@ -110,6 +114,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     ));
     let tools = Arc::new(ToolRegistry::new());
     let event_bus = Arc::new(EventBus::new());
+    #[cfg(feature = "semantic-index")]
     let index = Arc::new(IndexHub::new(
         config.settings_dir.clone(),
         Arc::clone(&event_bus),
@@ -117,6 +122,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
             &config.settings_dir,
         ))),
     ));
+    let index_assets = Arc::new(WorkspaceIndexAssets::new(config.settings_dir.clone()));
     let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
     evacuate_sqlite(&pool, &blobs)
         .await
@@ -165,6 +171,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         file_changes: Some(Arc::clone(&file_changes)),
         bus: Some(Arc::clone(&event_bus)),
         search,
+        #[cfg(feature = "semantic-index")]
         index: Some(Arc::clone(&index)),
         lsp: Some(LspHub::with_search_path(lsp_path)),
         settings: Some(Arc::clone(&settings)),
@@ -185,7 +192,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     Ok(AppState {
         workspace_service: Arc::new(WorkspaceService {
             repository: workspaces,
-            asset_cleaner: Some(index.clone() as Arc<dyn WorkspaceAssetCleaner>),
+            asset_cleaner: Some(index_assets as Arc<dyn WorkspaceAssetCleaner>),
         }),
         chat_session_service: Arc::clone(&chat_session_service),
         chat_message_service: Arc::new(ChatMessageService {
@@ -196,6 +203,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         settings_service,
         event_bus,
         file_changes,
+        #[cfg(feature = "semantic-index")]
         index,
         mcp: Some(mcp),
         originals,

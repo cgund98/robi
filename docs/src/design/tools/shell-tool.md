@@ -36,6 +36,34 @@ call always returns `NeedsApproval`. A sandboxed command that stays inside
 the default profile runs immediately. There is no silent fallback, and a
 denied command is not retried outside the sandbox.
 
+### `ShellAccess`
+
+One tool, one schema shape, two policies. `Shell::new(ctx, access)` takes:
+
+| `ShellAccess` | Modes | Workspace | Schema |
+|---|---|---|---|
+| `ReadWrite` | Agent | writable | `unsandboxed`, `write_paths`, `network` |
+| `ReadOnly` | Ask, Plan | read-only | `read_paths` only; `network` is `deny` |
+
+A read-only instance sets `Profile.write = WriteAccess::ReadOnly`. Seatbelt
+emits `(allow file-read* (subpath workspace))` instead of the read-write pair,
+and bubblewrap `--ro-bind`s the workspace instead of `--bind`. `wide_writes` and
+the `protected_write_*` lists degrade to reads. `.git` writes stay denied. The
+private temp directory stays writable in both modes: it belongs to the call and
+is deleted when it returns, and a read-only `/tmp` breaks innocuous tools.
+
+The schema drops the escalation keys in read-only mode, and `execute` refuses
+one that arrives anyway (`this mode is read-only`). A refused write also appends
+"this mode is read-only: ask the user to switch to Agent for a change" to the
+sandbox's blocked-path hint, so the model asks rather than retrying.
+
+The sharp edge is the build cache: `cargo check`, `tsc`, and `eslint` write
+`target/` and cache directories, so a read-only profile refuses exactly the
+verification commands the prompt recommends. The decision is that Ask and Plan
+do not run the build; verification is an Agent task, and the mode copy says so.
+A `build_write_paths` setting scoped to `target/` is the follow-up if those
+modes ever promise verification.
+
 The host process is the trust root. It holds API keys and computes each
 profile. It is not sandboxed.
 
@@ -96,8 +124,10 @@ Reads start allowed on `/`. Then these trees are denied: `$HOME`, `/Users`,
   read. Write paths open for read and write. A session write grant still
   does not.
 
-Writes are the workspace and the private temp directory. `write_paths` adds
-paths for that call only, after approval, and the command stays sandboxed.
+Writes are the workspace and the private temp directory, and the workspace is
+read-only for a `ReadOnly` instance. `write_paths` adds paths for that call
+only, after approval, and the command stays sandboxed. A read-only instance does
+not offer `write_paths` at all.
 
 Inside the workspace, `.git` stays readable and write-denied. `git status`
 works. A commit, an index update, or any other write under `.git` does not,

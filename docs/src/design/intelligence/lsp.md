@@ -1,5 +1,14 @@
 # Language servers
 
+> **Disabled in M11. Kept for reference.** None of `diagnostics`, `definition`,
+> `references`, `hover`, or `workspace_symbol` is registered, and the `lsp`
+> setting is gone: a stored `lsp` key is now an unknown setting. Verification is
+> the shell (`cargo check`, `tsc --noEmit`, `eslint`, the test command). The
+> client below stays in the default build behind the `lsp-tools` Cargo feature,
+> because it starts no server until a tool asks. See
+> [feature-switches.md](../core/feature-switches.md) and
+> [streamlining.md](../../streamlining.md#s4--no-lsp-diagnostics).
+
 This page settles **D8** and defines how a workspace's language servers
 become tools the model can call. It is the design for **F7.1** in the
 [roadmap](../../roadmap.md). Path rules are in [read-tools.md](../tools/read-tools.md).

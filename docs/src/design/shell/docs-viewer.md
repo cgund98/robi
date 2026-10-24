@@ -1,16 +1,21 @@
 # Docs viewer
 
 > **Disabled in M11. Kept for reference.** The `#/docs` route, the docs screen,
-> the chat tray, and the chat/documentation toggle are all off. The user reads
-> and writes markdown in an external editor, or asks the agent to. The
-> implementation stays in `src/features/docs/` and `crates/robi/src/web_api/docs.rs`
-> behind `showSurface('docsViewer')` in `src/app/surfaces.ts`. **A return needs:** the
-> route in `chatRoutePaths`, the `DocsScreen` and `ChatTray` branches in
-> `ChatChrome`, the `ViewToggle` in the bar, and a way back to the chat. See
-> [Streamlining roadmap](../../streamlining.md#s5--no-docs-viewer).
+> the chat tray, and the chat/documentation toggle are all off, and the front end
+> modules behind them (`src/features/docs/`, `src/api/docs.ts`,
+> `src/state/docsStore.ts`) are deleted. The user reads and writes markdown in an
+> external editor, or asks the agent to with the shell.
 >
-> The API's `GET /api/v1/workspaces/{id}/docs` and `/docs/search` routes are still
-> served; only the app stops calling them.
+> The API routes are off too: `web_api/docs.rs` is compiled only with the
+> `docs-viewer` Cargo feature, which in turn enables `semantic-index` because
+> docs search reads the index. `agent/docs/` stays unconditional, so the
+> reconciliation and merge path is intact. **A return needs:** `--features
+> docs-viewer`, the four routes and nine schemas in `web_api/mod.rs`, the
+> `src/features/docs/` tree, `src/api/docs.ts`, `src/state/docsStore.ts`, the
+> route in `chatRoutePaths`, the `DocsScreen` and `ChatTray` branches in
+> `ChatChrome`, and the `ViewToggle` in the bar. See
+> [feature switches](../core/feature-switches.md) and
+> [Streamlining roadmap](../../streamlining.md#s5--no-docs-viewer).
 
 This page is the workspace Markdown viewer: a file tree of the workspace's
 markdown pages on the left and the rendered document on the right. It is the

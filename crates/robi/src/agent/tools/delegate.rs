@@ -24,9 +24,10 @@ const GENERAL_CALLS: u32 = 4;
 const DESCRIPTION: &str = "\
 Hand a bounded task to a subagent so the file bodies and command output stay out of this conversation. \
 Use mode explore to locate an implementation, map a feature, or answer how something works across more than a couple of files. \
-Explore has read_file, list_dir, find, grep, and semantic_search. It has no shell and no edit tools. \
+Explore has a read-only shell: it searches and reads with grep, find, and sed, and it cannot change anything. \
 Use mode general when the task needs a sandboxed command, such as running tests or inspecting a tool. \
-General has the explore tools plus shell. It cannot edit, grant access, or call delegate. \
+General has the same read-only shell and cannot write the workspace. \
+Neither mode can edit, grant access, call delegate, or run unsandboxed. The summary names the change; you apply it. \
 Skip delegate for a single file read and for any edit: do those yourself. \
 A child call that would need approval fails with access_denied and the user is never asked. \
 The child reads this session's path rules and cannot widen them. Grant a path before delegating work outside the workspace. \
@@ -245,9 +246,8 @@ impl Tool for Delegate {
                 &self.ctx.root,
                 &thoroughness_or_default(&args.thoroughness),
                 &args.instructions,
-                self.ctx.lsp_enabled,
             ),
-            SubagentMode::General => general_prompt(&self.ctx.root, self.ctx.lsp_enabled),
+            SubagentMode::General => general_prompt(&self.ctx.root),
         };
         let description = card_description(&args.description, &task);
         let snapshot = SubagentSnapshot {
@@ -342,7 +342,7 @@ mod tests {
 
     use super::super::subagent::child_tool_names;
     use super::*;
-    use crate::agent::tools::apply_tests::harness;
+    use crate::agent::tools::test_harness::harness;
 
     struct ScriptModel {
         turns: Mutex<Vec<Message>>,
@@ -403,56 +403,78 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn explore_has_no_shell_and_general_cannot_edit_or_delegate() {
-        let harness = harness().await;
-        let explore = child_tool_names(SubagentMode::Explore, Arc::clone(&harness.ctx));
-        let general = child_tool_names(SubagentMode::General, Arc::clone(&harness.ctx));
-        assert_eq!(
-            explore,
-            vec![
-                "definition",
-                "diagnostics",
-                "find",
-                "grep",
-                "hover",
-                "list_dir",
-                "read_code",
-                "read_file",
-                "references",
-                "semantic_search",
-                "workspace_symbol"
-            ]
-        );
-        assert_eq!(
-            general,
-            vec![
-                "definition",
-                "diagnostics",
-                "find",
-                "grep",
-                "hover",
-                "list_dir",
-                "read_code",
-                "read_file",
-                "references",
-                "retrieve",
-                "semantic_search",
-                "shell",
-                "workspace_symbol"
-            ]
-        );
-        for name in [
-            "edit_file",
-            "write_file",
-            "delete_file",
-            "grant",
-            "delegate",
-            "todos",
-            "write_plan",
-        ] {
-            assert!(!general.iter().any(|tool| tool == name), "{name}");
+    /// What a child of `mode` registers in this build, sorted.
+    fn expected_child(mode: SubagentMode) -> Vec<&'static str> {
+        let mut names = vec!["retrieve", "shell"];
+        if cfg!(feature = "read-tools") {
+            names.extend(["find", "grep", "list_dir", "read_code", "read_file"]);
         }
+        if cfg!(feature = "semantic-index") {
+            names.push("semantic_search");
+        }
+        if cfg!(feature = "lsp-tools") {
+            names.extend([
+                "definition",
+                "diagnostics",
+                "hover",
+                "references",
+                "workspace_symbol",
+            ]);
+        }
+        let _ = mode;
+        names.sort_unstable();
+        names
+    }
+
+    #[tokio::test]
+    async fn both_child_modes_get_the_same_read_only_shell_and_no_edit_tools() {
+        let harness = harness().await;
+        for mode in [SubagentMode::Explore, SubagentMode::General] {
+            let mut names = child_tool_names(mode, Arc::clone(&harness.ctx));
+            names.sort();
+            assert_eq!(names, expected_child(mode), "{mode:?}");
+            for forbidden in [
+                "edit_file",
+                "write_file",
+                "delete_file",
+                "grant",
+                "delegate",
+                "todos",
+                "write_plan",
+            ] {
+                assert!(!names.iter().any(|tool| tool == forbidden), "{forbidden}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn no_child_schema_offers_an_escalation_key() {
+        let harness = harness().await;
+        let registry = ToolRegistry::new();
+        let snapshot = SubagentSnapshot {
+            mode: SubagentMode::General,
+            description: String::new(),
+            started_ms: 0,
+            steps: Vec::new(),
+        };
+        register_child_tools(
+            &registry,
+            SubagentMode::General,
+            Arc::clone(&harness.ctx),
+            Arc::new(Mutex::new(snapshot)),
+            Arc::new(robi_core::tool::NopReporter),
+        )
+        .unwrap();
+        let shell = registry
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name() == "shell")
+            .expect("a child has a shell");
+        let properties = &shell.parameters()["properties"];
+        assert!(properties.get("unsandboxed").is_none());
+        assert!(properties.get("write_paths").is_none());
+        // `network` is only ever `deny` for a child, so the key is absent.
+        assert!(properties.get("network").is_none());
     }
 
     #[tokio::test]
@@ -465,8 +487,8 @@ mod tests {
                 Message::assistant_with_tool_calls(
                     "",
                     vec![robi_core::message::ToolCall::new(
-                        "read_file",
-                        json!({"path": "note.txt"}),
+                        "shell",
+                        json!({"command": "cat note.txt"}),
                     )],
                 ),
             ]),
@@ -498,7 +520,7 @@ mod tests {
         assert!(steps.iter().any(|snapshot| snapshot
             .steps
             .iter()
-            .any(|step| step.name == "read_file" && step.target == "note.txt")));
+            .any(|step| step.name == "shell" && step.target.contains("note.txt"))));
     }
 
     #[tokio::test]
@@ -511,7 +533,7 @@ mod tests {
                     "",
                     vec![robi_core::message::ToolCall::new(
                         "shell",
-                        json!({"command": "echo hi", "unsandboxed": true}),
+                        json!({"command": "cat /etc/hosts", "read_paths": ["/etc/hosts"]}),
                     )],
                 ),
             ]),
@@ -521,9 +543,9 @@ mod tests {
         let result = tool
             .execute(
                 json!({
-                    "task": "Run echo outside the sandbox",
+                    "task": "Read a path outside the workspace",
                     "mode": "general",
-                    "description": "Unsandboxed echo"
+                    "description": "Read outside"
                 }),
                 ToolRun::new(CancellationToken::new()),
             )
@@ -568,7 +590,7 @@ mod tests {
         assert_eq!(limited["error"], "delegate_limit");
         assert_eq!(*calls.lock().expect("calls"), GENERAL_CALLS);
 
-        let explore_harness = crate::agent::tools::apply_tests::harness().await;
+        let explore_harness = crate::agent::tools::test_harness::harness().await;
         let explore = Delegate::new(
             Arc::clone(&explore_harness.ctx),
             Arc::new(FixedModels {

@@ -1,5 +1,13 @@
 # Editing tools
 
+> **Disabled in M11. Kept for reference.** `write_file`, `edit_file`, and
+> `delete_file` are not registered; the shell is the editing interface. The code
+> below still runs behind the `edit-tools` Cargo feature. Because a shell command
+> is opaque, no automatic baseline or checkpoint is recorded: `git diff` is the
+> verification and git is the undo. See
+> [shell-tool.md](shell-tool.md), [checkpoints.md](checkpoints.md), and
+> [feature-switches.md](../core/feature-switches.md).
+
 This page settles **D5** and defines the three write tools. It is the design
 for **F4.1** in the [roadmap](../../roadmap.md). The session baseline those writes
 record is [checkpoints.md](checkpoints.md). Path rules are in

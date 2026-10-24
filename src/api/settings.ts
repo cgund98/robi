@@ -16,7 +16,6 @@ export const SETTING_KEYS = {
   reasoningEffortAsk: 'reasoning_effort_ask',
   reasoningEffortPlan: 'reasoning_effort_plan',
   reasoningEffortAgent: 'reasoning_effort_agent',
-  lsp: 'lsp',
   pathAllowRead: 'path_allow_read',
   pathAllowWrite: 'path_allow_write',
   pathEntries: 'path_entries',

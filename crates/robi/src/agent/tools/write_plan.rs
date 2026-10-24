@@ -9,8 +9,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::change::{atomic_write, ensure_parent, lock_path, read_text};
 use super::context::ToolContext;
+use super::fs_write::{atomic_write, ensure_parent, lock_path, read_text};
 use super::plan_file::{format_plan, is_session_plan_file, normalize_todos, plan_argument, Todo};
 use crate::agent::workspace::user_home;
 
@@ -240,7 +240,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::agent::tools::apply_tests::harness;
+    use crate::agent::tools::test_harness::harness;
     use tokio_util::sync::CancellationToken;
 
     fn run() -> ToolRun {

@@ -10,7 +10,7 @@ use crate::domain::{
 };
 
 use super::diff::{accept, diff, reject, review_lines, FileDiff, FileStatus, Hunk, ReviewLine};
-use super::lock::lock_path;
+use crate::agent::tools::path_lock::lock_path;
 
 /// One changed path, with the lines a review shows.
 pub struct ReviewFile {

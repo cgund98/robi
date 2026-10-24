@@ -6,9 +6,32 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Every workstream in `docs/src/streamlining.md` is off by default: the
+# streamlined harness ships. Each feature is the restore path for one
+# workstream. The two non-obvious edges are load-bearing; see
+# `docs/src/design/core/feature-switches.md`.
+default = []
+# S3: the `semantic_search` tool, `IndexHub`, the index routes, and embeddings.
+semantic-index = ["dep:robi-index", "robi-index/local-embed"]
+# S1 (read half): `read_file`, `read_code`, `list_dir`, `find`, `grep`.
+# Tree-sitter outline comes back; embeddings do not.
+read-tools = ["dep:robi-index"]
+# S4: the five language-server tools. The client in `agent/lsp/` stays.
+lsp-tools = []
+# S2: the session review routes, and the `review`/`session` baseline reader.
+review = []
+# S1 (write half): `write_file`, `edit_file`, `delete_file`. The diff helpers
+# and their tests use the review half, hence the edge.
+edit-tools = ["review"]
+# S5: `web_api/docs.rs` and its four routes. Its search reads the index.
+docs-viewer = ["semantic-index"]
+
 [dependencies]
 robi-core = { path = "../robi-core" }
-robi-index = { path = "../robi-index" }
+# Optional: after S1 the default build has no user of `robi-index` at all, which
+# drops tree-sitter and `fastembed` with it.
+robi-index = { path = "../robi-index", default-features = false, optional = true }
 
 async-lsp.workspace = true
 async-trait.workspace = true

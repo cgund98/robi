@@ -108,11 +108,36 @@ describe('toolSummary', () => {
 })
 
 describe('exploreSummary', () => {
-  it('counts unique files and searches', () => {
+  it('counts shell commands, because a child reads through the shell now', () => {
     expect(
       exploreSummary({
         mode: 'explore',
         description: 'Find resume',
+        startedMs: 0,
+        answer: '',
+        steps: [
+          { name: 'shell', target: "grep -rn 'resume' .", status: 'ok' },
+          { name: 'shell', target: "sed -n '1,40p' a.rs", status: 'ok' },
+          { name: 'shell', target: "sed -n '1,40p' b.rs", status: 'ok' }
+        ]
+      })
+    ).toBe('Exploring 3 commands')
+    expect(
+      exploreSummary({
+        mode: 'explore',
+        description: '',
+        startedMs: 0,
+        answer: '',
+        steps: []
+      })
+    ).toBe('Exploring')
+  })
+
+  it('still reports a read or search tool when the read tools are restored', () => {
+    expect(
+      exploreSummary({
+        mode: 'explore',
+        description: '',
         startedMs: 0,
         answer: '',
         steps: [
@@ -124,15 +149,6 @@ describe('exploreSummary', () => {
         ]
       })
     ).toBe('Exploring 2 files, 2 searches')
-    expect(
-      exploreSummary({
-        mode: 'explore',
-        description: '',
-        startedMs: 0,
-        answer: '',
-        steps: []
-      })
-    ).toBe('Exploring')
   })
 })
 

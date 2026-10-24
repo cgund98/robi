@@ -3,7 +3,7 @@ import remarkGfm from 'remark-gfm'
 import { Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 
-import { resolveMarkdownLink } from '../docs/docLink'
+import { resolveMarkdownLink } from './docLink'
 import styles from './AssistantMarkdown.module.css'
 import { MermaidDiagram } from './MermaidDiagram'
 

@@ -461,6 +461,7 @@ mod tests {
             }),
             event_bus: Arc::new(EventBus::new()),
             file_changes,
+            #[cfg(feature = "semantic-index")]
             index: Arc::new(crate::agent::index::IndexHub::new(
                 std::env::temp_dir(),
                 Arc::new(EventBus::new()),

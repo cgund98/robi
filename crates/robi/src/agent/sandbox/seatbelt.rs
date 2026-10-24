@@ -4,9 +4,10 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use super::profile::{NetworkMode, Profile};
+use super::profile::{NetworkMode, Profile, WriteAccess};
 
 pub fn seatbelt_policy(profile: &Profile) -> String {
+    let read_only = profile.write == WriteAccess::ReadOnly;
     let mut out = String::new();
     out.push_str("(version 1)\n");
     out.push_str("(deny default)\n");
@@ -24,7 +25,14 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
     // itself, so a path such as `/var/select/developer_dir` never resolves.
     allow_literal_read(&mut out, "/var");
     allow_literal_read(&mut out, "/tmp");
-    allow_read_write(&mut out, &profile.workspace);
+    // The private temp directory stays writable in both modes: it belongs to
+    // this call and is deleted when the call returns. A read-only profile that
+    // also locked `/tmp` would break innocuous tools.
+    if read_only {
+        allow_read(&mut out, &profile.workspace);
+    } else {
+        allow_read_write(&mut out, &profile.workspace);
+    }
     allow_read_write(&mut out, &profile.temp_dir);
     allow_metadata_ancestors(&mut out, &profile.temp_dir);
     allow_metadata_ancestors(&mut out, &profile.home);
@@ -38,7 +46,11 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         allow_metadata_ancestors(&mut out, path);
     }
     for path in &profile.wide_writes {
-        allow_read_write(&mut out, path);
+        if read_only {
+            allow_read(&mut out, path);
+        } else {
+            allow_read_write(&mut out, path);
+        }
         allow_metadata_ancestors(&mut out, path);
     }
     for path in credential_dirs(&profile.home) {
@@ -63,7 +75,11 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         }
     }
     for path in &profile.protected_write_dirs {
-        allow_read_write(&mut out, path);
+        if read_only {
+            allow_read(&mut out, path);
+        } else {
+            allow_read_write(&mut out, path);
+        }
         for pattern in floor_regexes() {
             deny_regex(&mut out, &pattern);
         }
@@ -77,7 +93,11 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         allow_read(&mut out, path);
     }
     for path in &profile.protected_write_files {
-        allow_read_write(&mut out, path);
+        if read_only {
+            allow_read(&mut out, path);
+        } else {
+            allow_read_write(&mut out, path);
+        }
     }
     allow_read(&mut out, "/private/etc/ssl");
     allow_read(&mut out, "/etc/ssl");
@@ -221,6 +241,7 @@ mod tests {
     fn profile() -> Profile {
         Profile {
             sandboxed: true,
+            write: WriteAccess::ReadWrite,
             workspace: PathBuf::from("/work/app"),
             home: PathBuf::from("/Users/ada"),
             temp_dir: PathBuf::from("/private/var/folders/robi"),
@@ -313,5 +334,17 @@ mod tests {
         let deny = policy.find("(deny network*)").unwrap();
         let allow = policy.find("(allow network*)").unwrap();
         assert!(deny < allow);
+    }
+
+    #[test]
+    fn a_read_only_profile_cannot_write_the_workspace_or_git() {
+        let mut profile = profile();
+        profile.write = WriteAccess::ReadOnly;
+        let policy = seatbelt_policy(&profile);
+        assert!(!policy.contains("(allow file-write* (subpath \"/work/app\"))"));
+        assert!(policy.contains("(allow file-read* (subpath \"/work/app\"))"));
+        assert!(policy.contains("(deny file-write* (subpath \"/work/app/.git\"))"));
+        // The private temp directory belongs to the call, so it stays writable.
+        assert!(policy.contains("(allow file-write* (subpath \"/private/var/folders/robi\"))"));
     }
 }

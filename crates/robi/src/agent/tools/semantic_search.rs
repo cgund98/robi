@@ -239,8 +239,8 @@ mod tests {
 
     use super::SemanticSearch;
     use crate::agent::index::IndexHub;
-    use crate::agent::tools::apply_tests::harness;
     use crate::agent::tools::context::ToolContext;
+    use crate::agent::tools::test_harness::harness;
     use crate::domain::chat_session::model::UpdateChatSessionCommand;
     use crate::domain::events::EventBus;
     use tokio_util::sync::CancellationToken;
@@ -302,7 +302,6 @@ mod tests {
             file_changes: Arc::clone(&harness.ctx.file_changes),
             index: Some(Arc::clone(&hub)),
             lsp: crate::agent::lsp::LspHub::new(),
-            lsp_enabled: true,
             originals: None,
             settings: None,
             events: None,

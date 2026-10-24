@@ -12,6 +12,17 @@ pub enum NetworkMode {
     Unrestricted,
 }
 
+/// Whether the confined process may write the workspace.
+///
+/// Ask and Plan run a [`WriteAccess::ReadOnly`] shell so that having a shell does
+/// not mean having an editor. The `temp_dir` stays writable either way: it is
+/// private to the call and discarded afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedRule {
     /// `^.*$`, the workspace itself. The profile already allows it.
@@ -32,6 +43,8 @@ pub enum AccessClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
     pub sandboxed: bool,
+    /// Whether the workspace and the write roots are writable.
+    pub write: WriteAccess,
     pub workspace: PathBuf,
     pub home: PathBuf,
     pub temp_dir: PathBuf,

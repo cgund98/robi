@@ -77,11 +77,7 @@ export function ToolCallCard(props: {
 
   return (
     <>
-      <OpenedFile
-        sessionId={props.sessionId ?? null}
-        path={viewPath()}
-        onClose={() => setViewPath(null)}
-      />
+      <OpenedFile path={viewPath()} onClose={() => setViewPath(null)} />
       <Show
         when={!decision()}
         fallback={

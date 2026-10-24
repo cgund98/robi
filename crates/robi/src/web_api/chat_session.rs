@@ -567,6 +567,7 @@ mod tests {
                     &pool,
                 )),
             ),
+            #[cfg(feature = "semantic-index")]
             index: Arc::new(crate::agent::index::IndexHub::new(
                 std::env::temp_dir(),
                 Arc::new(EventBus::new()),

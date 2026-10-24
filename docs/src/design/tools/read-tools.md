@@ -1,5 +1,13 @@
 # Read tools
 
+> **Disabled in M11. Kept for reference.** `read_file`, `read_code`,
+> `list_dir`, `find`, and `grep` are not registered; the shell reads and
+> searches. `grant` and `retrieve` stay: `grant` persists an outside-workspace
+> allow the sandbox honours, and `retrieve` reads back a folded shell stream. The
+> tools and the path filter below still exist behind the `read-tools` Cargo
+> feature. See [feature-switches.md](../core/feature-switches.md) and
+> [streamlining.md](../../streamlining.md#s1--shell-first-editing).
+
 This page defines the read-only workspace tools and the session path
 filter they share. It is the design for **F3.1** in the
 [roadmap](../../roadmap.md). Approval cards stay in `docs/src/design/workspace/permissions.md`.

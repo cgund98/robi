@@ -1,5 +1,9 @@
 //! Run a command. Sandboxed calls stay inside the workspace profile.
 //! `unsandboxed: true` always waits for approval.
+//!
+//! A [`ShellAccess::ReadOnly`] instance is the same tool with two policies
+//! changed: its schema drops the escalation keys, and its sandbox profile cannot
+//! write the workspace or `.git`. The mode decides which instance it gets.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,18 +16,38 @@ use serde_json::{json, Value};
 
 use crate::agent::sandbox::{
     apply_allow_read, apply_allow_write, apply_deny, command_env, install_path_wrappers, launch,
-    push_classified, toolchain_reads, EnvInput, NetworkMode, Profile,
+    push_classified, toolchain_reads, EnvInput, NetworkMode, Profile, WriteAccess,
 };
 
 use super::context::ToolContext;
 
+/// What a shell instance may do. One tool, one schema shape, two policies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellAccess {
+    /// Ask and Plan: the workspace is mounted read-only, so a command that
+    /// writes fails inside the sandbox. `write_paths` and `unsandboxed` are not
+    /// in the schema at all.
+    ReadOnly,
+    /// Agent: the workspace is writable inside the sandbox.
+    ReadWrite,
+}
+
+const READ_WRITE_DESCRIPTION: &str = "Run a command in the workspace. The command is sandboxed: it can read and write the workspace, and it cannot read the home directory, secret files, or the network. cwd must stay inside the workspace. Set read_paths or write_paths when it needs one or two paths outside the workspace. Set unsandboxed to true when it needs the home directory, a logged-in CLI, or more than a few outside paths. Set network to unrestricted when it needs the network. Those calls wait for approval. If the sandbox blocks a path, call shell again with that path in read_paths or write_paths, or with unsandboxed set to true.";
+
+const READ_ONLY_DESCRIPTION: &str = "Run a command in the workspace, read-only. The command is sandboxed: it can read the workspace, and it cannot write the workspace or .git, read the home directory, or reach the network. cwd must stay inside the workspace. There is no write_paths and no unsandboxed in this mode: a command that writes a file fails inside the sandbox, so ask the user to switch to Agent if a change is needed. git status, git diff, git log, grep, sed, find, and cat all work. Build and test commands write to target/ and are refused; verify in Agent mode.";
+
 pub struct Shell {
     ctx: Arc<ToolContext>,
+    access: ShellAccess,
 }
 
 impl Shell {
-    pub fn new(ctx: Arc<ToolContext>) -> Self {
-        Self { ctx }
+    pub fn new(ctx: Arc<ToolContext>, access: ShellAccess) -> Self {
+        Self { ctx, access }
+    }
+
+    fn read_only(&self) -> bool {
+        self.access == ShellAccess::ReadOnly
     }
 }
 
@@ -49,10 +73,26 @@ impl Tool for Shell {
     }
 
     fn description(&self) -> &str {
-        "Run a command in the workspace. The command is sandboxed: it can read and write the workspace, and it cannot read the home directory, secret files, or the network. cwd must stay inside the workspace. Set read_paths or write_paths when it needs one or two paths outside the workspace. Set unsandboxed to true when it needs the home directory, a logged-in CLI, or more than a few outside paths. Set network to unrestricted when it needs the network. Those calls wait for approval. If the sandbox blocks a path, call shell again with that path in read_paths or write_paths, or with unsandboxed set to true."
+        if self.read_only() {
+            READ_ONLY_DESCRIPTION
+        } else {
+            READ_WRITE_DESCRIPTION
+        }
     }
 
     fn parameters(&self) -> Value {
+        if self.read_only() {
+            return json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run."},
+                    "cwd": {"type": "string", "description": "Working directory inside the workspace. Defaults to the workspace root."},
+                    "read_paths": {"type": "array", "items": {"type": "string"}, "description": "Extra files or directories to read. The user must approve the call."},
+                },
+                "required": ["command"],
+                "additionalProperties": false
+            });
+        }
         json!({
             "type": "object",
             "properties": {
@@ -83,6 +123,10 @@ impl Tool for Shell {
         if network_mode(&args.network).is_err() {
             return ApprovalDecision::AllowImmediately;
         }
+        if self.read_only() && args.network.as_deref() == Some("unrestricted") {
+            // `execute` refuses it; asking first would be a wasted turn.
+            return ApprovalDecision::AllowImmediately;
+        }
         if args
             .cwd
             .as_deref()
@@ -97,6 +141,16 @@ impl Tool for Shell {
             .any(|path| self.ctx.resolve(path).is_err())
         {
             return ApprovalDecision::AllowImmediately;
+        }
+        if self.read_only() {
+            // Neither `write_paths` nor `unsandboxed` is in the schema, and
+            // `execute` refuses both. A read_path is a read, so the remaining
+            // question is the same one the writable shell asks.
+            return if args.read_paths.is_empty() {
+                ApprovalDecision::AllowImmediately
+            } else {
+                ApprovalDecision::NeedsApproval
+            };
         }
         if args.unsandboxed
             || !args.read_paths.is_empty()
@@ -116,6 +170,23 @@ impl Tool for Shell {
         let command = args.command.trim();
         if command.is_empty() {
             return Err(ToolError::InvalidArgs("command is required".into()));
+        }
+        if self.read_only() {
+            // Refuse the escalation keys outright. The OS profile is the real
+            // boundary, but a property the tool accepts and then ignores is a
+            // wasted turn.
+            if args.unsandboxed || !args.write_paths.is_empty() {
+                return Err(ToolError::InvalidArgs(
+                    "this mode is read-only: write_paths and unsandboxed are not available. \
+                     Ask the user to switch to Agent mode for a write."
+                        .into(),
+                ));
+            }
+            if args.network.as_deref() == Some("unrestricted") {
+                return Err(ToolError::InvalidArgs(
+                    "this mode is read-only: network is restricted to deny".into(),
+                ));
+            }
         }
         let network = network_mode(&args.network).map_err(ToolError::InvalidArgs)?;
         let cwd = match &args.cwd {
@@ -147,6 +218,11 @@ impl Tool for Shell {
             .map_err(|err| ToolError::Failed(err.to_string()))?;
         let mut profile = Profile {
             sandboxed: !args.unsandboxed,
+            write: if self.read_only() {
+                WriteAccess::ReadOnly
+            } else {
+                WriteAccess::ReadWrite
+            },
             workspace: self.ctx.root.clone(),
             home: home.clone(),
             temp_dir: temp_dir.clone(),
@@ -257,6 +333,13 @@ impl Tool for Shell {
         });
         if profile.sandboxed {
             if let Some(hint) = blocked_hint(&output.stderr) {
+                let hint = if self.read_only() {
+                    format!(
+                        "{hint} This mode is read-only: ask the user to switch to Agent for a change."
+                    )
+                } else {
+                    hint
+                };
                 payload["hint"] = json!(hint);
             }
         }
@@ -359,13 +442,13 @@ fn path_in_denial(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::tools::apply_tests::harness;
+    use crate::agent::tools::test_harness::harness;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn a_plain_command_does_not_ask_and_an_unsandboxed_one_does() {
         let harness = harness().await;
-        let tool = Shell::new(Arc::clone(&harness.ctx));
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::ReadWrite);
         assert_eq!(
             tool.requires_approval(&json!({"command": "echo hi"})).await,
             ApprovalDecision::AllowImmediately
@@ -392,7 +475,7 @@ mod tests {
     #[tokio::test]
     async fn a_bad_argument_does_not_ask() {
         let harness = harness().await;
-        let tool = Shell::new(Arc::clone(&harness.ctx));
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::ReadWrite);
         assert_eq!(
             tool.requires_approval(&json!({"command": ""})).await,
             ApprovalDecision::AllowImmediately
@@ -412,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn echo_runs_in_the_sandbox() {
         let harness = harness().await;
-        let tool = Shell::new(Arc::clone(&harness.ctx));
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::ReadWrite);
         let result = tool
             .execute(
                 json!({"command": "echo hi"}),
@@ -429,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn a_cwd_outside_the_workspace_is_refused() {
         let harness = harness().await;
-        let tool = Shell::new(Arc::clone(&harness.ctx));
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::ReadWrite);
         let err = tool
             .execute(
                 json!({"command": "echo hi", "cwd": "/etc"}),
@@ -443,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn the_sandbox_hides_the_home_directory() {
         let harness = harness().await;
-        let tool = Shell::new(Arc::clone(&harness.ctx));
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::ReadWrite);
         let home = crate::agent::workspace::user_home().unwrap();
         let result = tool
             .execute(

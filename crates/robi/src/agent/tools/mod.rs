@@ -4,35 +4,54 @@
 //! rules at the start of every call.
 
 mod args;
+#[cfg(feature = "edit-tools")]
 pub(crate) mod change;
 mod context;
 mod delegate;
+#[cfg(feature = "edit-tools")]
 mod delete_file;
+#[cfg(feature = "edit-tools")]
 mod edit_file;
+#[cfg(feature = "read-tools")]
 mod find;
+pub(crate) mod fs_write;
 mod grant;
+#[cfg(feature = "read-tools")]
 mod grep;
+#[cfg(feature = "read-tools")]
 mod list_dir;
+#[cfg(feature = "lsp-tools")]
 mod lsp;
+#[cfg(feature = "edit-tools")]
 mod marker;
 pub(crate) mod memory_store;
+pub(crate) mod path_lock;
 pub(crate) mod plan_file;
+#[cfg(feature = "read-tools")]
 mod read_code;
+#[cfg(feature = "read-tools")]
 mod read_file;
+#[cfg(feature = "edit-tools")]
 mod replace;
 mod retrieve;
+#[cfg(feature = "semantic-index")]
 mod semantic_search;
-mod shell;
+pub(crate) mod shell;
 mod skill;
 mod subagent;
 mod todos;
 mod web_fetch;
 mod web_search;
+#[cfg(feature = "edit-tools")]
 mod write_file;
 mod write_plan;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "edit-tools"))]
 mod apply_tests;
+#[cfg(all(test, feature = "read-tools"))]
+mod read_tests;
+#[cfg(test)]
+mod test_harness;
 
 use std::sync::Arc;
 
@@ -46,39 +65,57 @@ use crate::domain::chat_session::model::AgentMode;
 
 pub use context::ToolContext;
 pub use delegate::{ChildModels, Delegate, SessionChildModels, UnavailableChildModels};
+pub use shell::ShellAccess;
 
-/// Register `read_file`, `list_dir`, `find`, `grep`, and `grant`.
+/// Register `grant`, plus whichever read tools this build has.
+///
+/// The default build registers `grant` alone: the shell is the read interface.
+/// `--features read-tools` adds `read_file`, `read_code`, `list_dir`, `find` and
+/// `grep`; `--features semantic-index` adds `semantic_search`; `--features
+/// lsp-tools` adds the five language-server tools.
 pub fn register_read_tools(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
 ) -> Result<(), RegistryError> {
+    #[cfg(feature = "read-tools")]
     register(
         registry,
         Arc::new(read_file::ReadFile::new(Arc::clone(&ctx))),
     )?;
+    #[cfg(feature = "read-tools")]
     register(
         registry,
         Arc::new(read_code::ReadCode::new(Arc::clone(&ctx))),
     )?;
+    #[cfg(feature = "read-tools")]
     register(registry, Arc::new(list_dir::ListDir::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "read-tools")]
     register(registry, Arc::new(find::Find::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "read-tools")]
     register(registry, Arc::new(grep::Grep::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "semantic-index")]
     register(
         registry,
         Arc::new(semantic_search::SemanticSearch::new(Arc::clone(&ctx))),
     )?;
     register(registry, Arc::new(grant::Grant::new(Arc::clone(&ctx))))?;
-    if ctx.lsp_enabled {
-        register(registry, Arc::new(lsp::Diagnostics::new(Arc::clone(&ctx))))?;
-        register(registry, Arc::new(lsp::Definition::new(Arc::clone(&ctx))))?;
-        register(registry, Arc::new(lsp::References::new(Arc::clone(&ctx))))?;
-        register(registry, Arc::new(lsp::Hover::new(Arc::clone(&ctx))))?;
-        register(registry, Arc::new(lsp::WorkspaceSymbol::new(ctx)))?;
-    }
+    #[cfg(feature = "lsp-tools")]
+    register(registry, Arc::new(lsp::Diagnostics::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "lsp-tools")]
+    register(registry, Arc::new(lsp::Definition::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "lsp-tools")]
+    register(registry, Arc::new(lsp::References::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "lsp-tools")]
+    register(registry, Arc::new(lsp::Hover::new(Arc::clone(&ctx))))?;
+    #[cfg(feature = "lsp-tools")]
+    register(registry, Arc::new(lsp::WorkspaceSymbol::new(ctx)))?;
     Ok(())
 }
 
 /// Register `write_file`, `edit_file`, and `delete_file`.
+///
+/// `--features edit-tools` only. The default build edits through the shell.
+#[cfg(feature = "edit-tools")]
 pub fn register_edit_tools(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
@@ -95,12 +132,19 @@ pub fn register_edit_tools(
     Ok(())
 }
 
-/// Register `shell`.
+/// Register `shell` and `retrieve`.
+///
+/// `access` is the mode's policy, not the sandbox's: a read-only shell runs
+/// inside a profile that cannot write the workspace, whatever the arguments say.
 pub fn register_shell_tool(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
+    access: shell::ShellAccess,
 ) -> Result<(), RegistryError> {
-    register(registry, Arc::new(shell::Shell::new(Arc::clone(&ctx))))?;
+    register(
+        registry,
+        Arc::new(shell::Shell::new(Arc::clone(&ctx), access)),
+    )?;
     register(registry, Arc::new(retrieve::Retrieve::new(ctx)))?;
     Ok(())
 }
@@ -142,6 +186,9 @@ pub fn register_web_tools(
 }
 
 /// Register the tools one mode is allowed to call.
+///
+/// Ask and Plan get a read-only shell: the mode policy lives in the tool
+/// instance, not in which tools were registered. See `ShellAccess`.
 pub fn register_tools_for_mode(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
@@ -160,15 +207,19 @@ pub fn register_tools_for_mode(
         search_approval,
         fetch_approval,
     )?;
+    let access = match mode {
+        AgentMode::Ask | AgentMode::Plan => ShellAccess::ReadOnly,
+        AgentMode::Agent => ShellAccess::ReadWrite,
+    };
+    register_shell_tool(registry, Arc::clone(&ctx), access)?;
     match mode {
         AgentMode::Ask => {}
         AgentMode::Plan => {
-            register_shell_tool(registry, Arc::clone(&ctx))?;
             register_plan_tool(registry, ctx, true)?;
         }
         AgentMode::Agent => {
+            #[cfg(feature = "edit-tools")]
             register_edit_tools(registry, Arc::clone(&ctx))?;
-            register_shell_tool(registry, Arc::clone(&ctx))?;
             register_plan_tool(registry, Arc::clone(&ctx), false)?;
             register(registry, Arc::new(todos::Todos::new(Arc::clone(&ctx))))?;
             register(registry, Arc::new(Delegate::new(ctx, models)))?;
@@ -242,86 +293,61 @@ mod registry_tests {
         }
     }
 
-    #[tokio::test]
-    async fn each_mode_registers_its_own_tools() {
-        let harness = apply_tests::harness().await;
-        let ask = names(AgentMode::Ask, &harness).await;
-        let plan = names(AgentMode::Plan, &harness).await;
-        let agent = names(AgentMode::Agent, &harness).await;
-        assert_eq!(
-            ask,
-            vec![
+    /// The names this build registers, sorted.
+    ///
+    /// Composed from `cfg!` rather than hardcoded: the same test then covers the
+    /// default build and `--all-features`, which is the only place a wrong
+    /// feature gate shows up.
+    fn expected(mode: AgentMode) -> Vec<&'static str> {
+        let mut names = vec![
+            "grant",
+            "shell",
+            "skill",
+            "web_fetch",
+            "web_search",
+            "retrieve",
+        ];
+        if cfg!(feature = "read-tools") {
+            names.extend(["find", "grep", "list_dir", "read_code", "read_file"]);
+        }
+        if cfg!(feature = "semantic-index") {
+            names.push("semantic_search");
+        }
+        if cfg!(feature = "lsp-tools") {
+            names.extend([
                 "definition",
                 "diagnostics",
-                "find",
-                "grant",
-                "grep",
                 "hover",
-                "list_dir",
-                "read_code",
-                "read_file",
                 "references",
-                "semantic_search",
-                "skill",
-                "web_fetch",
-                "web_search",
-                "workspace_symbol"
-            ]
-        );
-        assert_eq!(
-            plan,
-            vec![
-                "definition",
-                "diagnostics",
-                "find",
-                "grant",
-                "grep",
-                "hover",
-                "list_dir",
-                "read_code",
-                "read_file",
-                "references",
-                "retrieve",
-                "semantic_search",
-                "shell",
-                "skill",
-                "web_fetch",
-                "web_search",
                 "workspace_symbol",
-                "write_plan"
-            ]
-        );
-        assert_eq!(
-            agent,
-            vec![
-                "definition",
-                "delegate",
-                "delete_file",
-                "diagnostics",
-                "edit_file",
-                "find",
-                "grant",
-                "grep",
-                "hover",
-                "list_dir",
-                "read_code",
-                "read_file",
-                "references",
-                "retrieve",
-                "semantic_search",
-                "shell",
-                "skill",
-                "todos",
-                "web_fetch",
-                "web_search",
-                "workspace_symbol",
-                "write_file",
-                "write_plan"
-            ]
-        );
+            ]);
+        }
+        match mode {
+            AgentMode::Ask => {}
+            AgentMode::Plan => names.push("write_plan"),
+            AgentMode::Agent => {
+                names.extend(["delegate", "todos", "write_plan"]);
+                if cfg!(feature = "edit-tools") {
+                    names.extend(["delete_file", "edit_file", "write_file"]);
+                }
+            }
+        }
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 
-    async fn names(mode: AgentMode, harness: &apply_tests::Harness) -> Vec<String> {
+    #[tokio::test]
+    async fn each_mode_registers_its_own_tools() {
+        let harness = test_harness::harness().await;
+        for mode in [AgentMode::Ask, AgentMode::Plan, AgentMode::Agent] {
+            let mut got = names(mode, &harness).await;
+            got.sort_unstable();
+            assert_eq!(got, expected(mode), "{mode:?}");
+        }
+    }
+
+    async fn names(mode: AgentMode, harness: &test_harness::Harness) -> Vec<String> {
         let registry = ToolRegistry::new();
         register_tools_for_mode(
             &registry,
@@ -341,56 +367,39 @@ mod registry_tests {
     }
 
     #[tokio::test]
-    async fn lsp_off_omits_the_language_server_tools() {
-        let harness = apply_tests::harness().await;
-        let ctx = Arc::new(ToolContext {
-            session_id: harness.ctx.session_id,
-            workspace_id: harness.ctx.workspace_id,
-            root: harness.ctx.root.clone(),
-            sessions: Arc::clone(&harness.ctx.sessions),
-            file_changes: Arc::clone(&harness.ctx.file_changes),
-            index: None,
-            lsp: crate::agent::lsp::LspHub::new(),
-            lsp_enabled: false,
-            originals: None,
-            settings: None,
-            events: None,
-        });
-        let registry = ToolRegistry::new();
-        register_tools_for_mode(
-            &registry,
-            Arc::clone(&ctx),
-            AgentMode::Agent,
-            Arc::new(UnavailableChildModels),
-            Arc::new(IdleSearch),
-            true,
-            true,
-        )
-        .unwrap();
-        let names = registry.names();
-        for tool in [
-            "diagnostics",
-            "definition",
-            "references",
-            "hover",
-            "workspace_symbol",
-        ] {
-            assert!(!names.iter().any(|name| name == tool), "{names:?}");
+    async fn no_mode_offers_an_escalation_key_it_cannot_honour() {
+        let harness = test_harness::harness().await;
+        for mode in [AgentMode::Ask, AgentMode::Plan] {
+            let registry = ToolRegistry::new();
+            register_tools_for_mode(
+                &registry,
+                std::sync::Arc::clone(&harness.ctx),
+                mode,
+                std::sync::Arc::new(UnavailableChildModels),
+                std::sync::Arc::new(IdleSearch),
+                true,
+                true,
+            )
+            .unwrap();
+            let shell = registry
+                .tools()
+                .into_iter()
+                .find(|tool| tool.name() == "shell")
+                .expect("every mode has a shell");
+            let properties = &shell.parameters()["properties"];
+            assert!(properties.get("write_paths").is_none(), "{mode:?}");
+            assert!(properties.get("unsandboxed").is_none(), "{mode:?}");
         }
-        assert!(names.iter().any(|name| name == "read_file"));
-
-        let child = subagent::child_tool_names(robi_core::message::SubagentMode::Explore, ctx);
-        assert!(!child.iter().any(|name| name == "diagnostics"));
-        assert!(child.iter().any(|name| name == "grep"));
     }
 
+    #[cfg(feature = "edit-tools")]
     #[tokio::test]
     async fn an_edit_tool_publishes_a_file_changed_frame() {
         use crate::domain::events::{EventBus, FILE_CHANGED};
         use robi_core::tool::Tool;
         use serde_json::json;
 
-        let harness = apply_tests::harness().await;
+        let harness = test_harness::harness().await;
         std::fs::write(harness.root.join("note.md"), "one\n").unwrap();
         let session = harness.ctx.session_id;
         let workspace = harness.ctx.workspace_id;
@@ -402,9 +411,9 @@ mod registry_tests {
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: crate::agent::lsp::LspHub::new(),
-            lsp_enabled: false,
             originals: None,
             settings: None,
             events: Some(Arc::clone(&bus)),

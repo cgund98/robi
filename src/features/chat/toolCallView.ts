@@ -495,9 +495,16 @@ export function subagentView(call: ChatToolCall): SubagentView | null {
   }
 }
 
-/** The collapsed explore row: `Exploring 9 files, 5 searches`. */
+/**
+ * The collapsed explore row: `Exploring 4 commands`.
+ *
+ * A child now reads and searches through `shell`, so the read and search tools
+ * no longer appear in a step list. Counting shell steps is the honest summary;
+ * the commands themselves show in the expanded card.
+ */
 export function exploreSummary(view: SubagentView): string {
-  const files = new Set(
+  const commands = view.steps.filter((step) => step.name === 'shell' && step.target.length > 0)
+  const reads = new Set(
     view.steps
       .filter(
         (step) => (step.name === 'read_file' || step.name === 'read_code') && step.target.length > 0
@@ -506,10 +513,15 @@ export function exploreSummary(view: SubagentView): string {
   ).size
   const searches = view.steps.filter((step) => step.name === 'grep' || step.name === 'find').length
   const parts: string[] = []
-  if (files === 1) {
+  if (commands.length === 1) {
+    parts.push('1 command')
+  } else if (commands.length > 1) {
+    parts.push(`${commands.length} commands`)
+  }
+  if (reads === 1) {
     parts.push('1 file')
-  } else if (files > 1) {
-    parts.push(`${files} files`)
+  } else if (reads > 1) {
+    parts.push(`${reads} files`)
   }
   if (searches === 1) {
     parts.push('1 search')
@@ -523,6 +535,10 @@ export function exploreSummary(view: SubagentView): string {
 }
 
 export function subagentCount(view: SubagentView): string {
+  const commands = view.steps.filter((step) => step.name === 'shell').length
+  if (view.mode === 'explore' && commands > 0) {
+    return commands === 1 ? '1 command' : `${commands} commands`
+  }
   const searches = view.steps.filter((step) => step.name === 'grep' || step.name === 'find').length
   if (view.mode === 'explore' && searches > 0) {
     return searches === 1 ? '1 search' : `${searches} searches`

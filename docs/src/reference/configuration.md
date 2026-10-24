@@ -16,7 +16,6 @@ Both are plain TOML. The key is a string and the value is a string, for example:
 # ~/.robi/config.toml
 model = "ocg_glm-5.3"
 reasoning_effort = "medium"
-lsp = "on"
 max_iterations = "50"
 subagent_max_iterations = "50"
 subagent_timeout_seconds = "120"
@@ -76,20 +75,20 @@ files and later reads always agree.
 | `base_url` | no | none | Base URL for OpenCode Go and Anthropic. Unset uses that provider's default. |
 | `deepseek_base_url` | no | none | Base URL for DeepSeek. Unset uses `https://api.deepseek.com`. |
 | `system_prompt` | no | none | Extra system-prompt text. Unset adds no block. |
-| `lsp` | no | `on` | `on` registers the language-server tools; `off` leaves them out. |
 | `max_iterations` | no | `50` | Model turns in one primary-agent run. A whole number from 1 to 500. Read when the session actor starts. |
 | `subagent_max_iterations` | no | `50` | Model turns in one explore or general child. A whole number from 1 to 500. Read when `delegate` starts that child. |
 | `subagent_timeout_seconds` | no | `120` | Seconds before an explore or general child is stopped. A whole number from 1 to 3600. Read when `delegate` starts that child. |
 | `tool_timeout_seconds` | no | `120` | Seconds before a `shell` command is killed. A whole number from 1 to 3600. Read when that command starts. |
 | `path_allow_read` | no | none | Newline-separated paths appended to every session's read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
 | `path_allow_write` | no | none | Newline-separated paths appended to every session's write allow list. A line starting with `~/` is that user's home directory. Read from the store each time a tool builds the path filter or the shell profile. |
-| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`, to an MCP stdio child's `PATH`, and to the `PATH` the language-server tools resolve a binary on. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment, and once at startup for the language-server resolver. |
+| `path_entries` | no | none | Newline-separated directories appended to the sandbox `PATH`, to an MCP stdio child's `PATH`, and to the `PATH` the language-server client resolves a binary on. Each directory is also appended to the read allow list. A line starting with `~/` is that user's home directory. Read from the store each time a shell or an MCP stdio child builds its environment, and once at startup for the language-server client. |
 | `file_open_patterns` | no | none | Newline-separated globs. `*` matches any run of characters, including `/`, and `?` matches one character. A workspace-relative path that matches one opens outside the file viewer when its name is clicked on an edit card. Anything else opens in the file viewer. Absent matches nothing. |
 | `file_open_command` | no | none | One line. `{file_path}` is the absolute path and `{line}` is the 1-based line of the first change. A click with no line drops `{line}` and a colon before it. The line is split on whitespace into arguments; double quotes group one argument. It is not a shell command. Absent uses the system app. The desktop app posts the path to `POST /api/v1/workspaces/{id}/open` and waits up to 10 seconds. A program still running then has started. A failure to start, or a non-zero exit inside that window, is shown on the edit card. |
 | `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
 | `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
 
-Any key not on this list is refused. MCP reads `~/.robi/secrets.toml` for a
+Any key not on this list is refused. `lsp` used to be one of them and is gone with
+the language-server tools (S4): writing it now returns `unknown setting: lsp`. MCP reads `~/.robi/secrets.toml` for a
 value named by a server's `{"secret": "<name>"}` field; that name is not part of
 this whitelist.
 

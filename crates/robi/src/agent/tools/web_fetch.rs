@@ -199,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_first_host_waits_and_a_later_call_does_not() {
-        let harness = super::super::apply_tests::harness().await;
+        let harness = super::super::test_harness::harness().await;
         let tool = WebFetch::new(Arc::clone(&harness.ctx), Arc::new(HtmlFetcher), true);
         let args = json!({"url": "https://example.com/docs"});
         assert_eq!(
@@ -224,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_off_lets_a_new_host_run() {
-        let harness = super::super::apply_tests::harness().await;
+        let harness = super::super::test_harness::harness().await;
         let tool = WebFetch::new(Arc::clone(&harness.ctx), Arc::new(HtmlFetcher), false);
         assert_eq!(
             tool.requires_approval(&json!({"url": "https://example.com/docs"}))

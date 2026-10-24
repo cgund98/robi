@@ -16,10 +16,7 @@ use robi_index::{
     index_db_path, set_stored_pause, stored_pause, Embedder, Index, IndexState, IndexStatus,
 };
 
-use crate::domain::{
-    events::{EventBus, EventEnvelope},
-    workspace::assets::WorkspaceAssetCleaner,
-};
+use crate::domain::events::{EventBus, EventEnvelope};
 
 /// How long an index task outlives its last surface. A docs search holds a
 /// lease only for one request, so stopping at zero would tear the scan down
@@ -224,14 +221,6 @@ impl IndexHub {
 
     fn db_path(&self, id: WorkspaceId) -> PathBuf {
         index_db_path(&self.home, &id.to_string())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkspaceAssetCleaner for IndexHub {
-    async fn remove_workspace_assets(&self, id: WorkspaceId) -> Result<(), String> {
-        self.remove_files(id);
-        Ok(())
     }
 }
 

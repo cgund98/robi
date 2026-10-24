@@ -54,7 +54,9 @@ pub struct AgentFactory {
     /// Publishes `robi.session.v1.updated` after a title is stored. Absent when
     /// there is no bus.
     pub bus: Option<Arc<EventBus>>,
-    /// Workspace semantic index. Absent in tests that do not search.
+    /// `--features semantic-index` only: absent in a
+    /// default build, which does no indexing work at all.
+    #[cfg(feature = "semantic-index")]
     pub index: Option<Arc<crate::agent::index::IndexHub>>,
     /// Language servers shared by sessions on one workspace. Absent in tests
     /// that do not call them; those sessions get a hub of their own.
@@ -157,7 +159,6 @@ impl AgentFactory {
             ServiceError::Unknown
         })?;
         let registry = ToolRegistry::new();
-        let lsp_enabled = self.lsp_enabled().await?;
         let lsp = match self.lsp.clone() {
             Some(hub) => hub,
             None => {
@@ -175,9 +176,9 @@ impl AgentFactory {
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
+            #[cfg(feature = "semantic-index")]
             index: self.index.clone(),
             lsp,
-            lsp_enabled,
             originals: self.originals.clone(),
             settings: self.settings.clone(),
             events: self.bus.clone(),
@@ -228,16 +229,6 @@ impl AgentFactory {
         }
         tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
         Ok((Arc::new(registry), Some(root), mode, choice, chat.plan_path))
-    }
-
-    async fn lsp_enabled(&self) -> Result<bool, ServiceError> {
-        let Some(settings) = &self.settings else {
-            return Ok(true);
-        };
-        let stored = settings.get(crate::domain::settings::keys::LSP).await?;
-        Ok(crate::domain::settings::keys::lsp_enabled(
-            stored.as_ref().map(|setting| setting.value.as_str()),
-        ))
     }
 
     /// The `path_entries` setting appended to the LSP resolver's `PATH`.
@@ -838,7 +829,6 @@ mod tests {
     };
     use crate::domain::error::ServiceError;
     use crate::domain::events::{EventBus, SESSION_UPDATED};
-    use crate::domain::settings::store::SettingsStore;
     use crate::domain::workspace::repo::AnyWorkspace;
 
     struct MemoryStore {
@@ -1000,6 +990,7 @@ mod tests {
             file_changes: None,
             bus: None,
             search: idle_search(),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: None,
             settings: None,
@@ -1383,6 +1374,7 @@ mod tests {
             file_changes: None,
             bus: None,
             search: idle_search(),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: None,
             settings: None,
@@ -1497,6 +1489,7 @@ mod tests {
             )),
             bus: None,
             search: idle_search(),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: None,
             settings: None,
@@ -1512,82 +1505,6 @@ mod tests {
             seen.lock().expect("choice").clone(),
             Some((AgentMode::Agent, choice.agent.clone()))
         );
-    }
-
-    #[tokio::test]
-    async fn lsp_off_keeps_the_language_server_tools_out_of_the_actor() {
-        let store = Arc::new(MemoryStore::new());
-        let session = store.create_session(WorkspaceId::new());
-        let sessions = Arc::new(ChatSessionService {
-            repository: Arc::new(MemorySessions::new(session)),
-            workspaces: Arc::new(AnyWorkspace),
-            events: None,
-            plan_cleaner: None,
-        });
-        let settings = Arc::new(crate::domain::settings::memory::MemorySettingsStore::new());
-        settings
-            .set(
-                crate::domain::settings::keys::LSP,
-                crate::domain::settings::keys::LSP_OFF.into(),
-                false,
-            )
-            .await
-            .unwrap();
-        let names = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&names);
-        let runtime = SerializedChatRuntime::new(AgentFactory {
-            store,
-            events: Arc::new(NopSink),
-            models: Arc::new(ToolListSource {
-                names: seen,
-                model: Arc::new(TitleModel {
-                    calls: AtomicUsize::new(0),
-                    prompts: Mutex::new(Vec::new()),
-                    fail_user_turns: false,
-                }),
-            }),
-            tools: Arc::new(ToolRegistry::new()),
-            config: LoopConfig::default(),
-            sessions: Some(sessions),
-            file_changes: Some(Arc::new(
-                crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
-            )),
-            bus: None,
-            search: idle_search(),
-            index: None,
-            lsp: None,
-            settings: Some(settings),
-            mcp: None,
-            originals: None,
-        });
-
-        runtime
-            .submit(session, "hello".into(), Vec::new(), Vec::new())
-            .await
-            .unwrap();
-        let names = names.lock().expect("names").clone();
-        assert!(names.iter().any(|name| name == "read_file"));
-        assert!(!names.iter().any(|name| name == "diagnostics"));
-    }
-
-    struct ToolListSource {
-        names: Arc<Mutex<Vec<String>>>,
-        model: Arc<dyn Model>,
-    }
-
-    #[async_trait]
-    impl ModelSource for ToolListSource {
-        async fn model(
-            &self,
-            tools: Arc<ToolRegistry>,
-            _workspace: Option<std::path::PathBuf>,
-            _mode: AgentMode,
-            _choice: ModeOverride,
-            _plan_path: Option<String>,
-        ) -> Result<Arc<dyn Model>, ServiceError> {
-            *self.names.lock().expect("names") = tools.names();
-            Ok(Arc::clone(&self.model))
-        }
     }
 
     fn titled_runtime(
@@ -1608,6 +1525,7 @@ mod tests {
             )),
             bus: Some(bus),
             search: idle_search(),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: None,
             settings: None,

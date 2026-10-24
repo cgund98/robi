@@ -6,6 +6,7 @@
 //! A missing file contributes nothing.
 
 mod builtin;
+mod editing;
 mod files;
 mod mode;
 
@@ -18,10 +19,10 @@ use robi_core::tool::ToolRegistry;
 use crate::agent::tools::plan_file::todos_prompt;
 use crate::domain::chat_session::model::AgentMode;
 
-use mode::ModePrefix;
-
 pub use builtin::Builtin;
+use editing::ShellEditing;
 pub use files::{InstructionFile, ProjectAgents, WorkingDirectory};
+use mode::ModePrefix;
 
 /// Default cap for one instruction file. The tail is kept.
 pub const DEFAULT_MAX_BYTES: usize = 32 * 1024;
@@ -141,11 +142,8 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
     if let Some(body) = crate::agent::skills::catalog_block(&skills) {
         assembler = assembler.source(SkillCatalog { body });
     }
-    let lsp = input.tools.names().iter().any(|name| name == "diagnostics");
-    assembler = assembler.source(ModePrefix {
-        mode: input.mode,
-        lsp,
-    });
+    assembler = assembler.source(ShellEditing);
+    assembler = assembler.source(ModePrefix { mode: input.mode });
     if input.mode == AgentMode::Agent {
         if let Some(path) = input.plan_path.as_deref() {
             if let Some(body) = todos_prompt(path) {
@@ -324,7 +322,7 @@ mod tests {
         assert!(ask.contains("Ask mode"));
         assert!(ask.contains("- read_file: Read one file."));
         assert!(!ask.contains("- edit_file:"));
-        assert!(!ask.contains("- shell:"));
+        assert!(ask.contains("the shell you hold cannot write"));
         assert!(!ask.contains("mode explore"));
 
         let plan = prompt_for(
@@ -355,10 +353,9 @@ mod tests {
         let mode = agent.find("<mode>").unwrap();
         assert!(agent.find("- edit_file:").unwrap() < mode);
         assert!(agent.contains("Call todos with that path"));
+        // S4: verification is the shell, not a language server.
+        assert!(agent.contains("Verify with the shell"));
         assert!(!agent.contains("call diagnostics"));
-
-        let with_lsp = prompt_for(AgentMode::Agent, &[("diagnostics", "Diagnostics.")]);
-        assert!(with_lsp.contains("call diagnostics on that path"));
     }
 
     #[test]

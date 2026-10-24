@@ -15,3 +15,4 @@ pub mod session_title;
 pub mod settings;
 pub mod sqlite;
 pub mod workspace;
+pub mod workspace_assets;

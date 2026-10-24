@@ -1,10 +1,12 @@
 # Docs editing
 
 > **Disabled in M11. Kept for reference.** With the [docs viewer](docs-viewer.md)
-> off, there is no editor in the app. The agent edits markdown with its file
-> tools and the user edits it in an external editor. The save path
-> (`PUT /api/v1/workspaces/{id}/docs/{path}`, `agent/docs/`) stays in the tree
-> behind `showSurface('docsViewer')`. See
+> off, there is no editor in the app. The agent edits markdown with the shell and
+> the user edits it in an external editor. The save route
+> (`PUT /api/v1/workspaces/{id}/docs/{path}`) is compiled only with the
+> `docs-viewer` Cargo feature; `agent/docs/`, the change reconciliation and merge
+> that the route calls, stays in the tree and stays tested. See
+> [feature switches](../core/feature-switches.md) and
 > [Streamlining roadmap](../../streamlining.md#s5--no-docs-viewer).
 
 This page is the editing half of the [docs viewer](docs-viewer.md): CodeMirror

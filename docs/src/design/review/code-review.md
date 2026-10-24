@@ -1,10 +1,13 @@
 # Code review
 
-> **Disabled in M11. Kept for reference.** The review screen and its routes are
-> not served, and the chat no longer shows the edited-file strip. The user
-> reviews with `git diff` and their editor. The implementation stays in
-> `src/features/review/` and `crates/robi/src/web_api/review.rs` behind
-> `showSurface('reviewScreen')` in `src/app/surfaces.ts`. See
+> **Disabled in M11. Kept for reference.** The review routes are not served and
+> the app has no review screen or edited-file strip. The user reviews with
+> `git diff` and their editor. The backend stays in
+> `crates/robi/src/web_api/review.rs` and `agent/review/session.rs` behind the
+> `review` Cargo feature; `agent/review/diff.rs` stays unconditional because the
+> docs merge path uses it. The session baseline table is still written by the
+> `edit-tools` restore path only. See
+> [feature-switches.md](../core/feature-switches.md) and
 > [Streamlining roadmap](../../streamlining.md#s2--no-in-app-code-review).
 
 This page is the review of files a chat session has changed. The

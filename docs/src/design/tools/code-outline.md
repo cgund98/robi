@@ -1,5 +1,11 @@
 # Code outline
 
+> **Disabled in M11. Kept for reference.** `read_code` is not registered: it
+> lives behind the `read-tools` Cargo feature, and the shell is how a file is
+> read. The design below still describes the code, which `robi-index` keeps, and
+> the `outline` path is what the feature restores. See
+> [feature-switches.md](../core/feature-switches.md).
+
 This page defines targeted AST unfolding: a source file reaches the model as
 signatures plus the bodies it named, and an edit still has to quote bytes that
 are in the file. The tool is `read_code`. Exact reads stay on `read_file`.

@@ -11,15 +11,13 @@
  *
  * See `docs/src/streamlining.md`.
  */
-export type UiSurface = 'docsViewer' | 'reviewScreen' | 'indexStatus' | 'topBarShell'
+export type UiSurface = 'docsViewer' | 'reviewScreen' | 'topBarShell'
 
 const SURFACES: Record<UiSurface, boolean> = {
   /** S5: the `#/docs` viewer, its chat tray, and the chat/docs toggle. */
   docsViewer: false,
   /** S2: the session review screen and the edited-file strip. */
   reviewScreen: false,
-  /** S3, UI half: the index status pill. The index itself still runs. */
-  indexStatus: false,
   /** S6: the top bar in place of the permanent left sidebar. */
   topBarShell: true
 }

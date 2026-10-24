@@ -88,7 +88,7 @@ references to `--sidebar-width` in this page describe it.
 
 | Region | Role | Content |
 |---|---|---|
-| **Window bar** | Drag region and navigation | macOS window controls, inset from the corner. Then the workspace dropdown, back and forward, and the session title — which is also the Recents menu. At the trailing edge: the index pill while it is on, New chat, Settings, and an overflow holding MCP marks and the API health row |
+| **Window bar** | Drag region and navigation | macOS window controls, inset from the corner. Then the workspace dropdown, back and forward, and the session title — which is also the Recents menu. At the trailing edge: New chat, Settings, and an overflow holding MCP marks and the API health row |
 | **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards |
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
 
@@ -306,10 +306,9 @@ workspace dropdown, then the session title centred over the transcript — and t
 title is the Recents menu's trigger. Back and forward walk the same history as
 the side mouse buttons: each chat and the draft. A button is quiet when that
 direction has no entry. At the trailing edge sit New chat (`SquarePen`) and
-Settings, then the overflow if anything lives in it: the index pill while the
-workspace index is not ready (a progress wheel for files still remaining, and a
-short label; clicking it opens the status and pause or resume), one row per MCP
-server, and a row for a failing API health check.
+Settings, then the overflow if anything lives in it: one row per MCP
+server, and a row for a failing API health check. The index pill used to sit
+here while the workspace index was not ready; S3 removed it with the index.
 The transcript starts on the next row. Every icon-only control carries an
 accessible name and a title, and tab order runs leading, centre, trailing. The
 first time a session is opened, the main column shows a spinner and “Loading

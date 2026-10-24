@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
-use super::profile::{NetworkMode, Profile};
+use super::profile::{NetworkMode, Profile, WriteAccess};
 
 pub fn command(profile: &Profile, shell: &[String]) -> Result<Vec<String>, String> {
+    let read_only = profile.write == WriteAccess::ReadOnly;
     let mut args = vec![
         "bwrap".to_owned(),
         "--die-with-parent".to_owned(),
@@ -24,12 +25,23 @@ pub fn command(profile: &Profile, shell: &[String]) -> Result<Vec<String>, Strin
             args.extend(["--ro-bind".to_owned(), path.to_owned(), path.to_owned()]);
         }
     }
+    args.extend(["--tmpfs".to_owned(), "/tmp".to_owned()]);
+    if read_only {
+        args.extend([
+            "--ro-bind".to_owned(),
+            profile.workspace.display().to_string(),
+            profile.workspace.display().to_string(),
+        ]);
+    } else {
+        args.extend([
+            "--bind".to_owned(),
+            profile.workspace.display().to_string(),
+            profile.workspace.display().to_string(),
+        ]);
+    }
+    // The private temp directory stays writable in both modes: it belongs to
+    // this call and is deleted when it returns.
     args.extend([
-        "--tmpfs".to_owned(),
-        "/tmp".to_owned(),
-        "--bind".to_owned(),
-        profile.workspace.display().to_string(),
-        profile.workspace.display().to_string(),
         "--bind".to_owned(),
         profile.temp_dir.display().to_string(),
         profile.temp_dir.display().to_string(),
@@ -49,7 +61,11 @@ pub fn command(profile: &Profile, shell: &[String]) -> Result<Vec<String>, Strin
         .chain(&profile.protected_write_dirs)
         .chain(&profile.protected_write_files)
     {
-        bind(&mut args, path);
+        if read_only {
+            ro_bind(&mut args, path);
+        } else {
+            bind(&mut args, path);
+        }
     }
     for path in profile.deny_reads.iter().chain(&profile.deny_writes) {
         hide_or_readonly(&mut args, path);
@@ -58,14 +74,16 @@ pub fn command(profile: &Profile, shell: &[String]) -> Result<Vec<String>, Strin
         readonly(&mut args, &path);
     }
     let git = profile.workspace.join(".git");
-    for path in profile
-        .wide_writes
-        .iter()
-        .chain(&profile.protected_write_dirs)
-        .chain(&profile.protected_write_files)
-    {
-        if path == &git || path.starts_with(&git) {
-            bind(&mut args, path);
+    if !read_only {
+        for path in profile
+            .wide_writes
+            .iter()
+            .chain(&profile.protected_write_dirs)
+            .chain(&profile.protected_write_files)
+        {
+            if path == &git || path.starts_with(&git) {
+                bind(&mut args, path);
+            }
         }
     }
     for path in floor_files(profile)? {
@@ -173,4 +191,62 @@ fn floor_files(profile: &Profile) -> Result<Vec<std::path::PathBuf>, String> {
         }
     }
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn profile(write: WriteAccess) -> Profile {
+        Profile {
+            sandboxed: true,
+            write,
+            workspace: PathBuf::from("/work/app"),
+            home: PathBuf::from("/home/ada"),
+            temp_dir: PathBuf::from("/tmp/robi-call"),
+            cwd: PathBuf::from("/work/app"),
+            network: NetworkMode::Deny,
+            env: Vec::new(),
+            toolchain_reads: Vec::new(),
+            wide_reads: Vec::new(),
+            wide_writes: Vec::new(),
+            protected_read_files: Vec::new(),
+            protected_write_files: Vec::new(),
+            protected_read_dirs: Vec::new(),
+            protected_write_dirs: Vec::new(),
+            deny_reads: Vec::new(),
+            deny_writes: Vec::new(),
+        }
+    }
+
+    fn shell() -> Vec<String> {
+        vec!["/bin/sh".to_owned(), "-c".to_owned(), "true".to_owned()]
+    }
+
+    #[test]
+    fn a_read_only_profile_ro_binds_the_workspace() {
+        let args = command(&profile(WriteAccess::ReadOnly), &shell()).unwrap();
+        let pairs: Vec<(&str, &str)> = args
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+            .map(|w| (w[0].as_str(), w[1].as_str()))
+            .collect();
+        assert!(pairs.contains(&("--ro-bind", "/work/app")), "{pairs:?}");
+        assert!(!pairs.contains(&("--bind", "/work/app")), "{pairs:?}");
+        // The private temp directory stays writable: it belongs to the call.
+        assert!(pairs.contains(&("--bind", "/tmp/robi-call")), "{pairs:?}");
+    }
+
+    #[test]
+    fn a_writable_profile_binds_the_workspace_read_write() {
+        let args = command(&profile(WriteAccess::ReadWrite), &shell()).unwrap();
+        let pairs: Vec<(&str, &str)> = args
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+            .map(|w| (w[0].as_str(), w[1].as_str()))
+            .collect();
+        assert!(pairs.contains(&("--bind", "/work/app")), "{pairs:?}");
+    }
 }

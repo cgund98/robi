@@ -1,12 +1,13 @@
 # Semantic search
 
-> **The status surface is gone in M11. The index itself is unchanged.** S3
-> removes the index pill from the chat header and the client's handling of
-> `robi.index.v1.progress`, so the UI never shows indexing and never asks for its
-> status. The backend still indexes and the `semantic_search` tool is still
-> registered; whether the tool is disabled with the index is a separate decision
-> in [streamlining.md](../../streamlining.md#s3--no-semantic-index). From the
-> shell, `grep` and `find` are the retrieval path.
+> **Disabled in M11. Kept for reference.** S3 removes the whole surface: the
+> `semantic_search` tool is not registered, `IndexHub` is not built, the
+> `/workspaces/{id}/index` routes are not served, and the index status pill is
+> gone. `crates/robi-index` stays in the tree and the code below still runs
+> behind the `semantic-index` Cargo feature, so a return is a manifest change.
+> Retrieval is `grep` and `find`, or the shell. See
+> [feature-switches.md](../core/feature-switches.md) and
+> [streamlining.md](../../streamlining.md#s3--no-semantic-index).
 
 This page settles **D6** and **D7** and defines how a workspace becomes a
 searchable index. It is the design for **F7.2** in the
@@ -478,9 +479,12 @@ builds the tool with a fake `Embedder` that returns fixed vectors.
 - **Hosted embeddings.** Every index and every query would send source
   off the machine, and a workspace scan would need an API key. Embeddings
   stay on device.
-- **Qdrant, or any separate vector server.** Robi is one process on
-  loopback. A second daemon is an install and a failure mode the index
-  does not need.
+- **Qdrant, or any separate vector server.** Robi embeds its index, so
+  there is no daemon to install and no second failure mode. Several front
+  ends may share one `~/.robi/index/<workspace_id>/index.sqlite` once
+  parallel processes are allowed, which is a locking question for that
+  file — see [parallel front ends](../shell/parallel-front-ends.md) — and
+  not a reason for a server.
 - **LanceDB.** A workspace is tens of thousands of chunks, which a
   brute-force `vec0` scan answers interactively. A second storage
   engine would sit beside SQLite before the size required it.

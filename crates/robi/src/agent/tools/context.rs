@@ -6,6 +6,7 @@ use std::sync::Arc;
 use robi_core::error::ToolError;
 use robi_core::ids::{SessionId, WorkspaceId};
 
+#[cfg(feature = "semantic-index")]
 use crate::agent::index::IndexHub;
 use crate::agent::lsp::LspHub;
 use crate::agent::workspace::{resolve_path, user_home, PathFilter, ResolvedPath};
@@ -22,11 +23,10 @@ pub struct ToolContext {
     pub root: PathBuf,
     pub sessions: Arc<ChatSessionService>,
     pub file_changes: Arc<dyn FileChangeRepository>,
+    /// `--features semantic-index` only: `semantic_search` reads it.
+    #[cfg(feature = "semantic-index")]
     pub index: Option<Arc<IndexHub>>,
     pub lsp: Arc<LspHub>,
-    /// When false, language-server tools are not registered and writes do not
-    /// notify a server. Read once, when the actor builds its registry.
-    pub lsp_enabled: bool,
     /// Capped shell streams. Absent in tests that do not compress.
     pub originals: Option<Arc<dyn crate::agent::compress::OriginalStore>>,
     /// Live settings. Each path-filter and sandbox build reads
@@ -108,12 +108,10 @@ impl ToolContext {
 
     /// Tell a running language server that a write just changed this file.
     ///
-    /// A server that is not running is left stopped. The next tool call reads
-    /// the disk.
+    /// `LspHub::note_disk` is a map lookup: a server that is not running is left
+    /// stopped and nothing is spawned, so this is safe to call in a build where
+    /// no language-server tool is registered. The next tool call reads the disk.
     pub async fn note_lsp(&self, absolute: &std::path::Path, deleted: bool) {
-        if !self.lsp_enabled {
-            return;
-        }
         self.lsp.note_disk(&self.root, absolute, deleted).await;
     }
 
@@ -145,6 +143,7 @@ pub fn display_path(path: &ResolvedPath) -> String {
     }
 }
 
+#[cfg(feature = "read-tools")]
 pub fn denied(path: &ResolvedPath) -> ToolError {
     ToolError::Failed(format!("path is not allowed: {}", display_path(path)))
 }

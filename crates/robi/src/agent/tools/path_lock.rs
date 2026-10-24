@@ -1,4 +1,8 @@
-//! One lock per absolute path, shared by the edit tools and review decisions.
+//! One lock per absolute path, shared by every read-modify-write.
+//!
+//! The edit tools, the plan and todo tools, and the docs editor all take this
+//! guard before they read a file they are about to write, so two callers cannot
+//! interleave a read with someone else's write.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

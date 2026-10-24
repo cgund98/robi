@@ -1,16 +1,13 @@
 import { Show } from 'solid-js'
 
 import { ApiStatus } from '../../components/layout/ApiStatus'
-import { IndexStatusLine } from '../../components/layout/IndexStatusLine'
 import { McpTray } from '../../components/layout/McpTray'
 import styles from './ChatHeader.module.css'
 
 export function ChatHeader(props: { sessionTitle: string }) {
   return (
     <header class={styles.header} data-tauri-drag-region="deep">
-      <div class={styles.leading}>
-        <IndexStatusLine />
-      </div>
+      <div class={styles.leading}></div>
       <Show when={props.sessionTitle}>
         <span class={styles.title}>{props.sessionTitle}</span>
       </Show>

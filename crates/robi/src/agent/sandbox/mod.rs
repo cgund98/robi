@@ -15,7 +15,7 @@ pub use env::{command_env, install_path_wrappers, EnvInput};
 pub use launch::run_command;
 pub use profile::{
     apply_allow_read, apply_allow_write, apply_deny, classify_path, parse_rule, push_classified,
-    AccessClass, NetworkMode, ParsedRule, Profile, ProfileError,
+    AccessClass, NetworkMode, ParsedRule, Profile, ProfileError, WriteAccess,
 };
 pub use seatbelt::seatbelt_policy;
 

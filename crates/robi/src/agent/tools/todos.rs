@@ -8,8 +8,8 @@ use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::change::{atomic_write, lock_path, read_text};
 use super::context::ToolContext;
+use super::fs_write::{atomic_write, lock_path, read_text};
 use super::plan_file::{
     format_plan, is_session_plan_file, normalize_todos, plan_argument, split_plan, Todo,
 };
@@ -249,7 +249,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::agent::tools::apply_tests::harness;
+    use crate::agent::tools::test_harness::harness;
     use crate::agent::tools::write_plan::WritePlan;
     use tokio_util::sync::CancellationToken;
 
@@ -257,7 +257,7 @@ mod tests {
         ToolRun::new(CancellationToken::new())
     }
 
-    async fn plan(harness: &crate::agent::tools::apply_tests::Harness, body: &str) -> String {
+    async fn plan(harness: &crate::agent::tools::test_harness::Harness, body: &str) -> String {
         let created = WritePlan::new(Arc::clone(&harness.ctx), true)
             .execute(
                 json!({

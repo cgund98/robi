@@ -11,7 +11,7 @@ variable says otherwise. The directory is created mode `0700` on first use.
 | `~/.robi/plans/<session_id>/` | Plan files written by the assistant, one directory per session. |
 | `~/.robi/sessions/<session_id>/blobs.redb` | Tool results, tool originals, and image bytes for one chat. |
 | `~/.robi/sessions/image-index.redb` | Image id to session id. No image bytes. |
-| `~/.robi/index/<workspace_id>/index.sqlite` | The semantic index for one workspace. |
+| `~/.robi/index/<workspace_id>/index.sqlite` | The semantic index for one workspace, when `--features semantic-index` is on. The directory is still removed when the workspace is deleted. |
 | `~/.robi/models/` | Cached embedding model weights. |
 | `~/.robi/mcp.json` | User-scoped MCP server config. |
 | `~/.robi/mcp-icons.json` | Cached MCP server icons (capped at 256 KiB). |

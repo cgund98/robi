@@ -45,11 +45,11 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `adapters/` | M2 | SQLite behind those traits, and the settings files. A keychain can replace the secret backend later |
 | `bootstrap/` | M2 | Shared app state, bind, and router for `robi-api` and the Tauri process |
 | `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI |
-| `agent/tools/` | M3 | Built-in tools |
+| `agent/tools/` | M3 | Built-in tools. The default build is shell-first: `read_file`, `read_code`, `list_dir`, `find`, `grep`, and the three write tools are behind `read-tools` and `edit-tools`. See [docs/src/design/core/feature-switches.md](docs/src/design/core/feature-switches.md) |
 | `agent/workspace/` | M3 | Root resolution, path confinement, policy |
-| `agent/review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
-| `agent/lsp/` | M7 | Language server client |
-| `agent/index/` | M7 | AST chunking, embeddings, vector search |
+| `agent/review/` | M4 | Line diff and session hunks. `diff.rs` is unconditional; the session baseline reader is behind `--features review` |
+| `agent/lsp/` | M7 | Language server client. Kept in every build; the five tools are behind `--features lsp-tools` |
+| `agent/index/` | M7 | AST chunking, embeddings, vector search. Behind `--features semantic-index` |
 | `agent/skills/` | M8 | Skill scan, catalog, and `/id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
 | `agent/mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
 | `agent/compress/` | M9 | Tool-output compression and the original store |
@@ -173,6 +173,11 @@ builds the mdBook, the same steps as the Pages workflow. Keep the jobs and the
   `crates/robi`.
 - **Keep I/O out of the loop.** When the loop needs a file or a socket, it needs
   a trait instead.
+- **A removed backend surface is a Cargo feature, not a deletion.** One flag per
+  workstream in `crates/robi/Cargo.toml`, off by default, gating the module, its
+  registration, and its OpenAPI entry together. `make lint-restore` and
+  `make test-restore` compile the restore path, and CI runs both: a missing
+  feature edge fails only there.
 - **Do not block an async worker.** Filesystem, SQLite, and tree walks in
   `robi-api` go through `spawn_blocking` (`agent::blocking::call`). A blocking
   call on the async runtime stalls the API. See

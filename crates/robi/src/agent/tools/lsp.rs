@@ -721,8 +721,8 @@ mod tests {
 
     use crate::agent::lsp::connect_fake;
     use crate::agent::lsp::{LspHub, Timing};
-    use crate::agent::tools::apply_tests::harness;
     use crate::agent::tools::context::ToolContext;
+    use crate::agent::tools::test_harness::harness;
 
     use super::*;
 
@@ -730,7 +730,7 @@ mod tests {
         ToolRun::new(CancellationToken::new())
     }
 
-    async fn ready() -> (super::super::apply_tests::Harness, Arc<ToolContext>) {
+    async fn ready() -> (super::super::test_harness::Harness, Arc<ToolContext>) {
         let harness = harness().await;
         std::fs::write(harness.ctx.root.join("lib.rs"), "fn demo() {}\n").unwrap();
         let hub = LspHub::build(
@@ -746,10 +746,10 @@ mod tests {
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: hub,
             originals: None,
-            lsp_enabled: true,
             settings: None,
             events: None,
         });
@@ -806,10 +806,10 @@ mod tests {
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
+            #[cfg(feature = "semantic-index")]
             index: None,
             lsp: LspHub::build(Timing::fast(), Arc::new(|_| None)),
             originals: None,
-            lsp_enabled: true,
             settings: None,
             events: None,
         });

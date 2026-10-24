@@ -45,7 +45,7 @@ network. It is done when its tests pass. See
 | M4 | Editing | The assistant changes your files and runs commands | `write_file`, edit tools, checkpoints/undo, git awareness, sandboxed shell |
 | M5 | Modes and subagents | Ask, plan, and agent modes; read-only exploration | Modes, plan artifacts, `tasks`, `explore`, `delegate` |
 | M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments. **The screen is disabled in M11** |
-| M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search. **The index status UI is disabled in M11; the index keeps running** |
+| M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search. **Disabled in M11:** the five language-server tools and the semantic index are off by default, behind `--features lsp-tools` and `--features semantic-index` |
 | M8 | Reach | Integrations and headless use | MCP client, skills, web tools |
 | M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
 | M10 | Docs view | Read and write project documentation | A filtered file tree, and an editor shared by the user and the agent. **Disabled in M11** |
@@ -1151,6 +1151,8 @@ Statuses: **needed**, **later**, **done**.
 | `docs/src/design/compression/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
 | `docs/src/design/compression/mcp-output.md` | MCP result compression: JSON samples and counts, the line pass, `kind: "mcp"` originals | M9 | done |
 | `docs/src/design/tools/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit. Four slices: Rust with focus, then TypeScript, then Python and Go, then the depth and `compress` knobs | read tools | done |
+| `docs/src/design/shell/tui.md` | Terminal front end: module vs. crate, the TEA loop, the parity map, phases T0–T8. A surface, not a milestone | T0 | done |
+| `docs/src/design/shell/parallel-front-ends.md` | Per-session lease, the `redb` handle invariant it needs, the degraded transcript, and what parallel processes still share | T0 | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives
 with reasons, the interfaces, and the failure modes. A doc that only describes

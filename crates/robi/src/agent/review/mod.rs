@@ -4,14 +4,14 @@
 //! disk. `decide_review` keeps a change or puts a hunk back.
 
 mod diff;
-mod lock;
+#[cfg(feature = "review")]
 mod session;
 
 pub use diff::{
     accept, diff, reject, review_lines, split_lines, FileDiff, FileStatus, Hunk, ReviewLine,
     ReviewLineKind,
 };
-pub use lock::lock_path;
+#[cfg(feature = "review")]
 pub use session::{
     decide_review, hunks_for_session, review_file, review_for_session, review_summaries,
     ReviewDecision, ReviewFile, ReviewSummary,
