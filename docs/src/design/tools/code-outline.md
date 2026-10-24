@@ -136,7 +136,7 @@ missing grammar is slice 4. The result carries `view`, `path`, `language`,
 `depth_applied` (always 1), `focused`, `omitted`, `missing`, and
 `ambiguous`.
 
-`edit_file` and `write_file` reject `old`, `new`, or `content` that contains
+`edit_file` and `write_file` reject `old_string`, `new_string`, or `content` that contains
 `<<<ROBI_` before the file is read. The error is the one under
 [Markers must not reach the file](#markers-must-not-reach-the-file). This
 check ships in the same change as the tool. A marker the model can see and
@@ -288,7 +288,7 @@ through. A second compressor must not rewrite marker lines.
 
 The model already has `read_file`. `read_code` is a second tool because its
 result is not a quote source. Mixing both shapes behind one name is how a
-marker lands in `old`.
+marker lands in `old_string`.
 
 `compress` defaults to true. The schema default is not "true during search,
 false during an edit." The tool cannot see intent. The description tells the
@@ -383,8 +383,9 @@ Symbols use the same names as semantic_search: PaymentService::process_card
 in Rust and Go, PaymentService.process_card in TypeScript and Python. A
 bare name is accepted when it matches one symbol in the file.
 
-Quote edit_file's old and new only from read_file, or from a read_code call
-with compress false. Never copy a ROBI_OMITTED line into old, new, or
+Quote edit_file's old_string and new_string only from read_file, or from a
+read_code call with compress false. Never copy a ROBI_OMITTED line into
+old_string, new_string, or
 write_file content. To edit a folded body, call read_code again with that
 symbol in focus_symbols, or read_file with offset set to the marker's
 start line. depth 0 is the file map. depth 1 is the default. depth 2 keeps
@@ -839,7 +840,7 @@ both equal the query. The model sends the longer symbol.
 ### Markers must not reach the file
 
 `edit_file` and `write_file` reject the call before any read-modify-write
-when `old`, `new`, or `content` contains the literal `<<<ROBI_`. That covers
+when `old_string`, `new_string`, or `content` contains the literal `<<<ROBI_`. That covers
 an outline marker and a compressed shell marker
 ([shell-output.md](../compression/shell-output.md)).
 The check is a byte search, not a parse of the outline. `replace_all` does
@@ -862,16 +863,16 @@ This is the whole fallback. The write does not try to expand the marker
 into the current body and apply the edit. Doing that would write a patch
 the model did not see onto a range it did not quote.
 
-A signature copied from an outline is real source and may be `old`. The
+A signature copied from an outline is real source and may be `old_string`. The
 lines after it that are a marker may not. A focused body copied from an
-outline is real source and may be `old`, braces included.
+outline is real source and may be `old_string`, braces included.
 
 `write_file` uses the same prefix check on `content`. Replacing a file with
 a skeleton would persist the markers. `delete_file` does not look at
 content.
 
 A file that already contains the sentinel cannot be edited through any
-`old` or `new` that includes it, and cannot be overwritten by `write_file`
+`old_string` or `new_string` that includes it, and cannot be overwritten by `write_file`
 while the sentinel is in `content`. The sentinel is reserved. It is not a
 comment form, so ordinary `/* omitted */` notes in a repository are
 unaffected.

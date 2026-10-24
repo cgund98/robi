@@ -13,17 +13,17 @@ pub fn apply_edit(
     replace_all: bool,
 ) -> Result<String, String> {
     if old.is_empty() {
-        return Err("old is empty; use write_file to create or replace the file".to_owned());
+        return Err("old_string is empty; use write_file to create or replace the file".to_owned());
     }
     if old == new {
-        return Err("old and new are identical".to_owned());
+        return Err("old_string and new_string are identical".to_owned());
     }
     let (bom, body) = split_bom(original);
     let ending: &str = if body.contains("\r\n") { "\r\n" } else { "\n" };
     let old = convert_ending(old, ending);
     let new = convert_ending(new, ending);
     if old == new {
-        return Err("old and new are identical".to_owned());
+        return Err("old_string and new_string are identical".to_owned());
     }
     let next = replace_exact(body, &old, &new, replace_all)?;
     Ok(format!("{bom}{next}"))
@@ -53,7 +53,7 @@ fn replace_exact(content: &str, old: &str, new: &str, replace_all: bool) -> Resu
     }
     if count > 1 && !replace_all {
         return Err(format!(
-            "old text matched {count} times; include more surrounding lines so it matches once, or set replace_all"
+            "old_string matched {count} times; include more surrounding lines so it matches once, or set replace_all"
         ));
     }
     if replace_all {
@@ -65,9 +65,9 @@ fn replace_exact(content: &str, old: &str, new: &str, replace_all: bool) -> Resu
 
 fn not_found(content: &str, old: &str) -> String {
     if !trim_lines(old).is_empty() && trim_lines(content).contains(&trim_lines(old)) {
-        "old text was not found: it matches only if whitespace is ignored, so check indentation and trailing spaces; call read_file and copy the lines exactly".to_owned()
+        "old_string was not found: it matches only if whitespace is ignored, so check indentation and trailing spaces; call read_file and copy the lines exactly".to_owned()
     } else {
-        "old text was not found: the file may have changed or the snippet was retyped; call read_file and copy old exactly from the current content".to_owned()
+        "old_string was not found: the file may have changed or the snippet was retyped; call read_file and copy old_string exactly from the current content".to_owned()
     }
 }
 

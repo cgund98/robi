@@ -345,8 +345,8 @@ describe('editSuggestion', () => {
         execution_status: 'not_started',
         args: {
           path: 'src/Transcript.module.css',
-          old: 'color: var(--ink);\n',
-          new: 'color: var(--ink-bright);\n'
+          old_string: 'color: var(--ink);\n',
+          new_string: 'color: var(--ink-bright);\n'
         }
       })
     )
@@ -361,8 +361,8 @@ describe('editSuggestion', () => {
         execution_status: 'not_started',
         args: {
           path: 'src/main.rs',
-          old: 'keep\n',
-          new: ['keep', ...Array.from({ length: 40 }, () => 'extra')].join('\n')
+          old_string: 'keep\n',
+          new_string: ['keep', ...Array.from({ length: 40 }, () => 'extra')].join('\n')
         }
       })
     )

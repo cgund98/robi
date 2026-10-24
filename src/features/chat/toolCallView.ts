@@ -102,17 +102,22 @@ export type EditPreview = {
   hidden: number
 }
 
-/** The change an `edit_file` approval is asking to make, from `old` and `new`. */
+/** The change an `edit_file` approval is asking to make, from `old_string` and `new_string`. */
 export function editSuggestion(call: ChatToolCall): EditPreview | null {
   if (call.name !== 'edit_file') {
     return null
   }
   const args = record(call.args)
   const path = stringField(args, 'path')
-  if (!path || !args || typeof args.old !== 'string' || typeof args.new !== 'string') {
+  if (
+    !path ||
+    !args ||
+    typeof args.old_string !== 'string' ||
+    typeof args.new_string !== 'string'
+  ) {
     return null
   }
-  const all = diffSnippet(args.old, args.new)
+  const all = diffSnippet(args.old_string, args.new_string)
   return {
     path,
     fullPath: path,

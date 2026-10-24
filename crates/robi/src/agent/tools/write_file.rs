@@ -65,8 +65,7 @@ impl Tool for WriteFile {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: WriteArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: WriteArgs = super::args::parse_args(args, &["path", "content"])?;
         if args.path.is_empty() {
             return Err(ToolError::InvalidArgs("path is required".into()));
         }

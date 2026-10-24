@@ -87,8 +87,7 @@ impl Tool for WebFetch {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: FetchArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: FetchArgs = super::args::parse_args(args, &["url"])?;
         let url =
             parse_fetch_url(&args.url).map_err(|err| ToolError::InvalidArgs(err.to_string()))?;
         let host = url

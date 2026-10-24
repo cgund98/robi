@@ -83,8 +83,7 @@ impl Tool for Retrieve {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: Args = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: Args = super::args::parse_args(args, &["id"])?;
         if args.id.is_empty() {
             return Err(ToolError::InvalidArgs("id is required".into()));
         }

@@ -1045,10 +1045,10 @@ approval prompt are in [editing-tools.md](design/tools/editing-tools.md).
 | Search and replace | Unambiguous, cheap to validate, trivially reversible | Ambiguous on repeated text; large edits become many calls; no natural preview |
 | Unified diff / patch | Precise about position and context; one call per file; previewable as a real diff in review UI | Fragile to context drift; models generate malformed patches; needs fuzzy application |
 
-Search-and-replace fails closed when `old` is missing or matches more than
+Search-and-replace fails closed when `old_string` is missing or matches more than
 once. A patch the model authors was rejected: it applies to the wrong place
 when the file has drifted, and models emit malformed patches. Fuzzy matchers
-were rejected for the same reason. A write must not succeed when `old` is not
+were rejected for the same reason. A write must not succeed when `old_string` is not
 the bytes in the file. `replace_all` is the explicit opt-in when every match
 should change.
 

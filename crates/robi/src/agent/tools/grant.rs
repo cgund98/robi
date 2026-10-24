@@ -57,8 +57,7 @@ impl Tool for Grant {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: GrantArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: GrantArgs = super::args::parse_args(args, &["path", "access"])?;
         if args.path.is_empty() {
             return Err(ToolError::InvalidArgs("path is required".into()));
         }

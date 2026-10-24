@@ -64,8 +64,7 @@ impl Tool for Find {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: FindArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: FindArgs = super::args::parse_args(args, &[])?;
         let filter = self.ctx.filter().await?;
         let resolved = self.ctx.resolve(args.path.as_deref().unwrap_or(""))?;
         if !filter.allows_read(&resolved.relative) {

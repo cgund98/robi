@@ -3,6 +3,7 @@
 //! Each tool closes over one chat session. It reloads that session's path
 //! rules at the start of every call.
 
+mod args;
 pub(crate) mod change;
 mod context;
 mod delegate;

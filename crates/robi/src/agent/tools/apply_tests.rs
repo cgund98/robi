@@ -96,7 +96,7 @@ async fn edit_file_replaces_one_match_and_keeps_the_first_baseline() {
     let harness = harness().await;
     std::fs::write(harness.root.join("a.txt"), "one\ntwo\n").unwrap();
     let edit = EditFile::new(Arc::clone(&harness.ctx));
-    let args = json!({"path": "a.txt", "old": "two\n", "new": "three\n"});
+    let args = json!({"path": "a.txt", "old_string": "two\n", "new_string": "three\n"});
     assert_eq!(
         edit.requires_approval(&args).await,
         ApprovalDecision::AllowImmediately
@@ -109,7 +109,7 @@ async fn edit_file_replaces_one_match_and_keeps_the_first_baseline() {
     );
 
     edit.execute(
-        json!({"path": "a.txt", "old": "three\n", "new": "four\n"}),
+        json!({"path": "a.txt", "old_string": "three\n", "new_string": "four\n"}),
         run(),
     )
     .await
@@ -144,7 +144,7 @@ async fn an_ambiguous_edit_does_not_write() {
     let edit = EditFile::new(Arc::clone(&harness.ctx));
     let error = edit
         .execute(
-            json!({"path": "a.txt", "old": "same\n", "new": "other\n"}),
+            json!({"path": "a.txt", "old_string": "same\n", "new_string": "other\n"}),
             run(),
         )
         .await
@@ -161,7 +161,7 @@ async fn a_denied_path_asks_for_approval_and_then_writes() {
     let harness = harness().await;
     std::fs::write(harness.root.join(".env"), "TOKEN=1\n").unwrap();
     let edit = EditFile::new(Arc::clone(&harness.ctx));
-    let args = json!({"path": ".env", "old": "TOKEN=1\n", "new": "TOKEN=2\n"});
+    let args = json!({"path": ".env", "old_string": "TOKEN=1\n", "new_string": "TOKEN=2\n"});
     assert_eq!(
         edit.requires_approval(&args).await,
         ApprovalDecision::NeedsApproval
@@ -268,7 +268,7 @@ async fn edit_and_write_refuse_an_omitted_marker() {
     let edit = EditFile::new(Arc::clone(&harness.ctx));
     let error = edit
         .execute(
-            json!({"path": "pay.rs", "old": marker, "new": "fn keep() { let x = 1; }\n"}),
+            json!({"path": "pay.rs", "old_string": marker, "new_string": "fn keep() { let x = 1; }\n"}),
             run(),
         )
         .await

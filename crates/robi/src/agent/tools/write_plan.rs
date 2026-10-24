@@ -102,8 +102,7 @@ impl Tool for WritePlan {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: WritePlanArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: WritePlanArgs = super::args::parse_args(args, &["body"])?;
         if args.body.trim().is_empty() {
             return Err(ToolError::InvalidArgs("body is required".into()));
         }

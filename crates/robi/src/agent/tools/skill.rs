@@ -53,8 +53,7 @@ impl Tool for Skill {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: SkillArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: SkillArgs = super::args::parse_args(args, &["name"])?;
         let name = args.name.trim();
         if name.is_empty() {
             return Err(ToolError::InvalidArgs("name is required".into()));

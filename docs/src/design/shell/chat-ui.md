@@ -191,7 +191,7 @@ keeps **Call** and `server / tool` on that line, puts the arguments under it,
 and adds **Allow for this session** beside **Approve**. The labels and the
 session list are in [mcp.md](../reach/mcp.md). Each approval bar has `--space-2` under it, the same
 space as an edit or shell card, so parallel requests do not touch. A pending `edit_file` uses the same diff card as a
-finished edit, built from `old` and `new`: that same path, the counts, the
+finished edit, built from `old_string` and `new_string`: that same path, the counts, the
 first 4 lines, and the same 24-line cap. **Reject** and **Approve** sit on that
 card. Approve posts `approve`. It uses `--accent` with dark text. Reject posts
 `reject`. Either button lightens on hover. The phase

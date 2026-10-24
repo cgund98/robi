@@ -273,7 +273,7 @@ turn does not fail.
 - The client truncated at 256 KiB. `truncated` is true and `text` ends
   with the truncation line. `retrieve` cannot see past that cut.
 - A header line is not server content. Editing tools already reject a
-  `<<<ROBI_LOG` line in `old` or `new` when that line is not file text.
+  `<<<ROBI_LOG` line in `old_string` or `new_string` when that line is not file text.
   The MCP result is not a file.
 
 ## Testing

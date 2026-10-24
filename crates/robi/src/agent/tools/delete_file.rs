@@ -62,8 +62,7 @@ impl Tool for DeleteFile {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: DeleteArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: DeleteArgs = super::args::parse_args(args, &["path"])?;
         if args.path.is_empty() {
             return Err(ToolError::InvalidArgs("path is required".into()));
         }

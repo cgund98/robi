@@ -26,8 +26,9 @@ the function, method, or struct you are about to reason about or edit. \
 Symbols use the same names as semantic_search: PaymentService::process_card \
 in Rust and Go, PaymentService.process_card in TypeScript and Python. A \
 bare name is accepted when it matches one symbol in the file.\n\n\
-Quote edit_file's old and new only from read_file, or from a read_code call \
-with compress false. Never copy a ROBI_OMITTED line into old, new, or \
+Quote edit_file's old_string and new_string only from read_file, or from a \
+read_code call with compress false. Never copy a ROBI_OMITTED line into \
+old_string, new_string, or \
 write_file content. To edit a folded body, call read_code again with that \
 symbol in focus_symbols, or read_file with offset set to the marker's \
 start line. depth 0 is the file map. depth 1 is the default. depth 2 keeps \
@@ -124,8 +125,7 @@ impl Tool for ReadCode {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: Args = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: Args = super::args::parse_args(args, &["path"])?;
         let compress = args.compress.unwrap_or(true);
         validate(&args, compress)?;
         if args.path.is_empty() {

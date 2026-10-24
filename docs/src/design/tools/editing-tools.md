@@ -14,7 +14,7 @@ record is [checkpoints.md](checkpoints.md). Path rules are in
 | The shell sandbox | `docs/src/design/tools/shell-tool.md` (M4) |
 | Diagnostics after a write | `docs/src/design/intelligence/lsp.md` (M7) |
 | A saved allow for the rest of the session | `grant`, in [read-tools.md](read-tools.md) |
-| Refusing an outline marker in `old`, `new`, or `content` | [code-outline.md](code-outline.md) |
+| Refusing an outline marker in `old_string`, `new_string`, or `content` | [code-outline.md](code-outline.md) |
 
 ## Problem
 
@@ -22,7 +22,7 @@ The model has to change files, and a wrong change has to be visible and
 reversible. A unified diff the model authors looks like a review, but it
 applies to the wrong place when the file has drifted, and models emit
 malformed patches. A fuzzy match has the same failure in a quieter form: the
-write succeeds when `old` was not the bytes in the file.
+write succeeds when `old_string` was not the bytes in the file.
 
 ## Decision
 
@@ -30,24 +30,24 @@ Three tools, `write_file`, `edit_file`, and `delete_file`, live in
 `crates/robi/src/agent/tools/`. Each call resolves its path the same way a read
 does. All three are `Exclusive`.
 
-The model edits with exact text. `edit_file` replaces `old` with `new`. It
+The model edits with exact text. `edit_file` replaces `old_string` with `new_string`. It
 does not accept a patch. `write_file` creates a file or replaces its whole
 body. `delete_file` removes one file. After a successful change, the tool
 returns a file diff of that change: the workspace-relative path, a unified
 patch, `additions`, `deletions`, and `added`, `deleted`, or `modified`. The
 patch tells the model what landed. It is not the edit instruction.
 
-`old` is matched exactly, after the model's `\n` is converted to the file's
+`old_string` is matched exactly, after the model's `\n` is converted to the file's
 line ending (`\n` or `\r\n`). A UTF-8 BOM already on the file is kept.
 `replace_all` defaults to false. Set, it replaces every exact match. Unset,
-more than one match is an error. `old` and `new` must differ. An empty `old`
+more than one match is an error. `old_string` and `new_string` must differ. An empty `old_string`
 is an error that names `write_file`.
 
 A path `allows_write` accepts runs immediately. A path the filter denies
 returns `NeedsApproval`. That includes a built-in deny such as `.env` or
 `.git`, and a path outside the workspace. The loop pauses and the existing
 approval card shows Write or Delete with the path. A pending `edit_file`
-shows the same diff card as a finished edit, from `old` and `new`, with the
+shows the same diff card as a finished edit, from `old_string` and `new_string`, with the
 same line cap. Approval is for
 this call. It does not append an allow rule. The next write to that path
 asks again. A lasting exception stays on `grant`.
@@ -67,7 +67,7 @@ temporary file in the same directory, then renamed.
 | Tool | Arguments | Behavior |
 |---|---|---|
 | `write_file` | `path`, `content` | Create the file, or replace its whole body. Parent directories under the resolved path are created |
-| `edit_file` | `path`, `old`, `new`, optional `replace_all` | Replace one exact occurrence, or every occurrence when `replace_all` is true |
+| `edit_file` | `path`, `old_string`, `new_string`, optional `replace_all` | Replace one exact occurrence, or every occurrence when `replace_all` is true |
 | `delete_file` | `path` | Remove one file. A directory is refused. Parent directories stay |
 
 ## Rejected alternatives
@@ -76,10 +76,10 @@ temporary file in the same directory, then renamed.
   from the session baseline. The model does not have to author it. A patch
   applies to the wrong place when the context has drifted.
 - **Fuzzy replacement.** Trimmed lines, folded whitespace, flexible
-  indentation, and similarity scoring all succeed when `old` was not the
+  indentation, and similarity scoring all succeed when `old_string` was not the
   bytes in the file. A miss stays an error. When the text matches only after
   trimming each line, the error says so.
-- **One tool that both creates and edits.** An empty `old` is how a model
+- **One tool that both creates and edits.** An empty `old_string` is how a model
   accidentally overwrites a file. Creation and full replacement are
   `write_file`.
 - **Refusing a denied path with no prompt.** The user can allow one write
@@ -91,11 +91,16 @@ temporary file in the same directory, then renamed.
 
 ## Failure modes
 
-- `old` and `new` are identical: `old and new are identical`.
-- `old` is empty: `old is empty; use write_file to create or replace the file`.
-- `old` matches nothing: `old text was not found`, and a second sentence when
+- An argument object that does not parse names the keys it received and any
+  required keys that were absent. The values stay out of the message. Every
+  tool uses that parser. For `edit_file` the required keys are `path`, `old_string`,
+  and `new_string`. An empty `new_string` is a deletion and is valid; omitting the key is
+  not.
+- `old_string` and `new_string` are identical: `old_string and new_string are identical`.
+- `old_string` is empty: `old_string is empty; use write_file to create or replace the file`.
+- `old_string` matches nothing: `old_string was not found`, and a second sentence when
   the text matches only after trimming each line.
-- `old` matches more than once and `replace_all` is false: `old text matched N times`.
+- `old_string` matches more than once and `replace_all` is false: `old_string matched N times`.
 - A missing file on `edit_file` or `delete_file` is `file not found`. A
   directory is `path is a directory`. A non-UTF-8 file is `file is not utf-8`.
 - A path that resolves fails before any write, with the argument the model

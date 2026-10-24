@@ -72,8 +72,7 @@ impl Tool for Grep {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: GrepArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: GrepArgs = super::args::parse_args(args, &["pattern"])?;
         if args.pattern.is_empty() {
             return Err(ToolError::InvalidArgs("pattern is required".into()));
         }

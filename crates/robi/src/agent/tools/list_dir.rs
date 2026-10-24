@@ -56,8 +56,7 @@ impl Tool for ListDir {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: ListArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: ListArgs = super::args::parse_args(args, &[])?;
         let filter = self.ctx.filter().await?;
         let argument = args.path.unwrap_or_default();
         let resolved = self.ctx.resolve(&argument)?;

@@ -126,8 +126,7 @@ impl Tool for Todos {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: TodosArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: TodosArgs = super::args::parse_args(args, &["path"])?;
         if !args.clear && args.remove.is_empty() && args.update.is_empty() && args.add.is_empty() {
             return Err(ToolError::InvalidArgs(
                 "add, update, remove, or clear a task".into(),

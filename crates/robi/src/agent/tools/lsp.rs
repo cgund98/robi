@@ -282,8 +282,7 @@ impl Tool for WorkspaceSymbol {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: QueryArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: QueryArgs = super::args::parse_args(args, &["query"])?;
         if args.query.trim().is_empty() {
             return Err(ToolError::InvalidArgs("query is empty".into()));
         }
@@ -614,8 +613,7 @@ struct QueryArgs {
 }
 
 fn required_path(args: Value) -> Result<String, ToolError> {
-    let args: PathArgs = serde_json::from_value(args)
-        .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+    let args: PathArgs = super::args::parse_args(args, &["path"])?;
     if args.path.is_empty() {
         return Err(ToolError::InvalidArgs("path is required".into()));
     }
@@ -623,8 +621,7 @@ fn required_path(args: Value) -> Result<String, ToolError> {
 }
 
 fn position_args(args: Value) -> Result<PositionArgs, ToolError> {
-    let args: PositionArgs = serde_json::from_value(args)
-        .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+    let args: PositionArgs = super::args::parse_args(args, &["path", "line", "character"])?;
     if args.path.is_empty() {
         return Err(ToolError::InvalidArgs("path is required".into()));
     }

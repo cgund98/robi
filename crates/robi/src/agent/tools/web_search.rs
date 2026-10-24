@@ -68,8 +68,7 @@ impl Tool for WebSearch {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: SearchArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: SearchArgs = super::args::parse_args(args, &["query"])?;
         let hits = self
             .engine
             .search(&args.query)

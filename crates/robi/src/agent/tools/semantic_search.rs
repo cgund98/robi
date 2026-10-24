@@ -68,8 +68,7 @@ impl Tool for SemanticSearch {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: Args = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: Args = super::args::parse_args(args, &["query"])?;
         if args.query.trim().is_empty() {
             return Err(ToolError::InvalidArgs("query is required".into()));
         }

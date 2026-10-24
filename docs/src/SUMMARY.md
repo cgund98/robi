@@ -30,6 +30,7 @@
 # Project internals
 
 - [Roadmap](roadmap.md)
+- [Streamlining roadmap](streamlining.md)
 - [Design docs]()
     - [Core]()
         - [The agent loop](design/core/agent-loop.md)

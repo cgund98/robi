@@ -223,8 +223,7 @@ impl Tool for Delegate {
     }
 
     async fn execute(&self, args: Value, run: ToolRun) -> Result<Value, ToolError> {
-        let args: DelegateArgs = serde_json::from_value(args)
-            .map_err(|err| ToolError::InvalidArgs(format!("parse arguments: {err}")))?;
+        let args: DelegateArgs = super::args::parse_args(args, &["task", "mode"])?;
         let task = args.task.trim().to_owned();
         if task.is_empty() {
             return Err(ToolError::InvalidArgs("task is required".into()));

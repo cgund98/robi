@@ -73,7 +73,8 @@ impl Tool for Shell {
     }
 
     async fn requires_approval(&self, args: &Value) -> ApprovalDecision {
-        let Some(args) = parse_args(args) else {
+        let Some(args) = super::args::parse_args::<ShellArgs>(args.clone(), &["command"]).ok()
+        else {
             return ApprovalDecision::AllowImmediately;
         };
         if args.command.trim().is_empty() {
@@ -111,11 +112,7 @@ impl Tool for Shell {
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args = parse_args(&args).ok_or_else(|| {
-            ToolError::InvalidArgs(
-                "unsandboxed must be a boolean and network must be deny or unrestricted".into(),
-            )
-        })?;
+        let args = super::args::parse_args::<ShellArgs>(args, &["command"])?;
         let command = args.command.trim();
         if command.is_empty() {
             return Err(ToolError::InvalidArgs("command is required".into()));
@@ -265,10 +262,6 @@ impl Tool for Shell {
         }
         Ok(payload)
     }
-}
-
-fn parse_args(args: &Value) -> Option<ShellArgs> {
-    serde_json::from_value(args.clone()).ok()
 }
 
 fn network_mode(network: &Option<String>) -> Result<NetworkMode, String> {

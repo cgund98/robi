@@ -257,7 +257,7 @@ The first line is real output, so the model can see the shape. The other
 eleven are not copied.
 
 `<<<ROBI_LOG` is the marker prefix. It is not a comment and it is not
-source. `edit_file` and `write_file` reject `<<<ROBI_` in `old`, `new`, and
+source. `edit_file` and `write_file` reject `<<<ROBI_` in `old_string`, `new_string`, and
 `content`, as [code-outline.md](../tools/code-outline.md) specifies.
 
 A green `cargo test` of a few hundred tests becomes the progress summaries,

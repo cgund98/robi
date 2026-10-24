@@ -2,7 +2,9 @@
 
 These are the tools Robi's assistant can call. Each one is a JSON-schema function
 the model sees; its `description` and schema are the main lever on whether it is
-called correctly, so they are treated as reviewed copy.
+called correctly, so they are treated as reviewed copy. A call that does not
+parse returns `invalid arguments` naming the keys received and any required keys
+that were absent. The values are left out.
 
 Which tools exist depends on the session's **mode**:
 
@@ -56,7 +58,7 @@ immediately; a path they deny becomes an approval prompt for that call.
 | Tool | Arguments | Behavior | Approval |
 |---|---|---|---|
 | `write_file` | `path`, `content` | Create a file or replace its whole contents. | conditional |
-| `edit_file` | `path`, `old`, `new`, `replace_all` | Replace one exact snippet. Fails closed on a missing or non-unique match. | conditional |
+| `edit_file` | `path`, `old_string`, `new_string`, `replace_all` | Replace one exact snippet. Fails closed on a missing or non-unique match. | conditional |
 | `delete_file` | `path` | Delete one text file. Refuses a directory, a missing path, or a non-UTF-8 file. | conditional |
 
 Every edit is recorded as a checkpoint the user can revert, independent of git.
