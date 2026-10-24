@@ -140,7 +140,7 @@ turn streams ordinary `shell` cards and the checklist is read in the user's
 editor. See [tools.md](../../reference/tools.md).
 
 A `delegate` call is one collapsed row. Explore reads **Exploring**, then the
-counts it has so far: unique `read_file` and `read_code` paths as files, and `grep` or `find`
+counts it has so far: unique `read_file` paths as files, and `grep` or `find`
 calls as searches, as in **Exploring 9 files, 5 searches**. A count of zero is
 left off. The line uses `--ink-muted`. General reads **General**, and shows the
 running spinner while the call is running. Clicking the row opens the panel:

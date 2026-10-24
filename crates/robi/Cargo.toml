@@ -9,23 +9,19 @@ license.workspace = true
 [features]
 # Every workstream in `docs/src/streamlining.md` is off by default: the
 # streamlined harness ships. Each feature is the restore path for one
-# workstream. The two non-obvious edges are load-bearing; see
-# `docs/src/design/core/feature-switches.md`.
+# workstream. See `docs/src/design/core/feature-switches.md`.
 default = []
-# S3: the `semantic_search` tool, `IndexHub`, the index routes, and embeddings.
-semantic-index = ["dep:robi-index", "robi-index/local-embed"]
-# S1 (read half): `read_file`, `read_code`, `list_dir`, `find`, `grep`.
-# Tree-sitter outline comes back; embeddings do not.
-read-tools = ["dep:robi-index"]
-# S4: the five language-server tools. The client in `agent/lsp/` stays.
-lsp-tools = []
+# S1 (read half): `read_file`, `list_dir`, `find`, `grep`. `find` matches with
+# `globset`, and it and `grep` walk with `ignore`, so those come with them.
+read-tools = ["dep:globset", "dep:ignore"]
 # S2: the session review routes, and the `review`/`session` baseline reader.
 review = []
 # S1 (write half): `write_file`, `edit_file`, `delete_file`. The diff helpers
 # and their tests use the review half, hence the edge.
 edit-tools = ["review"]
-# S5: `web_api/docs.rs` and its four routes. Its search reads the index.
-docs-viewer = ["semantic-index"]
+# S5: `web_api/docs.rs` and its four routes. Search is a literal markdown scan
+# over the `ignore` walk, so the dependency comes with them.
+docs-viewer = ["dep:ignore"]
 # T0: the terminal front end in `tui/` and the `robi-tui` binary. Not a
 # streamlining workstream: off by default so `robi-api` and `src-tauri` do not
 # compile ratatui. `tokio/signal` is for SIGTERM -> restore.
@@ -38,11 +34,7 @@ tui = [
 ]
 [dependencies]
 robi-core = { path = "../robi-core" }
-# Optional: after S1 the default build has no user of `robi-index` at all, which
-# drops tree-sitter and `fastembed` with it.
-robi-index = { path = "../robi-index", default-features = false, optional = true }
 
-async-lsp.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 tower.workspace = true
@@ -50,11 +42,10 @@ tower-http.workspace = true
 axum = { workspace = true, features = ["macros"] }
 bytes.workspace = true
 chrono.workspace = true
-futures-io.workspace = true
 futures-util.workspace = true
 http.workspace = true
-globset.workspace = true
-ignore.workspace = true
+globset = { workspace = true, optional = true }
+ignore = { workspace = true, optional = true }
 redb.workspace = true
 regex.workspace = true
 ratatui = { workspace = true, optional = true }

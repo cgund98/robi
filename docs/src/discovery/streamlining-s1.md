@@ -77,8 +77,9 @@ Two things are facts rather than measurements, and they are in the plan:
 
 - The default build drops `tree-sitter`, `fastembed`, and `sqlite-vec` from the
   dependency graph. `cargo tree -p robi | grep -E 'tree-sitter|fastembed|sqlite-vec'`
-  prints nothing, and `--features semantic-index` brings all three back.
-- A cold workspace start issues no index work, because nothing takes an index
-  lease and there is no `IndexHub` to take one from.
+  prints nothing. A later change deleted the crates outright, so no feature
+  brings them back.
+- A cold workspace start issues no index work, because there is no `IndexHub`
+  and no index task left in the tree.
 
 The task set above is what still needs a human at the keyboard.

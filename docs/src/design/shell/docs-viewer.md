@@ -7,9 +7,9 @@
 > external editor, or asks the agent to with the shell.
 >
 > The API routes are off too: `web_api/docs.rs` is compiled only with the
-> `docs-viewer` Cargo feature, which in turn enables `semantic-index` because
-> docs search reads the index. `agent/docs/` stays unconditional, so the
-> reconciliation and merge path is intact. **A return needs:** `--features
+> `docs-viewer` Cargo feature. Its search is a literal markdown scan; the
+> semantic index it used to read is deleted. `agent/docs/` stays unconditional,
+> so the reconciliation and merge path is intact. **A return needs:** `--features
 > docs-viewer`, the four routes and nine schemas in `web_api/mod.rs`, the
 > `src/features/docs/` tree, `src/api/docs.ts`, `src/state/docsStore.ts`, the
 > route in `chatRoutePaths`, the `DocsScreen` and `ChatTray` branches in
@@ -269,91 +269,45 @@ error, and the field takes focus so the user can write about the line.
 
 ## Search
 
-A query field sits in the screen header, with a
-**Semantic** / **Text** control. The search starts half a second after the
-last keystroke. Another keystroke, or a change of engine, clears that wait
-and aborts a request already in flight, so only one search is open and only
-the latest text is sent. Switching engines searches the current text
-immediately. While that pause or the request is still open, a spinner sits
-in the field and the results pane says **Searching…**. Ranked hits then
-replace the tree; the viewer on the right still shows whichever document is
-open, and clicking a hit opens it. Clearing the field brings the tree back.
+A query field sits in the screen header. The search starts half a second after
+the last keystroke. Another keystroke clears that wait and aborts a request
+already in flight, so only one search is open and only the latest text is sent.
+While that pause or the request is still open, a spinner sits in the field and
+the results pane says **Searching…**. Ranked hits then replace the tree; the
+viewer on the right still shows whichever document is open, and clicking a hit
+opens it. Clearing the field brings the tree back.
 
-**One route, two engines.** `GET
-/api/v1/workspaces/{id}/docs/search?q={query}&limit={n}&engine={engine}`
-picks the engine. `engine` defaults to `semantic`. `ripgrep` is the Text
-control. Anything else is `400`. `limit` defaults to 10 and may not exceed
-20; a blank or missing `q`, or a `limit` outside 1 to 20, is `400`.
+**One route, one engine.** `GET
+/api/v1/workspaces/{id}/docs/search?q={query}&limit={n}` runs a
+case-insensitive literal scan of markdown. `limit` defaults to 10 and may not
+exceed 20; a blank or missing `q`, or a `limit` outside 1 to 20, is `400`.
 
-**Semantic** runs the fused vector-plus-FTS query described in
-[semantic-search.md](../intelligence/semantic-search.md) and keeps only
-markdown hits. The filter runs after fusion, so a code hit cannot hold a
-ranked slot. The surviving chunks are then grouped by document: one row per
-document, its `score` is the number of matching chunks, and the best-scoring
-chunk supplies `start_line`, `end_line`, `title`, and `snippet`. A document
-that matches many times outranks one that matches once; ties keep the fusion
-order.
+**Text search** runs `rg` when that binary is on `PATH` (`--fixed-strings`,
+`--ignore-case`, markdown globs, ripgrep's own hidden and gitignore defaults). If
+`rg` is missing or fails to launch, the handler scans the same markdown set the
+tree lists. Each file appears once, at its first matching line, and files are
+ordered by how many lines matched. `start_line` and `end_line` are that line,
+`title` is the file name, `snippet` is the line cut at 500 bytes, and `score` is
+the match count.
 
-**Text** is a case-insensitive literal scan of markdown. It runs `rg` when
-that binary is on `PATH` (`--fixed-strings`, `--ignore-case`, markdown globs, ripgrep's own
-hidden and gitignore defaults). If `rg` is missing or fails to launch, the
-handler scans the same markdown set the tree lists. It does not start the
-index. Each file appears once, at its first matching line, and files are
-ordered by how many lines matched. `start_line` and `end_line` are that
-line, `title` is the file name, `snippet` is the line cut at 500 bytes,
-and `score` is the match count. The response still includes `engine` and
-`index`, and the screen does not treat `index` as a partial-result notice
-for this engine.
-
-**The response says whether it is complete.** Each response carries the
-index status its hits were taken from:
+There is no semantic engine and no index status: the semantic index is gone
+(S3). A search is always complete over the files on disk at the moment it runs.
 
 ```json
 {
-  "query": "how do sessions pause",
-  "engine": "semantic",
-  "index": { "state": "ready", "files_done": 120, "files_total": 120, "error": null },
+  "query": "paused turn",
   "hits": [
     {
       "path": "docs/src/design/core/agent-loop.md",
       "start_line": 40,
-      "end_line": 88,
-      "title": "The paused turn",
+      "end_line": 40,
+      "title": "agent-loop.md",
       "snippet": "The invariant the whole design rests on…",
-      "score": 0.0322
+      "score": 1.0
     }
   ]
 }
 ```
-
-For a semantic hit, `title` is the section's heading chain (`Install.Overview`),
-`snippet` is the chunk's opening cut at 500 bytes on a character boundary, and
-`score` is the fusion score. A state other than `ready` means the corpus was
-incomplete, so the hits may be too, and the screen says so above the results.
-That notice is only for the semantic engine:
-
-| `state` | Notice |
-|---|---|
-| `indexing` | `Indexing files_done/files_total — results may be incomplete`, or `Preparing search…` before the walk has seen a file |
-| `downloading` | Preparing search… |
-| `paused` | Search index paused, with **Resume** |
-| `failed` | Search index failed, with **Resume** |
-
-**The first query starts the index.** The request holds a lease, so the scan
-begins if no chat session has one, and the hub keeps the task for a 60-second
-linger after the request ends. Until the scan catches up the state is
-`indexing`, the hits are partial, and that is the honest answer rather than
-an error.
-
-**While a notice is up, the screen polls.** The event stream's index frames
-follow the session's event stream, which a docs visit does not open, so the
-screen `GET`s `/api/v1/workspaces/{id}/index` every 2 seconds while the state
-is not `ready` and re-runs the search when the state changes. That GET shares
-the shell's 10-second cache, so a tick inside that window returns the last
-status and the counts move on when the cache expires.
-`paused` and `failed` wait for **Resume** instead: it calls
-`PUT /api/v1/workspaces/{id}/index` with `running`, and the next poll picks
-the scan up. `ready` draws no notice and stops the poll.
 
 ## Find in the document
 

@@ -1,11 +1,11 @@
 # Read tools
 
-> **Disabled in M11. Kept for reference.** `read_file`, `read_code`,
-> `list_dir`, `find`, and `grep` are not registered; the shell reads and
-> searches. `grant` and `retrieve` stay: `grant` persists an outside-workspace
-> allow the sandbox honours, and `retrieve` reads back a folded shell stream. The
-> tools and the path filter below still exist behind the `read-tools` Cargo
-> feature. See [feature-switches.md](../core/feature-switches.md) and
+> **Disabled in M11. Kept for reference.** `read_file`, `list_dir`, `find`, and
+> `grep` are not registered; the shell reads and searches. `grant` and `retrieve`
+> stay: `grant` persists an outside-workspace allow the sandbox honours, and
+> `retrieve` reads back a folded shell stream. The tools and the path filter
+> below still exist behind the `read-tools` Cargo feature. `read_code` and its
+> tree-sitter outline are deleted; see
 > [streamlining.md](../../streamlining.md#s1--shell-first-editing).
 
 This page defines the read-only workspace tools and the session path
@@ -22,7 +22,7 @@ stay in [persistence.md](../persistence/persistence.md).
 | OS sandbox for a shell tool | `docs/src/design/tools/shell-tool.md` (M4) |
 | Compaction when a read fills the window | `docs/src/design/workspace/context-management.md` (M3) |
 | How the actor is built | [chat-runtime.md](../shell/chat-runtime.md) |
-| An outline that folds function bodies | [code-outline.md](code-outline.md). `read_file` stays an exact window |
+| Folding a source file down to its symbols | Deleted with S3. `read_file` is an exact window; the shell covers the rest |
 
 ## Problem
 
@@ -34,7 +34,7 @@ still work when it is not.
 
 ## Decision
 
-`read_file`, `read_code`, `list_dir`, `find`, `grep`, and `grant` live in
+`read_file`, `list_dir`, `find`, `grep`, and `grant` live in
 `crates/robi/src/agent/tools/`. Each read resolves its path, then asks a
 `PathFilter` compiled from that session's rules. The `std::fs` reads, and the
 `find` and fallback `grep` walks, run on Tokio's blocking pool so a slow disk
@@ -130,7 +130,6 @@ arguments.
 | Tool | Arguments | Result |
 |---|---|---|
 | `read_file` | `path`, optional 1-based `offset`, optional `limit` | `content`, `start_line`, `end_line`, `total_lines`. At most 32 KB. When `truncated` is true, `next_offset` is the line to pass next |
-| `read_code` | `path`, optional `compress`, `focus_symbols`, `depth`, `expand_imports`. `offset` and `limit` only when `compress` is false | An outline (`view: "outline"`) or an exact window (`view: "source"`). See [code-outline.md](code-outline.md) |
 | `list_dir` | optional `path`, defaulting to the workspace root | One level of `name` and `kind` (`file`, `dir`, or `symlink`). Denied children are omitted. `.gitignore` is not applied |
 | `find` | optional `pattern`, optional `path`, optional `glob`, optional `hidden`, optional `no_ignore` | Workspace-relative files. `glob` false matches a substring. `glob` true matches a glob. At most 50 files. Honors `.gitignore` and skips hidden files unless `no_ignore` or `hidden` is set. Symlinks are not followed |
 | `grep` | `pattern`, optional `path`, optional `regex`, optional `hidden`, optional `no_ignore` | `matches` of `path`, `line`, and `text`, plus `backend` |

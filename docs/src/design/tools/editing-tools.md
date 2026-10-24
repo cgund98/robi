@@ -20,9 +20,8 @@ record is [checkpoints.md](checkpoints.md). Path rules are in
 |---|---|
 | Putting a hunk back, and the review window | `docs/src/design/review/code-review.md` (M6) |
 | The shell sandbox | `docs/src/design/tools/shell-tool.md` (M4) |
-| Diagnostics after a write | `docs/src/design/intelligence/lsp.md` (M7) |
 | A saved allow for the rest of the session | `grant`, in [read-tools.md](read-tools.md) |
-| Refusing an outline marker in `old_string`, `new_string`, or `content` | [code-outline.md](code-outline.md) |
+| Refusing a compressed shell marker in `old_string`, `new_string`, or `content` | [shell-output.md](../compression/shell-output.md) |
 
 ## Problem
 

@@ -109,12 +109,6 @@ export function useAgentEvents(): void {
     if (!envelope) {
       return
     }
-    if (envelope.type === 'robi.index.v1.progress') {
-      // S3: nothing in the app reads index progress any more, and the server no
-      // longer starts a scan. Drop the frame rather than open a GET for a UI
-      // that is gone.
-      return
-    }
     if (envelope.type === 'robi.mcp.v1.status') {
       if (envelope.subject) {
         void mcp.refresh(envelope.subject)

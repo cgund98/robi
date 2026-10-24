@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use crate::agent::docs::DocsEditCache;
-#[cfg(feature = "semantic-index")]
-use crate::agent::index::IndexHub;
 use crate::agent::providers::ImageStore;
 use crate::domain::{
     chat_message::service::ChatMessageService, chat_session::service::ChatSessionService,
@@ -20,10 +18,6 @@ pub struct AppState {
     pub settings_service: Arc<SettingsService>,
     pub event_bus: Arc<EventBus>,
     pub file_changes: Arc<dyn FileChangeRepository>,
-    /// `--features semantic-index` only. The default build has no hub, so a
-    /// stray `acquire` cannot start a scan.
-    #[cfg(feature = "semantic-index")]
-    pub index: Arc<IndexHub>,
     /// MCP client supervisor. Absent in tests that do not list servers.
     pub mcp: Option<Arc<crate::agent::mcp::McpHub>>,
     /// Capped streams for the shell card.

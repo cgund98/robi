@@ -97,7 +97,7 @@ pub struct EventsStreamQuery {
 struct StreamFilter {
     event_types: Option<HashSet<String>>,
     session_id: Option<String>,
-    /// Workspace of `session_id`, so index progress for that workspace is delivered.
+    /// Workspace of `session_id`, so MCP and file-change cues are delivered.
     workspace_id: Option<String>,
 }
 
@@ -450,12 +450,6 @@ mod tests {
             file_changes: Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             ),
-            #[cfg(feature = "semantic-index")]
-            index: Arc::new(crate::agent::index::IndexHub::new(
-                std::env::temp_dir(),
-                Arc::clone(&fanout),
-                Arc::new(robi_index::FakeEmbedder::new(4)),
-            )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),

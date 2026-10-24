@@ -370,7 +370,7 @@ filesystem and hides most of it.
 
 | Profile field | Container path | Mode |
 |---|---|---|
-| `workspace` | `/workspace` | `rw` for `WriteAccess::ReadWrite`, `ro` for `ReadOnly` |
+| `workspace` | `/workspace` | `rw` for every mode. Ask and Plan are meant to be read-only; see the limitation below |
 | `workspace/.git` | `/workspace/.git` | `ro`. A nested mount over the workspace; Docker applies the longer destination last |
 | `temp_dir` | not mounted; `/tmp` is a tmpfs | `rw`, private to the container |
 | `extra_writes`, `wide_writes`, `protected_write_*`, session write grants | `/workspace/<relative>` inside the workspace, the same absolute path outside | `rw`. A nested mount over a read-only workspace, used by Plan mode's `.robi/plans` |
@@ -378,6 +378,14 @@ filesystem and hides most of it.
 | `toolchain_reads` | not mounted | The image supplies the toolchain |
 | `deny_reads`, `deny_writes` inside a mounted tree | masked | See below |
 | Everything else on the host | absent | No mount, no path |
+
+**Limitation.** Ask and Plan are read-only on the OS sandbox. The container
+mounts `/workspace` read-write for those modes too. The mount table is fixed
+at container creation, and a mode switch in the same session reuses that
+container, so a Plan-mode mount left Agent mode unable to delete ordinary
+source files (`Read-only file system`). Until the container is recreated when
+`WriteAccess` changes, every mode gets the Agent write grant. `.git` and the
+secret-file masks stay read-only.
 
 Absolute paths outside the workspace are mounted at the same path so a command
 that names one still resolves. Inside the workspace the path changes: the host
@@ -758,8 +766,8 @@ Each module's tests cover the behaviour its doc comment claims:
   the fields it sets; an unacknowledged file contributes nothing; a project file
   cannot name a mechanism; out-of-range values are refused; a service entry needs
   a name and a port; a service without `service_network` is refused.
-- `host` — the workspace mounts where the container expects it; a read-only profile
-  mounts it read-only; a grant inside the workspace is rebased and one outside
+- `host` — the workspace mounts where the container expects it, read-write even
+  for a read-only profile; a grant inside the workspace is rebased and one outside
   keeps its host path; the floor becomes a `/dev/null` bind; the cache volumes are
   present; the security posture is fixed while the settings-backed fields follow
   the config.
@@ -1075,6 +1083,10 @@ only when the user asks, with `docker network rm` or `docker volume rm`.
 
 ## Follow-ups
 
+- **Read-only Ask and Plan mounts.** The container mounts `/workspace`
+  read-write for every mode, because the mount table is fixed at creation and
+  a mode switch reuses the container. Recreate when `WriteAccess` changes, then
+  mount Ask and Plan read-only again, with Plan's nested `.robi/plans` grant.
 - **Full-fidelity logs.** The original stored for `retrieve` is capped at 256
   KiB. A `full_log` field on `CommandOutput`, written by the sandbox to the
   session directory and read by the compressor, would keep a 1 GiB build log

@@ -22,8 +22,6 @@ mod grant;
 mod grep;
 #[cfg(feature = "read-tools")]
 mod list_dir;
-#[cfg(feature = "lsp-tools")]
-mod lsp;
 #[cfg(feature = "edit-tools")]
 mod marker;
 pub(crate) mod memory_store;
@@ -32,14 +30,10 @@ pub(crate) mod memory_store;
 #[cfg(any(feature = "edit-tools", feature = "docs-viewer", feature = "review"))]
 pub(crate) mod path_lock;
 #[cfg(feature = "read-tools")]
-mod read_code;
-#[cfg(feature = "read-tools")]
 mod read_file;
 #[cfg(feature = "edit-tools")]
 mod replace;
 mod retrieve;
-#[cfg(feature = "semantic-index")]
-mod semantic_search;
 pub(crate) mod shell;
 mod skill;
 mod subagent;
@@ -50,8 +44,6 @@ mod write_file;
 
 #[cfg(all(test, feature = "edit-tools"))]
 mod apply_tests;
-#[cfg(all(test, feature = "read-tools"))]
-mod read_tests;
 #[cfg(test)]
 mod test_harness;
 
@@ -72,9 +64,7 @@ pub use shell::ShellAccess;
 /// Register `grant`, plus whichever read tools this build has.
 ///
 /// The default build registers `grant` alone: the shell is the read interface.
-/// `--features read-tools` adds `read_file`, `read_code`, `list_dir`, `find` and
-/// `grep`; `--features semantic-index` adds `semantic_search`; `--features
-/// lsp-tools` adds the five language-server tools.
+/// `--features read-tools` adds `read_file`, `list_dir`, `find` and `grep`.
 pub fn register_read_tools(
     registry: &ToolRegistry,
     ctx: Arc<ToolContext>,
@@ -85,32 +75,12 @@ pub fn register_read_tools(
         Arc::new(read_file::ReadFile::new(Arc::clone(&ctx))),
     )?;
     #[cfg(feature = "read-tools")]
-    register(
-        registry,
-        Arc::new(read_code::ReadCode::new(Arc::clone(&ctx))),
-    )?;
-    #[cfg(feature = "read-tools")]
     register(registry, Arc::new(list_dir::ListDir::new(Arc::clone(&ctx))))?;
     #[cfg(feature = "read-tools")]
     register(registry, Arc::new(find::Find::new(Arc::clone(&ctx))))?;
     #[cfg(feature = "read-tools")]
     register(registry, Arc::new(grep::Grep::new(Arc::clone(&ctx))))?;
-    #[cfg(feature = "semantic-index")]
-    register(
-        registry,
-        Arc::new(semantic_search::SemanticSearch::new(Arc::clone(&ctx))),
-    )?;
     register(registry, Arc::new(grant::Grant::new(Arc::clone(&ctx))))?;
-    #[cfg(feature = "lsp-tools")]
-    register(registry, Arc::new(lsp::Diagnostics::new(Arc::clone(&ctx))))?;
-    #[cfg(feature = "lsp-tools")]
-    register(registry, Arc::new(lsp::Definition::new(Arc::clone(&ctx))))?;
-    #[cfg(feature = "lsp-tools")]
-    register(registry, Arc::new(lsp::References::new(Arc::clone(&ctx))))?;
-    #[cfg(feature = "lsp-tools")]
-    register(registry, Arc::new(lsp::Hover::new(Arc::clone(&ctx))))?;
-    #[cfg(feature = "lsp-tools")]
-    register(registry, Arc::new(lsp::WorkspaceSymbol::new(ctx)))?;
     Ok(())
 }
 
@@ -294,19 +264,7 @@ mod registry_tests {
             "retrieve",
         ];
         if cfg!(feature = "read-tools") {
-            names.extend(["find", "grep", "list_dir", "read_code", "read_file"]);
-        }
-        if cfg!(feature = "semantic-index") {
-            names.push("semantic_search");
-        }
-        if cfg!(feature = "lsp-tools") {
-            names.extend([
-                "definition",
-                "diagnostics",
-                "hover",
-                "references",
-                "workspace_symbol",
-            ]);
+            names.extend(["find", "grep", "list_dir", "read_file"]);
         }
         match mode {
             AgentMode::Ask => {}
@@ -413,9 +371,6 @@ mod registry_tests {
             root: harness.ctx.root.clone(),
             sessions: Arc::clone(&harness.ctx.sessions),
             file_changes: Arc::clone(&harness.ctx.file_changes),
-            #[cfg(feature = "semantic-index")]
-            index: None,
-            lsp: crate::agent::lsp::LspHub::new(),
             originals: None,
             settings: None,
             events: Some(Arc::clone(&bus)),

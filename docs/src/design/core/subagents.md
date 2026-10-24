@@ -56,9 +56,8 @@ child. The child prompt does not include the skill catalog and is written for
 the shell: what to run to search, how to read a window, and that the parent
 makes the change.
 
-With `--features read-tools`, `semantic-index`, or `lsp-tools`, the
-corresponding tools join both child registries too. See
-[feature-switches.md](feature-switches.md).
+With `--features read-tools`, the corresponding tools join both child
+registries too. See [feature-switches.md](feature-switches.md).
 
 The agent-mode prompt, and the built-in rules when `delegate` is registered,
 tell the parent to use `explore` for a search that spans more than a couple of
@@ -124,7 +123,7 @@ two minutes) cancels the child and the tool returns timed out.
   part of exploration is file bodies, and a command's output belongs to
   `general`.
 - **Witholding the shell from explore once the read tools went.** Removing
-  `read_file`, `grep`, `find`, `list_dir`, and `read_code` would leave explore
+  `read_file`, `grep`, `find`, and `list_dir` would leave explore
   with no tools at all, so both modes get the read-only shell. The distinction
   between the modes is now the prompt and the call budget, not the tool set.
 - **A writable `general` child.** A sandboxed write needs no approval, so the

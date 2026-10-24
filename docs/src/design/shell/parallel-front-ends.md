@@ -331,11 +331,8 @@ impl SessionBlobs {
 - **`path_lock` is per process.** Two sessions in two processes can interleave a
   read-modify-write on one file and lose a write, silently. Out of scope here; the
   fix is the same `try_lock` pattern at `agent/tools/path_lock.rs:13`.
-- **`LspHub`, `McpHub`, `IndexHub` are per process.** Two of each: two index
-  watchers on one workspace, two sets of MCP children. The index connection sets
-  WAL without a `busy_timeout` (`robi-index/src/store.rs:50`), so concurrent
-  indexing surfaces `SQLITE_BUSY` instead of waiting. One line, needed before this
-  ships.
+- **`McpHub` is per process.** Two processes mean two sets of MCP children. The
+  hubs that used to sit beside it, `LspHub` and `IndexHub`, are deleted with M7.
 - **`config.toml` and `secrets.toml` are last-write-wins** through an atomic
   rename: no corruption, but two settings screens overwrite each other.
 - **An old chat's image 404s.** Deliberate, once, per *Compatibility*: the
@@ -356,7 +353,7 @@ impl SessionBlobs {
 4. `chat_image_index` and `BlobImageStore` owning the pointer; delete the
    `IMAGE_INDEX` table and `forget_images`. No migration — see *Compatibility*.
 5. The degraded transcript and the `open in pid N` line.
-6. The index `busy_timeout`, and `path_lock` if concurrent edits matter.
+6. `path_lock` if concurrent edits matter.
 
 ## Documentation
 

@@ -7,21 +7,13 @@
 //! text, user settings, and instruction files. `compress` shortens tool
 //! output. `web` fetches and searches pages. `skills` and `mcp` load extra
 //! instructions and remote tools. `files` renders a user's attachments for the
-//! provider. `lsp` answers code questions by line and symbol, and `index` does
-//! the same by meaning when the `semantic-index` feature is on. `docs`
-//! reconciles piece-meal editor saves against the file on disk.
+//! provider. `docs` reconciles piece-meal editor saves against the file on disk.
 
 pub mod blocking;
 pub mod compact;
 pub mod compress;
 pub mod docs;
 pub mod files;
-#[cfg(feature = "semantic-index")]
-pub mod index;
-// The client is kept in every build; only the tools that drive it are gated.
-// Much of it is unreachable without them, which is not a defect.
-#[cfg_attr(not(feature = "lsp-tools"), allow(dead_code, unused_imports))]
-pub mod lsp;
 pub mod mcp;
 pub mod prompt;
 pub mod providers;

@@ -1,9 +1,9 @@
-//! The workspace asset cleaner for the semantic index, without an index.
+//! The workspace asset cleaner for the retired semantic index.
 //!
-//! Deleting a workspace must still drop `~/.robi/index/<workspace_id>/`, and the
-//! default build has no `IndexHub` and no `robi-index` crate to ask. The path is
-//! therefore built here, from the two facts that make it: the settings directory
-//! and the workspace id.
+//! The index is gone, but an older install left `~/.robi/index/<workspace_id>/`
+//! behind. Deleting a workspace still drops that directory. The path is built
+//! here, from the two facts that make it: the settings directory and the
+//! workspace id.
 
 use std::path::PathBuf;
 
@@ -12,10 +12,9 @@ use robi_core::ids::WorkspaceId;
 
 use crate::domain::workspace::assets::WorkspaceAssetCleaner;
 
-/// Removes one workspace's index directory.
+/// Removes one workspace's legacy index directory.
 pub struct WorkspaceIndexAssets {
-    /// `~/.robi`. The index lives at `<home>/index/<workspace_id>/index.sqlite`,
-    /// matching `robi_index::index_db_path`.
+    /// `~/.robi`. The directory is `<home>/index/<workspace_id>/`.
     home: PathBuf,
 }
 

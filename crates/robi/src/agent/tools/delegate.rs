@@ -407,19 +407,7 @@ mod tests {
     fn expected_child(mode: SubagentMode) -> Vec<&'static str> {
         let mut names = vec!["retrieve", "shell"];
         if cfg!(feature = "read-tools") {
-            names.extend(["find", "grep", "list_dir", "read_code", "read_file"]);
-        }
-        if cfg!(feature = "semantic-index") {
-            names.push("semantic_search");
-        }
-        if cfg!(feature = "lsp-tools") {
-            names.extend([
-                "definition",
-                "diagnostics",
-                "hover",
-                "references",
-                "workspace_symbol",
-            ]);
+            names.extend(["find", "grep", "list_dir", "read_file"]);
         }
         let _ = mode;
         names.sort_unstable();

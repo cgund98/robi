@@ -14,15 +14,12 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
   const path = stringField(args, 'path')
   const pattern = stringField(args, 'pattern')
   switch (call.name) {
-    case 'read_file':
-    case 'read_code': {
+    case 'read_file': {
       const range = readLineRange(args)
       return { verb: 'Read', target: path || 'file', ...(range ? { range } : {}) }
     }
     case 'grep':
       return { verb: 'Grepped', target: pattern || path || 'workspace' }
-    case 'semantic_search':
-      return { verb: 'Searched', target: stringField(args, 'query') || 'workspace' }
     case 'web_search':
       return { verb: 'Search', target: stringField(args, 'query') || 'the web' }
     case 'web_fetch':
@@ -502,9 +499,7 @@ export function exploreSummary(view: SubagentView): string {
   const commands = view.steps.filter((step) => step.name === 'shell' && step.target.length > 0)
   const reads = new Set(
     view.steps
-      .filter(
-        (step) => (step.name === 'read_file' || step.name === 'read_code') && step.target.length > 0
-      )
+      .filter((step) => step.name === 'read_file' && step.target.length > 0)
       .map((step) => step.target)
   ).size
   const searches = view.steps.filter((step) => step.name === 'grep' || step.name === 'find').length

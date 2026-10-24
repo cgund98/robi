@@ -106,7 +106,6 @@ impl Tool for WriteFile {
         })
         .await
         .map_err(ToolError::Failed)??;
-        self.ctx.note_lsp(&resolved.absolute, false).await;
         let file_diff = change_diff(&relative, &before, &args.content, existed, false);
         publish_file_changed(&self.ctx, &relative, status_outcome(file_diff.status));
         Ok(diff_json(&file_diff))

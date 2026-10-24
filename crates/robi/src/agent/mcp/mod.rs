@@ -10,11 +10,8 @@ mod names;
 mod session;
 mod tool;
 
-pub use connect::RmcpOpener;
-
-pub(crate) use env::resolve_path;
-
 pub use config::{file_hash, preview, project_path, read_file, user_path, ServerPreview};
+pub use connect::RmcpOpener;
 pub use host::{register_list, NameIndex, Registered};
 pub use session::{Listed, ListedTool, McpSession};
 pub use tool::{AllowList, McpTool};

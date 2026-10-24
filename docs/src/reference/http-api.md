@@ -133,7 +133,6 @@ and `data` is the payload. A keep-alive comment is sent every 15 seconds.
 | `robi.session.v1.updated` | A session's metadata changed. |
 | `robi.session.v1.deleted` | A session was deleted. |
 | `robi.app.v1.error` | A process-level error. |
-| `robi.index.v1.progress` | Semantic index progress for a workspace. Not published in the default build: nothing takes an index lease, so no scan starts, and the shell drops the frame. `--features semantic-index` restores it. |
 
 A `session_id` filter still delivers session lifecycle events and `app.error`.
 The shell subscribes with `workspace_id` and leaves transcript fetches to the

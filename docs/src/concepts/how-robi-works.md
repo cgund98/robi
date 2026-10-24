@@ -20,7 +20,7 @@ Dependencies point one way and never reverse.
   them. No network, no filesystem, no Tauri.
 - **`crates/robi`** — every implementation that does I/O. The crate root is
   `agent`, `domain`, `adapters`, and `web_api`. Providers, the prompt, tools,
-  the sandbox, review, LSP, the semantic index, skills, MCP, and compression
+  the sandbox, review, skills, MCP, and compression
   live under `agent`. Each is a module, promoted to its own crate only for a
   real reason.
 - **`src-tauri`** — the Tauri application: commands, IPC, wiring.

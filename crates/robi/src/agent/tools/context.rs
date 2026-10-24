@@ -6,9 +6,6 @@ use std::sync::Arc;
 use robi_core::error::ToolError;
 use robi_core::ids::{SessionId, WorkspaceId};
 
-#[cfg(feature = "semantic-index")]
-use crate::agent::index::IndexHub;
-use crate::agent::lsp::LspHub;
 use crate::agent::workspace::{resolve_path, user_home, PathFilter, ResolvedPath};
 use crate::domain::chat_session::service::ChatSessionService;
 use crate::domain::events::EventBus;
@@ -23,10 +20,6 @@ pub struct ToolContext {
     pub root: PathBuf,
     pub sessions: Arc<ChatSessionService>,
     pub file_changes: Arc<dyn FileChangeRepository>,
-    /// `--features semantic-index` only: `semantic_search` reads it.
-    #[cfg(feature = "semantic-index")]
-    pub index: Option<Arc<IndexHub>>,
-    pub lsp: Arc<LspHub>,
     /// Capped shell streams. Absent in tests that do not compress.
     pub originals: Option<Arc<dyn crate::agent::compress::OriginalStore>>,
     /// Live settings. Each path-filter and sandbox build reads
@@ -96,15 +89,6 @@ impl ToolContext {
         let home = user_home().map_err(|err| ToolError::Failed(err.to_string()))?;
         resolve_path(&self.root, argument, &home)
             .map_err(|err| ToolError::Failed(format!("{err}: {argument}")))
-    }
-
-    /// Tell a running language server that a write just changed this file.
-    ///
-    /// `LspHub::note_disk` is a map lookup: a server that is not running is left
-    /// stopped and nothing is spawned, so this is safe to call in a build where
-    /// no language-server tool is registered. The next tool call reads the disk.
-    pub async fn note_lsp(&self, absolute: &std::path::Path, deleted: bool) {
-        self.lsp.note_disk(&self.root, absolute, deleted).await;
     }
 
     /// The stored string for `key`, or empty when it is absent or the read fails.

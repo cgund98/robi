@@ -1,8 +1,8 @@
 # Feature switches
 
-The streamlining roadmap removes backend surfaces without deleting them. The
-front end has one switch for that, `src/app/surfaces.ts`. This page describes
-its backend counterpart: one Cargo feature per workstream, in
+The streamlining roadmap removed backend surfaces without deleting them. The
+front end still has one switch for that, `src/app/surfaces.ts`. This page
+describes its backend counterpart: one Cargo feature per workstream, in
 `crates/robi/Cargo.toml`, all off by default.
 
 Read [streamlining.md](../../streamlining.md) for what each workstream removes.
@@ -11,32 +11,32 @@ Read [streamlining.md](../../streamlining.md) for what each workstream removes.
 
 | Feature | Restores | Workstream |
 |---|---|---|
-| `semantic-index` | the `semantic_search` tool, `IndexHub`, the `/workspaces/{id}/index` routes, embeddings | S3 |
-| `read-tools` | `read_file`, `read_code`, `list_dir`, `find`, `grep` | S1 |
-| `lsp-tools` | `diagnostics`, `definition`, `references`, `hover`, `workspace_symbol` | S4 |
+| `read-tools` | `read_file`, `list_dir`, `find`, `grep` | S1 |
 | `review` | the `/chat_sessions/{id}/review` routes and the baseline reader | S2 |
 | `edit-tools` | `write_file`, `edit_file`, `delete_file` | S1 |
-| `docs-viewer` | `/workspaces/{id}/docs` and its search | S5 |
+| `docs-viewer` | `/workspaces/{id}/docs` and its literal search | S5 |
 
 `default = []`. The streamlined harness ships; a feature is the return path.
 
+S3 (the semantic index) and S4 (the language-server tools) are past the feature
+stage. Their code, `crates/robi-index`, and the LSP client are deleted, so no
+flag restores them. See [streamlining.md](../../streamlining.md) for what a
+return would need.
 
 ## The edges
 
-Three feature edges are not decoration. Without them the `--all-features` build
-does not compile, and the default build would not tell you:
+One feature edge is left, and it is not decoration:
 
-- **`docs-viewer = ["semantic-index"]`** — `web_api/docs.rs` imports
-  `code_index::IndexStatusBody` and calls `state.index.acquire`, `.status`,
-  `.index` and `embed_query` inside `search_docs`. A docs viewer without an index
-  has nothing to search.
 - **`edit-tools = ["review"]`** — the edit tools and their tests use
   `review::{diff, hunks_for_session, reject}` to render a change. Writes without
   the review half would be writes with no diff.
-- **`read-tools` and `semantic-index` both need `dep:robi-index`** — `read_code`
-  uses tree-sitter `outline`; `semantic_search` and `IndexHub` use the store and
-  the embedder. Only `semantic-index` needs `local-embed`, so `read-tools` brings
-  tree-sitter back without `fastembed`.
+
+Two dependencies arrive with a feature rather than with the default build:
+
+- **`read-tools = ["dep:globset", "dep:ignore"]`** — `find` matches with
+  `globset`, and `find` and `grep` walk with `ignore`.
+- **`docs-viewer = ["dep:ignore"]`** — the docs listing and its literal search
+  walk with `ignore`.
 
 `review/diff.rs` is **unconditional**: `agent/docs/merge.rs` is kept in the tree
 (S5) and needs it. Only `review/session.rs` is gated.

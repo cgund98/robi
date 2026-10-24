@@ -147,32 +147,9 @@ pub(crate) fn register_child_tools(
     #[cfg(feature = "read-tools")]
     {
         registry.register(read(Arc::new(ReadFile::new(Arc::clone(&ctx)))))?;
-        registry.register(read(Arc::new(super::read_code::ReadCode::new(Arc::clone(
-            &ctx,
-        )))))?;
         registry.register(read(Arc::new(ListDir::new(Arc::clone(&ctx)))))?;
         registry.register(read(Arc::new(Find::new(Arc::clone(&ctx)))))?;
         registry.register(read(Arc::new(Grep::new(Arc::clone(&ctx)))))?;
-    }
-    #[cfg(feature = "semantic-index")]
-    registry.register(read(Arc::new(super::semantic_search::SemanticSearch::new(
-        Arc::clone(&ctx),
-    ))))?;
-    #[cfg(feature = "lsp-tools")]
-    {
-        registry.register(read(Arc::new(super::lsp::Diagnostics::new(Arc::clone(
-            &ctx,
-        )))))?;
-        registry.register(read(Arc::new(super::lsp::Definition::new(Arc::clone(
-            &ctx,
-        )))))?;
-        registry.register(read(Arc::new(super::lsp::References::new(Arc::clone(
-            &ctx,
-        )))))?;
-        registry.register(read(Arc::new(super::lsp::Hover::new(Arc::clone(&ctx)))))?;
-        registry.register(read(Arc::new(super::lsp::WorkspaceSymbol::new(
-            Arc::clone(&ctx),
-        ))))?;
     }
     // Both child modes get the shell, read-only: a child cannot ask for approval,
     // so a write would land with nothing to audit it. `FailClosed` still bounds
@@ -355,7 +332,7 @@ pub(crate) fn step_target(name: &str, args: &Value) -> String {
     let pattern = field("pattern");
     let command = field("command");
     let raw = match name {
-        "read_file" | "read_code" => path,
+        "read_file" => path,
         "list_dir" => {
             if path.is_empty() {
                 ".".to_owned()
@@ -370,7 +347,6 @@ pub(crate) fn step_target(name: &str, args: &Value) -> String {
                 pattern
             }
         }
-        "semantic_search" => field("query"),
         "find" => {
             if !pattern.is_empty() {
                 pattern
@@ -440,20 +416,9 @@ fn denied_line(content: &str) -> Option<String> {
 }
 
 pub(crate) fn explore_prompt(root: &Path, thoroughness: &str, instructions: &str) -> String {
-    let language_server = if cfg!(feature = "lsp-tools") {
-        "\
-- definition, references, and hover: the language server, for a symbol at a
-  1-based line and character. grep is for an exact string.
-- workspace_symbol: find a name when you do not know the file.
-- diagnostics: errors and warnings for one file. available false means there
-  is no language server; keep searching with grep.
-"
-    } else {
-        ""
-    };
     let read_tools = if cfg!(feature = "read-tools") {
         "\
-- grep, find, list_dir, read_file, and read_code are registered as tools.
+- grep, find, list_dir, and read_file are registered as tools.
   Prefer them over the shell equivalents below: they report truncation and
   honor .gitignore for you.
 "
@@ -470,7 +435,7 @@ what you found. You do not change anything.
   read the workspace and it cannot write it, read the home directory, or reach
   the network. Build and test commands write to target/ and are refused.
 - retrieve: read back a compressed shell stream when output was folded.
-{read_tools}{language_server}\
+{read_tools}\
 </tools>
 
 <search>
@@ -521,17 +486,9 @@ The workspace root is {root}.
 }
 
 pub(crate) fn general_prompt(root: &Path) -> String {
-    let language_server = if cfg!(feature = "lsp-tools") {
-        "\
-- definition, references, hover, workspace_symbol, and diagnostics ask the
-  language server. available false means it is not installed; use grep or shell.
-"
-    } else {
-        ""
-    };
     let read_tools = if cfg!(feature = "read-tools") {
         "\
-- grep, find, list_dir, read_file, and read_code are registered as tools.
+- grep, find, list_dir, and read_file are registered as tools.
 "
     } else {
         ""
@@ -548,7 +505,7 @@ report what you found. The parent applies any change.
   unsandboxed, write_paths, or network to unrestricted: none of them is in the
   schema, and build commands fail because they write target/.
 - retrieve reads back a compressed shell stream.
-{read_tools}{language_server}\
+{read_tools}\
 </tools>
 
 <commands>

@@ -13,7 +13,7 @@ You do not call a subagent directly. The model does, through one tool — `deleg
 
 | Mode | What it can do | Model turns | Calls per session |
 |---|---|---|---|
-| `explore` | Read and search: `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, and the read-only language-server tools | `subagent_max_iterations`, default 50 | 6 |
+| `explore` | Read and search: the read-only shell, plus `read_file`, `list_dir`, `find`, and `grep` when `read-tools` is on | `subagent_max_iterations`, default 50 | 6 |
 | `general` | The explore set plus a sandboxed `shell` (and `retrieve`) | the same setting | 4 |
 
 Both children share `subagent_timeout_seconds` (default **two minutes**) per call; the parent turn

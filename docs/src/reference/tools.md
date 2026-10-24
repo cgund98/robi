@@ -28,10 +28,11 @@ Some tools are compiled out and restored by a Cargo feature. See
 
 | Feature | Restores |
 |---|---|
-| `read-tools` | `read_file`, `read_code`, `list_dir`, `find`, `grep` |
+| `read-tools` | `read_file`, `list_dir`, `find`, `grep` |
 | `edit-tools` | `write_file`, `edit_file`, `delete_file` |
-| `semantic-index` | `semantic_search` |
-| `lsp-tools` | `diagnostics`, `definition`, `references`, `hover`, `workspace_symbol` |
+
+The semantic index, `semantic_search`, the five language-server tools, and
+`read_code` are not features: they are deleted (S3 and S4).
 
 ## Read and search
 
@@ -54,32 +55,17 @@ With `--features read-tools` the five read tools come back:
 | Tool | Arguments | Behavior | Approval |
 |---|---|---|---|
 | `read_file` | `path`, `offset`, `limit` | Read a text file, one 32 KB window. Reports where to continue. | none |
-| `read_code` | `path`, `compress`, `focus_symbols`, `expand_imports`, `depth`, `offset`, `limit` | An outline of a source file, or an exact window of it. | none |
 | `list_dir` | `path` | List one directory, non-recursive. | none |
 | `find` | `pattern`, `path`, `glob`, `hidden`, `no_ignore` | Find files by path substring or glob. | none |
 | `grep` | `pattern`, `path`, `regex`, `hidden`, `no_ignore` | Content search. Uses ripgrep when available. | none |
 
-`semantic_search` (`query`, `path`, `limit`) comes with `--features
-semantic-index`. It is off by default: the search by meaning path costs an
-embedding runtime and a background index. `grep` and `find` are the retrieval
-path in the default build.
+`grep` and `find` are the retrieval path. There is no search by meaning: the
+semantic index is gone.
 
-## Language server
+## Verification
 
-Not registered by default (S4). With `--features lsp-tools`, five tools return
-`available: false` when no server for the file's language is installed, and the
-model falls back to `grep` or the shell:
-
-| Tool | Arguments |
-|---|---|
-| `diagnostics` | `path` |
-| `definition` | `path`, `line`, `character` |
-| `references` | `path`, `line`, `character` |
-| `hover` | `path`, `line`, `character` |
-| `workspace_symbol` | `query` |
-
-Verification in the default build is the shell: `cargo check`, `tsc --noEmit`,
-`eslint`, and the project's own test command.
+Verification is the shell: `cargo check`, `tsc --noEmit`, `eslint`, and the
+project's own test command. The language-server tools are gone too.
 
 ## Edit
 
@@ -224,6 +210,6 @@ tool names outside `[A-Za-z0-9_-]` are replaced with `_`. See
 
 Per-tool detail is in the design docs: [Read tools](../design/tools/read-tools.md),
 [Editing tools](../design/tools/editing-tools.md), [Shell tool](../design/tools/shell-tool.md),
-[Web tools](../design/tools/web-tools.md), [Code outline](../design/tools/code-outline.md),
-[Subagents](../design/core/subagents.md), [Feature switches](../design/core/feature-switches.md),
-and [MCP](../design/reach/mcp.md).
+[Web tools](../design/tools/web-tools.md), [Subagents](../design/core/subagents.md),
+[Feature switches](../design/core/feature-switches.md), and
+[MCP](../design/reach/mcp.md).

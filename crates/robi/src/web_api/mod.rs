@@ -21,8 +21,6 @@ use crate::web_api::state::AppState;
 
 pub mod chat_message;
 pub mod chat_session;
-#[cfg(feature = "semantic-index")]
-pub mod code_index;
 #[cfg(feature = "docs-viewer")]
 pub mod docs;
 pub mod error;
@@ -44,8 +42,6 @@ pub fn router(state: AppState) -> Router {
         .merge(settings::router(state.clone()))
         .merge(models::router(state.clone()))
         .merge(events::router(state.clone()));
-    #[cfg(feature = "semantic-index")]
-    let router = router.merge(code_index::router(state.clone()));
     #[cfg(feature = "docs-viewer")]
     let router = router.merge(docs::router(state.clone()));
     #[cfg(feature = "review")]
@@ -85,8 +81,6 @@ async fn log_requests(request: Request, next: Next) -> Response {
 pub fn openapi() -> utoipa::openapi::OpenApi {
     #[allow(unused_mut)]
     let mut document = ApiDoc::openapi();
-    #[cfg(feature = "semantic-index")]
-    document.merge(IndexDoc::openapi());
     #[cfg(feature = "docs-viewer")]
     document.merge(DocsDoc::openapi());
     #[cfg(feature = "review")]
@@ -174,15 +168,6 @@ async fn health_check() -> &'static str {
     )
 )]
 struct ApiDoc;
-
-/// S3: the index routes.
-#[cfg(feature = "semantic-index")]
-#[derive(OpenApi)]
-#[openapi(
-    paths(code_index::get_index, code_index::put_index),
-    components(schemas(code_index::IndexStatusBody, code_index::IndexCommand))
-)]
-struct IndexDoc;
 
 /// S5: the docs routes.
 #[cfg(feature = "docs-viewer")]

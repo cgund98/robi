@@ -317,7 +317,6 @@ that is not in this list is `400`.
 | `base_url` | no | None. Optional base URL for OpenCode Go and Anthropic |
 | `deepseek_base_url` | no | None. Optional DeepSeek base URL. Unset uses `https://api.deepseek.com` |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
-| `lsp` | no | `on`, written on the first read when the key is absent. `off` leaves the language-server tools unregistered. See [lsp.md](../intelligence/lsp.md) |
 | `max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one primary-agent run, from 1 to 500. Read when the session actor starts |
 | `subagent_max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one explore or general child, from 1 to 500. Read when `delegate` starts that child |
 | `subagent_timeout_seconds` | no | `120`, written on the first read when the key is absent. Seconds before an explore or general child is stopped, from 1 to 3600 |
@@ -364,9 +363,7 @@ environment variables. `examples/simple.rs` still reads `OPENCODE_GO_API_KEY`,
 `ROBI_MODEL`, `ROBI_BASE_URL`, and `ROBI_EFFORT` for that one program.
 
 `make api` runs the server. `make dev-api` restarts it when `crates/robi` or
-`crates/robi-core` change, and needs `cargo-watch`. A Rust diagnostics call
-still triggers that restart; see [lsp.md](../intelligence/lsp.md#failure-modes). Swagger UI is
-at `/docs`.
+`crates/robi-core` change, and needs `cargo-watch`. Swagger UI is at `/docs`.
 `make openapi-spec` writes `openapi/openapi.json`. `cargo run -p robi --bin
 export-openapi` prints the same document.
 
@@ -438,8 +435,8 @@ rules are in [events-sse.md](../shell/events-sse.md).
 - A missing workspace is `404`. Creating a chat session for an unknown
   workspace is the same. Deleting a workspace removes its sessions and, because
   foreign keys are on, their messages. After the row is gone, derived files
-  are removed: the semantic index under `~/.robi/index/<workspace_id>/`,
-  including a running index task for that id. That removal is best effort: a
+  are removed: a legacy index directory under `~/.robi/index/<workspace_id>/`,
+  if an older build left one. That removal is best effort: a
   failure is logged and the request still returns `204`.
 - A workspace root that is empty, missing, or a file is `400` and is not written.
 - A title over 200 characters is `400` and is not written. A missing title is

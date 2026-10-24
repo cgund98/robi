@@ -8,9 +8,7 @@ describe('resolveMarkdownLink', () => {
   it('resolves a sibling and a parent markdown link', () => {
     expect(resolveMarkdownLink(from, 'chat-ui.md')).toBe('docs/src/design/shell/chat-ui.md')
     expect(resolveMarkdownLink(from, './chat-ui.md')).toBe('docs/src/design/shell/chat-ui.md')
-    expect(resolveMarkdownLink(from, '../intelligence/semantic-search.md')).toBe(
-      'docs/src/design/intelligence/semantic-search.md'
-    )
+    expect(resolveMarkdownLink(from, '../reach/mcp.md')).toBe('docs/src/design/reach/mcp.md')
     expect(resolveMarkdownLink(from, '../../roadmap.md#m10')).toBe('docs/src/roadmap.md')
   })
 

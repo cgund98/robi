@@ -70,14 +70,13 @@ flowchart LR
 
 `AppState` is the whole contract. Its fields — `workspace_service`,
 `chat_session_service`, `chat_message_service`, `settings_service`, `event_bus`,
-`file_changes`, `index`, `mcp`, `originals`, `image_source` — are the same handles
+`file_changes`, `mcp`, `originals`, `image_source` — are the same handles
 the Axum handlers take. A controller is `State<AppState>` plus `Path` plus `Json`;
 the TUI is an `Arc<AppState>` plus a keymap.
 
-Two of those it never reads: `index` (the GUI hides the index line, so the TUI
-does not render one) and `docs_edits` (no docs surface; see *Deliberately not
-planned*). They stay in `AppState` because `build_app_state` is shared and the
-HTTP routes still serve them.
+One of those it never reads: `docs_edits` (no docs surface; see *Deliberately
+not planned*). It stays in `AppState` because `build_app_state` is shared and
+the HTTP routes still serve it.
 
 ### Where it lives
 
@@ -140,10 +139,10 @@ anticipates, "a new binary with no code moved"); the TUI's tests need to run
 without the web stack; or a measured build cost appears. The promotion is a move
 plus a manifest, because the module is already shaped like one.
 
-Rejected instead of a new crate now: `robi-index` and `robi-lsp` are the splits
-with a real dependency argument, and a crate for one binary that depends on
-`crates/robi` in both directions is the "split that happened too early"
-anti-signal.
+Rejected instead of a new crate now: `robi-index` and `robi-lsp` were the
+splits with a real dependency argument, and both are deleted with M7. A crate
+for one binary that depends on `crates/robi` in both directions is the "split
+that happened too early" anti-signal.
 
 ### Process model
 
@@ -268,8 +267,8 @@ State lives in one of three places, and nothing is duplicated between them:
 Every GUI surface that is on today, its TUI form, and the phase that lands it.
 The two surfaces the GUI has switched off — `reviewScreen` and `docsViewer` in
 `src/app/surfaces.ts` — are out of scope here as well, so a TUI flag is not
-needed for them; see *Deliberately not planned*. `indexStatus` is out for the
-same reason, and the status bar carries no index line.
+needed for them; see *Deliberately not planned*. The index status is gone with
+the index itself, so the status bar carries no index line.
 
 | GUI surface | TUI form | Phase |
 |---|---|---|

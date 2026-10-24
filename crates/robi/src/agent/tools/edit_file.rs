@@ -118,7 +118,6 @@ impl Tool for EditFile {
         crate::agent::blocking::call(move || atomic_write(&absolute, &written))
             .await
             .map_err(ToolError::Failed)??;
-        self.ctx.note_lsp(&resolved.absolute, false).await;
         let file_diff = change_diff(&relative, &before, &after, true, false);
         publish_file_changed(&self.ctx, &relative, status_outcome(file_diff.status));
         Ok(diff_json(&file_diff))

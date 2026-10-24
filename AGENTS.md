@@ -45,11 +45,9 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `adapters/` | M2 | SQLite behind those traits, and the settings files. A keychain can replace the secret backend later |
 | `bootstrap/` | M2 | Shared app state, bind, and router for `robi-api` and the Tauri process |
 | `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI |
-| `agent/tools/` | M3 | Built-in tools. The default build is shell-first: `read_file`, `read_code`, `list_dir`, `find`, `grep`, and the three write tools are behind `read-tools` and `edit-tools`. See [docs/src/design/core/feature-switches.md](docs/src/design/core/feature-switches.md) |
+| `agent/tools/` | M3 | Built-in tools. The default build is shell-first: `read_file`, `list_dir`, `find`, `grep`, and the three write tools are behind `read-tools` and `edit-tools`. See [docs/src/design/core/feature-switches.md](docs/src/design/core/feature-switches.md) |
 | `agent/workspace/` | M3 | Root resolution, path confinement, policy |
 | `agent/review/` | M4 | Line diff and session hunks. `diff.rs` is unconditional; the session baseline reader is behind `--features review` |
-| `agent/lsp/` | M7 | Language server client. Kept in every build; the five tools are behind `--features lsp-tools` |
-| `agent/index/` | M7 | AST chunking, embeddings, vector search. Behind `--features semantic-index` |
 | `agent/skills/` | M8 | Skill scan, catalog, and `/id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
 | `agent/mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
 | `agent/compress/` | M9 | Tool-output compression and the original store |
@@ -60,10 +58,10 @@ depends on neither. `bootstrap` is the composition root both processes call. Sch
 routes, and the chat session lifecycle are in
 [docs/src/design/persistence/persistence.md](docs/src/design/persistence/persistence.md).
 
-`crates/robi-index` and `crates/robi-lsp` are the likely first splits, because
-their dependencies — an embedding runtime, tree-sitter grammars, a JSON-RPC
-client — are large and optional. `crates/robi-cli` for headless mode (M8) is the
-next, and it is the evidence this layout works: a new binary with no code moved.
+`crates/robi-lsp` was once the likely first split, because a JSON-RPC client is
+large and optional. M7 is gone, so the first real split is `crates/robi-cli` for
+headless mode (M8), and it is the evidence this layout works: a new binary with
+no code moved.
 
 ## The crate boundary is the contract
 

@@ -33,7 +33,7 @@ use crate::{
         workspace_assets::WorkspaceIndexAssets,
     },
     agent::providers::ImageSource,
-    agent::{compress::OriginalStore, lsp::LspHub, mcp::McpHub, web::BraveSearch},
+    agent::{compress::OriginalStore, mcp::McpHub, web::BraveSearch},
     domain::{
         chat_message::service::ChatMessageService,
         chat_session::service::ChatSessionService,
@@ -44,9 +44,6 @@ use crate::{
     },
     web_api::{self, state::AppState},
 };
-
-#[cfg(feature = "semantic-index")]
-use crate::agent::index::IndexHub;
 
 /// Default listen port. Vite owns `1430`.
 pub const DEFAULT_PORT: u16 = 1431;
@@ -175,14 +172,6 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     ));
     let tools = Arc::new(ToolRegistry::new());
     let event_bus = Arc::new(EventBus::new());
-    #[cfg(feature = "semantic-index")]
-    let index = Arc::new(IndexHub::new(
-        config.settings_dir.clone(),
-        Arc::clone(&event_bus),
-        Arc::new(robi_index::LocalEmbedder::new(robi_index::model_cache_dir(
-            &config.settings_dir,
-        ))),
-    ));
     let index_assets = Arc::new(WorkspaceIndexAssets::new(config.settings_dir.clone()));
     let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
     evacuate_sqlite(&pool, &blobs)
@@ -206,17 +195,6 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         config.settings_dir,
         Arc::clone(&event_bus),
     ));
-    let lsp_path_entries = settings
-        .get(crate::domain::settings::keys::PATH_ENTRIES)
-        .await
-        .ok()
-        .flatten()
-        .map(|setting| setting.value)
-        .unwrap_or_default();
-    let lsp_path =
-        crate::agent::blocking::call(move || crate::agent::mcp::resolve_path(&lsp_path_entries))
-            .await
-            .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
         events: Arc::new(BusEventSink::new(Arc::clone(&event_bus))),
@@ -230,9 +208,6 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         file_changes: Some(Arc::clone(&file_changes)),
         bus: Some(Arc::clone(&event_bus)),
         search,
-        #[cfg(feature = "semantic-index")]
-        index: Some(Arc::clone(&index)),
-        lsp: Some(LspHub::with_search_path(lsp_path)),
         settings: Some(Arc::clone(&settings)),
         mcp: Some(Arc::clone(&mcp)),
         originals: Some(Arc::clone(&originals)),
@@ -262,8 +237,6 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         settings_service,
         event_bus,
         file_changes,
-        #[cfg(feature = "semantic-index")]
-        index,
         mcp: Some(mcp),
         originals,
         image_source,

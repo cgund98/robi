@@ -15,7 +15,6 @@ use bollard::models::{
     HostConfig, HostConfigLogConfig, Mount, MountType, RestartPolicy, RestartPolicyNameEnum,
 };
 
-use crate::agent::sandbox::profile::WriteAccess;
 use crate::agent::sandbox::Profile;
 
 use super::config::Config;
@@ -134,8 +133,11 @@ pub fn host_config(config: &Config, mounts: Vec<Mount>) -> HostConfig {
 /// already absent: a deny outside every mount needs no rule.
 pub fn mounts(profile: &Profile, masks: &[PathBuf]) -> Vec<Mount> {
     let workspace = &profile.workspace;
-    let writable = matches!(profile.write, WriteAccess::ReadWrite);
-    let mut mounts = vec![bind(workspace, WORKSPACE, writable)];
+    // Ask and Plan pass `WriteAccess::ReadOnly`, but the mount table is fixed
+    // when the container is created and a later mode switch reuses it. Mount
+    // the workspace read-write for every mode until recreation follows the
+    // write mode. `.git` stays read-only below.
+    let mut mounts = vec![bind(workspace, WORKSPACE, true)];
 
     // `.git` stays readable and write-denied, so `git status` works and a commit
     // does not. A nested mount over the workspace: the longer destination wins.
@@ -294,7 +296,7 @@ mod tests {
     use super::*;
     use crate::agent::sandbox::container::config::Service;
     use crate::agent::sandbox::masks::testing::scratch_dir;
-    use crate::agent::sandbox::profile::NetworkMode;
+    use crate::agent::sandbox::profile::{NetworkMode, WriteAccess};
 
     fn profile(root: &Path) -> Profile {
         Profile {
@@ -341,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_only_profile_mounts_the_workspace_read_only() {
+    fn a_read_only_profile_still_mounts_the_workspace_read_write() {
         let root = Path::new("/work/app");
         let mut profile = profile(root);
         profile.write = WriteAccess::ReadOnly;
@@ -350,7 +352,7 @@ mod tests {
             .iter()
             .find(|mount| mount.target.as_deref() == Some(WORKSPACE))
             .expect("workspace mount");
-        assert_eq!(workspace.read_only, Some(true));
+        assert_eq!(workspace.read_only, Some(false));
     }
 
     #[test]

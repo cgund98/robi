@@ -11,8 +11,7 @@ variable says otherwise. The directory is created mode `0700` on first use.
 | `~/.robi/plans/<session_id>/` | Legacy plan files from before S9. New plans are written to `<workspace>/.robi/plans/` and these are no longer read. |
 | `~/.robi/sessions/<session_id>/blobs.redb` | Tool results, tool originals, and image bytes for one chat. |
 | `~/.robi/sessions/image-index.redb` | Image id to session id. No image bytes. |
-| `~/.robi/index/<workspace_id>/index.sqlite` | The semantic index for one workspace, when `--features semantic-index` is on. The directory is still removed when the workspace is deleted. |
-| `~/.robi/models/` | Cached embedding model weights. |
+| `~/.robi/index/<workspace_id>/` | A legacy semantic index from a build before M11. Nothing writes it now; deleting the workspace still removes the directory. |
 | `~/.robi/mcp.json` | User-scoped MCP server config. |
 | `~/.robi/mcp-icons.json` | Cached MCP server icons (capped at 256 KiB). |
 | `~/.robi/logs/` | Process logs. One file per start, `robi-api-<timestamp>.log` or `robi-dev-<timestamp>.log`; the newest prior file is kept, older than seven days is pruned. |
@@ -61,7 +60,5 @@ it:
 ## Where this is specified
 
 The schema and the data directory are in
-[Persistence](../design/persistence/persistence.md). The index file and the
-model cache are in
-[Semantic search](../design/intelligence/semantic-search.md). The MCP config
-files are in [MCP](../design/reach/mcp.md).
+[Persistence](../design/persistence/persistence.md). The MCP config files are in
+[MCP](../design/reach/mcp.md).

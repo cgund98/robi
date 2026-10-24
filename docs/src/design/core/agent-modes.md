@@ -65,11 +65,11 @@ Verification happens in Agent mode, and the mode copy says so. `git status`,
 are denied.
 
 The remaining tools are compiled out in the default build and come back per
-Cargo feature. `read_file`, `read_code`, `list_dir`, `find`, and `grep` need
-`read-tools`; `semantic_search` needs `semantic-index`; the five language-server
-tools need `lsp-tools`; and the three write tools need `edit-tools`. See
-[feature-switches.md](feature-switches.md). There is no `lsp` setting: it was
-removed with the tools it gated, so a stored `lsp` key is an unknown setting.
+Cargo feature. `read_file`, `list_dir`, `find`, and `grep` need `read-tools`,
+and the three write tools need `edit-tools`. See
+[feature-switches.md](feature-switches.md). The language-server tools, the
+semantic index, and `read_code` are deleted, not gated; so is the `lsp` setting,
+and a stored `lsp` key is an unknown setting.
 
 ### Prompt
 

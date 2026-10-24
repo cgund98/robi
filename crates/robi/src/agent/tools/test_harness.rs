@@ -2,7 +2,6 @@
 //!
 //! The edit, read, shell, and subagent tests all need a real session with real
 //! path rules, so the builder lives here and is compiled in every test build.
-//! What each test file needs from `robi-index` is gated with the tool's feature.
 
 use std::sync::Arc;
 
@@ -27,11 +26,8 @@ use crate::domain::{
 pub(crate) struct Harness {
     pub(crate) ctx: Arc<ToolContext>,
     pub(crate) root: std::path::PathBuf,
-    /// Read by the `edit-tools` and `semantic-index` tests only.
-    #[cfg_attr(
-        not(any(feature = "edit-tools", feature = "semantic-index")),
-        allow(dead_code)
-    )]
+    /// Read by the `edit-tools` tests only.
+    #[cfg_attr(not(feature = "edit-tools"), allow(dead_code))]
     pub(crate) session_id: SessionId,
 }
 
@@ -73,9 +69,6 @@ pub(crate) async fn harness() -> Harness {
         root: canonical,
         sessions,
         file_changes: Arc::new(SqliteFileChangeRepository::new(pool)),
-        #[cfg(feature = "semantic-index")]
-        index: None,
-        lsp: crate::agent::lsp::LspHub::new(),
         originals: None,
         settings: None,
         events: None,

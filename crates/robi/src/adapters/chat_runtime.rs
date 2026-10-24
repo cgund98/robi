@@ -54,13 +54,6 @@ pub struct AgentFactory {
     /// Publishes `robi.session.v1.updated` after a title is stored. Absent when
     /// there is no bus.
     pub bus: Option<Arc<EventBus>>,
-    /// `--features semantic-index` only: absent in a
-    /// default build, which does no indexing work at all.
-    #[cfg(feature = "semantic-index")]
-    pub index: Option<Arc<crate::agent::index::IndexHub>>,
-    /// Language servers shared by sessions on one workspace. Absent in tests
-    /// that do not call them; those sessions get a hub of their own.
-    pub lsp: Option<Arc<crate::agent::lsp::LspHub>>,
     /// Global settings. Absent in tests, which leave language-server tools on.
     pub settings: Option<Arc<dyn SettingsStore>>,
     /// MCP host. Absent in tests. Agent mode attaches its tools before the model runs.
@@ -157,26 +150,12 @@ impl AgentFactory {
             ServiceError::Unknown
         })?;
         let registry = ToolRegistry::new();
-        let lsp = match self.lsp.clone() {
-            Some(hub) => hub,
-            None => {
-                let extra = self.path_entries().await?;
-                let path =
-                    crate::agent::blocking::call(move || crate::agent::mcp::resolve_path(&extra))
-                        .await
-                        .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
-                crate::agent::lsp::LspHub::with_search_path(path)
-            }
-        };
         let ctx = Arc::new(crate::agent::tools::ToolContext {
             session_id: session,
             workspace_id: chat.workspace_id,
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
-            #[cfg(feature = "semantic-index")]
-            index: self.index.clone(),
-            lsp,
             originals: self.originals.clone(),
             settings: self.settings.clone(),
             events: self.bus.clone(),
@@ -227,17 +206,6 @@ impl AgentFactory {
         }
         tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
         Ok((Arc::new(registry), Some(root), mode, choice))
-    }
-
-    /// The `path_entries` setting appended to the LSP resolver's `PATH`.
-    async fn path_entries(&self) -> Result<String, ServiceError> {
-        let Some(settings) = &self.settings else {
-            return Ok(String::new());
-        };
-        let stored = settings
-            .get(crate::domain::settings::keys::PATH_ENTRIES)
-            .await?;
-        Ok(stored.map(|setting| setting.value).unwrap_or_default())
     }
 
     async fn approval_required(&self, key: &str) -> Result<bool, ServiceError> {
@@ -985,9 +953,6 @@ mod tests {
             file_changes: None,
             bus: None,
             search: idle_search(),
-            #[cfg(feature = "semantic-index")]
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1368,9 +1333,6 @@ mod tests {
             file_changes: None,
             bus: None,
             search: idle_search(),
-            #[cfg(feature = "semantic-index")]
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1482,9 +1444,6 @@ mod tests {
             )),
             bus: None,
             search: idle_search(),
-            #[cfg(feature = "semantic-index")]
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1518,9 +1477,6 @@ mod tests {
             )),
             bus: Some(bus),
             search: idle_search(),
-            #[cfg(feature = "semantic-index")]
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,

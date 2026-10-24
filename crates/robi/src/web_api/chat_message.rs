@@ -338,7 +338,7 @@ fn decode_base64(name: &str, encoded: &str) -> Result<Vec<u8>, ServiceError> {
 
 /// The text of one attachment, or `415` when the bytes are not text.
 ///
-/// The same rule the read tools use (`read_code`, `grep`): a NUL byte marks
+/// The same rule the read tools use (`read_file`, `grep`): a NUL byte marks
 /// binary, and the bytes must be valid UTF-8. This is the authority — the client
 /// sniffs too, for feedback at attach time, but a client that lies is caught
 /// here, and no file name or extension is trusted.
@@ -1032,12 +1032,6 @@ mod tests {
                     &pool,
                 )),
             ),
-            #[cfg(feature = "semantic-index")]
-            index: Arc::new(crate::agent::index::IndexHub::new(
-                std::env::temp_dir(),
-                Arc::new(EventBus::new()),
-                Arc::new(robi_index::FakeEmbedder::new(4)),
-            )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),

@@ -29,8 +29,6 @@ pub const SESSION_DELETED: &str = "robi.session.v1.deleted";
 pub const APP_SOURCE: &str = "robi/app";
 pub const APP_SUBJECT: &str = "app";
 pub const APP_ERROR: &str = "robi.app.v1.error";
-pub const INDEX_PROGRESS: &str = "robi.index.v1.progress";
-pub const INDEX_SOURCE: &str = "robi/index";
 pub const MCP_STATUS: &str = "robi.mcp.v1.status";
 pub const MCP_SOURCE: &str = "robi/mcp";
 pub const WORKSPACE_SOURCE: &str = "robi/workspace";
@@ -51,7 +49,7 @@ pub const SESSION_FILTER_EXCEPTIONS: &[&str] = &[
 
 /// Workspace-scoped types a stream may deliver when it is filtered to one
 /// workspace. The subject is the workspace id.
-pub const WORKSPACE_EVENT_TYPES: &[&str] = &[INDEX_PROGRESS, MCP_STATUS, FILE_CHANGED];
+pub const WORKSPACE_EVENT_TYPES: &[&str] = &[MCP_STATUS, FILE_CHANGED];
 
 /// Every agent type the shell asks for. Order is the type map in the design.
 pub const AGENT_EVENT_TYPES: &[&str] = &[
@@ -67,7 +65,6 @@ pub const AGENT_EVENT_TYPES: &[&str] = &[
     SESSION_UPDATED,
     SESSION_DELETED,
     APP_ERROR,
-    INDEX_PROGRESS,
     MCP_STATUS,
     FILE_CHANGED,
 ];
@@ -223,11 +220,6 @@ impl EventEnvelope {
             json!({ "message": message }),
         )
         .expect("error payload")
-    }
-
-    /// Index build progress. `subject` is the workspace id.
-    pub fn index_progress(workspace_id: &str, data: Value) -> Self {
-        Self::from_payload(INDEX_SOURCE, INDEX_PROGRESS, workspace_id, data).expect("index payload")
     }
 
     /// MCP servers for one workspace changed. `subject` is the workspace id.

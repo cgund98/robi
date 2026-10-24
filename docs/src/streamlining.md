@@ -21,18 +21,20 @@ describes M11, which subtracts from them.
 
 ## What shipped
 
-Eight workstreams removed a **surface**, and the backend ones removed their
-routes and tools too. Nothing was deleted: each backend surface is a Cargo
+Nine workstreams removed a **surface**, and the backend ones removed their
+routes and tools too. The first pass kept each backend surface behind a Cargo
 feature in `crates/robi/Cargo.toml`, off by default, gating the module, its
-registration, and its OpenAPI entry together. The front end keeps its own
-switch in `src/app/surfaces.ts`.
+registration, and its OpenAPI entry together. S3 and S4 are now past that stage:
+the index, the language-server client, and the tree-sitter outline are deleted,
+and no flag restores them. The front end keeps its own switch in
+`src/app/surfaces.ts`.
 
 | # | What the app lost |
 |---|---|
-| S1 | `read_file`, `read_code`, `list_dir`, `find`, `grep`, `write_file`, `edit_file`, and `delete_file`. The shell reads, searches, and edits; the prompt carries the forms |
+| S1 | `read_file`, `list_dir`, `find`, `grep`, `write_file`, `edit_file`, and `delete_file`. The shell reads, searches, and edits; the prompt carries the forms |
 | S2 | The review screen, its route, its three API routes, and the `N files edited` strip. `git diff` is the review path |
-| S3 | The index status pill, the client's `robi.index.v1.progress` handling, the `semantic_search` tool, `IndexHub`, and the two `/index` routes |
-| S4 | The five language-server tools and the `lsp` setting |
+| S3 | The index status pill, the `robi.index.v1.progress` event, the `semantic_search` tool, `IndexHub`, the two `/index` routes, and `crates/robi-index` |
+| S4 | The five language-server tools, the `lsp` setting, and the LSP client in `agent/lsp/` |
 | S5 | The `#/docs` route, the docs screen, the editor, the chat tray, the toggle, and the four docs routes |
 | S6 | The permanent left sidebar. Navigation is one bar across the top; the transcript gets the full width |
 | S7 | The agent's ability to write from Ask or Plan. Ask holds a read-only shell; Plan may write only `.robi/plans` |
@@ -44,11 +46,12 @@ are off, `topBarShell` is on. `topBarShell` is a layout flag only — it never
 gates a backend call (D5). The `indexStatus` flag is gone: with the index off
 there is nothing for it to show.
 
-`crates/robi/Cargo.toml` is the backend switch. `default = []`, and six features
-restore one workstream each: `read-tools`, `edit-tools`, `semantic-index`,
-`lsp-tools`, `review`, `docs-viewer`. `make lint-restore` and `make test-restore`
-compile and test that path, and CI runs both — a missing feature edge fails only
-there. See [feature-switches.md](design/core/feature-switches.md).
+`crates/robi/Cargo.toml` is the backend switch. `default = []`, and four
+features restore one workstream each: `read-tools`, `edit-tools`, `review`,
+`docs-viewer`. S3 and S4 are not flags: their code is deleted. `make
+lint-restore` and `make test-restore` compile and test the remaining restore
+path, and CI runs both — a missing feature edge fails only there. See
+[feature-switches.md](design/core/feature-switches.md).
 
 Two prerequisites grew out of S1. **S7** was already required because a shell in
 Plan is an editor in Plan. **S8 trimmed** became required because `explore` had
@@ -73,10 +76,10 @@ simpler. The measurement plan below is how we tell the difference.
 
 | # | Workstream | Outcome | State |
 |---|---|---|---|
-| S1 | Shell-first editing | `read_file`, `read_code`, `list_dir`, `find`, `grep`, `write_file`, `edit_file`, and `delete_file` are disabled. The agent reads, searches, and edits through `shell`, with prompt hints and `git diff` verification | **Shipped**. `read-tools` and `edit-tools` restore them |
+| S1 | Shell-first editing | `read_file`, `list_dir`, `find`, `grep`, `write_file`, `edit_file`, and `delete_file` are disabled. The agent reads, searches, and edits through `shell`, with prompt hints and `git diff` verification | **Shipped**. `read-tools` and `edit-tools` restore them |
 | S2 | No in-app code review | Review routes and the edited-file strip leave the app. Review happens in an IDE or `git diff` | **Shipped**. `review` restores the routes; the baseline table stays |
-| S3 | No semantic index | Indexing, embeddings, the `semantic_search` tool, and index UI are disabled | **Shipped**. `semantic-index` restores it |
-| S4 | No LSP diagnostics | The five language-server tools and the `lsp` setting are gone | **Shipped**. `lsp-tools` restores the tools; the client stays either way |
+| S3 | No semantic index | Indexing, embeddings, the `semantic_search` tool, and index UI are gone, along with `crates/robi-index`, tree-sitter, and the embedder | **Removed**. Nothing restores it |
+| S4 | No LSP diagnostics | The five language-server tools, the `lsp` setting, and the LSP client are gone | **Removed**. Nothing restores it |
 | S5 | No docs viewer | The `/docs` route, docs screen, docs editor, and the docs routes are removed | **Shipped**. `docs-viewer` restores them; `agent/docs/` stays |
 | S6 | Top-bar shell | The permanent left sidebar is removed; navigation moves into the top bar | **Shipped** |
 | S7 | Read-only shell in Ask and Plan | Ask gets a shell that cannot write; Plan may write only `.robi/plans` | **Shipped** |
@@ -87,8 +90,11 @@ simpler. The measurement plan below is how we tell the difference.
 
 **Shipped as shell-only**, which is further than this section first proposed.
 The original plan kept `find`, `grep`, `list_dir`, and `read_code`; the shipped
-build removes them too, behind `--features read-tools`. The shell is the only
-interface to the workspace, and the prompt teaches the forms.
+build removes them too, behind `--features read-tools`. `read_code` went further
+still: it was the last user of the tree-sitter outline, so it is deleted with
+S3's grammar crates, and `read_file` is the window into a source file. The shell
+is the only interface to the workspace by default, and the prompt teaches the
+forms.
 
 That widened the prerequisites. `explore` had only read tools and no shell, so
 removing them would have left it with nothing: both child modes were rebuilt on
@@ -193,60 +199,65 @@ documented verification path, and the S1 prompt hints say so.
 
 ## S3 — No semantic index
 
-**Shipped, both halves.** The index status pill and the client's
-`robi.index.v1.progress` handling are gone, the tool is not registered,
-`IndexHub` is not built, the two `/index` routes are not served, and nothing
-takes an index lease — so a cold start issues no index work and opens no
-embedding model. `crates/robi-index` is an optional dependency behind
-`--features semantic-index`, which also drops tree-sitter and `fastembed` from
-the default build.
+**Removed.** The first pass gated the workstream behind `--features
+semantic-index`. The code is now deleted:
 
-Agents do not call `semantic_search` enough to justify an embedding runtime,
-a vector store, and a background index task. Disable:
-
-- the `semantic_search` tool (`crates/robi/src/agent/tools/semantic_search.rs`);
-- `IndexHub` and its leases (`crates/robi/src/agent/index.rs`);
+- the `semantic_search` tool (`agent/tools/semantic_search.rs`);
+- `IndexHub` and its leases (`agent/index.rs`);
 - `GET`/`PUT /api/v1/workspaces/{id}/index` (`web_api/code_index.rs`);
-- `IndexStatusLine` in the chat header;
-- the semantic engine in docs search, assuming docs search survives S5 at all.
+- the `robi.index.v1.progress` event and its constant;
+- the semantic engine in docs search, which is now a literal scan;
+- `crates/robi-index`, and with it `fastembed`, `sqlite-vec`, `rusqlite`,
+  `notify`, and the tree-sitter grammars.
 
-`crates/robi-index` stays in the tree, unbuilt or feature-gated. It is the
-largest optional dependency in the workspace, which is exactly why it should be
-behind a feature rather than deleted: restoring it later is a manifest change.
+The index status pill and the client's frame handling went in the first pass. A
+cold start issues no index work and opens no embedding model, because there is
+no embedder or index task left to start.
 
-`grep` and `find` become the only retrieval path. That is a real downgrade for
-"where is this concept handled?" questions, and the prompt should say so
-honestly: search by identifier and filename first, then read the hits.
+Agents did not call `semantic_search` enough to justify an embedding runtime, a
+vector store, and a background index task. `grep` and `find` are the retrieval
+path, and that is a real downgrade for "where is this concept handled?"
+questions. The prompt says so honestly: search by identifier and filename first,
+then read the hits.
+
+The last user of the tree-sitter outline was `read_code`, so it goes with the
+grammars rather than staying as a duplicate of `read_file`. `read_file` is the
+window into a source file, and the shell covers the rest.
+
+`~/.robi/index/<workspace_id>/` is no longer written. The workspace asset
+cleaner still removes a directory an older install left behind.
 
 ### Exit criteria
 
-A cold workspace start does no indexing work, opens no embedding model, and the
-index status UI is gone. `grep`/`find` cover the retrieval in the S1 task set
-without a measurable drop in success.
+A cold workspace start does no indexing work and opens no embedding model, and
+the index status UI is gone. `grep`/`find` cover the retrieval in the S1 task
+set without a measurable drop in success.
 
 ## S4 — No LSP diagnostics
 
-Disable the `diagnostics` tool, the settings toggle, and the registration path
-in `register_read_tools`. The two smaller decisions:
+**Removed.** The first pass gated the five tools behind `--features lsp-tools`
+and kept the client. With no tool driving it, the client is dead weight, so the
+whole module is deleted: `agent/lsp/`, `agent/tools/lsp.rs`, and the `async-lsp`
+and `futures-io` dependencies. `note_lsp` goes with it; nothing else invalidated
+a server cache.
 
-1. **Diagnostics only, or the whole LSP surface?** `definition`, `references`,
-   `hover`, and `workspace_symbol` share the same hub. If the agents do not use
-   diagnostics, they are unlikely to use symbol navigation either. Prefer
-   disabling the whole set and keeping `crates/robi/src/agent/lsp/` behind the
-   switch. If tool-call data says `grep` is not a substitute for `references`,
-   restore the four non-diagnostics tools and leave diagnostics off.
-2. **What replaces verification?** The shell. `cargo check`, `tsc`, `eslint`,
-   and the project's own test command are already available through `shell` and
-   are more honest than a diagnostics snapshot. Add them to the prompt hints.
+The two smaller decisions:
 
-`docs/src/reference/tools.md` should lose the language-server section, and
-[design/intelligence/lsp.md](design/intelligence/lsp.md) gets the disabled
-banner from S0.
+1. **Diagnostics only, or the whole LSP surface?** The whole surface. If the
+   agents do not use diagnostics, they do not use symbol navigation either, and
+   five tools sharing one hub is one subsystem, not five.
+2. **What replaces verification?** The shell. `cargo check`, `tsc --noEmit`,
+   `eslint`, and the project's own test command are already available through
+   `shell` and are more honest than a diagnostics snapshot. The prompt hints say
+   so.
+
+`docs/src/reference/tools.md` has no language-server section, and the design
+page for the client is deleted rather than bannered.
 
 ### Exit criteria
 
-`lsp = on` no longer registers a tool, the settings toggle is gone, and the S1
-task set verifies with `cargo check` rather than `diagnostics`.
+`lsp = on` is an unknown setting, no language-server tool is registered, and the
+S1 task set verifies with `cargo check` rather than `diagnostics`.
 
 ## S5 — No docs viewer
 
@@ -655,10 +666,10 @@ question.
   `topBarShell` is a layout flag that gates no backend behavior, which is what S6
   shipping on its own required. The backend flags are in
   [feature-switches.md](design/core/feature-switches.md).
-- **D6 — What happens to `read_code`?** **Settled: it lives behind
-  `read-tools`.** It was the last unconditional user of `robi-index`, so gating
-  it is what made tree-sitter optional. The S1 measurement decides whether it
-  comes back.
+- **D6 — What happens to `read_code`?** **Settled: deleted.** It lived behind
+  `read-tools` while the outline was still there. It was the last user of
+  tree-sitter, so it went when the grammar crates did, rather than staying as a
+  second `read_file`. A return means a parser and a new outline, not a flag.
 - **D7 — Does Ask get a shell?** **Settled: a read-only one.** With `grep` and
   `git diff` gone from the tool set, Ask needs the shell to answer anything.
 - **D8 — Build caches under a read-only profile?** **Settled: verify in Agent
@@ -700,8 +711,8 @@ now says what the app does, not what it used to do.
 - The docs-search guide: removed with S5. **Done.**
 - [design/shell/frontend-layout.md](design/shell/frontend-layout.md),
   [design/shell/visual-style.md](design/shell/visual-style.md), and
-  [design/shell/events-sse.md](design/shell/events-sse.md): the top-bar layout,
-  the removed left column, and the index frames. **Done.**
+  [design/shell/events-sse.md](design/shell/events-sse.md): the top-bar layout
+  and the removed left column. **Done.**
 - [design/core/agent-modes.md](design/core/agent-modes.md): the mode table, with
   a read-only shell in Ask and Plan. **Done.**
 - [design/core/subagents.md](design/core/subagents.md): both children are
@@ -709,12 +720,11 @@ now says what the app does, not what it used to do.
 - [design/tools/shell-tool.md](design/tools/shell-tool.md): the `ShellAccess`
   flag, the read-only profile, and `Profile::extra_writes`. **Done.**
 - [design/tools/editing-tools.md](design/tools/editing-tools.md),
-  [read-tools.md](design/tools/read-tools.md),
-  [code-outline.md](design/tools/code-outline.md), and
+  [read-tools.md](design/tools/read-tools.md), and
   [checkpoints.md](design/tools/checkpoints.md): the shell is the interface and
   there is no automatic journal. **Done.**
-- The design pages for review, LSP, semantic search, and docs: the disabled
-  banner. **Done.**
+- The design pages for review and docs: the disabled banner. The LSP, semantic
+  search, and code-outline pages are deleted with their subjects. **Done.**
 - [design/core/feature-switches.md](design/core/feature-switches.md): new, and
   the backend counterpart of `src/app/surfaces.ts`. **Done.**
 - `AGENTS.md`: the layout table and the "removed surface is a Cargo feature"

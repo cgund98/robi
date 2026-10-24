@@ -177,10 +177,10 @@ async fn delete_file_refuses_a_directory() {
 }
 
 #[tokio::test]
-async fn edit_and_write_refuse_an_omitted_marker() {
+async fn edit_and_write_refuse_a_compressed_shell_marker() {
     let harness = harness().await;
     std::fs::write(harness.root.join("pay.rs"), "fn keep() {}\n").unwrap();
-    let marker = "<<<ROBI_OMITTED symbol=\"keep\" lines=1-1 sha256=\"abcdabcdabcdabcd\">>>";
+    let marker = "<<<ROBI_LOG id=\"abc\" sha256=\"abcdabcdabcdabcd\" exit=0>>>";
     let edit = EditFile::new(Arc::clone(&harness.ctx));
     let error = edit
         .execute(
@@ -189,8 +189,10 @@ async fn edit_and_write_refuse_an_omitted_marker() {
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("omitted-body marker"), "{error}");
-    assert!(error.to_string().contains("symbol: keep"), "{error}");
+    assert!(
+        error.to_string().contains("compressed shell marker"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read_to_string(harness.root.join("pay.rs")).unwrap(),
         "fn keep() {}\n"
@@ -200,5 +202,8 @@ async fn edit_and_write_refuse_an_omitted_marker() {
         .execute(json!({"path": "pay.rs", "content": marker}), run())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("omitted-body marker"), "{error}");
+    assert!(
+        error.to_string().contains("compressed shell marker"),
+        "{error}"
+    );
 }

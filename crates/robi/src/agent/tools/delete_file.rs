@@ -123,7 +123,6 @@ impl Tool for DeleteFile {
                 .await
                 .map_err(ToolError::Failed)??;
         }
-        self.ctx.note_lsp(&resolved.absolute, true).await;
         let file_diff = change_diff(&relative, &before, "", true, true);
         publish_file_changed(&self.ctx, &relative, status_outcome(file_diff.status));
         Ok(diff_json(&file_diff))
