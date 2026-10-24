@@ -6,9 +6,8 @@ where you read the code, jump around, and keep working after Robi has changed
 something.
 
 Robi does not replace that editor. It has no buffer, no tabs of open source
-files, and no keybindings for writing code. The review screen and the docs
-viewer are for looking at a change or a markdown page inside the app. Day-to-day
-editing stays in the program you already use.
+files, and no keybindings for writing code. Day-to-day editing stays in the
+program you already use.
 
 ## Open a changed file
 
@@ -57,12 +56,19 @@ still running then has opened. A program that cannot start, or that exits
 non-zero inside that window, shows the error on the edit card and leaves the
 file viewer closed.
 
-## Keep the rest of the loop in Robi
+## See what changed
 
-Approve or reject the edit in the chat before you rely on the file in your
-editor. The review screen still lists every path the session changed, and
-**Approve** or **Reject** there is what keeps or discards the change. Opening
-the file elsewhere does not approve it.
+Robi is not where you review a change. A turn's edits are on disk as soon as the
+tool call runs, so `git diff` is the record:
 
-See [Code review](code-review.md) for that screen, and
+```sh
+git status --short     # which paths this session touched
+git diff -- path       # what changed in one file
+```
+
+The chat streams every tool call as it happens, so the transcript says what ran
+and on which path. To keep or discard work, use git: `git checkout -- path`
+throws one file away, and `git stash` before a risky turn gives you a clean undo.
+
+See [Reviewing changes with git](code-review.md), and
 [Quickstart](quickstart.md) if you have not run a turn yet.

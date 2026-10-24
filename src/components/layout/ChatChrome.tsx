@@ -6,25 +6,24 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from
 import { listModels, type CatalogModel } from '../../api/models'
 import { sessionDisplayTitle, type AgentMode, type ChatSession } from '../../api/sessions'
 import { getSettings, SETTING_KEYS } from '../../api/settings'
+import { showSurface } from '../../app/surfaces'
 import { planBuildInstruction, type PlanView } from '../../features/chat/toolCallView'
 import styles from './AppLayout.module.css'
+import { sessionMark } from './recents'
 import { sessionMode, type AgentPhase } from '../../state/chatStore'
 import { useAgentEvents } from '../../features/chat/useAgentEvents'
 import { chat } from '../../state/chatStore'
 import { workspaces } from '../../state/workspaceStore'
 import { ChatHeader } from '../../features/chat/ChatHeader'
 import { ChatPanel } from '../../features/chat/ChatPanel'
-import { ChatTray } from '../../features/chat/ChatTray'
 import { Composer } from '../../features/chat/Composer'
 import { DeleteSessionDialog } from '../../features/chat/DeleteSessionDialog'
 import { EmptyGreeting } from '../../features/chat/EmptyGreeting'
 import { PlanPage } from '../../features/chat/PlanPage'
 import { RenameSessionDialog } from '../../features/chat/RenameSessionDialog'
-import { requestComposerAttachment } from '../../state/composerAttachments'
-import { DocsScreen } from '../../features/docs/DocsScreen'
 import { ErrorNotices } from './ErrorNotices'
-import { ReviewScreen } from '../../features/review/ReviewScreen'
 import { Sidebar } from './Sidebar'
+import { TopBar } from './TopBar'
 
 async function buildPlan(path: string) {
   await chat.setModeChoice('agent')
@@ -46,7 +45,10 @@ const MODE_SETTING_KEYS: Record<AgentMode, { model: string; effort: string }> = 
   agent: { model: SETTING_KEYS.modelAgent, effort: SETTING_KEYS.reasoningEffortAgent }
 }
 
-/** Chat shell: sidebar, header, and the welcome, thread, plan, docs, or review pane. */
+/**
+ * Chat shell: the bar (or, in the legacy layout, the sidebar and header), and
+ * the welcome, thread, or plan pane.
+ */
 export function ChatChrome() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -58,10 +60,7 @@ export function ChatChrome() {
   const [plan, setPlan] = createSignal<{
     view: PlanView
     sessionId: string | null
-    // Opened from the docs chat tray, so the plan may cover the docs sheet.
-    overDocs: boolean
   } | null>(null)
-  const [trayOpen, setTrayOpen] = createSignal(false)
   const [models, setModels] = createSignal<CatalogModel[]>([])
   const [fallbackModelId, setFallbackModelId] = createSignal('glm-5.3')
   const [fallbackEffort, setFallbackEffort] = createSignal<string | null>(null)
@@ -146,23 +145,11 @@ export function ChatChrome() {
     }
   })
 
-  const docsOpen = () => location.pathname === '/docs'
-  const reviewSessionId = () => /^\/sessions\/([^/]+)\/review$/.exec(location.pathname)?.[1] ?? null
   const chatSessionId = () => /^\/sessions\/([^/]+)$/.exec(location.pathname)?.[1] ?? null
 
   createEffect(() => {
-    const id = reviewSessionId()
-    if (isRouting() || !id) {
-      return
-    }
-    if (chat.activeSessionId !== id || chat.draftSelected) {
-      void chat.selectSession(id)
-    }
-  })
-
-  createEffect(() => {
     const id = chatSessionId()
-    if (isRouting() || chat.loading || reviewSessionId() || docsOpen() || !id) {
+    if (isRouting() || chat.loading || !id) {
       return
     }
     if (!chat.sessions.some((session) => session.id === id)) {
@@ -175,20 +162,8 @@ export function ChatChrome() {
 
   createEffect(() => {
     const current = plan()
-    if (
-      current &&
-      (chat.draftSelected ||
-        reviewSessionId() !== null ||
-        (docsOpen() && !current.overDocs) ||
-        current.sessionId !== chat.activeSessionId)
-    ) {
+    if (current && (chat.draftSelected || current.sessionId !== chat.activeSessionId)) {
       setPlan(null)
-    }
-  })
-
-  createEffect(() => {
-    if (!docsOpen() && trayOpen()) {
-      setTrayOpen(false)
     }
   })
 
@@ -198,34 +173,19 @@ export function ChatChrome() {
       : null
   )
   const sessionTitle = createMemo(() => {
-    if (docsOpen()) {
-      return 'Documentation'
-    }
     if (chat.loading && !activeSession() && !chat.draftSelected) {
       return 'Loading…'
     }
     return sessionDisplayTitle(activeSession())
   })
-  const runningIds = createMemo(() => {
-    const ids: string[] = []
-    for (const session of chat.sessions) {
-      const sessionPhase = chat.phaseBySession[session.id]
-      if (session.turn_display === 'awaiting_approval') {
-        continue
-      }
-      if (
-        session.has_pending_agent ||
-        session.turn_display === 'pending' ||
-        (sessionPhase !== undefined && sessionPhase !== 'idle')
-      ) {
-        ids.push(session.id)
-      }
-    }
-    return ids
-  })
+  const runningIds = createMemo(() =>
+    chat.sessions
+      .filter((session) => sessionMark(session, chat.phaseBySession[session.id]) === 'running')
+      .map((session) => session.id)
+  )
   const awaitingIds = createMemo(() =>
     chat.sessions
-      .filter((session) => session.turn_display === 'awaiting_approval')
+      .filter((session) => sessionMark(session, chat.phaseBySession[session.id]) === 'awaiting')
       .map((session) => session.id)
   )
   const phase = createMemo((): AgentPhase => {
@@ -278,11 +238,6 @@ export function ChatChrome() {
 
   const openSession = (id: string) => {
     setPlan(null)
-    if (docsOpen()) {
-      setTrayOpen(true)
-      void chat.selectSession(id)
-      return
-    }
     // Navigate first: the route reaches `location` on a later microtask, so the
     // reconciling effect below must see `isRouting()` already true and bail.
     // Writing the store first would let that effect re-select the old route.
@@ -293,11 +248,6 @@ export function ChatChrome() {
   }
   const openDraft = () => {
     setPlan(null)
-    if (docsOpen()) {
-      setTrayOpen(true)
-      chat.selectDraft()
-      return
-    }
     // See openSession: navigate before the store write so the reconciling effect
     // does not read a stale `/sessions/:id` route and undo the draft selection.
     if (location.pathname !== '/') {
@@ -324,8 +274,7 @@ export function ChatChrome() {
     onBuild: (path: string) => {
       void buildPlan(path)
     },
-    onViewPlan: (next: PlanView) =>
-      setPlan({ view: next, sessionId: chat.activeSessionId, overDocs: docsOpen() }),
+    onViewPlan: (next: PlanView) => setPlan({ view: next, sessionId: chat.activeSessionId }),
     disabled: composerLocked(),
     pending: chat.busy,
     running: agentRunning(),
@@ -349,50 +298,53 @@ export function ChatChrome() {
 
   return (
     <div class={styles.shell}>
-      <Sidebar
-        sessions={chat.sessions}
-        activeSessionId={chat.draftSelected ? '' : (activeSession()?.id ?? '')}
-        draftSelected={chat.draftSelected}
-        docsSelected={docsOpen()}
-        disabled={chat.loading}
-        runningSessionIds={new Set(runningIds())}
-        awaitingSessionIds={new Set(awaitingIds())}
-        onSelectSession={openSession}
-        onNewSession={openDraft}
-        onRenameSession={(id) => {
-          setRenameError(null)
-          setRenameId(id)
-        }}
-        onDeleteSession={(id) => {
-          setDeleteError(null)
-          setDeleteId(id)
-        }}
-      />
+      <Show when={!showSurface('topBarShell')}>
+        <Sidebar
+          sessions={chat.sessions}
+          activeSessionId={chat.draftSelected ? '' : (activeSession()?.id ?? '')}
+          draftSelected={chat.draftSelected}
+          docsSelected={false}
+          disabled={chat.loading}
+          runningSessionIds={new Set(runningIds())}
+          awaitingSessionIds={new Set(awaitingIds())}
+          onSelectSession={openSession}
+          onNewSession={openDraft}
+          onRenameSession={(id) => {
+            setRenameError(null)
+            setRenameId(id)
+          }}
+          onDeleteSession={(id) => {
+            setDeleteError(null)
+            setDeleteId(id)
+          }}
+        />
+      </Show>
       <div class={styles.main}>
-        <ChatHeader sessionTitle={sessionTitle()} />
-        <ErrorNotices />
-        <Show when={reviewSessionId()} keyed>
-          {(id) => <ReviewScreen sessionId={id} />}
-        </Show>
         <Show
-          when={
-            !reviewSessionId() && docsOpen() ? (workspaces.activeWorkspaceId ?? 'none') : undefined
-          }
-          keyed
+          when={showSurface('topBarShell')}
+          fallback={<ChatHeader sessionTitle={sessionTitle()} />}
         >
-          {(id) => (
-            <div style={{ display: plan() ? 'none' : 'contents' }}>
-              <DocsScreen
-                workspaceId={id === 'none' ? null : id}
-                onAttachLine={(file) => {
-                  setTrayOpen(true)
-                  requestComposerAttachment(composerDraftKey(), file)
-                }}
-              />
-            </div>
-          )}
+          <TopBar
+            sessionTitle={sessionTitle()}
+            sessions={chat.sessions}
+            activeSessionId={chat.draftSelected ? '' : (activeSession()?.id ?? '')}
+            draftSelected={chat.draftSelected}
+            phaseBySession={chat.phaseBySession}
+            disabled={chat.loading}
+            onSelectSession={openSession}
+            onNewSession={openDraft}
+            onRenameSession={(id) => {
+              setRenameError(null)
+              setRenameId(id)
+            }}
+            onDeleteSession={(id) => {
+              setDeleteError(null)
+              setDeleteId(id)
+            }}
+          />
         </Show>
-        <Show when={!reviewSessionId() && plan()}>
+        <ErrorNotices />
+        <Show when={plan()}>
           <PlanPage
             plan={plan()!.view}
             buildDisabled={
@@ -411,14 +363,7 @@ export function ChatChrome() {
           />
         </Show>
         <Show
-          when={
-            !reviewSessionId() &&
-            !docsOpen() &&
-            !plan() &&
-            chat.transcriptLoading &&
-            messages().length === 0 &&
-            echo() === null
-          }
+          when={!plan() && chat.transcriptLoading && messages().length === 0 && echo() === null}
         >
           <div class={styles.loadingTranscript} role="status">
             <span class={styles.spinner} aria-hidden="true" />
@@ -427,8 +372,6 @@ export function ChatChrome() {
         </Show>
         <Show
           when={
-            !reviewSessionId() &&
-            !docsOpen() &&
             !plan() &&
             !(chat.transcriptLoading && messages().length === 0 && echo() === null) &&
             fresh()
@@ -441,23 +384,12 @@ export function ChatChrome() {
         </Show>
         <Show
           when={
-            !reviewSessionId() &&
-            !docsOpen() &&
             !plan() &&
             !(chat.transcriptLoading && messages().length === 0 && echo() === null) &&
             !fresh()
           }
         >
-          <ChatPanel {...chatProps()} showReviewStrip />
-        </Show>
-        <Show when={docsOpen()}>
-          <ChatTray
-            {...chatProps()}
-            open={trayOpen()}
-            onOpen={() => setTrayOpen(true)}
-            onClose={() => setTrayOpen(false)}
-            title={sessionDisplayTitle(activeSession())}
-          />
+          <ChatPanel {...chatProps()} />
         </Show>
       </div>
       <Show when={renameTarget()}>

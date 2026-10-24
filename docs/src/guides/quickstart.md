@@ -42,8 +42,9 @@ On first launch there are no workspaces, so Robi opens the **Workspaces** page.
 
 Click **New workspace** and pick a directory in the system folder dialog. The
 name is taken from the folder. Sessions stay with that folder, and the agent
-works from its root. You can add another at any time from the sidebar workspace
-switcher (**Add workspace…**).
+works from its root. You can add another at any time: **Manage workspaces…** in
+the workspace dropdown in the top bar opens the Workspaces page, where
+**New workspace** lives.
 
 ## 3. Set up model providers
 

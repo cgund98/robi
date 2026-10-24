@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, Show } from 'solid-js'
+import { createEffect, onCleanup } from 'solid-js'
 
 import type { ChatMessage } from '../../api/messages'
 import type { CatalogModel } from '../../api/models'
@@ -8,7 +8,6 @@ import type { AttachmentMeta, FileAttachment } from './textAttachments'
 import type { PlanView } from './toolCallView'
 import styles from './ChatPanel.module.css'
 import { Composer } from './Composer'
-import { EditReviewStrip } from './EditReviewStrip'
 import { Transcript } from './Transcript'
 
 export type ChatPanelProps = {
@@ -42,7 +41,6 @@ export type ChatPanelProps = {
   workspaceId?: string | null
   onCompact?: () => void
   compacting?: boolean
-  showReviewStrip?: boolean
 }
 
 export function ChatPanel(props: ChatPanelProps) {
@@ -52,7 +50,6 @@ export function ChatPanel(props: ChatPanelProps) {
   createEffect(() => {
     props.sessionId
     props.draftKey
-    props.showReviewStrip
     const dockNode = dock
     const threadNode = thread
     if (!dockNode || !threadNode) {
@@ -88,9 +85,6 @@ export function ChatPanel(props: ChatPanelProps) {
           onViewPlan={props.onViewPlan}
         />
         <div class={styles.dock} ref={dock}>
-          <Show when={props.showReviewStrip && props.sessionId}>
-            <EditReviewStrip sessionId={props.sessionId!} />
-          </Show>
           <Composer
             disabled={props.disabled}
             pending={props.pending}

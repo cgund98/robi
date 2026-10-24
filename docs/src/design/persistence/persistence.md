@@ -100,7 +100,7 @@ applied in code and are not written on the row.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `TEXT PRIMARY KEY` | `WorkspaceId`, UUIDv7, minted in the adapter |
-| `name` | `TEXT NOT NULL` | Final path component of `root`. The sidebar workspace header shows this |
+| `name` | `TEXT NOT NULL` | Final path component of `root`. The workspace dropdown shows this |
 | `root` | `TEXT NOT NULL UNIQUE` | Canonical absolute directory. Opening the same directory again returns this row |
 | `mcp_project_sha256` | `TEXT` | SHA-256 of `<workspace>/.robi/mcp.json` after the user enables that file. Null until then. See [mcp.md](../reach/mcp.md) |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
@@ -391,10 +391,12 @@ Vite origin and from `http://tauri.localhost`, `https://tauri.localhost`, and
 
 The shell shows one workspace at a time. The active id is
 `localStorage` key `robi.activeWorkspaceId`. `/workspaces` is the list: search,
-sort, create, and open. The sidebar links there under the workspace dropdown, and an empty list
-opens that page instead of the chat. The workspace dropdown at the top of the
-sidebar still switches the active workspace without leaving the chat. Add opens the system
-folder dialog in the desktop window, and asks for a path in a normal browser.
+sort, create, and open. An empty list
+opens that page instead of the chat. The workspace dropdown in the window bar
+still switches the active workspace without leaving the chat, and its
+**Manage workspaces…** item opens that page. Adding a workspace lives there, not
+in the dropdown: **New workspace** opens the system folder dialog in the desktop
+window, and asks for a path in a normal browser.
 List and create of chat sessions use that active id. Switching workspaces
 clears the open session and shows the draft composer for the newly selected
 workspace. Null titles render as **New session**.

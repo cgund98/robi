@@ -1,8 +1,10 @@
 # Streamlining Roadmap
 
-This page is a proposal, not a plan of record. It sketches a smaller Robi: one
+This page sketches a smaller Robi: one
 general-purpose tool instead of a suite of specialised ones, fewer surfaces, and
-a shell that spends its width on the conversation. Nothing here is built yet.
+a shell that spends its width on the conversation. **Four workstreams have
+shipped as UI changes** — S2, S3 (its UI half), S5, and S6 — and the rest are
+still proposals.
 
 The premise is that a **minimalist harness** can outperform a complex one. A
 small tool set with good prompts gives the model fewer ways to choose wrong, and
@@ -12,7 +14,28 @@ remove is a guarantee we stop enforcing in code and start enforcing in prompt
 copy. This roadmap exists to test the first claim without losing the second.
 
 Read [roadmap.md](roadmap.md) first for the shipped milestones. This page
-describes a possible M11 that subtracts from them.
+describes M11, which subtracts from them.
+
+## What shipped
+
+The four shipped workstreams removed a **surface**, not the code. Nothing in the
+backend changed: the review, docs, and index routes are still served, and the
+dependency graph is untouched.
+
+| # | What the app lost |
+|---|---|
+| S2 | The review screen, its route, and the `N files edited` strip. `git diff` is the review path |
+| S3 (UI) | The index status pill and the client's handling of `robi.index.v1.progress`. The index still runs; the tool is untouched |
+| S5 | The `#/docs` route, the docs screen, the editor, the chat tray, and the chat/documentation toggle |
+| S6 | The permanent left sidebar. Navigation is one bar across the top; the transcript gets the full width |
+
+`src/app/surfaces.ts` is the switch: `docsViewer`, `reviewScreen`, and
+`indexStatus` are off, `topBarShell` is on. Flipping a value restores that
+surface, and the modules behind it never left the tree. `topBarShell` is a layout
+flag only — it never gates a backend call (D5).
+
+S3's **backend** half — disabling `semantic_search`, `IndexHub`, and the index
+routes — is still open. So are S1, S4, S7, S8, and S9.
 
 ## Thesis
 
@@ -30,37 +53,17 @@ simpler. The measurement plan below is how we tell the difference.
 
 ## What changes
 
-| # | Workstream | Outcome |
-|---|---|---|
-| S1 | Shell-first editing | `read_file`, `edit_file`, and `write_file` are disabled. The agent reads and edits through `shell`, with prompt hints and `git diff` verification |
-| S2 | No in-app code review | Review routes, screens, and baselines leave the app. Review happens in an IDE or `git diff` |
-| S3 | No semantic index | Indexing, embeddings, the `semantic_search` tool, and index UI are disabled |
-| S4 | No LSP diagnostics | The `diagnostics` tool is disabled, and the LSP surface is reduced or gated |
-| S5 | No docs viewer | The `/docs` route, docs screen, and docs editor are temporarily removed |
-| S6 | Top-bar shell | The permanent left sidebar is removed; navigation moves into the top bar |
-| S7 | Read-only shell in Ask and Plan | Ask and Plan get a shell that cannot write, whatever the sandbox allows |
-| S8 | Read-only subagents | No child can write, and none can run unsandboxed |
-
-### Disable, do not delete
-
-Every workstream follows the same rule: **remove the surface, keep the code**.
-Concretely, a disabled feature:
-
-- is not registered in the tool registry or the router, so the model and the
-  client cannot reach it;
-- is not described in the system prompt, the tool catalog, or `reference/tools.md`;
-- has no entry point in the UI;
-- stays in a module behind one switch, so restoring it is a config change rather
-  than a revert.
-
-The switch should be one place, not six. A `streamlined` setting (or a
-`legacy-harness` Cargo feature) read once at composition time is enough. A
-feature with no switch and a commented-out `register_*` call is not a disabled
-feature; it is a merge conflict waiting to happen.
-
-Design pages for disabled features stay in the book with a status banner at the
-top: **Disabled in M11. Kept for reference.** A page that silently describes a
-screen the app no longer has is worse than no page.
+| # | Workstream | Outcome | State |
+|---|---|---|---|
+| S1 | Shell-first editing | `read_file`, `edit_file`, and `write_file` are disabled. The agent reads and edits through `shell`, with prompt hints and `git diff` verification | Proposed |
+| S2 | No in-app code review | Review routes, screens, and baselines leave the app. Review happens in an IDE or `git diff` | **Shipped (UI)**. Routes still served; baselines still written |
+| S3 | No semantic index | Indexing, embeddings, the `semantic_search` tool, and index UI are disabled | **UI shipped**. Backend open |
+| S4 | No LSP diagnostics | The `diagnostics` tool is disabled, and the LSP surface is reduced or gated | Proposed |
+| S5 | No docs viewer | The `/docs` route, docs screen, and docs editor are temporarily removed | **Shipped (UI)**. Backend open |
+| S6 | Top-bar shell | The permanent left sidebar is removed; navigation moves into the top bar | **Shipped** |
+| S7 | Read-only shell in Ask and Plan | Ask and Plan get a shell that cannot write, whatever the sandbox allows | Proposed |
+| S8 | Read-only subagents | No child can write, and none can run unsandboxed | Proposed |
+| S9 | No built-in todos | `todos` and `write_plan` go; the agent keeps its checklist in a `TODO.md` or `plan.md` in the workspace | Proposed |
 
 ## S1 — Shell-first editing
 
@@ -127,6 +130,12 @@ higher rate of failed commands. If it does not, keep the edit tools.
 
 ## S2 — No in-app code review
 
+**Shipped as a UI change.** The route and the screen are gone from the app, and
+the strip with them; the API routes and `features/review/` stay. Baselines are
+still written because the edit tools still write them — S2 coupled the baselines
+to S1, and S1 has not shipped, so there is nothing to remove yet. The inline file
+peek from a tool call card is not a review surface and stays.
+
 Remove the review screen and the routes behind it:
 
 - `GET /api/v1/chat_sessions/{id}/review`
@@ -160,6 +169,11 @@ No route, component, guide, or prompt mentions in-app review. `git diff` is the
 documented verification path, and the S1 prompt hints say so.
 
 ## S3 — No semantic index
+
+**The UI half shipped.** The index status pill and the client's
+`robi.index.v1.progress` handling are off, so a cold start issues no index
+request. The backend half — the tool, `IndexHub`, and the routes — is still open,
+so the index still runs and `semantic_search` is still registered.
 
 Agents do not call `semantic_search` enough to justify an embedding runtime,
 a vector store, and a background index task. Disable:
@@ -210,6 +224,11 @@ task set verifies with `cargo check` rather than `diagnostics`.
 
 ## S5 — No docs viewer
 
+**Shipped as a UI change.** The route is out of `chatRoutePaths`, `DocsScreen` and
+`ChatTray` are out of `ChatChrome`, and the toggle is out of the bar. The docs
+modules and the API routes stay, so a return is a flag flip plus a back link. A
+`#/docs` hash kept from an older build is rewritten to the chat on startup.
+
 Temporarily remove the viewer and editor:
 
 - the `/docs` route and `ViewToggle`;
@@ -222,9 +241,9 @@ the docs routes with the UI, and keep `agent/docs/` (change reconciliation and
 merge) behind the switch. When the viewer returns, it returns with its merge
 path intact rather than half-remembered.
 
-Docs search ([guides/documentation-search.md](guides/documentation-search.md))
-goes with the viewer. If search should survive as a standalone surface, it needs
-its own entry point, which is a different feature.
+Docs search goes with the viewer, and its guide went with it. If search should
+survive as a standalone surface, it needs its own entry point, which is a
+different feature.
 
 **Temporarily** means the removal is reversible and recorded: the design pages
 [design/shell/docs-viewer.md](design/shell/docs-viewer.md) and
@@ -237,6 +256,12 @@ No `/docs` route, no docs components, and the S1 prompt tells the agent to use
 the shell for markdown. The user browses docs in an external editor.
 
 ## S6 — Top-bar shell
+
+**Shipped.** `TopBar` renders one row over the window frame's strip: the workspace
+dropdown, back and forward, the session title (which is also the Recents menu),
+then New chat, Settings, and an overflow holding MCP marks and the API health
+row. `Sidebar` and `ChatHeader` remain in the tree as the legacy branch behind
+`showSurface('topBarShell')`; delete them a release after this shipped.
 
 Remove the permanent left sidebar and give the transcript the full window width.
 Everything the sidebar held moves into the top bar:
@@ -392,6 +417,123 @@ network option. A `general` child asked to write a file returns a refusal and
 the file is unchanged. A test asserts the read-only profile for both child
 modes, and a second test asserts the schema has no escalation keys.
 
+## S9 — No built-in todos
+
+Remove the `todos` and `write_plan` tools. The agent keeps its open tasks in a
+markdown file in the workspace — `TODO.md` for a running list, or `plan.md` when
+the work is a plan — and updates it with the same shell writes it uses for
+everything else (S1).
+
+### What exists today
+
+Worth seeing in full, because most of it is machinery that only exists to
+support the tool:
+
+| Piece | File | What it does |
+|---|---|---|
+| `todos` tool | `tools/todos.rs` | Patches `clear`/`remove`/`update`/`add` on frontmatter, validates unique ids and one `in_progress` |
+| `write_plan` tool | `tools/write_plan.rs` | Creates or overwrites a plan, inventing `<plan_name>-<uuid>.md` |
+| Frontmatter parser | `tools/plan_file.rs` | `split_plan`, `format_plan`, `normalize_todos`, the 500-char limit |
+| Prompt injection | `tools/plan_file.rs` `todos_prompt` | Reads the plan at prompt build and emits a `<todos path="…">` block |
+| Session column | `chat_sessions.plan_path` | Points at one plan file per session |
+| Cleanup | `adapters/session_plans.rs` | Deletes `~/.robi/plans/<session_id>` with the session |
+| UI | `PlanPage.tsx`, `todoProgress.ts`, `toolCallView.ts` | Derives a checklist from the tool-call arguments, not from the file |
+
+The plan file lives under `~/.robi/plans/<session_id>`, outside the workspace.
+That single fact is the argument for S9: the plan is the one artifact the user
+most wants to read and edit, and it is in a hidden app directory they will
+never open, in a bespoke frontmatter format, deleted when the session is.
+
+### What replaces it
+
+A file in the workspace, in a format the model already knows:
+
+```markdown
+# Ship the mode registry
+
+- [ ] Add `ShellAccess` to the shell tool
+- [x] Register the read tools per mode
+- [ ] Update the mode table in the design doc
+```
+
+Rules, and no more than these:
+
+- **Checkboxes, not frontmatter.** `- [ ]` and `- [x]`. Every model writes
+  these without being taught, and the user's editor renders them.
+- **One file, one convention.** `TODO.md` at the workspace root for a running
+  list. `plan.md` when the user asked for a plan. Say which in the prompt; do
+  not let the agent invent `tasks/TODO-2.md`.
+- **The file is the source of truth.** No session column, no prompt injection
+  from a hidden path. The agent reads it with `cat TODO.md` when it needs to
+  reorient, which is one shell call it already knows how to make.
+- **Plan mode writes exactly this one path.** See the conflict below.
+
+### The Plan-mode conflict
+
+This is the part that does not resolve itself. S7 makes Plan's shell read-only,
+and `write_plan` is the only write Plan has today. Remove `write_plan` without a
+replacement and **Plan mode cannot produce a plan file at all**.
+
+Three ways out, in order of preference:
+
+1. **A one-path write exception in Plan.** The read-only profile denies writes
+   except to `plan.md` (or whatever path the session agreed on). Narrow,
+   auditable, and it keeps the "Plan produces a plan" contract. This needs
+   explicit support in `Profile`: a deny-all plus a single allowed file, not a
+   directory-wide write root.
+2. **Plan proposes, Agent writes.** Plan returns the plan in chat; switching to
+   Agent writes the file. Simple, but the plan file appears after the mode
+   switch, which is a worse story for the user.
+3. **Keep `write_plan` and remove only `todos`.** Half the change, and it leaves
+   the tool that writes to a hidden directory.
+
+Prefer 1. It is also the only option that keeps plan authoring inside Plan mode,
+which is where the mode prompt says it belongs.
+
+### What this costs
+
+- **No validation.** `normalize_todos` rejects duplicate ids, two `in_progress`
+  items, and a 500-character step. A freeform checklist has none of that. That
+  is acceptable: those checks mostly caught the model fighting its own tool
+  schema. If a task is too long for a checkbox, the plan body is the place for it.
+- **No guaranteed structure.** The UI can no longer parse a checklist, so
+  `PlanPage` and `todoProgress` go with the tools. Under S5 there is no docs
+  viewer either, so the user reads `plan.md` in their editor. That is consistent,
+  but it means the plan has no in-app rendering at all — decide whether that is
+  acceptable before shipping S9 with S5.
+- **The file can conflict.** The user may edit `TODO.md` while the agent is
+  working. There is no merge path here, unlike the docs editor's three-way
+  merge. The prompt should say: re-read before rewriting, and never overwrite a
+  file you have not read this turn.
+- **It shows up in git.** A `TODO.md` at the root appears in `git status` and in
+  every `git diff`. That is either the point (a durable, reviewable plan) or
+  noise. Recommend documenting a `.gitignore` entry for a scratch list, and
+  committing `plan.md` only when the plan is meant to be shared. Do not have the
+  agent add the ignore rule silently.
+
+### What gets deleted, not disabled
+
+`todos` and `write_plan` are pure harness scaffolding with no user-facing
+surface once the file moves into the workspace. Unlike S1–S5 there is nothing
+worth keeping behind a switch:
+
+- `tools/todos.rs` and `tools/write_plan.rs`;
+- `tools/plan_file.rs` and its frontmatter parser (keep `session_plan_directory`
+  only if something else still needs it — check first);
+- the `todos_prompt` block in prompt assembly;
+- `adapters/session_plans.rs` and the `chat_sessions.plan_path` column;
+- `PlanPage.tsx`, `todoProgress.ts`, and the `todos` case in `toolCallView.ts`.
+
+Deleting the column is a migration; do it in the same change as the code that
+stops reading it, not before.
+
+### Exit criteria
+
+No `todos` or `write_plan` tool is registered in any mode. A plan-mode session
+produces a `plan.md` in the workspace, and an agent-mode session updates a
+`TODO.md` across turns by reading it first. The prompt contains the checklist
+convention and the re-read rule.
+
 ## Sequencing
 
 The order is chosen so the app is usable at every step and each step can be
@@ -416,12 +558,17 @@ reverted alone.
 7. **S1 — shell-first editing.** Last, because it is the change that can
    actually make the product worse. It ships behind the switch and is measured
    against the current harness.
+8. **S9 — workspace todo files.** After S1, because the replacement writes
+   through the shell, and after S7, because Plan's write exception is defined
+   against the read-only profile.
 
 S1 depends on S2's decision about baselines and on S7 being in place. If S1
 ships without S7, Plan and Ask become editing modes by accident. S3, S4, and S8
 must ship before S1's measurement run, so the "before" and "after" harnesses
 differ only in the editing path. If S1 fails its exit criteria, S2–S8 still
-stand on their own.
+stand on their own. S9 is the one workstream that can ship early against the
+current `write_file` instead of the shell; do that if the hidden plan directory
+is the more urgent problem.
 
 ```mermaid
 graph LR
@@ -436,6 +583,8 @@ graph LR
   S2 --> S7[S7 Read-only shell]
   S7 --> S1
   S4 --> S1
+  S1 --> S9[S9 Workspace todos]
+  S7 --> S9
 ```
 
 ## How we will know
@@ -472,9 +621,12 @@ question.
 | We remove a tool the model actually used | Keep a month of tool-call counts before deleting the registration. If a tool is in the top five, it does not qualify. |
 | A read-only shell blocks `cargo check` and test runs | Scope writes to build and cache directories, or move verification to Agent mode and say so in the prompt. |
 | A read-only shell is enforced by scanning the command string | Do not scan. Use the OS profile's deny list. A regex on `>` is defeated by `python -c` on the first try. |
-| Plan mode becomes useless without a writable shell | `write_plan` is a separate tool and stays. If a plan needs a scratch file, that is an Agent task. |
+| Plan mode becomes useless without a writable shell | Plan's one allowed write is its plan file (S9). Anything else is an Agent task. |
 | Subagents lose the ability to fix what they find | Expected. The summary names the fix; the parent applies it with its own approval. Measure the extra parent turns in the S1 run. |
 | S8 is "already true" and silently regresses | Assert the invariant with tests on the profile and the schema, not on the wrapper's behavior. |
+| Plan mode cannot write a plan once `write_plan` is gone | Give Plan exactly one allowed write path, or move plan authoring to Agent. Do not ship S9 and S7 together without deciding. |
+| The workspace `TODO.md` is stale, duplicated, or fights the user's edits | One fixed path per workspace, re-read before rewrite, and never invent alternate names. |
+| A root-level `TODO.md` pollutes every diff | Document the `.gitignore` choice; do not let the agent edit ignore rules on its own. |
 
 ## Open decisions
 
@@ -486,11 +638,14 @@ question.
   ships. The likely shape: no automatic journal, a prompt hint to use a branch
   or `git stash`, and no in-app undo.
 - **D3 — Diagnostics only, or all LSP tools?** See S4.
-- **D4 — Do docs routes leave with the UI, or stay for a future client?** The
-  recommendation is to disable them with the UI.
-- **D5 — One switch or two?** `streamlined` for S1–S5, and a separate flag for
-  S6, so the layout can ship without the harness changes. The UI flag should
-  not gate backend behavior.
+- **D4 — Do docs routes leave with the UI, or stay for a future client?** **Settled
+  for the UI:** the docs routes stay on the API and the app no longer calls them.
+  `web_api/docs.rs` and `agent/docs/` stay in the tree, so a future client or a
+  restored viewer finds them working.
+- **D5 — One switch or two?** **Settled: one module, four flags.**
+  `src/app/surfaces.ts` holds `docsViewer`, `reviewScreen`, `indexStatus`, and
+  `topBarShell`. `topBarShell` is a layout flag that gates no backend behavior,
+  which is what S6 shipping on its own required.
 - **D6 — What happens to `read_code`?** It is a read tool, not an edit tool, and
   it depends on the same tree-sitter work as the index. Decide from usage.
 - **D7 — Does Ask get a shell?** S7 gives it a read-only one. Ask currently has
@@ -501,25 +656,43 @@ question.
 - **D9 — Do `general` subagents keep a shell at all?** S8 keeps it read-only.
   If the read-only shell turns out to be useless for them, remove the shell from
   both child modes and make delegation purely read-and-summarize.
+- **D10 — Where does the checklist live?** `TODO.md` at the workspace root, or
+  inside the session's working directory? A root file is shared by every
+  session in that workspace, which is either the point or a conflict.
+- **D11 — Does Plan mode get a one-path write exception?** See S9. Required
+  before S7 and S9 ship together.
+- **D12 — Is the plan file git-tracked?** A committed plan is a durable artifact
+  and a reviewable diff; an ignored one is scratch. Pick one and document it.
+- **D13 — Does anything still render a plan in-app?** With S5 and S9 both
+  shipped, nothing does. Either accept that, or keep one read-only plan view.
 
 ## What must be updated when this ships
 
+Done for S2, S3 (UI), S5, and S6: the roadmap, the two shell design pages, the
+code-review guide, and the docs-search guide (deleted). A page a shipped
+workstream touches now says what the app does, not what it used to do.
+
 - [roadmap.md](roadmap.md): M6, M7, and M10 gain a "Disabled" note, and M11
-  points here.
+  points here. **Done.**
 - [reference/tools.md](reference/tools.md): the tool set after S1, S3, and S4.
-- [guides/editor.md](guides/editor.md): the shell-first workflow.
+  Waiting on the S3 backend half.
+- [guides/editor.md](guides/editor.md): the shell-first workflow. **Partly done:**
+  the review and docs references are gone; the shell-first half waits on S1.
 - [guides/code-review.md](guides/code-review.md): review with git and an IDE.
-- [guides/documentation-search.md](guides/documentation-search.md): removed with
-  S5.
+  **Done.**
+- The docs-search guide: removed with S5. **Done.**
 - [design/shell/frontend-layout.md](design/shell/frontend-layout.md) and
   [design/shell/visual-style.md](design/shell/visual-style.md): the top-bar
-  layout and the removal of the left column.
+  layout and the removal of the left column. **Done.**
 - [design/core/agent-modes.md](design/core/agent-modes.md): the mode table, with
   a read-only shell in Ask and Plan.
 - [design/core/subagents.md](design/core/subagents.md): `general` children are
   read-only, and no child can escalate.
 - [design/tools/shell-tool.md](design/tools/shell-tool.md): the `ShellAccess`
   flag and the read-only profile.
+- [design/core/agent-modes.md](design/core/agent-modes.md) and
+  [reference/tools.md](reference/tools.md): `todos` and `write_plan` removed,
+  and the workspace checklist convention in their place.
 - The design pages for review, LSP, semantic search, and docs: the disabled
   banner from S0.
 - `AGENTS.md`: the layout table and the "read/edit tools" language, once the

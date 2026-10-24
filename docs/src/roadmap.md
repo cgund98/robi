@@ -44,11 +44,12 @@ network. It is done when its tests pass. See
 | M3 | Read-only tools | The assistant reads your workspace, with approval | `read_file`, `find`, `grep`, `list_dir`, approvals, compaction |
 | M4 | Editing | The assistant changes your files and runs commands | `write_file`, edit tools, checkpoints/undo, git awareness, sandboxed shell |
 | M5 | Modes and subagents | Ask, plan, and agent modes; read-only exploration | Modes, plan artifacts, `tasks`, `explore`, `delegate` |
-| M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments |
-| M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search |
+| M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments. **The screen is disabled in M11** |
+| M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search. **The index status UI is disabled in M11; the index keeps running** |
 | M8 | Reach | Integrations and headless use | MCP client, skills, web tools |
 | M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
-| M10 | Docs view | Read and write project documentation | A filtered file tree, and an editor shared by the user and the agent |
+| M10 | Docs view | Read and write project documentation | A filtered file tree, and an editor shared by the user and the agent. **Disabled in M11** |
+| M11 | Streamlining | A smaller shell: a top bar, and fewer surfaces | [Streamlining roadmap](streamlining.md). S2, S3 (UI), S5, and S6 have shipped |
 
 The line between "usable" and "differentiated" falls after M5. M1–M3 produce a
 chat app that reads code. M4 makes it an agent. M5 is where Robi stops being a
@@ -81,6 +82,13 @@ chat shell, read and edit tools, the sandbox, modes, plans, delegate, session
 review, LSP, the semantic index, MCP, skills, and web tools. These pieces are
 still open. Delete a row when that piece ships, and update the milestone
 section that owns it.
+
+**M11 removed surfaces without removing code.** The [streamlining
+roadmap](streamlining.md) turns off the review screen (S2), the index status UI
+(S3), and the docs viewer (S5), and replaces the left sidebar with a top bar
+(S6). The code, the API routes, and the design pages stay; `src/app/surfaces.ts`
+is the switch. The rows below that belong to M6 and M10 are therefore not
+"remaining" in the UI — they are waiting on a decision to restore the surface.
 
 | Milestone | Piece | State |
 |---|---|---|

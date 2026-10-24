@@ -40,12 +40,12 @@ handler that takes 2 seconds or longer is logged at warning with its duration.
 | `GET` | `/api/v1/workspaces/{id}/mcp` | Configured MCP servers and their status. |
 | `POST` | `/api/v1/workspaces/{id}/mcp` | Start this workspace's MCP servers and close every other workspace's. |
 | `GET` | `/api/v1/workspaces/{id}/mcp/config` | The user and project MCP config text. |
-| `GET` | `/api/v1/workspaces/{id}/index` | The semantic index status, with a cursor. |
-| `PUT` | `/api/v1/workspaces/{id}/index` | Pause or resume the index (`state`: `paused` / `running`). |
-| `GET` | `/api/v1/workspaces/{id}/docs` | The markdown files in the workspace, gitignore respected. |
-| `GET` | `/api/v1/workspaces/{id}/docs/{path}` | One markdown file's text, with its content-hash `version`. |
-| `PUT` | `/api/v1/workspaces/{id}/docs/{path}` | Save the open page. The body is a CodeMirror change set (`base_version` + `changes`) or the whole buffer (`content`). Reconciles against the disk and returns `{path, content, version, outcome}`. A base version the server no longer has is `409` with `{content, version}`. |
-| `GET` | `/api/v1/workspaces/{id}/docs/search` | Markdown search. `engine` is `semantic` (default, the index) or `ripgrep` (a literal scan that does not start the index). |
+| `GET` | `/api/v1/workspaces/{id}/index` | The semantic index status, with a cursor. **The app no longer calls this** (S3, UI half) |
+| `PUT` | `/api/v1/workspaces/{id}/index` | Pause or resume the index (`state`: `paused` / `running`). **The app no longer calls this** |
+| `GET` | `/api/v1/workspaces/{id}/docs` | The markdown files in the workspace, gitignore respected. **The app no longer calls this** (S5) |
+| `GET` | `/api/v1/workspaces/{id}/docs/{path}` | One markdown file's text, with its content-hash `version`. **The app no longer calls this** |
+| `PUT` | `/api/v1/workspaces/{id}/docs/{path}` | Save the open page. The body is a CodeMirror change set (`base_version` + `changes`) or the whole buffer (`content`). Reconciles against the disk and returns `{path, content, version, outcome}`. A base version the server no longer has is `409` with `{content, version}`. **The app no longer calls this** |
+| `GET` | `/api/v1/workspaces/{id}/docs/search` | Markdown search. `engine` is `semantic` (default, the index) or `ripgrep` (a literal scan that does not start the index). **The app no longer calls this** |
 | `GET` | `/api/v1/workspaces/{id}/path` | `{"absolute"}`. Query `path` is workspace-relative. A blank path, the workspace root, or a path that resolves outside the root is `400`. |
 | `POST` | `/api/v1/workspaces/{id}/open` | Body `{"path", "line?"}`. Runs `file_open_command` for that file. `204` when the program is still running after 10 seconds or exits 0 sooner. `400` with `{"error"}` when it cannot start or exits non-zero inside that window. `404` when the command is unset. |
 | `GET` | `/api/v1/workspaces/{id}/file` | `{"path","content"}`. UTF-8 text of that file, at most 1 MiB. A directory, a larger file, or a non-UTF-8 file is `400`. A missing file is `404`. |
@@ -78,6 +78,10 @@ approval, that same submit rejects the waiting calls and then runs the new
 instruction. See the [approval invariant](../design/core/agent-loop.md).
 
 ## Review
+
+These routes are still served. **The app no longer calls them:** the review
+screen is off (S2). The one exception is `review/file`, which the inline file
+peek from a tool call card still uses.
 
 | Method | Path | Returns |
 |---|---|---|
@@ -134,7 +138,7 @@ and `data` is the payload. A keep-alive comment is sent every 15 seconds.
 | `robi.session.v1.updated` | A session's metadata changed. |
 | `robi.session.v1.deleted` | A session was deleted. |
 | `robi.app.v1.error` | A process-level error. |
-| `robi.index.v1.progress` | Semantic index progress for a workspace. The shell refetches `GET /workspaces/{id}/index`, reusing a successful response for 10 seconds. The stream publishes once when it opens, then again as the index changes. |
+| `robi.index.v1.progress` | Semantic index progress for a workspace. With the index status surface off — the shipping default — the shell drops the frame and issues no request. With it on, the shell refetches `GET /workspaces/{id}/index`, reusing a successful response for 10 seconds. The stream publishes once when it opens, then again as the index changes. |
 
 A `session_id` filter still delivers session lifecycle events and `app.error`,
 plus index progress for that session's workspace. The shell subscribes with

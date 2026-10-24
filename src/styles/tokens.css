@@ -52,6 +52,12 @@
   --settings-rail: 240px;
   --titlebar-height: 40px;
   --chat-column-width: 48rem;
+  /* Room for the macOS window buttons. Zero elsewhere. */
+  --traffic-light-inset: 0px;
   --font-ui: ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+[data-os='macos'] {
+  --traffic-light-inset: 84px;
 }

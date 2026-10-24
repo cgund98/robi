@@ -21,9 +21,9 @@ delivery stays in [events-sse.md](events-sse.md).
 ## Draft session
 
 **New session** does not `POST /chat_sessions`. It selects a client-only draft:
-no database row, no sidebar entry, header title “New session”. Choosing it
+no database row, no Recents row, bar title “New chat”. Choosing it
 again while it is already open does nothing. While that draft is selected,
-**New chat** uses the same active pill as a recent session.
+**New chat** is the open state.
 
 The first send creates the session, then `POST /chat_sessions/{id}/messages`
 with `{ "instruction" }`. On `202` the shell selects that session, marks it
@@ -178,8 +178,8 @@ uses `--danger`. The answer the parent model received is behind an **Answer**
 control inside that panel and stays closed until that click. Closing the row
 hides the panel. The rows update when `tool_call_updated` refetches the
 assistant message. Those refetches collapse to one in flight and one trailing
-GET. The review strip refreshes on the first of a burst, then once more when
-the burst goes quiet. `turn_finished` refreshes it immediately.
+GET. With the review screen off there is no strip to refresh; the Recents menu
+reads the phase map, and `turn_finished` clears the running mark there.
 
 A call that is still `pending` approval and `not_started`, while the session
 phase is idle, is the approval bar. It shows the same verb and target, then
@@ -309,13 +309,13 @@ Another session can still be running; the lock follows the session on screen.
 Selecting it again refetches, and `has_pending_agent` restores the phase when
 the actor is still running.
 
-Recents shows the five most recently used sessions. **Show more** reveals the
-next ten, then the ten after that, until the list is open. The session on
-screen stays in that list when it is older than the window. Switching
-workspace returns the list to five.
+Recents lists the 20 most recently used sessions behind the title in the bar,
+with a filter field above them. A search narrows the list before the cap applies,
+and a line under it says how many rows are hidden. Switching workspace clears the
+filter.
 
 A session whose agent is still running shows a grayscale spinner on its row
-in the sidebar. That is the phase when it is not `idle`, `has_pending_agent`
+in the Recents menu. That is the phase when it is not `idle`, `has_pending_agent`
 when the list was loaded with the actor already running, or `turn_display` of
 `pending`. Leaving that chat does not drop the spinner. `turn_finished` for
 that session still arrives on the open stream and clears the running mark,

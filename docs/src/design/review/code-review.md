@@ -1,8 +1,19 @@
 # Code review
 
+> **Disabled in M11. Kept for reference.** The review screen and its routes are
+> not served, and the chat no longer shows the edited-file strip. The user
+> reviews with `git diff` and their editor. The implementation stays in
+> `src/features/review/` and `crates/robi/src/web_api/review.rs` behind
+> `showSurface('reviewScreen')` in `src/app/surfaces.ts`. See
+> [Streamlining roadmap](../../streamlining.md#s2--no-in-app-code-review).
+
 This page is the review of files a chat session has changed. The
 baselines it reads are in [checkpoints.md](../tools/checkpoints.md). The chat strip
 that opens it is in [visual-style.md](../shell/visual-style.md).
+
+Two pieces still ship: the session review routes stay on the API, and the
+inline file peek from a tool call card uses `GET …/review/file` to show a
+file's diff in the chat.
 
 ## What this page does not cover
 

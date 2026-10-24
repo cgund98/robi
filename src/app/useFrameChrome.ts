@@ -4,6 +4,7 @@ import { createRenderEffect, onCleanup, onMount } from 'solid-js'
 import { useLocation, useNavigate } from '@solidjs/router'
 
 import { historyStep } from './mouseHistory'
+import { isMacOs } from './platform'
 import { scaleShortcut } from './scaleShortcut'
 import { uiScale } from '../state/uiScaleStore'
 
@@ -139,7 +140,7 @@ export function useFrameChrome() {
   })
 
   onMount(() => {
-    const isMac = /mac/i.test(navigator.platform || navigator.userAgent)
+    const isMac = isMacOs()
     function onKeyDown(event: KeyboardEvent) {
       const action = scaleShortcut(event, isMac)
       if (action === null) {

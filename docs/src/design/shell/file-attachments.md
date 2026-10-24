@@ -99,23 +99,25 @@ appears immediately, before the stored row exists.
 
 **Where a range comes from.** The composer never sets one: the OS file picker and
 a drop have no notion of a source line, so the composer only ever produces
-whole-file attachments (`filename`, no range). A range is a producer concern. The
-docs viewer is the built producer: hovering a rendered block in `#/docs` shows an
-add-to-chat button, and clicking it slices that block's raw markdown lines
-(`attachmentFromDocument` in `src/features/docs/docAttachment.ts`) and hands the
-composer a ready `FileAttachment` with `start_line` and `end_line`. The block's
-source range comes from `data-md-lines`, which `AssistantMarkdown`'s document mode
-takes from the mdast `position` react-markdown carries on every element — the file
-line, not a rendered one. See
-[docs-viewer.md](docs-viewer.md#attach-a-line-to-chat).
+whole-file attachments (`filename`, no range). A range is a producer concern, and
+both built producers are currently removed from the app (streamlining S5 and S2):
 
-The review screen is a second range producer, and it sends directly rather than
-handing off to the composer. **Reject with reason** on a hunk builds one
-attachment from that hunk's `new_start` / `new_count` range
-(`src/features/review/reviewAttachment.ts`), and on a whole file builds a
-whole-file attachment with no range. It decides the reject, returns to the chat,
-and calls `sendInstruction` with the attachment. See
-[code-review.md](../review/code-review.md).
+- The docs viewer's add-to-chat button slices a hovered block's raw markdown
+  lines (`attachmentFromDocument` in `src/features/docs/docAttachment.ts`) and
+  hands the composer a ready `FileAttachment` with `start_line` and `end_line`.
+  The block's source range comes from `data-md-lines`, which
+  `AssistantMarkdown`'s document mode takes from the mdast `position`
+  react-markdown carries on every element — the file line, not a rendered one.
+  See [docs-viewer.md](docs-viewer.md#attach-a-line-to-chat).
+- The review screen's **Reject with reason** sends directly rather than handing
+  off to the composer. It builds one attachment from the hunk's `new_start` /
+  `new_count` range (`src/features/review/reviewAttachment.ts`), or a whole-file
+  attachment, then decides the reject, returns to the chat, and calls
+  `sendInstruction`. See [code-review.md](../review/code-review.md).
+
+Both stay in the tree behind `showSurface('docsViewer')` and
+`showSurface('reviewScreen')`. The tray handoff below is what a restored producer
+would call.
 
 The producer does not pass the attachment down as a prop, because attaching a
 line opens the chat tray and the composer is not mounted until it does. It calls

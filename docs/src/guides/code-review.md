@@ -1,96 +1,68 @@
-# Code review
+# Reviewing changes with git
 
-Once the assistant edits files, the changes do not pile up in the transcript as a
-list of patches. They collect on a **review screen** tied to the chat session:
-one stable place that lists every path the session changed and shows the diff,
-with controls to keep or discard each change.
+Robi edits your workspace directly. There is no review screen inside the app:
+once a tool call runs, the change is on disk, and the record of it is your git
+repository plus the tool calls in the transcript.
 
-Review reads the session **baseline** — the bytes as they were when the session
-started (or when a change was last approved). It diffs that against the bytes on
-disk. A file with no additions and no deletions is left out, so the list holds
-only paths that actually differ.
+This is the same loop you would use for a teammate's branch. Read the diff, keep
+what you want, throw away what you do not.
 
-## Open the review
+## See what a session changed
 
-When a session has changed at least one file, a strip sits just above the
-composer:
+```sh
+git status --short        # paths this session touched
+git diff                  # everything uncommitted, in full
+git diff -- path/to/file  # one file
+```
 
-> **N files edited**  **Review**
+The chat helps here: every edit and shell call streams into the transcript as it
+runs, so you can read which paths a turn touched without leaving the app. Ask
+the assistant to explain a diff and it reads the same output.
 
-Click **Review** to open `#/sessions/:id/review`. The session sidebar stays in
-place; the main column becomes the review. The header's back button is
-`← <session title>` and returns you to that session's chat. Choosing another
-session, or **New chat**, leaves the review.
+If the workspace is not a git repository, `git init` first, or ask the assistant
+to. Without version control there is no undo, so start one before a large task.
 
-The strip refetches as the session runs, so the count rises as the assistant
-edits more files. If nothing has changed, there is no strip.
+## Keep or discard
 
-## The screen
-
-Two panes:
-
-- **Left — the changed-path tree.** Directories first, then files, each group
-  alphabetical and case-insensitive. Click a file to load it in the right pane.
-  Only the selected file is fetched and painted.
-- **Right — the diff.** The default is a **unified diff**: unchanged context,
-  `−` deletions, `+` insertions. Long lines scroll horizontally with the whole
-  file, and the line numbers stay put.
-
-A header toggle switches the view:
-
-| View | Shows |
+| Goal | Command |
 |---|---|
-| **Diff** | Context, deletions, and insertions — the full change |
-| **Current** | The file as it is now (insertions and context; deletions hidden) |
-| **Previous** | The file as it was (deletions and context; insertions hidden) |
+| Throw away one file's changes | `git checkout -- path/to/file` |
+| Throw away everything uncommitted | `git reset --hard` |
+| Save the current state before a risky turn | `git stash` (restore with `git stash pop`) |
+| Keep a change | `git add -p` then `git commit` |
+| Work on a throwaway branch | `git switch -c attempt-1` |
 
-On a file the session created, **Previous** shows `File added`; on a deleted
-file, **Current** shows `File deleted`. Context is three lines around each
-change, and `···` marks the unchanged stretch between two hunks that did not
-merge.
+On a new file, `git checkout --` does nothing until it is tracked; delete it
+with `rm` or `git clean -i` instead.
 
-Known extensions (`ts`, `tsx`, `js`, `jsx`, `rs`, `py`, `go`, `json`, `css`,
-`md`, `html`, `toml`, `yaml`, `yml`, `sql`) are syntax-highlighted with the
-`github-dark` theme. Anything else renders in plain `--code-ink`.
+## Approvals are not review
 
-**Open the whole file.** Click the path in a file's header to open a dialog with
-**Diff**, **Current**, and **Previous** tabs (it opens on **Diff**); a markdown
-file also gets **Preview**, which renders the current text.
+Approving a tool call is a decision about **running** the command, not about
+keeping its result. Approving `write_file` writes the file. The change stays
+until git says otherwise.
 
-## Approve and reject
+That distinction is why the diff matters. The approval card says what is about
+to happen; `git diff` says what did.
 
-Each file header shows the path, then `+N` / `-N` on the left and **Reject** /
-**Approve** on the right. Both work at two scopes:
+## A turn that went wrong
 
-- **Whole file** — the header buttons.
-- **One hunk** — hover a block between gaps; **Reject** and **Approve** appear on
-  the first changed line of that block. A file the session created only has the
-  buttons on its header.
+1. `git status --short` — see which paths moved.
+2. `git diff -- path` — read the change.
+3. `git checkout -- path` or `git reset --hard` — revert what you do not want.
+4. Say what went wrong in the next message. The transcript still holds the tool
+   call that made the change.
 
-The two decisions mean:
-
-- **Approve** keeps the file (or hunk) as it is and folds that text into the
-  baseline, so it leaves the review. An approved path leaves the list as soon as
-  you click. If the request fails, the file comes back and the error is shown.
-- **Reject** writes the baseline back to disk. A file the session created that
-  is fully rejected is removed.
-
-Deciding one hunk reloads only that file. A hunk that no longer matches the file
-on disk returns a conflict instead of applying a stale change.
-
-## When the list is empty
-
-- **No files changed in this session.** — nothing to review.
-- **Loading review…** / **Loading file…** — a fetch is in flight.
-- A non-UTF-8 file cannot be diffed and is reported as such.
+For a long task, commit before you start and commit again whenever the diff
+reads correctly. Each commit is a checkpoint you can return to.
 
 ## Where this is specified
 
-The routes, the tree ordering, the hunk decisions, and the failure modes are in
-[Code review](../design/review/code-review.md). The baselines it reads are in
-[Checkpoints](../design/tools/checkpoints.md).
+[Streamlining roadmap](../streamlining.md#s2--no-in-app-code-review) records why
+the in-app review screen was removed. The API routes it used are still served
+and documented in [HTTP API](../reference/http-api.md); nothing in the app calls
+them.
 
 ## Next
 
-- [Approvals](../concepts/approvals.md) — what prompts before an edit runs.
-- [Tools](../reference/tools.md) — the edit tools that produce a review.
+- [Using an editor](editor.md) — open a changed path in your own editor.
+- [Approvals](../concepts/approvals.md) — what prompts before a command runs.

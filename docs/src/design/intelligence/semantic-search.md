@@ -1,5 +1,13 @@
 # Semantic search
 
+> **The status surface is gone in M11. The index itself is unchanged.** S3
+> removes the index pill from the chat header and the client's handling of
+> `robi.index.v1.progress`, so the UI never shows indexing and never asks for its
+> status. The backend still indexes and the `semantic_search` tool is still
+> registered; whether the tool is disabled with the index is a separate decision
+> in [streamlining.md](../../streamlining.md#s3--no-semantic-index). From the
+> shell, `grep` and `find` are the retrieval path.
+
 This page settles **D6** and **D7** and defines how a workspace becomes a
 searchable index. It is the design for **F7.2** in the
 [roadmap](../../roadmap.md). The read tools and the session path filter are in

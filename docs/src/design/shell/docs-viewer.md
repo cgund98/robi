@@ -1,5 +1,17 @@
 # Docs viewer
 
+> **Disabled in M11. Kept for reference.** The `#/docs` route, the docs screen,
+> the chat tray, and the chat/documentation toggle are all off. The user reads
+> and writes markdown in an external editor, or asks the agent to. The
+> implementation stays in `src/features/docs/` and `crates/robi/src/web_api/docs.rs`
+> behind `showSurface('docsViewer')` in `src/app/surfaces.ts`. **A return needs:** the
+> route in `chatRoutePaths`, the `DocsScreen` and `ChatTray` branches in
+> `ChatChrome`, the `ViewToggle` in the bar, and a way back to the chat. See
+> [Streamlining roadmap](../../streamlining.md#s5--no-docs-viewer).
+>
+> The API's `GET /api/v1/workspaces/{id}/docs` and `/docs/search` routes are still
+> served; only the app stops calling them.
+
 This page is the workspace Markdown viewer: a file tree of the workspace's
 markdown pages on the left and the rendered document on the right. It is the
 read-only half of M10's project navigation. Editing the open page — CodeMirror,

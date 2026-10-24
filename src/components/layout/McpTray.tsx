@@ -1,30 +1,18 @@
 import { A } from '@solidjs/router'
-import { createEffect, For, on, Show } from 'solid-js'
+import { For, Show } from 'solid-js'
 
 import type { McpServer } from '../../api/mcp'
 import styles from './McpTray.module.css'
-import { mcp } from '../../state/mcpStore'
-import { workspaces } from '../../state/workspaceStore'
+import { useMcpServers } from './useMcpServers'
 
+/** A mark per configured server, each linking to MCP settings. */
 export function McpTray() {
-  const visible = () => (mcp.workspaceId === workspaces.activeWorkspaceId ? mcp.servers : [])
-
-  createEffect(
-    on(
-      () => workspaces.activeWorkspaceId,
-      (id) => {
-        if (!id) {
-          return
-        }
-        void mcp.refresh(id)
-      }
-    )
-  )
+  const servers = useMcpServers()
 
   return (
-    <Show when={visible().length > 0}>
+    <Show when={servers().length > 0}>
       <div class={styles.tray} aria-label="MCP servers">
-        <For each={visible()}>
+        <For each={servers()}>
           {(server) => (
             <A
               class={`${styles.mark} ${markClass(server.status)}`}

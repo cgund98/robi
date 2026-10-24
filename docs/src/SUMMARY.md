@@ -6,8 +6,7 @@
 
 - [Quickstart](guides/quickstart.md)
 - [Using an editor](guides/editor.md)
-- [Code review](guides/code-review.md)
-- [Documentation viewing and search](guides/documentation-search.md)
+- [Reviewing changes with git](guides/code-review.md)
 - [Setting up MCP servers](guides/mcp-servers.md)
 - [Releases](guides/releases.md)
 

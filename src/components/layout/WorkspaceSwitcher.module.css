@@ -50,9 +50,35 @@
   transform: rotate(180deg);
 }
 
+/* The top-bar form: an inline chip, not a full-width row. */
+.switcherCompact {
+  margin-bottom: 0;
+}
+
+.summaryCompact {
+  width: auto;
+  max-width: 220px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.summaryCompact .name {
+  font-weight: 500;
+}
+
+/* Narrow windows: the workspace name goes first, before any control clips. */
+@media (max-width: 1040px) {
+  .summaryCompact .name {
+    display: none;
+  }
+}
+
 .panel {
   z-index: 2;
-  width: var(--radix-dropdown-menu-trigger-width);
+  /* Kobalte sets no trigger-width variable, so bound it explicitly. */
+  min-width: 260px;
+  max-width: 360px;
   padding: var(--space-1);
   background: var(--bg-canvas);
   border: 1px solid var(--ink-faint);
@@ -111,4 +137,13 @@
 
 .action {
   color: var(--ink-muted);
+  text-decoration: none;
+}
+
+/* Kobalte's Separator is an `<hr>`, so the UA border has to be cleared. */
+.separator {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  border: 0;
+  background: var(--rule);
 }

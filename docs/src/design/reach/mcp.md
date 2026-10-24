@@ -308,8 +308,10 @@ the id, then `starting` or `failed`. A failed line has **Retry**, which
 resets that server's restart budget and connects again. A connected
 server shows no line. The line is not a transcript row.
 
-The sidebar, above Recents, shows every configured server for the open
-workspace. The MCP heading opens the MCP tab under Settings. That tab
+The window bar's overflow menu lists every configured server for the open
+workspace as one row each — its icon, the name, the status, and (when connected)
+the tool count — and every row links to the MCP tab. The overflow button is
+absent while there is no server to show and the API is healthy. That tab
 shows the configured servers and the connection state Robi has for each
 (the same `GET /api/v1/workspaces/{id}/mcp` list the top bar draws), then
 `~/.robi/mcp.json` and `<workspace>/.robi/mcp.json` as stored, then the

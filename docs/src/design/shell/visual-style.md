@@ -44,7 +44,6 @@ theme for M2.** Dark-only. No light mode until product schedules one.
 | Soft radii on bubbles, composer, sidebar pills | Pinned section as a first-class store | Floating badges over the transcript |
 | Session rail + main transcript + bottom composer | Breadcrumb as editable project switcher | Multi-column agent canvases (Devin-style) |
 | Muted activity lines between turns, and a context ring as a meter | | |
-| **Edited-file strip** above the composer, with a count and **Review** | Inline expanded diffs inside the transcript | Embedding a full PR review pane in the chat column |
 
 Rejected alternatives:
 
@@ -56,37 +55,44 @@ Rejected alternatives:
 
 ## Shell layout
 
-One composition. Two columns. No third panel in M2.
+One composition: a single bar, then the transcript across the whole window.
 
 ```text
-┌────────────┬──────────────────────────────────────────┐
-│ ○ ○ ○      │  Header (session title)                  │
-│  Workspace ├──────────────────────────────────────────┤
-│            │                                          │
-│  New       │                                          │
-│  Recents   │  Transcript                              │
-│            │    user bubble                           │
-│            │    assistant prose + inline code         │
-│            │    muted activity lines                  │
-│            │    (tool cards — see chat-ui)            │
-│            │                                          │
-│            ├──────────────────────────────────────────┤
-│  Settings  │  N files edited              Review      │
-│            │  Composer + mode / model / effort row     │
-└────────────┴──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  ‹ ›   Workspace ▾       Session title ▾       ＋  ⚙  ⋯   │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  Transcript                                              │
+│    user bubble                                           │
+│    assistant prose + inline code                         │
+│    muted activity lines                                  │
+│    (tool cards — see chat-ui)                            │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│  Composer + mode / model / effort row                    │
+└──────────────────────────────────────────────────────────┘
 ```
 
-The top row is the window bar. It is the same height on every page. On the chat shell its left `--sidebar-width` is `--bg-sidebar` and the rest is `--bg-canvas`, so the row continues the columns under it. The session title sits in that row, over the chat column, and the transcript starts on the next row. On Settings the split follows the settings rail. On Workspaces the whole row is `--bg-canvas`. macOS window buttons sit in that row, inset from the window corner. Back and forward, then the chat and documentation icons, sit at the right edge of the sidebar's share of that row. The workspace dropdown starts on the next row. The desktop window uses an overlay title bar so those buttons draw on the app fill instead of a separate system bar.
+The top row is the window bar. It is the same height on every page, and it is the
+drag region. On the chat shell the whole row is `--bg-canvas`; on Settings the
+split follows the settings rail; on Workspaces the whole row is `--bg-canvas`.
+macOS window buttons sit in that row, inset from the window corner, so the bar's
+leading edge starts after them: `--traffic-light-inset` is `84px` on macOS and
+`0px` elsewhere. The desktop window uses an overlay title bar so those buttons
+draw on the app fill instead of a separate system bar.
 
-| Region | Role | M2 content |
+There is no permanent left column (streamlining S6). The legacy two-column
+layout — a `--bg-sidebar` column with the chat header in that same row — is still
+in the tree behind `showSurface('topBarShell')` in `src/app/surfaces.ts`, and the
+references to `--sidebar-width` in this page describe it.
+
+| Region | Role | Content |
 |---|---|---|
-| **Window bar** | Drag region | macOS window controls, inset from the corner. Back, forward, and the chat and documentation icons sit at the right of the sidebar's share of the bar. On a chat, the session title |
-| **Sidebar** | Session navigation | Workspace dropdown at the top, Workspaces link under it, New chat, Recents list, active-session highlight, rename dialog, Settings link |
-| **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards (empty until M3) |
+| **Window bar** | Drag region and navigation | macOS window controls, inset from the corner. Then the workspace dropdown, back and forward, and the session title — which is also the Recents menu. At the trailing edge: the index pill while it is on, New chat, Settings, and an overflow holding MCP marks and the API health row |
+| **Transcript** | The work | User bubbles, assistant text, activity lines, tool-call cards |
 | **Composer** | Primary input | Multiline field, send, mode, model, effort; stop when a turn is running |
 
-Sidebar width stays roughly **240–280px** at default window size. The transcript
-column takes the rest. After the first message, the composer stays at the
+Nothing but the text column is capped. After the first message, the composer stays at the
 bottom of the main column and the transcript scrolls underneath it. The
 scrollbar runs to the bottom of that column. A scrim over the bottom of the
 transcript fades into `--bg-canvas` and is solid halfway down the composer,
@@ -94,6 +100,17 @@ so the rows behind the lower half are gone. The fade reaches `1rem` above
 the dock. Padding under the last row is the dock height plus `--space-4`, so
 the last row sits just above the composer when the list is scrolled to the end. Before the first
 message, the composer sits under the greeting in the center of the column.
+
+### Bar rules
+
+- **One row at the default width.** The title truncates before any control does.
+  The primary actions (workspace, title/Recents, New chat, Settings) stay visible;
+  MCP marks and the API health row fold into one overflow menu, and that button is
+  absent while there is nothing to show.
+- **The workspace name collapses below 1040 px.** At narrow widths the dropdown
+  keeps its folder icon and chevron and drops the name, before anything clips.
+- **The overflow is the only home for secondary chrome.** It is a Kobalte
+  dropdown, styled with these tokens.
 
 ## Color tokens
 
@@ -104,7 +121,7 @@ Do not sprinkle raw hex in components.
 | Token | Value | Use |
 |---|---|---|
 | `--bg-canvas` | `#0b0b0b` | Main transcript background |
-| `--bg-sidebar` | `#1f1f1e` | Sidebar fill |
+| `--bg-sidebar` | `#1f1f1e` | Sidebar fill. The legacy layout only |
 | `--bg-surface` | `#1f1f1e` | Composer field, elevated chips |
 | `--bg-surface-hover` | `#282827` | Row / control hover |
 | `--bg-surface-active` | `#333333` | Selected session, pressed toggle |
@@ -220,18 +237,30 @@ Muted one-liners between turns (e.g. “Read 3 files…”). Icon + `--ink-muted
 text. Not cards. Tool **results** that need inspection become tool cards
 (`chat-ui.md`); activity lines are the collapsed summary strip.
 
-### Session rail items
+### Recents menu
 
-- Idle: transparent / canvas-adjacent.
-- Hover: `--bg-surface-hover`.
-- Active: `--bg-surface-active` pill with `--radius-md`.
-- A running agent: a 12px ring at the start of the row, `--ink-faint` with an
-  `--ink` leading edge, spinning. Grayscale, not `--accent`. Reduced motion
-  leaves the ring still.
-- Section labels (Recents): uppercase or small caps optional; prefer plain muted
-  label text over heavy chrome.
-- **Show more** sits under the list in muted 13px text. The first paint is five
-  sessions; each click adds ten.
+The session title in the window bar is the trigger: a quiet line with a chevron,
+`--ink` at 13px, a `--bg-surface-hover` fill on hover and while open, and
+`--ink-strong` then. Its accessible name is `<title> — recents`.
+
+- The panel is `--bg-canvas` on a 1px `--ink-faint` edge, `--radius-md`, and the
+  same shadow the workspace menu uses. It is a menu, not a panel: no header bar,
+  no footer.
+- First row is the **filter field**, `--bg-surface-hover` with a
+  `--bg-surface-active` border, and focus moves that border to `--ink-faint`. It
+  takes focus when the menu opens, and the query clears when the menu closes.
+- Rows are 13px, `--bg-surface-hover` under the pointer or the keyboard, and
+  `--bg-surface-active` for the open session. The title truncates with an
+  ellipsis and carries the full text on hover.
+- Marks sit at the start of a row and match the transcript's: a running agent is
+  a 12px spinning ring, `--ink-faint` with an `--ink` leading edge; an approval
+  is an 8px `--accent` dot. Reduced motion leaves the ring still.
+- **Rename** (✎) and **Delete** (×) appear at the trailing edge of a row on hover
+  or focus, and open the same dialogs the sidebar used. Their space is reserved
+  whether or not they show, so revealing them never changes a row's height or
+  shifts the list.
+- The list caps at 20 rows. A line under it says how many are hidden and asks the
+  user to type: `N more sessions — type to narrow the list.`
 
 ### Composer
 
@@ -272,14 +301,39 @@ They are not canvas wells.
 
 ### Header
 
-The session title is a single quiet line in the window bar, in the centered chat column, aligned with the transcript. At the right edge of the sidebar's share of that bar, back and forward sit beside a pair of icons for chat and documentation. The icons share one quiet pill. The open view uses `--bg-surface-active` and `--ink-strong`; the other stays `--ink-muted`. A hover names the icon: **Chat** or **Documentation**. Back and forward walk the same history as the side mouse buttons: each chat and the draft, and each document opened in the docs viewer. A button is quiet when that direction has no entry. While the workspace index is not ready, a small pill sits at the left of the chat column in that bar: a progress wheel for files still remaining, and a short label. Clicking it opens the status and pause or resume. MCP server marks sit on the right of that same line, on a new chat and on an open session. Each mark links to MCP settings. The transcript starts on the next row, level with the workspace dropdown. The first time a session is opened, the main column shows a spinner and “Loading conversation” until that transcript arrives. Opening it again uses the copy already in memory and does not show that spinner.
+One bar holds the navigation. From the leading edge: back and forward, then the
+workspace dropdown, then the session title centred over the transcript — and that
+title is the Recents menu's trigger. Back and forward walk the same history as
+the side mouse buttons: each chat and the draft. A button is quiet when that
+direction has no entry. At the trailing edge sit New chat (`SquarePen`) and
+Settings, then the overflow if anything lives in it: the index pill while the
+workspace index is not ready (a progress wheel for files still remaining, and a
+short label; clicking it opens the status and pause or resume), one row per MCP
+server, and a row for a failing API health check.
+The transcript starts on the next row. Every icon-only control carries an
+accessible name and a title, and tab order runs leading, centre, trailing. The
+first time a session is opened, the main column shows a spinner and “Loading
+conversation” until that transcript arrives. Opening it again uses the copy
+already in memory and does not show that spinner.
 
-The workspace dropdown is the top of the sidebar, in place of a product title.
-The workspace menu is a Radix dropdown, and the rename dialog is a Radix dialog.
-Both are styled with these tokens. The active workspace uses an open folder. The others use a closed folder. The closed control matches the sidebar, with a
-chevron. A border appears on hover and while the list is open. The open list is the darker canvas color, with a stronger
-edge. The chevron opens the list of workspaces, most recently selected first, plus add. The menu shows at most eight workspaces. When more exist, **All workspaces…** links to the Workspaces page. A workspace with no recorded selection stays in the order the API returned it. Add opens the system folder dialog in the
-desktop window, and asks for a path in a normal browser. **Workspaces**, **New chat**, and **Settings** share one nav style: 14px `--ink-strong`, with an 18px icon in the same color. New chat uses Lucide `SquarePen`. Workspaces sits under the dropdown and opens the full list. Settings sits at the bottom of the sidebar.
+The workspace dropdown sits after the history pair. The workspace menu is a
+Kobalte dropdown, and the rename and delete
+dialogs are Kobalte dialogs. Both are styled with these tokens. The active
+workspace uses an open folder. The others use a closed folder. The closed control
+is an inline chip — icon, name, chevron — with no border until hover. The open
+list is the darker canvas color, with a stronger edge. The chevron opens the list
+of workspaces, most recently selected first. The menu shows at most
+eight workspaces, and one **Manage workspaces…** item under a rule links to the
+Workspaces page. A workspace with no recorded selection stays in the order the
+API returned it. Adding a workspace happens on that page, not in this menu.
+
+### Overflow menu
+
+One row per MCP server: the server's icon, then `name · status · N tools` on one
+line, where the status is `connected`, `starting`, `failed`, or `disconnected`
+and the tool count appears only when connected. Each row links to MCP settings.
+A failing API health check adds a line under them in `--danger`. The rows match
+the **Servers** list on the MCP settings page, in the same order.
 
 ### Workspaces page
 
@@ -292,29 +346,16 @@ below on a darker strip in mono. Opening a card selects it and returns to the
 chat. The chat shell sends you here when the list is empty. **Chat** returns
 when one is already selected.
 
-### Edited-file strip
+### Edited-file strip — removed
 
-A single line fixed above the composer, in the same column width. It appears
-when this session has at least one path whose baseline differs from the file
-on disk. It does not scroll with the transcript, and it is absent on an empty
-chat.
+The line above the composer that read `N files edited` with a **Review** button is
+gone with the review screen (streamlining S2). The implementation
+(`src/features/chat/EditReviewStrip.tsx`) stays behind
+`showSurface('reviewScreen')`. Reviewing a change means `git diff`
+([Reviewing changes with git](../../guides/code-review.md)).
 
-```text
-      ┌───────────────────────────────────────────┐
-      │  2 files edited                [ Review ] │
-  ╭───┴───────────────────────────────────────────┴───╮
-  │  Describe a task…                                 │
-  ╰───────────────────────────────────────────────────╯
-```
-
-| Piece | Look |
-|---|---|
-| **Bar** | `--bg-canvas` fill, the same ground as the transcript, with a `1px` `--rule` border. Top corners `--radius-lg`, square bottom. It is inset by `--radius-lg` on each side so its edges meet the composer where the composer’s top curve ends |
-| **Left** | `N file(s) edited` in `--ink` |
-| **Right** | `Review` on `--bg-surface-active`, `--ink-strong`, `--radius-sm`. Hover lightens the fill. Opens `#/sessions/:id/review` |
-
-Do not paste diffs into the transcript. The review screen owns the tree and
-the hunks ([code-review.md](../review/code-review.md)).
+Do not paste diffs into the transcript instead. The inline file peek from a tool
+card is the one in-app diff, and it shows a single file on demand.
 
 ## Icons
 
@@ -332,11 +373,11 @@ Interface icons come from [Lucide](https://lucide.dev) (`lucide-react`). Pick an
 
 | # | Decision | Notes |
 |---|---|---|
-| V1 | Sidebar flush to the window edge vs. inset floating rail | **Chosen: flush.** The rail meets the top, left, and bottom of the window. Square corners, no canvas gutter |
-| V2 | Exact sidebar width and whether it is resizable | Start fixed (~260px); resize is polish |
+| V1 | Sidebar flush to the window edge vs. inset floating rail | Moot: there is no sidebar. The bar spans the window |
+| V2 | Sidebar width and whether it is resizable | Only the legacy layout has one (~260px, `--sidebar-width`) |
 | V3 | Whether assistant ever gets a bubble | Default no; revisit only if contrast testing fails |
-| V4 | Brand mark in the sidebar | The workspace dropdown occupies the top of the sidebar |
-| V5 | File-row chevron: expand inline snippet vs. jump to that file in review | The review screen is the destination. The chat strip does not list files |
+| V4 | Brand mark in the sidebar | There is no sidebar and no mark; the workspace dropdown leads the bar |
+| V5 | File-row chevron: expand inline snippet vs. jump to that file in review | The inline file peek is the destination. No surface lists edited files |
 | V6 | Aggregate counts: lines changed vs. files touched | Reference uses line counts (`+123 -42`); keep that unless editing tools report only file-level stats |
 
 ## Failure modes
@@ -350,8 +391,7 @@ Interface icons come from [Lucide](https://lucide.dev) (`lucide-react`). Pick an
 
 ## Relationship to later docs
 
-`chat-ui.md` assumes these tokens and regions. The edited-file strip sits
-above the composer. [code-review.md](../review/code-review.md) owns the review screen.
-When a component needs a new color, add a token here first — do not invent a
-one-off hex in the module. Syntax colors on a diff line come from the
-highlighter theme, not from a new token.
+`chat-ui.md` assumes these tokens and regions. [code-review.md](../review/code-review.md)
+describes the removed review screen. When a component needs a new color, add a
+token here first — do not invent a one-off hex in the module. Syntax colors on a
+diff line come from the highlighter theme, not from a new token.

@@ -14,7 +14,8 @@ type ChatState = { draft: boolean; activeId: string | null }
 
 /**
  * Mirrors the route -> store reconciler and the "New chat" handler in
- * `ChatChrome`. The handler navigates before it writes the store, so the
+ * `ChatChrome` (reached from the top bar's New chat button, or the sidebar's in
+ * the legacy layout). The handler navigates before it writes the store, so the
  * reconciler sees `isRouting()` and bails instead of reading the stale
  * `/sessions/:id` route and undoing the draft. Writing the store first makes
  * one click not land.

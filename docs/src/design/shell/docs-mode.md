@@ -1,5 +1,12 @@
 # Docs editing
 
+> **Disabled in M11. Kept for reference.** With the [docs viewer](docs-viewer.md)
+> off, there is no editor in the app. The agent edits markdown with its file
+> tools and the user edits it in an external editor. The save path
+> (`PUT /api/v1/workspaces/{id}/docs/{path}`, `agent/docs/`) stays in the tree
+> behind `showSurface('docsViewer')`. See
+> [Streamlining roadmap](../../streamlining.md#s5--no-docs-viewer).
+
 This page is the editing half of the [docs viewer](docs-viewer.md): CodeMirror
 over the open page, debounced autosave, and the reconciliation that keeps a
 manual edit and an agent edit from losing each other. It is **F10.2** in the

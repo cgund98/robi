@@ -2,6 +2,7 @@ import { createEffect, onCleanup } from 'solid-js'
 
 import { getMessage } from '../../api/messages'
 import { ApiError } from '../../api/sessions'
+import { showSurface } from '../../app/surfaces'
 import { chat, patchChat } from '../../state/chatStore'
 import { docs } from '../../state/docsStore'
 import { errors } from '../../state/errorLog'
@@ -127,6 +128,11 @@ export function useAgentEvents(): void {
       return
     }
     if (envelope.type === 'robi.index.v1.progress') {
+      // The status pill is the only reader, and it is off with S3. Applying the
+      // frame would start a `GET /index` the UI never shows, so drop it here.
+      if (!showSurface('indexStatus')) {
+        return
+      }
       if (envelope.subject) {
         // The frame carries the same status object as the GET, so apply it
         // directly. A GET would be served from a 10-second cache and could

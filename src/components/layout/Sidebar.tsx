@@ -4,6 +4,7 @@ import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 
 import { sessionDisplayTitle, type ChatSession } from '../../api/sessions'
 import styles from './Sidebar.module.css'
+import { showSurface } from '../../app/surfaces'
 import { HistoryNav } from './HistoryNav'
 import { ViewToggle } from './ViewToggle'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
@@ -54,7 +55,9 @@ export function Sidebar(props: SidebarProps) {
     <aside class={styles.sidebar}>
       <div class={styles.navTools}>
         <HistoryNav />
-        <ViewToggle docsOpen={props.docsSelected ?? false} />
+        <Show when={showSurface('docsViewer')}>
+          <ViewToggle docsOpen={props.docsSelected ?? false} />
+        </Show>
       </div>
 
       <WorkspaceSwitcher />
