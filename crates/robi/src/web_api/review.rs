@@ -424,7 +424,7 @@ mod tests {
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let session = sessions
             .create_chat_session(CreateChatSessionCommand {

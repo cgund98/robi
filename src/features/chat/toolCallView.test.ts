@@ -7,8 +7,6 @@ import {
   hasDetail,
   needsDecision,
   exploreSummary,
-  planBuildInstruction,
-  planView,
   toolDetail,
   toolSummary,
   type ChatToolCall
@@ -149,96 +147,6 @@ describe('exploreSummary', () => {
         ]
       })
     ).toBe('Exploring 2 files, 2 searches')
-  })
-})
-
-describe('planView', () => {
-  it('uses the first heading, then the plan name, then the file name', () => {
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: { plan_name: 'Ship modes', body: '# Ship modes\n\nAdd the modes.\n' },
-          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
-        })
-      )
-    ).toEqual({
-      title: 'Ship modes',
-      summary: 'Add the modes.',
-      body: '# Ship modes\n\nAdd the modes.\n',
-      path: '.robi/plans/ship-modes.md',
-      created: true,
-      todos: []
-    })
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: { plan_name: 'Ship modes', body: 'No heading yet.\n' },
-          result: { path: '.robi/plans/ship-modes.md' }
-        })
-      )?.title
-    ).toBe('Ship modes')
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: { body: 'No heading yet.\n' },
-          result: { path: '.robi/plans/ship-modes-abc.md' }
-        })
-      )?.title
-    ).toBe('ship-modes-abc')
-  })
-
-  it('stays closed until the write succeeds', () => {
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          execution_status: 'running',
-          args: { plan_name: 'Ship modes', body: '# Ship modes\n' }
-        })
-      )
-    ).toBeNull()
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          execution_status: 'failed',
-          error: 'plan file does not exist',
-          args: { body: '# Ship modes\n' }
-        })
-      )
-    ).toBeNull()
-  })
-
-  it('keeps the todo steps from the plan write', () => {
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: {
-            body: '# Ship modes\n',
-            todos: [
-              { id: 'modes', content: 'Add the mode registry', status: 'pending' },
-              { id: 'wire', content: 'Register the tool', status: 'in_progress' },
-              { id: 'skip', content: '   ' },
-              { id: 'bad', content: 'Nope', status: 'done' }
-            ]
-          },
-          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
-        })
-      )?.todos
-    ).toEqual([
-      { id: 'modes', content: 'Add the mode registry', status: 'pending' },
-      { id: 'wire', content: 'Register the tool', status: 'in_progress' }
-    ])
-  })
-
-  it('names the file the build turn should read', () => {
-    expect(planBuildInstruction('.robi/plans/ship-modes.md')).toBe(
-      'Implement the plan at .robi/plans/ship-modes.md. Read that file and make the changes it describes.'
-    )
   })
 })
 

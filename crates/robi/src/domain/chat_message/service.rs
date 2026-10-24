@@ -162,7 +162,6 @@ mod tests {
                     mcp_allows: Vec::new(),
                     mode: AgentMode::Agent,
                     model_config: crate::domain::chat_session::model::ModelConfig::default(),
-                    plan_path: None,
                     turn_display: crate::domain::chat_session::model::TurnDisplay::Idle,
                     created_at: now,
                     updated_at: now,
@@ -221,10 +220,6 @@ mod tests {
             _display: crate::domain::chat_session::model::TurnDisplay,
         ) -> Result<(), ServiceError> {
             Ok(())
-        }
-
-        async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
-            Err(ServiceError::Unknown)
         }
 
         async fn delete_chat_session(&self, _id: SessionId) -> Result<(), ServiceError> {
@@ -371,7 +366,7 @@ mod tests {
                 repository: sessions.clone(),
                 workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
                 events: None,
-                plan_cleaner: None,
+                session_cleaner: None,
             }),
             runtime: runtime.clone(),
             store: store.clone(),

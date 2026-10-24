@@ -27,6 +27,11 @@ use crate::domain::{
 pub(crate) struct Harness {
     pub(crate) ctx: Arc<ToolContext>,
     pub(crate) root: std::path::PathBuf,
+    /// Read by the `edit-tools` and `semantic-index` tests only.
+    #[cfg_attr(
+        not(any(feature = "edit-tools", feature = "semantic-index")),
+        allow(dead_code)
+    )]
     pub(crate) session_id: SessionId,
 }
 
@@ -50,7 +55,7 @@ pub(crate) async fn harness() -> Harness {
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces,
         events: None,
-        plan_cleaner: None,
+        session_cleaner: None,
     });
     let chat = sessions
         .create_chat_session(CreateChatSessionCommand {

@@ -14,6 +14,8 @@ mod delete_file;
 mod edit_file;
 #[cfg(feature = "read-tools")]
 mod find;
+/// `--features edit-tools` only. The docs editor uses the same primitives.
+#[cfg(any(feature = "edit-tools", feature = "docs-viewer"))]
 pub(crate) mod fs_write;
 mod grant;
 #[cfg(feature = "read-tools")]
@@ -25,8 +27,10 @@ mod lsp;
 #[cfg(feature = "edit-tools")]
 mod marker;
 pub(crate) mod memory_store;
+/// One writer at a time per path. The edit tools, the docs editor, and the
+/// review baseline reader use it.
+#[cfg(any(feature = "edit-tools", feature = "docs-viewer", feature = "review"))]
 pub(crate) mod path_lock;
-pub(crate) mod plan_file;
 #[cfg(feature = "read-tools")]
 mod read_code;
 #[cfg(feature = "read-tools")]
@@ -39,12 +43,10 @@ mod semantic_search;
 pub(crate) mod shell;
 mod skill;
 mod subagent;
-mod todos;
 mod web_fetch;
 mod web_search;
 #[cfg(feature = "edit-tools")]
 mod write_file;
-mod write_plan;
 
 #[cfg(all(test, feature = "edit-tools"))]
 mod apply_tests;
@@ -149,19 +151,6 @@ pub fn register_shell_tool(
     Ok(())
 }
 
-/// Register `write_plan`.
-///
-/// `create` is true in plan mode, which may mint a new file. Agent mode passes
-/// false and only overwrites a plan that already exists.
-pub fn register_plan_tool(
-    registry: &ToolRegistry,
-    ctx: Arc<ToolContext>,
-    create: bool,
-) -> Result<(), RegistryError> {
-    register(registry, Arc::new(write_plan::WritePlan::new(ctx, create)))?;
-    Ok(())
-}
-
 /// Register `web_search` and `web_fetch`.
 pub fn register_web_tools(
     registry: &ToolRegistry,
@@ -208,20 +197,17 @@ pub fn register_tools_for_mode(
         fetch_approval,
     )?;
     let access = match mode {
-        AgentMode::Ask | AgentMode::Plan => ShellAccess::ReadOnly,
+        AgentMode::Ask => ShellAccess::ReadOnly,
+        AgentMode::Plan => ShellAccess::PlanReadOnly,
         AgentMode::Agent => ShellAccess::ReadWrite,
     };
     register_shell_tool(registry, Arc::clone(&ctx), access)?;
     match mode {
         AgentMode::Ask => {}
-        AgentMode::Plan => {
-            register_plan_tool(registry, ctx, true)?;
-        }
+        AgentMode::Plan => {}
         AgentMode::Agent => {
             #[cfg(feature = "edit-tools")]
             register_edit_tools(registry, Arc::clone(&ctx))?;
-            register_plan_tool(registry, Arc::clone(&ctx), false)?;
-            register(registry, Arc::new(todos::Todos::new(Arc::clone(&ctx))))?;
             register(registry, Arc::new(Delegate::new(ctx, models)))?;
         }
     }
@@ -324,9 +310,9 @@ mod registry_tests {
         }
         match mode {
             AgentMode::Ask => {}
-            AgentMode::Plan => names.push("write_plan"),
+            AgentMode::Plan => {}
             AgentMode::Agent => {
-                names.extend(["delegate", "todos", "write_plan"]);
+                names.push("delegate");
                 if cfg!(feature = "edit-tools") {
                     names.extend(["delete_file", "edit_file", "write_file"]);
                 }
@@ -344,6 +330,22 @@ mod registry_tests {
             let mut got = names(mode, &harness).await;
             got.sort_unstable();
             assert_eq!(got, expected(mode), "{mode:?}");
+        }
+    }
+
+    /// S9: the plan is a workspace file the shell writes, so no mode offers a
+    /// plan or todo tool.
+    #[tokio::test]
+    async fn no_mode_offers_a_plan_tool() {
+        let harness = test_harness::harness().await;
+        for mode in [AgentMode::Ask, AgentMode::Plan, AgentMode::Agent] {
+            let registered = names(mode, &harness).await;
+            for forbidden in ["write_plan", "todos"] {
+                assert!(
+                    !registered.iter().any(|tool| tool == forbidden),
+                    "{forbidden} in {mode:?}"
+                );
+            }
         }
     }
 

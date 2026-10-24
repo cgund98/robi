@@ -7,11 +7,11 @@ use crate::agent::providers::catalog::ModelCatalog;
 use crate::agent::providers::config::{ModelId, ReasoningEffort, OPENCODE_GO_PREFIX};
 use crate::domain::{
     chat_session::{
+        data::SessionDataCleaner,
         model::{
             ChatSession, CreateChatSessionCommand, ModeOverride, ModeOverrideUpdate, ModelConfig,
             TurnDisplay, UpdateChatSessionCommand,
         },
-        plans::SessionPlanCleaner,
         repo::ChatSessionRepository,
     },
     error::ServiceError,
@@ -51,10 +51,11 @@ pub struct ChatSessionService {
     pub workspaces: Arc<dyn WorkspaceRepository>,
     /// Publishes session create, update, and delete. Absent in tests.
     pub events: Option<Arc<EventBus>>,
-    /// Removes a session's plan files under `~/.robi/plans/<session_id>`.
+    /// Removes the data a session keeps outside its row, such as blobs. Plan
+    /// directories live in the workspace and are left alone.
     /// Absent in tests. Best effort: a failure is logged and the delete still
     /// succeeds, because the row is already gone.
-    pub plan_cleaner: Option<Arc<dyn SessionPlanCleaner>>,
+    pub session_cleaner: Option<Arc<dyn SessionDataCleaner>>,
 }
 
 impl ChatSessionService {
@@ -154,19 +155,6 @@ impl ChatSessionService {
         }
     }
 
-    /// Remember the plan the next agent prompt should re-read.
-    pub async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-        let path = path.trim();
-        if path.is_empty() {
-            return Err(ServiceError::BadRequest(
-                "plan_path must not be empty".into(),
-            ));
-        }
-        self.repository.set_plan_path(id, path.to_owned()).await?;
-        self.publish(EventEnvelope::session_updated(id));
-        Ok(())
-    }
-
     /// Store the display summary and publish it on `robi.session.v1.updated`.
     pub async fn set_turn_display(
         &self,
@@ -203,9 +191,9 @@ impl ChatSessionService {
 
     pub async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
         self.repository.delete_chat_session(id).await?;
-        if let Some(cleaner) = &self.plan_cleaner {
-            if let Err(err) = cleaner.remove_session_plans(id).await {
-                tracing::warn!(session = %id, %err, "failed to remove session plan files");
+        if let Some(cleaner) = &self.session_cleaner {
+            if let Err(err) = cleaner.remove_session_data(id).await {
+                tracing::warn!(session = %id, %err, "failed to remove session data");
             }
         }
         self.publish(EventEnvelope::session_deleted(id));
@@ -394,7 +382,6 @@ mod tests {
                 mcp_allows: Vec::new(),
                 mode: command.mode,
                 model_config: command.model_config,
-                plan_path: None,
                 turn_display: TurnDisplay::Idle,
                 created_at: now,
                 updated_at: now,
@@ -464,15 +451,6 @@ mod tests {
             Ok(Some(session.clone()))
         }
 
-        async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-            let mut sessions = self.lock();
-            let session = sessions
-                .get_mut(&id)
-                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
-            session.plan_path = Some(path);
-            Ok(())
-        }
-
         async fn set_turn_display(
             &self,
             id: SessionId,
@@ -499,7 +477,7 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         }
     }
 
@@ -530,8 +508,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl SessionPlanCleaner for FakeCleaner {
-        async fn remove_session_plans(&self, session: SessionId) -> Result<(), String> {
+    impl SessionDataCleaner for FakeCleaner {
+        async fn remove_session_data(&self, session: SessionId) -> Result<(), String> {
             self.removed
                 .lock()
                 .expect("fake cleaner lock")
@@ -599,7 +577,7 @@ mod tests {
             repository: repository.clone(),
             workspaces: Arc::new(MissingWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         };
         let workspace_id = WorkspaceId::new();
         let error = service
@@ -948,7 +926,6 @@ mod tests {
             mcp_allows: Vec::new(),
             mode: AgentMode::Agent,
             model_config: ModelConfig::default(),
-            plan_path: None,
             turn_display: TurnDisplay::Idle,
             created_at: last_used_at,
             updated_at: last_used_at,
@@ -1005,7 +982,7 @@ mod tests {
             repository: repo,
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         };
         assert_eq!(service.prune_excess_sessions().await.unwrap(), 1);
 
@@ -1173,7 +1150,7 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: Some(cleaner.clone()),
+            session_cleaner: Some(cleaner.clone()),
         };
         let session = service
             .create_chat_session(CreateChatSessionCommand {
@@ -1200,7 +1177,7 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: Some(Arc::new(FakeCleaner::failing())),
+            session_cleaner: Some(Arc::new(FakeCleaner::failing())),
         };
         let session = service
             .create_chat_session(CreateChatSessionCommand {

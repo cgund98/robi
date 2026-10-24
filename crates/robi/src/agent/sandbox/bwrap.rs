@@ -46,6 +46,11 @@ pub fn command(profile: &Profile, shell: &[String]) -> Result<Vec<String>, Strin
         profile.temp_dir.display().to_string(),
         profile.temp_dir.display().to_string(),
     ]);
+    // S9: the one directory Plan mode may write, bound read-write in both modes.
+    // Emitted before the deny, git-lock, and floor mounts so those still win.
+    for path in &profile.extra_writes {
+        bind(&mut args, path);
+    }
     for path in profile
         .toolchain_reads
         .iter()
@@ -212,6 +217,7 @@ mod tests {
             toolchain_reads: Vec::new(),
             wide_reads: Vec::new(),
             wide_writes: Vec::new(),
+            extra_writes: Vec::new(),
             protected_read_files: Vec::new(),
             protected_write_files: Vec::new(),
             protected_read_dirs: Vec::new(),
@@ -248,5 +254,55 @@ mod tests {
             .map(|w| (w[0].as_str(), w[1].as_str()))
             .collect();
         assert!(pairs.contains(&("--bind", "/work/app")), "{pairs:?}");
+    }
+
+    /// S9: Plan's one writable directory, bound read-write in both modes and
+    /// after the workspace mount, so the later deny and `.git` mounts still win.
+    ///
+    /// Those later mounts are emitted only for paths that exist, so this test
+    /// asserts the bind's position and mode rather than a deny on a temp path.
+    /// [`super::super::seatbelt`]'s ordering test covers the rule itself.
+    #[test]
+    fn extra_writes_are_bound_read_write_after_the_workspace() {
+        // The mount is emitted only for a path that exists, so use real temp dirs.
+        let root = std::env::temp_dir().join(format!(
+            "robi-bwrap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let plans = root.join(".robi/plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        for write in [WriteAccess::ReadOnly, WriteAccess::ReadWrite] {
+            let mut profile = profile(write);
+            profile.workspace = root.clone();
+            profile.cwd = root.clone();
+            profile.extra_writes = vec![plans.clone()];
+            let args = command(&profile, &shell()).unwrap();
+            let workspace = args
+                .windows(3)
+                .position(|w| {
+                    w[0].starts_with("--")
+                        && w[0].ends_with("bind")
+                        && w[1] == root.display().to_string()
+                })
+                .expect("the workspace is mounted");
+            let extra = args
+                .windows(3)
+                .position(|w| w[0] == "--bind" && w[1] == plans.display().to_string())
+                .expect("the plans directory is bound read-write");
+            let chdir = args
+                .iter()
+                .position(|arg| arg == "--chdir")
+                .expect("a working directory");
+            assert!(workspace < extra, "{write:?}");
+            assert!(extra < chdir, "{write:?}");
+            assert!(!args
+                .windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == plans.display().to_string()));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

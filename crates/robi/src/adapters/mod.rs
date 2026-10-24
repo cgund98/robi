@@ -10,7 +10,7 @@ pub mod file_change;
 pub mod model_source;
 pub mod originals;
 pub mod session_blobs;
-pub mod session_plans;
+pub mod session_data;
 pub mod session_title;
 pub mod settings;
 pub mod sqlite;

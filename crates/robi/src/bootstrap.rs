@@ -26,7 +26,7 @@ use crate::{
         model_source::SettingsModelSource,
         originals::BlobOriginals,
         session_blobs::{evacuate_sqlite, SessionBlobs},
-        session_plans::FilesystemSessionPlans,
+        session_data::FilesystemSessionData,
         settings::TomlSettingsStore,
         sqlite,
         workspace::repo::SqliteWorkspaceRepository,
@@ -50,6 +50,67 @@ use crate::agent::index::IndexHub;
 
 /// Default listen port. Vite owns `1430`.
 pub const DEFAULT_PORT: u16 = 1431;
+
+/// The Tauri identifier from `src-tauri/tauri.conf.json`.
+///
+/// Tauri derives its app data directory from this, and the terminal front end
+/// has to open the same database, so the two agree on it here.
+pub const DESKTOP_IDENTIFIER: &str = "com.github.cgund98.robi";
+
+/// The database URL `robi-tui` uses when `ROBI_DATABASE_URL` is unset.
+///
+/// This mirrors `src-tauri/src/lib.rs::database_url`, which is the
+/// authoritative version: it asks Tauri for `app_data_dir()` and appends `dev`
+/// when `is_dev()`. The terminal cannot call that (nothing depends on
+/// `src-tauri`), so it repeats the rule. A terminal started from a source
+/// checkout is a development build, so it opens the **dev** database, the same
+/// one `pnpm tauri dev` uses.
+///
+/// `None` when the platform data directory cannot be resolved, and the caller
+/// falls back to a path relative to the working directory.
+pub fn desktop_dev_database_url() -> Option<String> {
+    Some(desktop_dev_database_url_in(&data_dir()?))
+}
+
+/// The URL for one platform data directory. Separated from [`data_dir`] so the
+/// rule is a unit test rather than an environment variable.
+fn desktop_dev_database_url_in(data_dir: &std::path::Path) -> String {
+    let dir = data_dir.join(DESKTOP_IDENTIFIER).join("dev");
+    sqlite_url(&dir.join("robi.db"))
+}
+
+/// `sqlite://{path}?mode=rwc`, the shape `src-tauri` writes.
+fn sqlite_url(path: &std::path::Path) -> String {
+    format!("sqlite://{}?mode=rwc", path.display())
+}
+
+/// The platform's per-user data directory, as Tauri's `app_data_dir()` sees it
+/// before the identifier is appended.
+fn data_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        return std::env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+    }
+    if cfg!(target_os = "macos") {
+        return std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(|home| {
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+            });
+    }
+    // Everything else follows the XDG base directory specification.
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local").join("share"))
+        })
+}
 
 /// How many ports to try, starting at [`DEFAULT_PORT`], when no address is fixed.
 pub const PORT_ATTEMPTS: u16 = 20;
@@ -136,9 +197,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces: workspaces.clone(),
         events: Some(Arc::clone(&event_bus)),
-        plan_cleaner: Some(Arc::new(
-            FilesystemSessionPlans::default().with_blobs(blobs),
-        )),
+        session_cleaner: Some(Arc::new(FilesystemSessionData::new(blobs))),
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
@@ -385,5 +444,36 @@ mod tests {
         let addr = taken.local_addr().unwrap();
         let error = bind(Listen::Exact(addr)).await.unwrap_err();
         assert!(error.to_string().contains("failed to bind"));
+    }
+
+    #[test]
+    fn the_terminal_opens_the_database_tauri_dev_opens() {
+        // `pnpm tauri dev` resolves this itself through Tauri's `app_data_dir`.
+        // If that path moves, this test and the terminal are both wrong.
+        let url = desktop_dev_database_url_in(std::path::Path::new("/data"));
+        assert_eq!(
+            url, "sqlite:///data/com.github.cgund98.robi/dev/robi.db?mode=rwc",
+            "the identifier and the `dev` subdirectory are the whole rule"
+        );
+    }
+
+    #[test]
+    fn a_path_with_a_space_needs_no_encoding() {
+        // The macOS app data directory has a space in it, and sqlx accepts the
+        // URL as written.
+        let url = desktop_dev_database_url_in(std::path::Path::new(
+            "/Home/me/Library/Application Support",
+        ));
+        assert_eq!(
+            url,
+            "sqlite:///Home/me/Library/Application Support/com.github.cgund98.robi/dev/robi.db?mode=rwc"
+        );
+    }
+
+    #[test]
+    fn this_platform_resolves_a_data_directory() {
+        // The fallback to a working-directory path is for a broken environment,
+        // not the normal case.
+        assert!(desktop_dev_database_url().is_some());
     }
 }

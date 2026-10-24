@@ -273,11 +273,11 @@ same reason, and the status bar carries no index line.
 
 | GUI surface | TUI form | Phase |
 |---|---|---|
-| `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans | T1 |
+| `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans; user turns as a blue-railed band | T1 |
 | `Composer` textarea, drafts per session | text area, draft kept per session in `App` | T1 |
 | Send / Stop button | `Enter` / `Ctrl-C` | T1 |
 | `ActivityLine`, streaming | header line: Thinking / Responding, elapsed | T1 |
-| `ToolCallCard` and its six variants | one card block per call, collapsible | T2 |
+| `ToolCallCard` and its six variants | one background band per call, no border, muted heading and `$`, output cut to 6 lines; the per-variant bodies and expansion are T2 | T2 |
 | Approval buttons on a card | **modal**, one turn at a time | T2 |
 | `PlanCard` + `PlanPage` | plan surface, `Esc` returns | T2 |
 | `TodoList`, `FinishedTodos` | list under the transcript | T2 |
@@ -315,6 +315,43 @@ same reason, and the status bar carries no index line.
   product.
 - A `TestBackend` harness: render `App::view` into a buffer and assert on a
   string. This is the TUI's test strategy from the first commit.
+- Every message and every tool call is a **band**: a raised surface with a
+  one-cell rail on its left edge, one cell of horizontal padding, and one row of
+  padding above and below. The rail is the only vertical rule in the transcript
+  — there is no drawn border, so the band contrast plus the rail is the whole
+  affordance. The rail's colour is what identifies the block:
+
+  | Block | Band | Rail |
+  |---|---|---|
+  | User message | `--bg-user` | `--accent` (blue) |
+  | Tool call | `--code-bg` | `--ink-faint` (gray) |
+
+  A user message is therefore a full-width band with the text left-aligned, not
+  a right-aligned capsule. The blue is the transcript's one piece of state:
+  the user's own turn. Machinery is gray.
+- A tool call's card reads, in order:
+
+  ```text
+   │
+   │ # shell
+   │
+   │ $ cd /pocket && php artisan migrate --no-interaction
+   │
+   │ INFO  Running migrations.
+   │
+  ```
+
+  The heading is `# ` then the call's `description` argument or the tool's name,
+  in `--ink-muted`. A blank row separates it from the contents; the subject line
+  is `$ command`, with the `$` muted too and the command in the card's ink; a
+  second blank row precedes the output. **The output is not indented past `#` or
+  `$`** — all three start in the same column, so the card reads as one block
+  rather than a nested list.
+  At most `MAX_TOOL_OUTPUT_LINES` (6) lines of the result show, the cut counted
+  as `… (+N more lines)`. One blank row also separates every *block*, and that
+  one comes from `build_rows` alone, so inter-block spacing is uniform no matter
+  what a block does inside its own band. T2 replaces the output per variant and
+  adds expansion.
 
 **Exit** — `cargo run -p robi --features tui --bin robi-tui` shows the most recent
 session of the active workspace, scrolls, and quits cleanly. One snapshot test
@@ -647,10 +684,20 @@ collapsed directories, docs-tray width, UI scale.
 
 - `update()` is a pure function, so it is tested without a terminal, without a
   database, and without a network — the same discipline as `robi-core`.
-- `TestBackend` snapshots, one per view: an empty transcript, a streaming turn, an
-  approval modal, a collapsed and expanded edit card, the sessions overlay, a
-  settings section. A snapshot asserts on rendered strings, not on a golden file,
-  so a token change that does not change the layout does not fail.
+- **A `TestBackend` frame test is for a notable bug, not for coverage.** The UI
+  is not snapshot-tested per view: a golden frame fails on every cosmetic change
+  and says nothing about behaviour, and the interesting logic — grouping,
+  wrapping, the follow lock, the card's geometry, the keymap — lives in pure
+  functions that are cheaper to test and fail more precisely. A frame test earns
+  its place when a bug was visible only on screen:
+  - an empty workspace list claimed there was no workspace when the process had
+    opened a different database;
+  - a tool card needed to be a band, not a bordered box;
+  - user and tool bands needed rails in different colours, from the buffer, not
+    from a glyph;
+  - the frame needed one gutter, which also caught the footer padding twice.
+  Frames assert on substrings and on cell colours, never on a golden file, so a
+  token change that does not move the layout does not fail.
 - Keymap: every binding in the table is reachable from `chat`, no key maps to two
   `Msg`s in one mode, and `Esc` from each mode returns to `chat`.
 - The pump: publish `EventEnvelope`s onto a real `EventBus` — `turn_started`,

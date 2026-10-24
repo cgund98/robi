@@ -1,8 +1,7 @@
 //! Shared read-modify-write for anything that writes a file text.
 //!
-//! These are not edit-tool helpers: `write_plan`, `todos`, and the docs editor
-//! use them too, so this module stays in the default build while the edit tools
-//! are gated.
+//! These are not edit-tool helpers: the docs editor uses them too, so this
+//! module stays in the default build while the edit tools are gated.
 
 use std::path::Path;
 
@@ -11,6 +10,8 @@ use robi_core::ids::SessionId;
 
 use crate::domain::file_change::repo::FileChangeRepository;
 
+// Only the edit tools and the docs editor serialize a write to one path.
+#[cfg(any(feature = "edit-tools", feature = "docs-viewer"))]
 pub use super::path_lock::lock_path;
 
 pub fn read_text(path: &Path) -> Result<Option<String>, ToolError> {

@@ -54,6 +54,12 @@ pub struct Profile {
     pub toolchain_reads: Vec<PathBuf>,
     pub wide_reads: Vec<PathBuf>,
     pub wide_writes: Vec<PathBuf>,
+    /// Read-write even when `write` is [`WriteAccess::ReadOnly`].
+    ///
+    /// S9: Plan mode's shell may write one directory, `.robi/plans`. These paths
+    /// are emitted after the credential denies and before the floor, the `.git`
+    /// deny, and the session deny lists, so every explicit deny still wins.
+    pub extra_writes: Vec<PathBuf>,
     pub protected_read_files: Vec<PathBuf>,
     pub protected_write_files: Vec<PathBuf>,
     pub protected_read_dirs: Vec<PathBuf>,

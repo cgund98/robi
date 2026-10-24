@@ -24,10 +24,13 @@ use super::context::ToolContext;
 /// What a shell instance may do. One tool, one schema shape, two policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellAccess {
-    /// Ask and Plan: the workspace is mounted read-only, so a command that
-    /// writes fails inside the sandbox. `write_paths` and `unsandboxed` are not
-    /// in the schema at all.
+    /// Ask: the workspace is mounted read-only, so a command that writes fails
+    /// inside the sandbox. `write_paths` and `unsandboxed` are not in the
+    /// schema at all.
     ReadOnly,
+    /// Plan: read-only except `.robi/plans`, which is read-write so the mode can
+    /// produce a plan. `write_paths` and `unsandboxed` are still absent.
+    PlanReadOnly,
     /// Agent: the workspace is writable inside the sandbox.
     ReadWrite,
 }
@@ -35,6 +38,10 @@ pub enum ShellAccess {
 const READ_WRITE_DESCRIPTION: &str = "Run a command in the workspace. The command is sandboxed: it can read and write the workspace, and it cannot read the home directory, secret files, or the network. cwd must stay inside the workspace. Set read_paths or write_paths when it needs one or two paths outside the workspace. Set unsandboxed to true when it needs the home directory, a logged-in CLI, or more than a few outside paths. Set network to unrestricted when it needs the network. Those calls wait for approval. If the sandbox blocks a path, call shell again with that path in read_paths or write_paths, or with unsandboxed set to true.";
 
 const READ_ONLY_DESCRIPTION: &str = "Run a command in the workspace, read-only. The command is sandboxed: it can read the workspace, and it cannot write the workspace or .git, read the home directory, or reach the network. cwd must stay inside the workspace. There is no write_paths and no unsandboxed in this mode: a command that writes a file fails inside the sandbox, so ask the user to switch to Agent if a change is needed. git status, git diff, git log, grep, sed, find, and cat all work. Build and test commands write to target/ and are refused; verify in Agent mode.";
+
+/// Plan mode's shell: read-only except the plans directory, which is the one
+/// place a plan may be written.
+const PLAN_DESCRIPTION: &str = "Run a command in the workspace, read-only except .robi/plans. The command is sandboxed: it can read the workspace, and the only directory it can write is .robi/plans, where a plan and its TODO.md go. It cannot write the rest of the workspace or .git, read the home directory, or reach the network. cwd must stay inside the workspace. There is no write_paths and no unsandboxed in this mode: a write anywhere but .robi/plans fails inside the sandbox, so ask the user to switch to Agent for any other change. git status, git diff, git log, grep, sed, find, and cat all work. Build and test commands write to target/ and are refused; verify in Agent mode.";
 
 pub struct Shell {
     ctx: Arc<ToolContext>,
@@ -47,7 +54,15 @@ impl Shell {
     }
 
     fn read_only(&self) -> bool {
-        self.access == ShellAccess::ReadOnly
+        matches!(
+            self.access,
+            ShellAccess::ReadOnly | ShellAccess::PlanReadOnly
+        )
+    }
+
+    /// Plan mode: read-only except `.robi/plans`.
+    fn plan_read_only(&self) -> bool {
+        self.access == ShellAccess::PlanReadOnly
     }
 }
 
@@ -73,7 +88,9 @@ impl Tool for Shell {
     }
 
     fn description(&self) -> &str {
-        if self.read_only() {
+        if self.plan_read_only() {
+            PLAN_DESCRIPTION
+        } else if self.read_only() {
             READ_ONLY_DESCRIPTION
         } else {
             READ_WRITE_DESCRIPTION
@@ -210,6 +227,24 @@ impl Tool for Shell {
         .map_err(ToolError::Failed)?
         .map_err(ToolError::Failed)?;
         let temp_guard = TempDir(temp_dir.clone());
+        // Plan mode may write one directory. Create it before the profile is
+        // built: bubblewrap cannot bind a path that does not exist, and the model
+        // is told to `mkdir -p` only below this root.
+        let extra_writes = if self.plan_read_only() {
+            let plans = self.ctx.root.join(".robi").join("plans");
+            let create = plans.clone();
+            let resolved = crate::agent::blocking::call(move || -> Result<PathBuf, String> {
+                std::fs::create_dir_all(&create)
+                    .map_err(|err| format!("create {}: {err}", create.display()))?;
+                Ok(create.canonicalize().unwrap_or(create))
+            })
+            .await
+            .map_err(ToolError::Failed)?
+            .map_err(ToolError::Failed)?;
+            vec![resolved]
+        } else {
+            Vec::new()
+        };
         let session = self
             .ctx
             .sessions
@@ -232,6 +267,7 @@ impl Tool for Shell {
             toolchain_reads: toolchain,
             wide_reads: Vec::new(),
             wide_writes: Vec::new(),
+            extra_writes,
             protected_read_files: Vec::new(),
             protected_write_files: Vec::new(),
             protected_read_dirs: Vec::new(),
@@ -333,7 +369,11 @@ impl Tool for Shell {
         });
         if profile.sandboxed {
             if let Some(hint) = blocked_hint(&output.stderr) {
-                let hint = if self.read_only() {
+                let hint = if self.plan_read_only() {
+                    format!(
+                        "{hint} This mode is read-only except `.robi/plans`: only a plan file may be written there. Ask the user to switch to Agent for any other change."
+                    )
+                } else if self.read_only() {
                     format!(
                         "{hint} This mode is read-only: ask the user to switch to Agent for a change."
                     )
@@ -537,5 +577,103 @@ mod tests {
             .unwrap();
         assert_ne!(result["exit_code"], 0);
         assert_eq!(result["sandboxed"], true);
+    }
+
+    /// S9: Plan mode's shell writes `.robi/plans` and nothing else.
+    #[tokio::test]
+    async fn plan_mode_writes_a_plan_directory_and_nothing_else() {
+        let harness = harness().await;
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::PlanReadOnly);
+        let write = "mkdir -p .robi/plans/ship-mode-registry && \
+             printf '*\\n' > .robi/plans/.gitignore && \
+             printf '# Ship\\n' > .robi/plans/ship-mode-registry/PLAN.md && \
+             printf '# TODO\\n\\n- [ ] One\\n' > .robi/plans/ship-mode-registry/TODO.md";
+        let result = tool
+            .execute(
+                json!({ "command": write }),
+                ToolRun::new(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert!(harness
+            .root
+            .join(".robi/plans/ship-mode-registry/TODO.md")
+            .is_file());
+        assert!(harness.root.join(".robi/plans/.gitignore").is_file());
+
+        // A second, differently named plan directory: the allow is the whole
+        // directory, not one file, and it is recursive.
+        let second = tool
+            .execute(
+                json!({"command": "mkdir -p .robi/plans/drop-plan-column/notes && printf 'x\\n' > .robi/plans/drop-plan-column/notes/draft.md"}),
+                ToolRun::new(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second["exit_code"], 0, "{second}");
+
+        for command in [
+            "printf 'x\\n' > src/robi-leak.rs",
+            "printf 'x\\n' > notes.txt",
+            "printf 'x\\n' > .git/robi-leak",
+            "mkdir -p .robi/plans-evil && printf 'x\\n' > .robi/plans-evil/x.md",
+        ] {
+            let refused = tool
+                .execute(
+                    json!({ "command": command }),
+                    ToolRun::new(CancellationToken::new()),
+                )
+                .await
+                .unwrap();
+            assert_ne!(refused["exit_code"], 0, "{command} should be refused");
+        }
+        assert!(!harness.root.join("src/robi-leak.rs").exists());
+        assert!(!harness.root.join("notes.txt").exists());
+        assert!(!harness.root.join(".git/robi-leak").exists());
+        assert!(!harness.root.join(".robi/plans-evil").exists());
+
+        let hint = tool
+            .execute(
+                json!({"command": "printf 'x\\n' > notes.txt"}),
+                ToolRun::new(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        let hint = hint["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(".robi/plans"), "{hint}");
+    }
+
+    /// S9: Agent mode edits plan files like any other workspace file.
+    #[tokio::test]
+    async fn agent_mode_writes_plan_files() {
+        let harness = harness().await;
+        let tool = Shell::new(Arc::clone(&harness.ctx), ShellAccess::ReadWrite);
+        let result = tool
+            .execute(
+                json!({"command": "mkdir -p .robi/plans/ship-mode-registry && printf '*\\n' > .robi/plans/.gitignore && printf -- '- [ ] One\\n' > .robi/plans/ship-mode-registry/TODO.md && printf -- '- [x] One\\n' > .robi/plans/ship-mode-registry/TODO.md"}),
+                ToolRun::new(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["exit_code"], 0, "{result}");
+        let todo =
+            std::fs::read_to_string(harness.root.join(".robi/plans/ship-mode-registry/TODO.md"))
+                .unwrap();
+        assert_eq!(todo, "- [x] One\n");
+    }
+
+    #[test]
+    fn the_plan_description_names_the_one_writable_directory() {
+        let descriptions: Vec<&str> = [
+            READ_ONLY_DESCRIPTION,
+            PLAN_DESCRIPTION,
+            READ_WRITE_DESCRIPTION,
+        ]
+        .into_iter()
+        .collect();
+        assert!(descriptions[1].contains(".robi/plans"));
+        assert!(descriptions[1].contains("no write_paths"));
+        assert!(!descriptions[0].contains(".robi/plans"));
     }
 }

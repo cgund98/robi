@@ -325,11 +325,6 @@ pub struct ChatSession {
     pub mcp_allows: Vec<McpAllow>,
     pub mode: AgentMode,
     pub model_config: ModelConfig,
-    /// Workspace-relative plan last written by `write_plan` or `todos`.
-    ///
-    /// Null until one of those tools runs. A later write replaces it.
-    /// `updated_at` and `last_used_at` do not move.
-    pub plan_path: Option<String>,
     /// Sidebar summary of the latest turn. Not read by the loop.
     pub turn_display: TurnDisplay,
     pub created_at: DateTime<Utc>,

@@ -35,6 +35,9 @@ dev-api:
 lint:
 	$(CARGO) fmt --all -- --check
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	# The terminal front end is off by default, so `--all-features` alone would
+	# only lint it on the restore path. Lint it here too.
+	$(CARGO) clippy -p robi --features tui --all-targets -- -D warnings
 	pnpm run lint
 	scripts/check-doc-links.sh
 
@@ -54,6 +57,9 @@ lint-restore:
 .PHONY: test
 test:
 	$(CARGO) test --workspace
+	# The `tui` feature is off by default, so the workspace run above never
+	# compiles it. Its tests are part of the default gate, not the restore path.
+	$(CARGO) test -p robi --features tui
 
 .PHONY: test-restore
 test-restore:

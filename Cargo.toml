@@ -8,6 +8,16 @@ edition = "2021"
 rust-version = "1.90"
 license = "MIT"
 
+# Dev and test builds carry line tables but no full debug info. Link time and
+# `target/` size are dominated by DWARF, and a 200 MB `librobi-*.rlib` links
+# into every test binary. `line-tables-only` keeps file:line in backtraces,
+# which is what a failing test needs, and drops the rest.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 # Every dependency is declared once here so versions cannot drift between crates.
 [workspace.dependencies]
 async-trait = "0.1.83"
@@ -66,6 +76,12 @@ sqlite-vec = "0.1"
 notify = "8"
 fastembed = "7"
 
+# The terminal front end (T0). Feature-gated in `robi`, so `robi-api` and
+# `src-tauri` never compile it. `crossterm` comes from `ratatui::crossterm`: a
+# second direct version in the tree fails to typecheck on `KeyEvent`.
+ratatui = "0.30"
+unicode-width = "0.2"
+
 # The desktop shell. Versions stay here so they cannot drift.
 tauri = { version = "2", features = ["devtools"] }
 tauri-build = { version = "2", features = [] }
@@ -76,4 +92,3 @@ mac-notification-sys = "0.6"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSEvent"] }
 block2 = "0.6.2"
-

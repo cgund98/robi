@@ -88,8 +88,7 @@ impl Tool for Grep {
             .map_err(|err| ToolError::Failed(err.to_string()))?;
         let mut rules = session.path_rules.clone();
         self.ctx.append_configured_allows(&mut rules).await;
-        let filter =
-            PathFilter::for_session(&rules, self.ctx.session_id).map_err(ToolError::Failed)?;
+        let filter = PathFilter::for_session(&rules).map_err(ToolError::Failed)?;
         let resolved = self.ctx.resolve(args.path.as_deref().unwrap_or(""))?;
         if !filter.allows_read(&resolved.relative) {
             return Err(denied(&resolved));

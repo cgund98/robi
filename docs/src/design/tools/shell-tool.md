@@ -38,12 +38,13 @@ denied command is not retried outside the sandbox.
 
 ### `ShellAccess`
 
-One tool, one schema shape, two policies. `Shell::new(ctx, access)` takes:
+One tool, one schema shape, three policies. `Shell::new(ctx, access)` takes:
 
 | `ShellAccess` | Modes | Workspace | Schema |
 |---|---|---|---|
 | `ReadWrite` | Agent | writable | `unsandboxed`, `write_paths`, `network` |
-| `ReadOnly` | Ask, Plan | read-only | `read_paths` only; `network` is `deny` |
+| `ReadOnly` | Ask | read-only | `read_paths` only; `network` is `deny` |
+| `PlanReadOnly` | Plan | read-only, plus `.robi/plans` | `read_paths` only; `network` is `deny` |
 
 A read-only instance sets `Profile.write = WriteAccess::ReadOnly`. Seatbelt
 emits `(allow file-read* (subpath workspace))` instead of the read-write pair,
@@ -51,6 +52,20 @@ and bubblewrap `--ro-bind`s the workspace instead of `--bind`. `wide_writes` and
 the `protected_write_*` lists degrade to reads. `.git` writes stay denied. The
 private temp directory stays writable in both modes: it belongs to the call and
 is deleted when it returns, and a read-only `/tmp` breaks innocuous tools.
+
+`PlanReadOnly` adds exactly one writable root through `Profile::extra_writes`:
+`<workspace>/.robi/plans`. Seatbelt emits `(allow file-write* (subpath …))` for
+it, and bubblewrap a recursive `--bind`. Its position in the policy is the
+design: **after** the credential denies, so a workspace that *is* `$HOME` still
+opens `~/.robi/plans` while the rest of `~/.robi` stays closed, and **before**
+the floor, the `.git` write deny, and the session deny lists, so every one of
+those still wins inside the directory. The allow is a directory rather than a
+file, so the model may `mkdir -p .robi/plans/<name>` and name both files
+inside it. The tool creates the top-level `.robi/plans` before building the
+profile, because bubblewrap cannot bind a path that does not exist.
+
+Agent mode needs no exception: `WriteAccess::ReadWrite` already covers
+`.robi/plans`, so plan files stay editable after the mode switch.
 
 The schema drops the escalation keys in read-only mode, and `execute` refuses
 one that arrives anyway (`this mode is read-only`). A refused write also appends
@@ -127,7 +142,8 @@ Reads start allowed on `/`. Then these trees are denied: `$HOME`, `/Users`,
 Writes are the workspace and the private temp directory, and the workspace is
 read-only for a `ReadOnly` instance. `write_paths` adds paths for that call
 only, after approval, and the command stays sandboxed. A read-only instance does
-not offer `write_paths` at all.
+not offer `write_paths` at all. `Profile::extra_writes` adds a read-write root
+that is not the workspace: today the only user is Plan mode's `.robi/plans`.
 
 Inside the workspace, `.git` stays readable and write-denied. `git status`
 works. A commit, an index update, or any other write under `.git` does not,

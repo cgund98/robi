@@ -18,7 +18,7 @@ use crate::domain::{
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, plan_path, turn_display, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, turn_display, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug + 'static) -> ServiceError {
     if let Some(sql) = (&err as &dyn std::any::Any).downcast_ref::<sqlx::Error>() {
@@ -57,9 +57,6 @@ fn chat_session_from_row(
     let mode = AgentMode::parse(&row_text(context, &row, "mode")?)
         .map_err(|err| log_unknown(context, err))?;
     let model_config = decode_model_config(context, &row_text(context, &row, "model_config")?)?;
-    let plan_path: Option<String> = row
-        .try_get("plan_path")
-        .map_err(|err| log_unknown(context, err))?;
     let turn_display = TurnDisplay::parse(&row_text(context, &row, "turn_display")?)
         .map_err(|err| log_unknown(context, err))?;
     let created_at: String = row
@@ -81,7 +78,6 @@ fn chat_session_from_row(
         mcp_allows,
         mode,
         model_config,
-        plan_path,
         turn_display,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
@@ -200,7 +196,6 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             mcp_allows: Vec::new(),
             mode: command.mode,
             model_config: command.model_config,
-            plan_path: None,
             turn_display: TurnDisplay::Idle,
             created_at: now,
             updated_at: now,
@@ -337,25 +332,6 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         Ok(())
     }
 
-    async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-        let result = sqlx::query(
-            r#"
-            UPDATE chat_sessions
-            SET plan_path = ?1
-            WHERE id = ?2
-            "#,
-        )
-        .bind(&path)
-        .bind(id.to_string())
-        .execute(self.pool.as_ref())
-        .await
-        .map_err(|err| log_unknown("set_plan_path: update", err))?;
-        if result.rows_affected() == 0 {
-            return Err(ServiceError::NotFound(id.to_string()));
-        }
-        Ok(())
-    }
-
     async fn set_turn_display(
         &self,
         id: SessionId,
@@ -458,15 +434,6 @@ mod tests {
 
         let loaded = repo.get_chat_session(created.id).await.unwrap().unwrap();
         assert_eq!(loaded, created);
-        assert_eq!(loaded.plan_path, None);
-        let updated_at = loaded.updated_at;
-        repo.set_plan_path(created.id, ".robi/plans/ship.md".into())
-            .await
-            .unwrap();
-        let pointed = repo.get_chat_session(created.id).await.unwrap().unwrap();
-        assert_eq!(pointed.plan_path.as_deref(), Some(".robi/plans/ship.md"));
-        assert_eq!(pointed.updated_at, updated_at);
-        assert_eq!(pointed.last_used_at, loaded.last_used_at);
         assert!(repo
             .get_chat_session(SessionId::new())
             .await

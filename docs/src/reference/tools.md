@@ -13,14 +13,15 @@ depends on the session's **mode**:
 | Mode | Tools |
 |---|---|
 | **Ask** | `shell` (read-only), `retrieve`, `skill`, `grant`, `web_search`, `web_fetch` |
-| **Plan** | the ask set plus `write_plan` |
-| **Agent** | the plan set plus `todos`, `delegate`, and MCP tools |
+| **Plan** | the ask set, with a shell that may write only `.robi/plans` |
+| **Agent** | the ask set plus `delegate` and MCP tools; the shell writes the workspace |
 
-Ask and Plan hold a **read-only** shell: the sandbox mounts the workspace
-read-only, so a command that writes fails inside it. The schema in those modes
-has no `write_paths` and no `unsandboxed`, and `network` is restricted to `deny`.
-Build and test commands write to `target/`, so they fail there too: verify in
-Agent mode.
+Ask holds a **read-only** shell: the sandbox mounts the workspace read-only, so
+a command that writes fails inside it. Plan's shell is read-only too, except for
+one directory: `.robi/plans`. Agent's shell writes the whole workspace. In Ask
+and Plan the schema has no `write_paths` and no `unsandboxed`, and `network` is
+restricted to `deny`. Build and test commands write to `target/`, so they fail
+there too: verify in Agent mode.
 
 Some tools are compiled out and restored by a Cargo feature. See
 [Feature switches](../design/core/feature-switches.md).
@@ -140,15 +141,36 @@ and is deleted when the call returns. `.git` writes are denied in both modes, so
 `git status`, `diff`, `log`, and `show` work and `git checkout`, `restore`,
 `stash`, and `commit` do not.
 
-## Plan and todos
+## Plans
 
-| Tool | Arguments | Behavior | Approval |
-|---|---|---|---|
-| `write_plan` | `body`, `plan_name`, `path`, `todos` | Create or overwrite a plan file for the session. | none |
-| `todos` | `path`, `clear`, `remove`, `update`, `add` | Patch the todo checklist in a plan file. Agent mode only. | none |
+There is no plan tool. A plan is a directory in the workspace the agent writes
+with the shell:
 
-Plans live at `~/.robi/plans/<session_id>/`. The checklist is read back into the
-next agent prompt, so the open item is in front of the model again.
+```
+.robi/plans/
+  .gitignore                 # one line: *
+  ship-mode-registry/
+    PLAN.md                  # the prose: what changes, why, in what order
+    TODO.md                  # the checklist, and nothing else
+```
+
+| Mode | Writes |
+|---|---|
+| **Ask** | nothing |
+| **Plan** | only `.robi/plans`, recursively |
+| **Agent** | the workspace, including `.robi/plans` |
+
+One directory per plan, named from the plan's title in kebab case; the prompt
+tells the agent to list the directory first and update an existing plan rather
+than mint a near-duplicate. `TODO.md` is one line per step, `- [ ]` open and
+`- [x]` done, and `PLAN.md` carries no checkboxes — so ticking a step changes
+only the checklist. `.robi/plans/.gitignore` holds a single `*`, which ignores
+the whole directory including itself: nothing in it is tracked, and deleting
+that file is the opt-in to committing a plan.
+
+Because `.robi` is hidden and git-ignored, `git status`, `rg`, and the
+`find`/`grep` tools skip it; only `ls` and `cat` see it. See
+[S9](../streamlining.md#s9--no-built-in-todos) for why the tools went.
 
 ## Delegate
 

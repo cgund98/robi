@@ -36,7 +36,6 @@ pub trait ModelSource: Send + Sync {
         workspace: Option<std::path::PathBuf>,
         mode: AgentMode,
         choice: ModeOverride,
-        plan_path: Option<String>,
     ) -> Result<Arc<dyn Model>, ServiceError>;
 
     /// Build a model that offers `tools` and uses `system_prompt` as written.
@@ -51,7 +50,7 @@ pub trait ModelSource: Send + Sync {
         system_prompt: String,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         let _ = system_prompt;
-        self.model(tools, None, mode, choice, None).await
+        self.model(tools, None, mode, choice).await
     }
 }
 
@@ -74,7 +73,6 @@ impl ModelSource for FixedModelSource {
         _workspace: Option<std::path::PathBuf>,
         _mode: AgentMode,
         _choice: ModeOverride,
-        _plan_path: Option<String>,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         Ok(Arc::clone(&self.model))
     }
@@ -199,7 +197,6 @@ impl ModelSource for SettingsModelSource {
         workspace: Option<std::path::PathBuf>,
         mode: AgentMode,
         choice: ModeOverride,
-        plan_path: Option<String>,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         let mut settings = self.provider_settings(mode, &choice).await?;
         let user_prompt = match self.settings.get(keys::SYSTEM_PROMPT).await? {
@@ -214,7 +211,6 @@ impl ModelSource for SettingsModelSource {
                 config_dir: crate::adapters::settings::home_dir().ok(),
                 workspace,
                 mode,
-                plan_path,
                 max_bytes: crate::agent::prompt::DEFAULT_MAX_BYTES,
             })
         })
@@ -295,7 +291,6 @@ mod tests {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             )
             .await
             .unwrap();
@@ -321,7 +316,7 @@ mod tests {
             .unwrap();
 
         let second = source
-            .model(tools, None, AgentMode::Agent, ModeOverride::default(), None)
+            .model(tools, None, AgentMode::Agent, ModeOverride::default())
             .await
             .unwrap();
         let second_settings = source
@@ -346,7 +341,6 @@ mod tests {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             )
             .await
         {
@@ -412,7 +406,6 @@ mod tests {
                     model: Some("glm-5.2".into()),
                     reasoning_effort: None,
                 },
-                None,
             )
             .await
             .unwrap();
@@ -575,7 +568,6 @@ mod tests {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             )
             .await
             .unwrap();
@@ -598,7 +590,6 @@ mod tests {
                     model: Some("ocg_not-a-model".into()),
                     reasoning_effort: None,
                 },
-                None,
             )
             .await
         {

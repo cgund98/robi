@@ -7,7 +7,6 @@ import { listModels, type CatalogModel } from '../../api/models'
 import { sessionDisplayTitle, type AgentMode, type ChatSession } from '../../api/sessions'
 import { getSettings, SETTING_KEYS } from '../../api/settings'
 import { showSurface } from '../../app/surfaces'
-import { planBuildInstruction, type PlanView } from '../../features/chat/toolCallView'
 import styles from './AppLayout.module.css'
 import { sessionMark } from './recents'
 import { sessionMode, type AgentPhase } from '../../state/chatStore'
@@ -19,23 +18,10 @@ import { ChatPanel } from '../../features/chat/ChatPanel'
 import { Composer } from '../../features/chat/Composer'
 import { DeleteSessionDialog } from '../../features/chat/DeleteSessionDialog'
 import { EmptyGreeting } from '../../features/chat/EmptyGreeting'
-import { PlanPage } from '../../features/chat/PlanPage'
 import { RenameSessionDialog } from '../../features/chat/RenameSessionDialog'
 import { ErrorNotices } from './ErrorNotices'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
-
-async function buildPlan(path: string) {
-  await chat.setModeChoice('agent')
-  const mode =
-    chat.draftSelected || chat.activeSessionId === null
-      ? chat.draftMode
-      : sessionMode(chat.sessions.find((session) => session.id === chat.activeSessionId))
-  if (mode !== 'agent') {
-    return
-  }
-  await chat.sendInstruction(planBuildInstruction(path))
-}
 
 type ModeDefault = { model: string | null; effort: string | null }
 
@@ -57,10 +43,6 @@ export function ChatChrome() {
   const [renameError, setRenameError] = createSignal<string | null>(null)
   const [deleteId, setDeleteId] = createSignal<string | null>(null)
   const [deleteError, setDeleteError] = createSignal<string | null>(null)
-  const [plan, setPlan] = createSignal<{
-    view: PlanView
-    sessionId: string | null
-  } | null>(null)
   const [models, setModels] = createSignal<CatalogModel[]>([])
   const [fallbackModelId, setFallbackModelId] = createSignal('glm-5.3')
   const [fallbackEffort, setFallbackEffort] = createSignal<string | null>(null)
@@ -160,13 +142,6 @@ export function ChatChrome() {
     }
   })
 
-  createEffect(() => {
-    const current = plan()
-    if (current && (chat.draftSelected || current.sessionId !== chat.activeSessionId)) {
-      setPlan(null)
-    }
-  })
-
   const activeSession = createMemo(() =>
     !chat.draftSelected && chat.activeSessionId
       ? (chat.sessions.find((session) => session.id === chat.activeSessionId) ?? null)
@@ -237,7 +212,6 @@ export function ChatChrome() {
   const deleteTarget = () => chat.sessions.find((session) => session.id === deleteId()) ?? null
 
   const openSession = (id: string) => {
-    setPlan(null)
     // Navigate first: the route reaches `location` on a later microtask, so the
     // reconciling effect below must see `isRouting()` already true and bail.
     // Writing the store first would let that effect re-select the old route.
@@ -247,7 +221,6 @@ export function ChatChrome() {
     void chat.selectSession(id)
   }
   const openDraft = () => {
-    setPlan(null)
     // See openSession: navigate before the store write so the reconciling effect
     // does not read a stale `/sessions/:id` route and undo the draft selection.
     if (location.pathname !== '/') {
@@ -264,17 +237,12 @@ export function ChatChrome() {
     phase: phase(),
     mode: mode(),
     deciding: chat.busy,
-    buildDisabled: chat.loading || chat.busy || agentRunning() || stopping(),
     onDecide: (callId: string, decision: 'approve' | 'reject') => {
       const id = chat.activeSessionId
       if (id) {
         void chat.decideCall(id, callId, decision)
       }
     },
-    onBuild: (path: string) => {
-      void buildPlan(path)
-    },
-    onViewPlan: (next: PlanView) => setPlan({ view: next, sessionId: chat.activeSessionId }),
     disabled: composerLocked(),
     pending: chat.busy,
     running: agentRunning(),
@@ -344,38 +312,14 @@ export function ChatChrome() {
           />
         </Show>
         <ErrorNotices />
-        <Show when={plan()}>
-          <PlanPage
-            plan={plan()!.view}
-            buildDisabled={
-              chat.loading ||
-              chat.busy ||
-              agentRunning() ||
-              stopping() ||
-              plan()!.view.path.length === 0
-            }
-            onBack={() => setPlan(null)}
-            onBuild={() => {
-              const path = plan()!.view.path
-              setPlan(null)
-              void buildPlan(path)
-            }}
-          />
-        </Show>
-        <Show
-          when={!plan() && chat.transcriptLoading && messages().length === 0 && echo() === null}
-        >
+        <Show when={chat.transcriptLoading && messages().length === 0 && echo() === null}>
           <div class={styles.loadingTranscript} role="status">
             <span class={styles.spinner} aria-hidden="true" />
             Loading conversation
           </div>
         </Show>
         <Show
-          when={
-            !plan() &&
-            !(chat.transcriptLoading && messages().length === 0 && echo() === null) &&
-            fresh()
-          }
+          when={!(chat.transcriptLoading && messages().length === 0 && echo() === null) && fresh()}
         >
           <div class={styles.welcome}>
             <EmptyGreeting />
@@ -383,11 +327,7 @@ export function ChatChrome() {
           </div>
         </Show>
         <Show
-          when={
-            !plan() &&
-            !(chat.transcriptLoading && messages().length === 0 && echo() === null) &&
-            !fresh()
-          }
+          when={!(chat.transcriptLoading && messages().length === 0 && echo() === null) && !fresh()}
         >
           <ChatPanel {...chatProps()} />
         </Show>

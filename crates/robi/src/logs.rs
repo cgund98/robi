@@ -58,12 +58,48 @@ fn log_prefix() -> &'static str {
 /// directly: the background logger does not flush when the process aborts.
 static LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 
+/// Which process is installing the subscriber.
+///
+/// Only [`Target::Api`] may write to stderr: a terminal front end draws on
+/// stderr's target, so a tracing line there overwrites the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// `robi-api` and the Tauri process.
+    Api,
+    /// `robi-tui`.
+    Tui,
+}
+
+/// Whether `target` writes the same events to stderr.
+///
+/// `Api` does in a debug build, which is what `pnpm tauri dev` reads. `Tui`
+/// never does, in any build: the terminal owns those cells.
+fn stderr_layer(target: Target) -> bool {
+    match target {
+        Target::Api => cfg!(debug_assertions),
+        Target::Tui => false,
+    }
+}
+
 /// Install the process-wide tracing subscriber.
 ///
 /// Writes a new log file when `~/.robi` can be resolved. Debug builds also
 /// write the same events to stderr. `RUST_LOG` selects verbosity, defaulting
 /// to `robi=info`.
 pub fn init() {
+    install(Target::Api);
+}
+
+/// Same file layer as [`init`], and never a stderr layer.
+///
+/// A terminal front end renders on the cells stderr would write to, so one
+/// tracing line there corrupts the frame. This holds in every build, which is
+/// why it is a separate entry point rather than a `debug_assertions` check.
+pub fn init_tui() {
+    install(Target::Tui);
+}
+
+fn install(target: Target) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "robi=info".into());
 
@@ -99,20 +135,23 @@ pub fn init() {
     };
 
     let registry = tracing_subscriber::registry().with(filter);
-    match file_layer {
-        Some(file_layer) => {
-            let registry = registry.with(file_layer);
-            #[cfg(debug_assertions)]
-            {
-                registry.with(tracing_subscriber::fmt::layer()).init();
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                registry.init();
-            }
+    match (file_layer, stderr_layer(target)) {
+        (Some(file_layer), true) => {
+            registry
+                .with(file_layer)
+                .with(tracing_subscriber::fmt::layer())
+                .init();
         }
-        None => {
+        (Some(file_layer), false) => {
+            registry.with(file_layer).init();
+        }
+        (None, true) => {
             registry.with(tracing_subscriber::fmt::layer()).init();
+        }
+        // A terminal front end with no resolvable log file logs nowhere. The
+        // alternative writes over the frame it is drawing.
+        (None, false) => {
+            registry.init();
         }
     }
 }
@@ -283,6 +322,19 @@ fn is_mcp_log_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_terminal_front_end_never_writes_to_stderr() {
+        assert!(
+            !stderr_layer(Target::Tui),
+            "a tracing line on stderr overwrites the frame the TUI draws"
+        );
+        assert_eq!(
+            stderr_layer(Target::Api),
+            cfg!(debug_assertions),
+            "the API keeps its debug-build stderr layer"
+        );
+    }
 
     fn touch(path: &Path, age: Duration) {
         fs::write(path, b"log").unwrap();

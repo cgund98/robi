@@ -5,15 +5,12 @@ import { imageUrl } from '../../api/messages'
 import type { AgentMode } from '../../api/sessions'
 import type { AgentPhase } from '../../state/chatStore'
 import type { AttachmentMeta } from './textAttachments'
-import { finishedTodos, remainingTodos } from './todoProgress'
-import type { PlanView } from './toolCallView'
 import { pinnedAfterScroll } from './transcriptFollow'
 import { formatElapsed, pendingSeconds, workedLabel } from './turnDuration'
 import styles from './Transcript.module.css'
 import { AssistantMarkdown } from './AssistantMarkdown'
 import { AttachmentChip } from './AttachmentChip'
 import { CopyMarkdownButton } from './CopyMarkdownButton'
-import { FinishedTodos, RemainingTodos } from './TodoList'
 import { ToolCallCard } from './ToolCallCard'
 
 const FOLLOW_THRESHOLD = 48
@@ -62,10 +59,7 @@ export function Transcript(props: {
   phase: AgentPhase
   mode: AgentMode
   deciding: boolean
-  buildDisabled?: boolean
   onDecide: (callId: string, decision: 'approve' | 'reject') => void
-  onBuild?: (path: string) => void
-  onViewPlan?: (plan: PlanView) => void
 }) {
   let scroller: HTMLDivElement | undefined
   let pinned = true
@@ -193,10 +187,7 @@ export function Transcript(props: {
               last={id === lastTurnId()}
               phase={props.phase}
               deciding={props.deciding}
-              buildDisabled={props.buildDisabled ?? false}
               onDecide={props.onDecide}
-              onBuild={props.onBuild}
-              onViewPlan={props.onViewPlan}
             />
           )}
         </For>
@@ -219,7 +210,6 @@ export function Transcript(props: {
             {props.echo}
           </li>
         </Show>
-        <RemainingTodos items={props.mode === 'agent' ? remainingTodos(props.messages) : []} />
         <ActivityLine phase={props.phase} anchorId={anchorId()} />
       </ul>
     </div>
@@ -232,10 +222,7 @@ function TurnView(props: {
   last: boolean
   phase: AgentPhase
   deciding: boolean
-  buildDisabled: boolean
   onDecide: (callId: string, decision: 'approve' | 'reject') => void
-  onBuild?: (path: string) => void
-  onViewPlan?: (plan: PlanView) => void
 }) {
   const assistant = createMemo(() => props.group.filter((message) => message.role === 'assistant'))
   const assistantById = createMemo(
@@ -311,10 +298,7 @@ function TurnView(props: {
                 sessionId={props.sessionId}
                 phase={props.phase}
                 deciding={props.deciding}
-                buildDisabled={props.buildDisabled}
                 onDecide={props.onDecide}
-                onBuild={props.onBuild}
-                onViewPlan={props.onViewPlan}
               />
             )}
           </For>
@@ -330,10 +314,7 @@ function AssistantBlock(props: {
   sessionId?: string | null
   phase: AgentPhase
   deciding: boolean
-  buildDisabled: boolean
   onDecide: (callId: string, decision: 'approve' | 'reject') => void
-  onBuild?: (path: string) => void
-  onViewPlan?: (plan: PlanView) => void
 }) {
   const text = () => props.message.content.trim()
   const callById = createMemo(
@@ -352,25 +333,13 @@ function AssistantBlock(props: {
         {(id) => {
           const call = () => callById().get(id)!
           return (
-            <Show
-              when={
-                call().name === 'todos' && !call().error && call().execution_status === 'succeeded'
-              }
-              fallback={
-                <ToolCallCard
-                  call={call()}
-                  sessionId={props.sessionId}
-                  phase={props.phase}
-                  busy={props.deciding}
-                  buildDisabled={props.buildDisabled}
-                  onDecide={(decision) => props.onDecide(call().id, decision)}
-                  onBuild={props.onBuild}
-                  onViewPlan={props.onViewPlan}
-                />
-              }
-            >
-              <FinishedTodos items={finishedTodos(call())} />
-            </Show>
+            <ToolCallCard
+              call={call()}
+              sessionId={props.sessionId}
+              phase={props.phase}
+              busy={props.deciding}
+              onDecide={(decision) => props.onDecide(call().id, decision)}
+            />
           )
         }}
       </For>

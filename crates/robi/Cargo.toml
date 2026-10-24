@@ -26,6 +26,10 @@ review = []
 edit-tools = ["review"]
 # S5: `web_api/docs.rs` and its four routes. Its search reads the index.
 docs-viewer = ["semantic-index"]
+# T0: the terminal front end in `tui/` and the `robi-tui` binary. Not a
+# streamlining workstream: off by default so `robi-api` and `src-tauri` do not
+# compile ratatui. `tokio/signal` is for SIGTERM -> restore.
+tui = ["dep:ratatui", "dep:unicode-width", "tokio/signal"]
 
 [dependencies]
 robi-core = { path = "../robi-core" }
@@ -48,6 +52,7 @@ globset.workspace = true
 ignore.workspace = true
 redb.workspace = true
 regex.workspace = true
+ratatui = { workspace = true, optional = true }
 reqwest.workspace = true
 scraper.workspace = true
 serde.workspace = true
@@ -63,6 +68,7 @@ tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+unicode-width = { workspace = true, optional = true }
 url.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
@@ -80,3 +86,10 @@ path = "src/bin/robi-api.rs"
 [[bin]]
 name = "export-openapi"
 path = "src/bin/export-openapi.rs"
+
+# The terminal front end. `required-features` keeps it out of a default build,
+# so `cargo build` never compiles ratatui.
+[[bin]]
+name = "robi-tui"
+path = "src/bin/robi-tui.rs"
+required-features = ["tui"]

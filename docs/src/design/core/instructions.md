@@ -49,11 +49,10 @@ default chain, built by `assemble_session` when a session actor starts, is:
    [skills.md](../reach/skills.md).
 8. **Mode.** The active mode, in `<mode>`. See
    [agent-modes.md](agent-modes.md).
-9. **Plan checklist.** When the session is in agent mode and `plan_path`
-   names a plan that has todos, a `<todos path="…">` block lists each id,
-   status, and content. The path is `~/.robi/plans/<session_id>/<file>.md`.
-   A missing file, an empty list, or any other mode skips the block. See
-   [agent-modes.md](agent-modes.md).
+
+There is no plan-checklist source. Since S9 the plan and its `TODO.md` are files
+in the workspace the shell reads, so nothing is injected from a stored path. See
+[agent-modes.md](agent-modes.md#plans).
 
 A source is added with `PromptAssembler::source`. A new kind of instruction is
 another type that implements `PromptSource`. It does not edit the built-in text.
@@ -63,9 +62,9 @@ with `[earlier instructions truncated]`. The project chain is one block, so a
 short budget drops the root file before the closest one.
 
 `SettingsModelSource::model` receives the session tool registry, the
-workspace root, the active mode, and the session's `plan_path`. It assembles
-this chain and stores it on `ProviderSettings`. The provider prepends it as a
-system message. The transcript does not store it.
+workspace root, and the active mode. It assembles this chain and stores it on
+`ProviderSettings`. The provider prepends it as a system message. The transcript
+does not store it.
 
 Instruction text cannot add a tool or change a path rule. The built-in rules
 say so, and the tools do not read the prompt to decide.

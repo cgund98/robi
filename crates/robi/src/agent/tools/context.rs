@@ -56,7 +56,7 @@ impl ToolContext {
                 .push(crate::agent::skills::read_allow(&relative));
         }
         self.append_configured_allows(&mut rules).await;
-        PathFilter::for_session(&rules, self.session_id).map_err(ToolError::Failed)
+        PathFilter::for_session(&rules).map_err(ToolError::Failed)
     }
 
     /// Settings paths, with `~/` expanded, appended to the session allow lists.
@@ -96,14 +96,6 @@ impl ToolContext {
         let home = user_home().map_err(|err| ToolError::Failed(err.to_string()))?;
         resolve_path(&self.root, argument, &home)
             .map_err(|err| ToolError::Failed(format!("{err}: {argument}")))
-    }
-
-    /// Remember the plan the next agent prompt should re-read.
-    pub async fn remember_plan(&self, path: &str) -> Result<(), ToolError> {
-        self.sessions
-            .set_plan_path(self.session_id, path.to_owned())
-            .await
-            .map_err(|err| ToolError::Failed(err.to_string()))
     }
 
     /// Tell a running language server that a write just changed this file.

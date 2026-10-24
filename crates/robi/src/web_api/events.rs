@@ -347,10 +347,6 @@ mod tests {
             Ok(())
         }
 
-        async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
-            unreachable!("events stream does not touch chat sessions")
-        }
-
         async fn delete_chat_session(&self, _id: SessionId) -> Result<(), ServiceError> {
             unreachable!("events stream does not touch chat sessions")
         }
@@ -435,7 +431,7 @@ mod tests {
             repository: Arc::new(Unused),
             workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let settings: Arc<dyn SettingsStore> = Arc::new(MemorySettingsStore::new());
         AppState {

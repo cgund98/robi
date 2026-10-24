@@ -3,11 +3,14 @@
 //! `agent` runs a turn: model clients, tools, the prompt, and the workspace.
 //! `domain` is the HTTP API's model and services, `adapters` is SQLite and the
 //! settings files, and `web_api` is the Axum surface. `bootstrap` wires them
-//! for the `robi-api` binary and the Tauri process.
+//! for the `robi-api` binary and the Tauri process. `tui` is the terminal front
+//! end, behind the `tui` feature.
 
 pub mod adapters;
 pub mod agent;
 pub mod bootstrap;
 pub mod domain;
 pub mod logs;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod web_api;

@@ -715,18 +715,23 @@ prefix, and that is why switching is instant and stateless.
 
 ### F5.2 Plan artifacts
 
-- `write_plan` creates a plan file; `update_plan` overwrites an existing one.
-- Plans live at `~/.robi/plans/<session_id>/`, with todo frontmatter, and
-  render in the UI as a checklist the user can watch advance.
-- The checklist is re-read into the next agent prompt. See F5.3.
+- Shipped as S9 and rewritten since: there is no plan tool. A plan is a
+  directory in the workspace, `.robi/plans/<name>/`, holding `PLAN.md` for the
+  prose and `TODO.md` for the checklist. The agent writes both with the shell.
+- The name is the plan's title in kebab case; Plan mode lists the directory
+  first so a second turn updates the existing plan.
+- `.robi/plans/.gitignore` holds a single `*`, so nothing there is tracked,
+  including the ignore file itself.
+- Plan mode's shell may write that one directory and nothing else; Agent mode
+  writes it as part of the workspace. See S9 in
+  [streamlining.md](streamlining.md#s9--no-built-in-todos).
 
 ### F5.3 Tasks / todos
 
-- Agent mode's `todos` tool patches the plan file's todo frontmatter. The
-  markdown body stays as written. There is no separate in-memory list.
-- The session stores the path of the plan last written. The next agent actor
-  reads that file into a `<todos>` block, so the open item is in front of the
-  model again. Ask, plan, and a delegate child do not get the tool.
+- Shipped as S9 and rewritten since: `TODO.md` is the checklist, one line per
+  step, `- [ ]` open and `- [x]` done, and `PLAN.md` carries no checkboxes.
+- Nothing is stored: no session column and no prompt injection. Agent mode reads
+  the files with `cat` and ticks a step by rewriting `TODO.md` after reading it.
 
 ### F5.4 Subagents
 

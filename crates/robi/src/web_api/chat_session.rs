@@ -542,7 +542,7 @@ mod tests {
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let store: Arc<dyn MessageStore> = Arc::new(SqliteMessageStore::new(
             Arc::clone(&pool),

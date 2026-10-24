@@ -439,8 +439,6 @@ mod tests {
                 "delete_file",
                 "grant",
                 "delegate",
-                "todos",
-                "write_plan",
             ] {
                 assert!(!names.iter().any(|tool| tool == forbidden), "{forbidden}");
             }

@@ -18,7 +18,6 @@ import {
   exploreSummary,
   hasDetail,
   needsDecision,
-  planView,
   subagentCount,
   subagentStepSummary,
   subagentView,
@@ -29,7 +28,6 @@ import {
   type ToolSummary,
   type DiffLine,
   type EditPreview,
-  type PlanView,
   type SubagentStepView
 } from './toolCallView'
 
@@ -50,10 +48,7 @@ export function ToolCallCard(props: {
   call: ChatToolCall
   phase: AgentPhase
   busy: boolean
-  buildDisabled?: boolean
   onDecide: (decision: 'approve' | 'reject') => void
-  onBuild?: (path: string) => void
-  onViewPlan?: (plan: PlanView) => void
   sessionId?: string | null
 }) {
   const [viewPath, setViewPath] = createSignal<string | null>(null)
@@ -97,28 +92,7 @@ export function ToolCallCard(props: {
         <Show when={props.call.name === 'delegate'} fallback={null}>
           <DelegateCard call={props.call} status={status()} />
         </Show>
-        <Show when={props.call.name !== 'delegate' && planView(props.call)}>
-          {(saved) => (
-            <PlanCard
-              plan={saved()}
-              buildDisabled={(props.buildDisabled ?? false) || saved().path.length === 0}
-              onBuild={() => {
-                if (saved().path && props.onBuild) {
-                  props.onBuild(saved().path)
-                }
-              }}
-              onView={() => props.onViewPlan?.(saved())}
-            />
-          )}
-        </Show>
-        <Show
-          when={
-            props.call.name !== 'delegate' &&
-            !planView(props.call) &&
-            preview() &&
-            status() !== 'failed'
-          }
-        >
+        <Show when={props.call.name !== 'delegate' && preview() && status() !== 'failed'}>
           <EditDiff
             expansionKey={props.call.id}
             preview={preview()!}
@@ -131,7 +105,6 @@ export function ToolCallCard(props: {
         <Show
           when={
             props.call.name !== 'delegate' &&
-            !planView(props.call) &&
             !(preview() && status() !== 'failed') &&
             detail()?.kind === 'shell'
               ? detail()
@@ -147,11 +120,7 @@ export function ToolCallCard(props: {
             status={<StatusMark status={status()} />}
           />
         </Show>
-        <Show
-          when={
-            detail()?.kind === 'retrieve' && props.call.name !== 'delegate' && !planView(props.call)
-          }
-        >
+        <Show when={detail()?.kind === 'retrieve' && props.call.name !== 'delegate'}>
           <RetrieveCard
             expansionKey={props.call.id}
             summary={summary()}
@@ -178,7 +147,6 @@ export function ToolCallCard(props: {
         <Show
           when={
             props.call.name !== 'delegate' &&
-            !planView(props.call) &&
             !(preview() && status() !== 'failed') &&
             detail()?.kind !== 'shell' &&
             detail()?.kind !== 'retrieve' &&
@@ -310,36 +278,6 @@ function statusOf(call: ChatToolCall, phase: AgentPhase): 'running' | 'failed' |
     return 'running'
   }
   return null
-}
-
-function PlanCard(props: {
-  plan: PlanView
-  buildDisabled: boolean
-  onBuild: () => void
-  onView: () => void
-}) {
-  return (
-    <div class={styles.planCard}>
-      <p class={styles.planStatus}>{props.plan.created ? 'Created Plan' : 'Updated Plan'}</p>
-      <p class={styles.planTitle}>{props.plan.title}</p>
-      <Show when={props.plan.summary}>
-        <p class={styles.planSummary}>{props.plan.summary}</p>
-      </Show>
-      <div class={styles.planActions}>
-        <button type="button" class={styles.viewPlan} onClick={() => props.onView()}>
-          View Plan
-        </button>
-        <button
-          type="button"
-          class={styles.planBuild}
-          disabled={props.buildDisabled}
-          onClick={() => props.onBuild()}
-        >
-          Build
-        </button>
-      </div>
-    </div>
-  )
 }
 
 function DelegateCard(props: { call: ChatToolCall; status: 'running' | 'failed' | null }) {

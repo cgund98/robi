@@ -94,8 +94,17 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The terminal front end is off by default, so the workspace run above
+      # never compiles it. `make lint` lints it here rather than on the restore
+      # path only.
+      - name: Clippy (terminal front end)
+        run: cargo clippy -p robi --features tui --all-targets -- -D warnings
+
       - name: Test
         run: cargo test --workspace
+
+      - name: Test (terminal front end)
+        run: cargo test -p robi --features tui
 
   rust-restore:
     name: Rust restore path (all features)

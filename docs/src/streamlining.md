@@ -2,8 +2,8 @@
 
 This page sketches a smaller Robi: one
 general-purpose tool instead of a suite of specialised ones, fewer surfaces, and
-a shell that spends its width on the conversation. **Eight workstreams have
-shipped** — S1, S2, S3, S4, S5, S6, S7, and S8 — and S9 is still a proposal.
+a shell that spends its width on the conversation. **Nine workstreams have
+shipped** — S1, S2, S3, S4, S5, S6, S7, S8, and S9 — so the roadmap is complete.
 
 Nothing was deleted to get there. Each backend surface sits behind a Cargo
 feature, off by default, exactly as the front end has one switch in
@@ -35,8 +35,9 @@ switch in `src/app/surfaces.ts`.
 | S4 | The five language-server tools and the `lsp` setting |
 | S5 | The `#/docs` route, the docs screen, the editor, the chat tray, the toggle, and the four docs routes |
 | S6 | The permanent left sidebar. Navigation is one bar across the top; the transcript gets the full width |
-| S7 | The agent's ability to write from Ask or Plan. Both hold a read-only shell |
+| S7 | The agent's ability to write from Ask or Plan. Ask holds a read-only shell; Plan may write only `.robi/plans` |
 | S8 | A subagent's ability to write. Both child modes are read-only |
+| S9 | `todos` and `write_plan`. A plan is `.robi/plans/<name>/PLAN.md` plus `TODO.md`, written and ticked with the shell |
 
 `src/app/surfaces.ts` is the front-end switch: `docsViewer` and `reviewScreen`
 are off, `topBarShell` is on. `topBarShell` is a layout flag only — it never
@@ -78,9 +79,9 @@ simpler. The measurement plan below is how we tell the difference.
 | S4 | No LSP diagnostics | The five language-server tools and the `lsp` setting are gone | **Shipped**. `lsp-tools` restores the tools; the client stays either way |
 | S5 | No docs viewer | The `/docs` route, docs screen, docs editor, and the docs routes are removed | **Shipped**. `docs-viewer` restores them; `agent/docs/` stays |
 | S6 | Top-bar shell | The permanent left sidebar is removed; navigation moves into the top bar | **Shipped** |
-| S7 | Read-only shell in Ask and Plan | Ask and Plan get a shell that cannot write, whatever the sandbox allows | **Shipped** |
+| S7 | Read-only shell in Ask and Plan | Ask gets a shell that cannot write; Plan may write only `.robi/plans` | **Shipped** |
 | S8 | Read-only subagents | No child can write, and none can run unsandboxed | **Shipped** |
-| S9 | No built-in todos | `todos` and `write_plan` go; the agent keeps its checklist in a `TODO.md` or `plan.md` in the workspace | Proposed |
+| S9 | No built-in todos | `todos` and `write_plan` go. A plan is `.robi/plans/<name>/PLAN.md` with a checkbox `TODO.md` beside it, written through the shell | **Shipped**. Nothing restores the tools |
 
 ## S1 — Shell-first editing
 
@@ -444,120 +445,101 @@ modes, and a second test asserts the schema has no escalation keys.
 
 ## S9 — No built-in todos
 
-Remove the `todos` and `write_plan` tools. The agent keeps its open tasks in a
-markdown file in the workspace — `TODO.md` for a running list, or `plan.md` when
-the work is a plan — and updates it with the same shell writes it uses for
+**Shipped.** The `todos` and `write_plan` tools are gone. A plan is a directory
+in the workspace, written and ticked with the same shell the agent uses for
 everything else (S1).
 
-### What exists today
+### The layout
 
-Worth seeing in full, because most of it is machinery that only exists to
-support the tool:
-
-| Piece | File | What it does |
-|---|---|---|
-| `todos` tool | `tools/todos.rs` | Patches `clear`/`remove`/`update`/`add` on frontmatter, validates unique ids and one `in_progress` |
-| `write_plan` tool | `tools/write_plan.rs` | Creates or overwrites a plan, inventing `<plan_name>-<uuid>.md` |
-| Frontmatter parser | `tools/plan_file.rs` | `split_plan`, `format_plan`, `normalize_todos`, the 500-char limit |
-| Prompt injection | `tools/plan_file.rs` `todos_prompt` | Reads the plan at prompt build and emits a `<todos path="…">` block |
-| Session column | `chat_sessions.plan_path` | Points at one plan file per session |
-| Cleanup | `adapters/session_plans.rs` | Deletes `~/.robi/plans/<session_id>` with the session |
-| UI | `PlanPage.tsx`, `todoProgress.ts`, `toolCallView.ts` | Derives a checklist from the tool-call arguments, not from the file |
-
-The plan file lives under `~/.robi/plans/<session_id>`, outside the workspace.
-That single fact is the argument for S9: the plan is the one artifact the user
-most wants to read and edit, and it is in a hidden app directory they will
-never open, in a bespoke frontmatter format, deleted when the session is.
-
-### What replaces it
-
-A file in the workspace, in a format the model already knows:
-
-```markdown
-# Ship the mode registry
-
-- [ ] Add `ShellAccess` to the shell tool
-- [x] Register the read tools per mode
-- [ ] Update the mode table in the design doc
 ```
+.robi/plans/
+  .gitignore                 # one line: *
+  ship-mode-registry/
+    PLAN.md                  # the prose: what changes, why, in what order
+    TODO.md                  # the checklist, and nothing else
+```
+
+Flat under `.robi/plans/`, one directory per plan, named from the plan's title
+in kebab case — no session subdirectory and no uuid, so `ls .robi/plans` reads
+as the list of outstanding work. Splitting the prose from the checklist is what
+keeps ticking cheap: marking a step done touches only `TODO.md`, so `PLAN.md`
+stays stable for the whole implementation.
 
 Rules, and no more than these:
 
-- **Checkboxes, not frontmatter.** `- [ ]` and `- [x]`. Every model writes
-  these without being taught, and the user's editor renders them.
-- **One file, one convention.** `TODO.md` at the workspace root for a running
-  list. `plan.md` when the user asked for a plan. Say which in the prompt; do
-  not let the agent invent `tasks/TODO-2.md`.
-- **The file is the source of truth.** No session column, no prompt injection
-  from a hidden path. The agent reads it with `cat TODO.md` when it needs to
-  reorient, which is one shell call it already knows how to make.
-- **Plan mode writes exactly this one path.** See the conflict below.
+- **Checkboxes, not frontmatter.** `- [ ]` and `- [x]` in `TODO.md`. Every model
+  writes these without being taught, and the user's editor renders them.
+- **One ignore file, ignoring itself.** `.robi/plans/.gitignore` holds a single
+  `*`. A bare `*` covers every entry in that directory recursively, including
+  the `.gitignore` itself, so `git status` stays clean and `git add` picks up
+  nothing. A `.gitignore` inside a plan directory would be dead weight: an
+  ignored directory's children are already unreachable to git.
+- **List first, then name.** Plan mode `ls`es `.robi/plans` and updates an
+  existing plan directory for the same work rather than minting a near-duplicate.
+- **The files are the source of truth.** No session column and no prompt
+  injection. Agent mode lists `TODO.md` and `cat`s both files, which is the same
+  pair of shell calls the user makes.
 
-### The Plan-mode conflict
+### Plan mode writes one directory
 
-This is the part that does not resolve itself. S7 makes Plan's shell read-only,
-and `write_plan` is the only write Plan has today. Remove `write_plan` without a
-replacement and **Plan mode cannot produce a plan file at all**.
+S7 made Plan's shell read-only, and `write_plan` was the only write it had.
+Removing the tool without a replacement would leave Plan unable to produce a
+plan at all, so Plan's profile gets **one writable directory**.
 
-Three ways out, in order of preference:
+`Profile::extra_writes` is emitted read-write in both modes, on Seatbelt
+(`allow file-write* (subpath …)`) and on bubblewrap (`--bind`, recursive). Its
+position in the policy is the whole design:
 
-1. **A one-path write exception in Plan.** The read-only profile denies writes
-   except to `plan.md` (or whatever path the session agreed on). Narrow,
-   auditable, and it keeps the "Plan produces a plan" contract. This needs
-   explicit support in `Profile`: a deny-all plus a single allowed file, not a
-   directory-wide write root.
-2. **Plan proposes, Agent writes.** Plan returns the plan in chat; switching to
-   Agent writes the file. Simple, but the plan file appears after the mode
-   switch, which is a worse story for the user.
-3. **Keep `write_plan` and remove only `todos`.** Half the change, and it leaves
-   the tool that writes to a hidden directory.
+- **after** the credential denies, so a workspace that *is* `$HOME` still opens
+  `~/.robi/plans` while the rest of `~/.robi` stays closed;
+- **before** the floor, the `.git` write deny, and the session deny lists, so
+  every one of those still wins inside the directory.
 
-Prefer 1. It is also the only option that keeps plan authoring inside Plan mode,
-which is where the mode prompt says it belongs.
+The allow is a directory, not a file, so `mkdir -p .robi/plans/<name>` and both
+files work without a per-plan rule. `ShellAccess::PlanReadOnly` is the third
+variant: read-only schema (no `write_paths`, no `unsandboxed`), read-only
+workspace, plus that one extra write root. Agent mode is unchanged — its
+read-write profile already covers `.robi/plans`, which is what makes plan files
+editable after the plan is built.
 
-### What this costs
+### What it cost
 
-- **No validation.** `normalize_todos` rejects duplicate ids, two `in_progress`
-  items, and a 500-character step. A freeform checklist has none of that. That
-  is acceptable: those checks mostly caught the model fighting its own tool
-  schema. If a task is too long for a checkbox, the plan body is the place for it.
-- **No guaranteed structure.** The UI can no longer parse a checklist, so
-  `PlanPage` and `todoProgress` go with the tools. Under S5 there is no docs
-  viewer either, so the user reads `plan.md` in their editor. That is consistent,
-  but it means the plan has no in-app rendering at all — decide whether that is
-  acceptable before shipping S9 with S5.
-- **The file can conflict.** The user may edit `TODO.md` while the agent is
-  working. There is no merge path here, unlike the docs editor's three-way
-  merge. The prompt should say: re-read before rewriting, and never overwrite a
-  file you have not read this turn.
-- **It shows up in git.** A `TODO.md` at the root appears in `git status` and in
-  every `git diff`. That is either the point (a durable, reviewable plan) or
-  noise. Recommend documenting a `.gitignore` entry for a scratch list, and
-  committing `plan.md` only when the plan is meant to be shared. Do not have the
-  agent add the ignore rule silently.
+- **No validation.** `normalize_todos` used to reject duplicate ids, two
+  `in_progress` items, and a 500-character step. A freeform checklist has none of
+  that, and that is accepted: those checks mostly caught the model fighting its
+  own tool schema.
+- **No in-app rendering.** With no tool call to render, `PlanPage`, the plan card,
+  and the todo rails went with the tools. The plan is two markdown files in the
+  user's editor, which is where D13 landed.
+- **The plan is invisible to tools.** `.robi` is hidden and git-ignored, so
+  `git status`, `rg`, and the `find`/`grep` tools skip it; only `ls` and `cat`
+  see it. That is the price of not polluting every diff.
+- **Two sessions can tick the same plan.** A shared directory is the feature —
+  the plan is a workspace artifact — and the mitigations are the read-before-write
+  rule and distinct names, not a session scope.
 
-### What gets deleted, not disabled
+### What was deleted, not disabled
 
-`todos` and `write_plan` are pure harness scaffolding with no user-facing
-surface once the file moves into the workspace. Unlike S1–S5 there is nothing
-worth keeping behind a switch:
+Unlike S1–S5 there was nothing worth keeping behind a Cargo feature:
 
-- `tools/todos.rs` and `tools/write_plan.rs`;
-- `tools/plan_file.rs` and its frontmatter parser (keep `session_plan_directory`
-  only if something else still needs it — check first);
-- the `todos_prompt` block in prompt assembly;
-- `adapters/session_plans.rs` and the `chat_sessions.plan_path` column;
-- `PlanPage.tsx`, `todoProgress.ts`, and the `todos` case in `toolCallView.ts`.
-
-Deleting the column is a migration; do it in the same change as the code that
-stops reading it, not before.
+- `tools/todos.rs`, `tools/write_plan.rs`, and `tools/plan_file.rs`;
+- the `todos_prompt` block and the `PlanChecklist` source in prompt assembly;
+- `SessionPrompt.plan_path` and the `plan_path` argument on `ModelSource::model`;
+- `adapters/session_plans.rs` and `domain/chat_session/plans.rs`, replaced by a
+  `SessionDataCleaner` that removes only session blobs — a workspace plan
+  directory now outlives the session that wrote it;
+- the `chat_sessions.plan_path` column, dropped by migration `0003`;
+- `PlanPage.tsx`, `TodoList.tsx`, `todoProgress.ts`, and the `write_plan` and
+  `todos` cases in `toolCallView.ts`.
 
 ### Exit criteria
 
-No `todos` or `write_plan` tool is registered in any mode. A plan-mode session
-produces a `plan.md` in the workspace, and an agent-mode session updates a
-`TODO.md` across turns by reading it first. The prompt contains the checklist
-convention and the re-read rule.
+No `todos` or `write_plan` tool is registered in any mode, and a test asserts it
+in every feature combination. Plan mode's shell creates `.robi/plans/<name>/`
+with both files and the `.gitignore`, and is refused on `src/`, on a file at the
+workspace root, on `.git/`, and on a sibling that leaves the plans root. Agent
+mode's shell writes the same files. The prompt carries the layout, the checkbox
+convention, and the `.gitignore`.
 
 ## Sequencing
 
@@ -583,17 +565,16 @@ reverted alone.
 7. **S1 — shell-first editing.** Last, because it is the change that can
    actually make the product worse. It ships behind the switch and is measured
    against the current harness.
-8. **S9 — workspace todo files.** After S1, because the replacement writes
-   through the shell, and after S7, because Plan's write exception is defined
-   against the read-only profile.
+8. **S9 — workspace plan directories.** Shipped last: after S1, because the
+   replacement writes through the shell, and after S7, because Plan's write
+   exception is defined against the read-only profile.
 
 S1 depends on S2's decision about baselines and on S7 being in place. If S1
 ships without S7, Plan and Ask become editing modes by accident. S3, S4, and S8
 must ship before S1's measurement run, so the "before" and "after" harnesses
 differ only in the editing path. If S1 fails its exit criteria, S2–S8 still
-stand on their own. S9 is the one workstream that can ship early against the
-current `write_file` instead of the shell; do that if the hidden plan directory
-is the more urgent problem.
+stand on their own. S9 shipped last, and it could have shipped earlier: its
+replacement is a plain file write, so it needs only `write_file` or the shell.
 
 ```mermaid
 graph LR
@@ -646,12 +627,12 @@ question.
 | We remove a tool the model actually used | Keep a month of tool-call counts before deleting the registration. If a tool is in the top five, it does not qualify. |
 | A read-only shell blocks `cargo check` and test runs | Scope writes to build and cache directories, or move verification to Agent mode and say so in the prompt. |
 | A read-only shell is enforced by scanning the command string | Do not scan. Use the OS profile's deny list. A regex on `>` is defeated by `python -c` on the first try. |
-| Plan mode becomes useless without a writable shell | Plan's one allowed write is its plan file (S9). Anything else is an Agent task. |
+| Plan mode becomes useless without a writable shell | Plan's one writable directory is `.robi/plans` (S9). Anything else is an Agent task. |
 | Subagents lose the ability to fix what they find | Expected. The summary names the fix; the parent applies it with its own approval. Measure the extra parent turns in the S1 run. |
 | S8 is "already true" and silently regresses | Assert the invariant with tests on the profile and the schema, not on the wrapper's behavior. |
-| Plan mode cannot write a plan once `write_plan` is gone | Give Plan exactly one allowed write path, or move plan authoring to Agent. Do not ship S9 and S7 together without deciding. |
-| The workspace `TODO.md` is stale, duplicated, or fights the user's edits | One fixed path per workspace, re-read before rewrite, and never invent alternate names. |
-| A root-level `TODO.md` pollutes every diff | Document the `.gitignore` choice; do not let the agent edit ignore rules on its own. |
+| Plan mode cannot write a plan once `write_plan` is gone | Plan's profile gets one writable directory: `Profile::extra_writes`, emitted before the floor and the `.git` and session denies. |
+| A plan directory is stale, duplicated, or fights the user's edits | Plan mode `ls`es `.robi/plans` first, and Agent mode re-reads `TODO.md` before rewriting it. |
+| A plan file pollutes every diff | `.robi/plans/.gitignore` holds `*`, so the directory ignores itself. Deleting that file is the opt-in to tracking. |
 
 ## Open decisions
 
@@ -689,20 +670,25 @@ question.
   read-only.** If the traces show it is useless for them, the follow-up is to
   drop the shell from both child modes and make delegation purely
   read-and-summarize.
-- **D10 — Where does the checklist live?** `TODO.md` at the workspace root, or
-  inside the session's working directory? A root file is shared by every
-  session in that workspace, which is either the point or a conflict.
-- **D11 — Does Plan mode get a one-path write exception?** See S9. S7 and S1
-  have shipped, so Plan can no longer write anything at all; this is now the
-  blocking decision for S9 rather than a future one.
-- **D12 — Is the plan file git-tracked?** A committed plan is a durable artifact
-  and a reviewable diff; an ignored one is scratch. Pick one and document it.
-- **D13 — Does anything still render a plan in-app?** With S5 and S9 both
-  shipped, nothing does. Either accept that, or keep one read-only plan view.
+- **D10 — Where does the checklist live?** **Settled:**
+  `.robi/plans/<name>/TODO.md`, with the prose in `PLAN.md` beside it. Not a
+  session directory and not one fixed file: the directory name says what the plan
+  is, and the split keeps stable prose apart from a changing checklist.
+- **D11 — Does Plan mode get a one-path write exception?** **Settled: yes,
+  directory-scoped.** `Profile::extra_writes` opens `.robi/plans` read-write for
+  Plan's shell instance and nothing else. The allow is recursive, so the model
+  may name its own directory and files inside it.
+- **D12 — Is the plan file git-tracked?** **Settled: no.**
+  `.robi/plans/.gitignore` holds a single `*`, which ignores the directory
+  recursively including itself. The user opts in by deleting that file.
+- **D13 — Does anything still render a plan in-app?** **Settled: no.** With S5
+  and S9 shipped there is no plan surface: the plan is markdown in the user's
+  editor. A read-only page over the workspace file route is the follow-up if it
+  is ever wanted.
 
 ## What must be updated when this ships
 
-Done for S1, S2, S3, S4, S5, S6, S7, and S8. A page a shipped workstream touches
+Done for S1, S2, S3, S4, S5, S6, S7, S8, and S9. A page a shipped workstream touches
 now says what the app does, not what it used to do.
 
 - [roadmap.md](roadmap.md): M6, M7, and M10 say "Disabled". **Done.**
@@ -721,7 +707,7 @@ now says what the app does, not what it used to do.
 - [design/core/subagents.md](design/core/subagents.md): both children are
   read-only, and no child can escalate. **Done.**
 - [design/tools/shell-tool.md](design/tools/shell-tool.md): the `ShellAccess`
-  flag and the read-only profile. **Done.**
+  flag, the read-only profile, and `Profile::extra_writes`. **Done.**
 - [design/tools/editing-tools.md](design/tools/editing-tools.md),
   [read-tools.md](design/tools/read-tools.md),
   [code-outline.md](design/tools/code-outline.md), and
@@ -741,4 +727,5 @@ now says what the app does, not what it used to do.
   contain no review, docs, or index route. **Done.**
 - [design/core/agent-modes.md](design/core/agent-modes.md) and
   [reference/tools.md](reference/tools.md): `todos` and `write_plan` removed,
-  and the workspace checklist convention in their place. **Waiting on S9.**
+  Plan's one writable directory, and the `.robi/plans` convention in their place.
+  **Done.**

@@ -134,38 +134,10 @@ the body: numbered file text, match lines, paths, or the error. The row stays
 closed until that click. Every opened body is a bordered panel, the same shape as a shell card: the header sits
 on the panel, and a rule divides it from the body — numbered file text, match lines, paths, or the error.
 
-A finished `write_plan` is a bordered card. The label is **Created Plan**, or
-**Updated Plan** when the result status is `updated`. The title is the first
-heading in that call's markdown, otherwise `plan_name`, otherwise the file
-name. Under it is the first paragraph of the markdown, clamped to three lines.
-**View Plan** and **Build** sit at the bottom right, both in `--mode-plan`. **View Plan** replaces
-the chat with a page that fills the main column. The header is **Back**, the
-plan name, and **Build**. **Back**, or choosing another session, returns to
-the chat. Opened from the docs chat tray it fills the main column over the
-document sheet instead, and **Back** returns to that sheet; see
-[docs-viewer.md](docs-viewer.md). The body lists that call's todo steps, then the markdown, rendered
-the same way as assistant text. A step is pending, in progress, completed, or
-canceled. A step with no content is left off. Opening the page again shows
-the same markdown and the same steps. Either **Build** switches the session
-to agent mode and sends
-`Implement the plan at <path>. Read that file and make the changes it
-describes.`, where `<path>` is the file that call wrote. **Build** stays
-disabled while the composer is locked, and when the call has no path. A
-running plan write shows a spinner and no card. A failed one stays the error
-row.
-
-A finished `todos` call is not a tool row. Each task that call marked
-completed is a muted line in the transcript, in the order of the result list,
-with the task text. A task it marked canceled is the same line, struck
-through. A call that only moves a task to pending or in progress adds no
-line. Under the conversation, above the activity line, the latest checklist
-renders the tasks that are still pending or in progress once the session is
-in agent mode. Each open task is one line, and a longer task is clipped. Plan mode leaves that list off, and the steps stay on the plan
-page. The list comes from
-the last successful `todos` result, or from the last successful `write_plan`
-when no later `todos` call has succeeded. An in-progress task uses the accent
-mark. A failed `todos` call stays the error row, **Update tasks**. A running
-one shows the spinner on that same row.
+There is no plan card and no todo rail. Since S9 a plan is a file the agent
+writes with the shell — `.robi/plans/<name>/PLAN.md` plus `TODO.md` — so a plan
+turn streams ordinary `shell` cards and the checklist is read in the user's
+editor. See [tools.md](../../reference/tools.md).
 
 A `delegate` call is one collapsed row. Explore reads **Exploring**, then the
 counts it has so far: unique `read_file` and `read_code` paths as files, and `grep` or `find`

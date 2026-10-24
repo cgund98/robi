@@ -114,7 +114,7 @@ Index: `(created_at DESC, id DESC)`.
 | `id` | `TEXT PRIMARY KEY` | `SessionId`, UUIDv7, minted in the adapter |
 | `workspace_id` | `TEXT NOT NULL` | `WorkspaceId`. References `workspaces(id)` `ON DELETE CASCADE`. A chat session does not move workspaces |
 | `title` | `TEXT` | Null until set. At most 200 characters. The model writes it after the first turn when it is still null |
-| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny. The compiled filter also allows reading `~/.robi/plans/<session_id>`. That allow is not stored |
+| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny |
 | `path_allow_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that write through a deny |
 | `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
 | `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
@@ -122,7 +122,6 @@ Index: `(created_at DESC, id DESC)`.
 | `mcp_allows` | `TEXT NOT NULL` | JSON array of `{ "server", "tool" }`. `[]` on create. An MCP approval that allows the tool for this session appends one pair. See [mcp.md](../reach/mcp.md) |
 | `mode` | `TEXT NOT NULL` | `ask`, `plan`, or `agent`. `agent` on create. Selects the tool registry and the prompt prefix |
 | `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `agent`, `ask`, and `plan` objects, each with optional `model` and `reasoning_effort`. An absent key inherits that mode's setting, then the fallback setting, then the built-in model |
-| `plan_path` | `TEXT` | Null until `write_plan` or `todos` writes a plan. Stored as `~/.robi/plans/<session_id>/<file>.md`. A later write replaces it. `updated_at` and `last_used_at` do not move. Deleting the session removes the row and, best effort, the files under `~/.robi/plans/<session_id>` |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
 | `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, a host-allow edit, or a model-config edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
@@ -205,7 +204,7 @@ Base path `/api/v1`. One error body, `{ "error": "..." }`.
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
 | `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, a host is empty or includes a scheme, port, or user info, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
-| `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. A running turn is stopped first, and the request returns after that session's actor has exited. The session's plan files under `~/.robi/plans/<session_id>` are removed too |
+| `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. A running turn is stopped first, and the request returns after that session's actor has exited. The session's blobs are removed too |
 
 `POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
 so a symlink and its target are one workspace. `name` is the last path
@@ -450,9 +449,10 @@ rules are in [events-sse.md](../shell/events-sse.md).
   messages.
 - Deleting a session stops its running actor first, so the `DELETE` request
   blocks until that actor has exited. An idle session is a no-op. The session's
-  plan files under `~/.robi/plans/<session_id>` are removed after the row. That
-  removal is best effort: a failure is logged and the request still returns
-  `204`.
+  blobs are removed after the row. That removal is best effort: a failure is
+  logged and the request still returns `204`. Plan directories are **not**
+  session data: since S9 they live in the workspace at `.robi/plans/<name>/`
+  and outlive the session that wrote them.
 - `last_used_at` does not move on rename. A title edit is not use.
 - In-memory pools (tests) skip WAL. File pools set it. Shared-cache memory is
   how adapter tests share one database across pooled connections.
@@ -480,12 +480,13 @@ rules are in [events-sse.md](../shell/events-sse.md).
   a title, empty path lists on create, a path pattern that does not compile,
   missing get, list filter, missing update, a null title written once
   and not replaced, an empty or oversized generated title refused, delete, create against
-  an unknown workspace, and a fake `SessionPlanCleaner` that is called for the
+  an unknown workspace, and a fake `SessionDataCleaner` that is called for the
   deleted session, skipped for a missing one, and whose failure does not fail
   the delete.
-- `FilesystemSessionPlans` tests pin a throwaway home under the temp directory:
-  the session's plan directory is removed, a neighbouring session's is left, and
-  a missing directory is `Ok`.
+- Migration `0003` drops `plan_path`: a plan is a workspace file now, so a
+  session no longer points at one. `FilesystemSessionData` wraps
+  `SessionBlobs::remove_session`, which has its own tests over a throwaway blob
+  root under the temp directory.
 - `SqliteChatSessionRepository` tests use a shared-cache in-memory pool: round trip, list order,
   title update leaving `last_used_at` in place, empty path lists on create,
   a patch of one list leaving the others, a null title written once and

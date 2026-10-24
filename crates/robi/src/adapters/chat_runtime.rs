@@ -131,7 +131,6 @@ impl AgentFactory {
             Option<std::path::PathBuf>,
             AgentMode,
             ModeOverride,
-            Option<String>,
         ),
         ServiceError,
     > {
@@ -141,7 +140,6 @@ impl AgentFactory {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             ));
         };
         let chat = sessions.get_chat_session(session).await?;
@@ -228,7 +226,7 @@ impl AgentFactory {
             }
         }
         tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
-        Ok((Arc::new(registry), Some(root), mode, choice, chat.plan_path))
+        Ok((Arc::new(registry), Some(root), mode, choice))
     }
 
     /// The `path_entries` setting appended to the LSP resolver's `PATH`.
@@ -424,7 +422,7 @@ impl SerializedChatRuntime {
         let model = self
             .factory
             .models
-            .model(Arc::new(ToolRegistry::new()), None, chat.mode, choice, None)
+            .model(Arc::new(ToolRegistry::new()), None, chat.mode, choice)
             .await?;
         Ok(model.context_window())
     }
@@ -472,8 +470,7 @@ impl ChatRuntime for SerializedChatRuntime {
         // Resolve before the slot is marked running, so a missing key does not
         // leave an actor that will never start. A paused turn is settled inside
         // `user_input`, which rejects the calls still waiting.
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
 
         if self.actor_running(session).await {
             let mut slots = self.slots.map.lock().await;
@@ -488,7 +485,7 @@ impl ChatRuntime for SerializedChatRuntime {
         let model = match self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await
         {
             Ok(model) => model,
@@ -514,12 +511,11 @@ impl ChatRuntime for SerializedChatRuntime {
             tracing::warn!(%session, "decision refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
         let model = match self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await
         {
             Ok(model) => model,
@@ -602,12 +598,11 @@ impl ChatRuntime for SerializedChatRuntime {
 
         // The actor's model only needs to expose the window; the compactor
         // builds its own no-tools model. A tools-less build is enough.
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await?;
         self.start_compact(session, model, tools).await
     }
@@ -1352,7 +1347,6 @@ mod tests {
             _workspace: Option<std::path::PathBuf>,
             _mode: AgentMode,
             _choice: ModeOverride,
-            _plan_path: Option<String>,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             Err(ServiceError::BadRequest(
                 "opencode_go_api_key is not set".into(),
@@ -1445,7 +1439,6 @@ mod tests {
             _workspace: Option<std::path::PathBuf>,
             mode: AgentMode,
             choice: ModeOverride,
-            _plan_path: Option<String>,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             *self.seen.lock().expect("choice") = Some((mode, choice));
             Ok(Arc::clone(&self.model))
@@ -1467,7 +1460,7 @@ mod tests {
             repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let seen = Arc::new(Mutex::new(None));
         let runtime = SerializedChatRuntime::new(AgentFactory {
@@ -1561,7 +1554,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: Some(Arc::clone(&bus)),
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let mut subscription = bus.subscribe();
         let model = Arc::new(TitleModel {
@@ -1642,7 +1635,7 @@ mod tests {
             repository: Arc::new(MemorySessions::named(session, "Kept")),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1694,7 +1687,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1754,7 +1747,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let runtime = titled_runtime(
             store.clone(),
@@ -1808,7 +1801,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let runtime = titled_runtime(
@@ -1857,7 +1850,7 @@ mod tests {
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let runtime = titled_runtime(
             store,
@@ -1911,7 +1904,6 @@ mod tests {
                 mcp_allows: Vec::new(),
                 mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
-                plan_path: None,
                 turn_display: crate::domain::chat_session::model::TurnDisplay::Idle,
                 created_at: now,
                 updated_at: now,
@@ -1965,15 +1957,6 @@ mod tests {
                 .get_mut(&id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
             session.turn_display = display;
-            Ok(())
-        }
-
-        async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-            let mut sessions = self.sessions.lock().expect("sessions");
-            let session = sessions
-                .get_mut(&id)
-                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
-            session.plan_path = Some(path);
             Ok(())
         }
 

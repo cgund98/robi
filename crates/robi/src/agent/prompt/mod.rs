@@ -16,7 +16,6 @@ use std::sync::Arc;
 use robi_core::prompt::{render, PromptBlock};
 use robi_core::tool::ToolRegistry;
 
-use crate::agent::tools::plan_file::todos_prompt;
 use crate::domain::chat_session::model::AgentMode;
 
 pub use builtin::Builtin;
@@ -96,8 +95,6 @@ pub struct SessionPrompt<'a> {
     pub config_dir: Option<PathBuf>,
     pub workspace: Option<PathBuf>,
     pub mode: AgentMode,
-    /// Workspace-relative plan whose checklist is re-read for an agent turn.
-    pub plan_path: Option<String>,
     pub max_bytes: usize,
 }
 
@@ -144,13 +141,6 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
     }
     assembler = assembler.source(ShellEditing);
     assembler = assembler.source(ModePrefix { mode: input.mode });
-    if input.mode == AgentMode::Agent {
-        if let Some(path) = input.plan_path.as_deref() {
-            if let Some(body) = todos_prompt(path) {
-                assembler = assembler.source(PlanChecklist { body });
-            }
-        }
-    }
     assembler.render()
 }
 
@@ -160,20 +150,6 @@ struct SkillCatalog {
 }
 
 impl PromptSource for SkillCatalog {
-    fn load(&self) -> Option<PromptBlock> {
-        Some(PromptBlock {
-            tag: None,
-            body: self.body.clone(),
-        })
-    }
-}
-
-/// The open checklist, already wrapped, so the path can sit on the tag.
-struct PlanChecklist {
-    body: String,
-}
-
-impl PromptSource for PlanChecklist {
     fn load(&self) -> Option<PromptBlock> {
         Some(PromptBlock {
             tag: None,
@@ -269,7 +245,6 @@ mod tests {
             config_dir: Some(home.clone()),
             workspace: Some(repo.join("pkg")),
             mode: AgentMode::Ask,
-            plan_path: None,
             max_bytes: DEFAULT_MAX_BYTES,
         });
 
@@ -307,7 +282,6 @@ mod tests {
             config_dir: None,
             workspace: Some(repo.clone()),
             mode: AgentMode::Agent,
-            plan_path: None,
             max_bytes: DEFAULT_MAX_BYTES,
         });
         assert!(prompt.contains("used"));
@@ -327,23 +301,25 @@ mod tests {
 
         let plan = prompt_for(
             AgentMode::Plan,
-            &[
-                ("read_file", "Read one file."),
-                ("shell", "Run a command."),
-                ("write_plan", "Save a plan."),
-            ],
+            &[("read_file", "Read one file."), ("shell", "Run a command.")],
         );
         assert!(plan.contains("Plan mode"));
         assert!(plan.contains("- shell: Run a command."));
-        assert!(plan.contains("- write_plan: Save a plan."));
         assert!(!plan.contains("- edit_file:"));
+        // S9: the plan is a workspace file the shell writes, not a tool.
+        assert!(!plan.contains("- write_plan:"));
+        assert!(plan.contains(".robi/plans/<name>"));
+        assert!(plan.contains("PLAN.md"));
+        assert!(plan.contains("TODO.md"));
+        assert!(plan.contains(".robi/plans/.gitignore"));
+        assert!(plan.contains("`- [ ]` for open and `- [x]` for done"));
+        assert!(plan.contains("List `.robi/plans` first"));
 
         let agent = prompt_for(
             AgentMode::Agent,
             &[
                 ("delegate", "Hand a task to a subagent."),
                 ("edit_file", "Edit a file."),
-                ("write_plan", "Update a plan."),
             ],
         );
         assert!(agent.contains("Agent mode"));
@@ -352,52 +328,24 @@ mod tests {
         assert!(agent.contains("- edit_file: Edit a file."));
         let mode = agent.find("<mode>").unwrap();
         assert!(agent.find("- edit_file:").unwrap() < mode);
-        assert!(agent.contains("Call todos with that path"));
+        assert!(!agent.contains("- write_plan:"));
+        assert!(!agent.contains("- todos:"));
+        assert!(agent.contains("Plans live in `.robi/plans/`"));
+        assert!(agent.contains("Tick a step the moment it is done"));
         // S4: verification is the shell, not a language server.
         assert!(agent.contains("Verify with the shell"));
         assert!(!agent.contains("call diagnostics"));
     }
 
     #[test]
-    fn an_agent_prompt_includes_the_plan_checklist() {
-        let repo = temp_dir("plan");
-        let path = repo.join("ship.md");
-        fs::write(
-            &path,
-            "---\ntodos:\n  - id: \"modes\"\n    content: \"Add the mode registry\"\n    status: \"pending\"\n  - id: \"wire\"\n    content: \"Register the tool\"\n    status: \"in_progress\"\n---\n# Ship\n",
-        )
-        .unwrap();
-        let plan_path = path.to_string_lossy().into_owned();
-
-        let prompt = assemble_session(SessionPrompt {
-            tools: &ToolRegistry::new(),
-            user_prompt: None,
-            config_dir: None,
-            workspace: Some(repo.clone()),
-            mode: AgentMode::Agent,
-            plan_path: Some(plan_path.clone()),
-            max_bytes: DEFAULT_MAX_BYTES,
-        });
-        let mode = prompt.find("<mode>").unwrap();
-        let todos = prompt
-            .find(&format!("<todos path=\"{plan_path}\">"))
-            .unwrap();
-        assert!(mode < todos);
-        assert!(prompt.contains("- modes (pending) Add the mode registry"));
-        assert!(prompt.contains("- wire (in_progress) Register the tool"));
-        assert!(!prompt.contains("todos:"));
-
-        let ask = assemble_session(SessionPrompt {
-            tools: &ToolRegistry::new(),
-            user_prompt: None,
-            config_dir: None,
-            workspace: Some(repo.clone()),
-            mode: AgentMode::Ask,
-            plan_path: Some(plan_path),
-            max_bytes: DEFAULT_MAX_BYTES,
-        });
-        assert!(!ask.contains("<todos"));
-        let _ = fs::remove_dir_all(repo);
+    fn no_mode_prompt_carries_a_stored_plan_checklist() {
+        // S9 removed the `<todos>` block: the checklist is a file the shell
+        // reads, so no prompt source injects it.
+        for mode in [AgentMode::Ask, AgentMode::Plan, AgentMode::Agent] {
+            let prompt = prompt_for(mode, &[]);
+            assert!(!prompt.contains("<todos"), "{mode:?}");
+            assert!(!prompt.contains("<plan"), "{mode:?}");
+        }
     }
 
     fn prompt_for(mode: AgentMode, tools: &[(&'static str, &'static str)]) -> String {
@@ -413,7 +361,6 @@ mod tests {
             config_dir: None,
             workspace: None,
             mode,
-            plan_path: None,
             max_bytes: DEFAULT_MAX_BYTES,
         })
     }
