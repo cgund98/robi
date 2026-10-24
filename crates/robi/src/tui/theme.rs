@@ -154,6 +154,109 @@ pub fn tool_card() -> Style {
     Style::default().bg(CODE_BG).fg(CODE_INK)
 }
 
+/// The composer band: the same raised surface a tool card uses, so "this is a
+/// surface" means one thing in the whole frame.
+pub fn composer_surface() -> Style {
+    Style::default().bg(BG_SURFACE).fg(INK_BRIGHT)
+}
+
+/// The composer's rail: `--accent`, the same column a user message wears.
+///
+/// The composer is the user's turn before it is sent, so it is state, not
+/// machinery — the tool card's gray rail is the contrast, not the model.
+pub fn composer_rail() -> Style {
+    Style::default().bg(BG_SURFACE).fg(ACCENT)
+}
+
+/// The composer's metadata row: the mode and model from T4, and the lock status
+/// until then.
+pub fn composer_status() -> Style {
+    Style::default().bg(BG_SURFACE).fg(INK_MUTED)
+}
+
+/// The header's activity segment. `--ink-muted`, the same tone as a timestamp:
+/// state the user can glance at, not state that competes with the title.
+pub fn activity() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK_MUTED)
+}
+
+/// The footer progress widget's track. `--ink-faint`, the tone
+/// `visual-style.md` gives a running agent's spinner track.
+pub fn progress_track() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK_FAINT)
+}
+
+/// The lit cell of the footer progress widget: the spinner's leading edge,
+/// which `visual-style.md` puts in `--ink`.
+pub fn progress_head() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK)
+}
+
+/// The caret drawn at the end of streaming text.
+pub fn caret() -> Style {
+    Style::default().bg(BG_CANVAS).fg(ACCENT)
+}
+
+// Markdown. One function per construct `tui/state/markdown.rs` asks for, so the
+// assistant's prose is styled from this file and nowhere else.
+
+/// A markdown heading. Weight replaces the `#` marker; level 1 also underlines,
+/// which is the only distinction a terminal has left after brightness.
+pub fn markdown_heading(level: u8) -> Style {
+    let style = Style::default()
+        .bg(BG_CANVAS)
+        .fg(INK_STRONG)
+        .add_modifier(Modifier::BOLD);
+    if level <= 1 {
+        style.add_modifier(Modifier::UNDERLINED)
+    } else {
+        style
+    }
+}
+
+/// A link's label and its appended destination. `--accent`, underlined, so it
+/// reads as something the reader could open even though a terminal cannot.
+pub fn markdown_link() -> Style {
+    Style::default()
+        .bg(BG_CANVAS)
+        .fg(ACCENT)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+/// A blockquote's `>` prefix and its body.
+pub fn markdown_quote() -> Style {
+    Style::default()
+        .bg(BG_CANVAS)
+        .fg(INK_MUTED)
+        .add_modifier(Modifier::ITALIC)
+}
+
+/// A table's header row. On the canvas, because the box-drawing border already
+/// delimits the cell and a band would fight it.
+pub fn markdown_table_header() -> Style {
+    Style::default()
+        .bg(BG_CANVAS)
+        .fg(INK_STRONG)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// An ordinary table cell: the prose ink, one step quieter than a body sentence.
+pub fn markdown_table_cell() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK)
+}
+
+/// A table's box-drawing border. `--ink-faint`, the hairline tone, so the box
+/// frames the data without competing with it.
+pub fn markdown_table_border() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK_FAINT)
+}
+
+/// A GFM alert (`> [!NOTE]`) heading and body. `--warn`: it is a callout, and
+/// the accent is already the link's.
+pub fn markdown_alert() -> Style {
+    Style::default().bg(BG_CANVAS).fg(WARN)
+}
+
 /// A tool card's heading. Gray rather than the card's bright ink, so the name
 /// of the tool reads as a label and the command below it is what stands out.
 pub fn tool_card_heading() -> Style {

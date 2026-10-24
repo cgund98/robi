@@ -103,6 +103,12 @@ flowchart TD
 | Linux | `bwrap`. Landlock does not hide a directory or drop the network namespace, so it is not a second layer | The sandboxed call is refused when `bwrap` is missing |
 | Windows | No sandbox in this design | A sandboxed call is refused. `unsandboxed: true` still runs after approval |
 
+This table describes the default `os` mechanism, which ships and stays the
+default. A second mechanism runs the command in a gVisor container over the
+Docker API, on macOS as well as Linux; `sandbox_mechanism` selects it, and it is
+behind the `container-sandbox` Cargo feature. See
+[container-sandbox.md](container-sandbox.md).
+
 ### Filesystem
 
 Seatbelt is last-match-wins, and the bubblewrap mounts follow the same

@@ -1,7 +1,10 @@
-//! The header: one row, `robi · workspace · session title`.
+//! The header: one row, `robi · workspace · session title`, with the activity
+//! segment at the right edge.
 //!
 //! The terminal's peer of the desktop window bar. It names the workspace and
-//! the session, which is the whole navigation a T0 terminal has.
+//! the session, and — from T1 — says what the open turn is doing and for how
+//! long. The activity segment is right-aligned: the left side is identity and
+//! does not move, the right side is state and changes every 250 ms.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -15,10 +18,18 @@ use crate::tui::theme;
 const SEPARATOR: &str = " \u{b7} ";
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(
-        Paragraph::new(Line::from(spans(app))).style(theme::canvas()),
-        area,
-    );
+    let mut line = Line::from(spans(app));
+    if let Some(activity) = activity_span(app) {
+        let used = line.width();
+        let pad = usize::from(area.width)
+            .saturating_sub(used)
+            .saturating_sub(activity.content.len());
+        if pad >= 2 {
+            line.spans.push(Span::raw(" ".repeat(pad)));
+            line.spans.push(activity);
+        }
+    }
+    frame.render_widget(Paragraph::new(line).style(theme::canvas()), area);
 }
 
 fn spans(app: &App) -> Vec<Span<'static>> {
@@ -35,6 +46,17 @@ fn spans(app: &App) -> Vec<Span<'static>> {
         theme::strong(),
     ));
     spans
+}
+
+/// `Thinking \u{b7} 4s \u{b7}\u{b7}` at the right edge, or nothing when idle.
+///
+/// The dots come from the tick count, so the segment moves without the view
+/// keeping a timer of its own.
+fn activity_span(app: &App) -> Option<Span<'static>> {
+    let activity = app.activity();
+    let summary = activity.summary()?;
+    let dots = ".".repeat(activity.dots());
+    Some(Span::styled(format!("{summary} {dots}"), theme::activity()))
 }
 
 #[cfg(test)]

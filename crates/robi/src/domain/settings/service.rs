@@ -101,16 +101,56 @@ impl SettingsService {
                 | keys::PROVIDER_OPENCODE_GO
                 | keys::PROVIDER_ANTHROPIC
                 | keys::PROVIDER_DEEPSEEK
+                | keys::SANDBOX_PROJECT_FILES
         ) && value != keys::PROVIDER_ON
             && value != keys::PROVIDER_OFF
         {
             return Err(ServiceError::BadRequest(format!("{key} must be on or off")));
+        }
+        // A sandbox setting chooses a mechanism and a network posture. Both are
+        // two-value, and the wrong value must not be stored silently: an
+        // unreadable one falls back to the narrower default at resolve time,
+        // which hides the mistake.
+        if key == keys::SANDBOX_MECHANISM
+            && value != keys::MECHANISM_OS
+            && value != keys::MECHANISM_CONTAINER
+        {
+            return Err(ServiceError::BadRequest(format!(
+                "{key} must be {} or {}",
+                keys::MECHANISM_OS,
+                keys::MECHANISM_CONTAINER
+            )));
+        }
+        if key == keys::SANDBOX_NETWORK
+            && value != keys::DEFAULT_SANDBOX_NETWORK
+            && value != keys::NETWORK_UNRESTRICTED
+        {
+            return Err(ServiceError::BadRequest(format!(
+                "{key} must be {} or {}",
+                keys::DEFAULT_SANDBOX_NETWORK,
+                keys::NETWORK_UNRESTRICTED
+            )));
         }
         if key == keys::FILE_OPEN_PATTERNS {
             validate_open_patterns(&value)?;
         }
         if key == keys::FILE_OPEN_COMMAND {
             super::open_command::validate_open_command(&value).map_err(ServiceError::BadRequest)?;
+        }
+        if key == keys::SANDBOX_IMAGE {
+            validate_image(&value)?;
+        }
+        if key == keys::SANDBOX_RUNTIME && !is_container_name(&value) {
+            return Err(ServiceError::BadRequest(format!(
+                "{key} must be a runtime name, got {value}"
+            )));
+        }
+        if matches!(
+            key,
+            keys::SANDBOX_MEMORY_MB | keys::SANDBOX_CPUS | keys::SANDBOX_PIDS_LIMIT
+        ) && !in_sandbox_range(key, &value)
+        {
+            return Err(ServiceError::BadRequest(sandbox_range_message(key)));
         }
         if let Some(limit) = bounded_limit(key) {
             if keys::parse_bounded(Some(&value), 0, limit) == 0 {
@@ -134,6 +174,75 @@ impl SettingsService {
 
 fn require_known(key: &str) -> Result<crate::domain::settings::keys::KnownSetting, ServiceError> {
     known_setting(key).ok_or_else(|| ServiceError::BadRequest(format!("unknown setting: {key}")))
+}
+
+/// An image reference the daemon will accept.
+///
+/// Not a shell word, so this rejects whitespace and a leading dash rather than
+/// trying to parse a full reference grammar.
+fn validate_image(value: &str) -> Result<(), ServiceError> {
+    let ok =
+        !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_whitespace);
+    if ok {
+        Ok(())
+    } else {
+        Err(ServiceError::BadRequest(format!(
+            "{} must look like `repo/name[:tag]`, got {value}",
+            keys::SANDBOX_IMAGE
+        )))
+    }
+}
+
+/// A Docker runtime name: `runsc`, `runc`, and the like.
+fn is_container_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+}
+
+/// Whether a numeric sandbox setting is inside its bounds.
+///
+/// A value that does not parse is out of range: the resolver would otherwise fall
+/// back to the default and the write would look successful.
+fn in_sandbox_range(key: &str, value: &str) -> bool {
+    let Ok(number) = value.parse::<u32>() else {
+        return false;
+    };
+    match key {
+        keys::SANDBOX_MEMORY_MB => {
+            (keys::SANDBOX_MEMORY_FLOOR_MB..=keys::SANDBOX_MEMORY_LIMIT_MB).contains(&number)
+        }
+        keys::SANDBOX_PIDS_LIMIT => {
+            (keys::SANDBOX_PIDS_FLOOR..=keys::SANDBOX_PIDS_MAX).contains(&number)
+        }
+        keys::SANDBOX_CPUS => number >= 1 && number <= host_cpus(),
+        _ => true,
+    }
+}
+
+fn sandbox_range_message(key: &str) -> String {
+    match key {
+        keys::SANDBOX_MEMORY_MB => format!(
+            "{key} must be {} to {}",
+            keys::SANDBOX_MEMORY_FLOOR_MB,
+            keys::SANDBOX_MEMORY_LIMIT_MB
+        ),
+        keys::SANDBOX_PIDS_LIMIT => format!(
+            "{key} must be {} to {}",
+            keys::SANDBOX_PIDS_FLOOR,
+            keys::SANDBOX_PIDS_MAX
+        ),
+        keys::SANDBOX_CPUS => format!("{key} must be 1 to {}", host_cpus()),
+        _ => format!("{key} is out of range"),
+    }
+}
+
+fn host_cpus() -> u32 {
+    std::thread::available_parallelism()
+        .map(|count| count.get() as u32)
+        .unwrap_or(1)
 }
 
 fn bounded_limit(key: &str) -> Option<u32> {

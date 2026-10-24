@@ -2,6 +2,10 @@
 //!
 //! The picks are pure functions of what the services returned, so they are
 //! tested without a database. `app::update` calls them when an outcome lands.
+//!
+//! The terminal lifecycle helpers here are the ones `ratatui::init` does not
+//! cover: mouse reporting, which has to be turned on next to raw mode and off
+//! again before the alternate screen goes.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -22,6 +26,29 @@ pub const LOCK_FILE: &str = "tui.lock";
 /// The view state from the last run.
 pub fn restore(state_dir: &Path) -> ViewState {
     persist::load(state_dir)
+}
+
+/// Turn on mouse reporting, so the wheel scrolls the transcript.
+///
+/// `ratatui::init` takes raw mode and the alternate screen but leaves mouse
+/// reporting off, and that default is right for a terminal: a program that
+/// always captures the pointer takes text selection away from the user. The TUI
+/// turns it on because the wheel is the scroll gesture most people try first,
+/// and it reads only wheel events — a click, a drag, and a move are ignored.
+pub fn enable_mouse() -> io::Result<()> {
+    ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::event::EnableMouseCapture)
+}
+
+/// Turn mouse reporting off again, before the alternate screen goes.
+///
+/// Restoring is best effort and logged rather than returned: it runs on the way
+/// out, after the last frame, and there is no one left to tell.
+pub fn disable_mouse() {
+    if let Err(error) =
+        ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::event::DisableMouseCapture)
+    {
+        tracing::warn!(%error, "could not turn mouse reporting off");
+    }
 }
 
 /// The workspace to show.

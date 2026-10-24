@@ -152,50 +152,7 @@ fn git_write_locks(workspace: &Path) -> Vec<std::path::PathBuf> {
 }
 
 fn floor_files(profile: &Profile) -> Result<Vec<std::path::PathBuf>, String> {
-    let mut found = Vec::new();
-    let mut pending = vec![profile.workspace.clone()];
-    let mut visited = 0usize;
-    while let Some(dir) = pending.pop() {
-        visited += 1;
-        if visited > 20_000 {
-            return Err(
-                "sandbox could not be applied: the workspace is too large to hide secret files"
-                    .to_owned(),
-            );
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if path.is_dir() {
-                if !matches!(name, "target" | "node_modules" | "dist" | "vendor") {
-                    pending.push(path);
-                }
-                continue;
-            }
-            if profile
-                .protected_read_files
-                .iter()
-                .any(|open| open == &path)
-                || profile
-                    .protected_write_files
-                    .iter()
-                    .any(|open| open == &path)
-            {
-                continue;
-            }
-            if crate::agent::sandbox::profile::classify_path(&path, Path::new("/"))
-                == crate::agent::sandbox::profile::AccessClass::ProtectedFile
-            {
-                found.push(path);
-            }
-        }
-    }
-    Ok(found)
+    super::masks::floor_files(profile)
 }
 
 #[cfg(test)]

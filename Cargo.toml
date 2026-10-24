@@ -80,6 +80,16 @@ fastembed = "7"
 # `src-tauri` never compile it. `crossterm` comes from `ratatui::crossterm`: a
 # second direct version in the tree fails to typecheck on `KeyEvent`.
 ratatui = "0.30"
+# The composer's multi-line field. It depends on `ratatui-core`,
+# `ratatui-crossterm`, and `ratatui-widgets` at the same majors ratatui 0.30
+# already resolves, so `KeyEvent` stays one type across the tree.
+ratatui-textarea = "0.9"
+# Assistant markdown -> a ratatui `Text`. Pinned to the major that depends on
+# `ratatui-core 0.1`, which is what ratatui 0.30 already resolves.
+# `default-features = false` drops the optional `syntect` code highlighter: it is
+# a large build cost for one view, and the TUI's code blocks read fine in
+# `--code-ink`.
+tui-markdown = { version = "0.3", default-features = false }
 unicode-width = "0.2"
 
 # The desktop shell. Versions stay here so they cannot drift.

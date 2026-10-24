@@ -10,6 +10,7 @@ use ratatui::Frame;
 
 use crate::tui::app::App;
 use crate::tui::state::transcript::{display_width, wrap_text, Row, RowKind, RAIL_CHAR};
+use crate::tui::state::Phase;
 use crate::tui::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -18,11 +19,23 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         draw_empty(frame, area, app);
         return;
     }
-    let lines: Vec<Line<'_>> = transcript
+    let mut lines: Vec<Line<'_>> = transcript
         .visible()
         .iter()
         .map(|row| line_for(row, area.width))
         .collect();
+
+    // A caret on the last row while the reply is arriving. It is appended to
+    // the built line rather than drawn by the row builder, so the wrapped rows
+    // and the scroll offset stay exactly what `state::transcript` computed.
+    if transcript.phase() == Phase::Responding {
+        if let Some(line) = lines.last_mut() {
+            if line.width() < usize::from(area.width) {
+                line.spans.push(Span::styled("\u{258d}", theme::caret()));
+            }
+        }
+    }
+
     frame.render_widget(Paragraph::new(lines).style(theme::canvas()), area);
 }
 
@@ -33,10 +46,10 @@ fn line_for(row: &Row, width: u16) -> Line<'_> {
         _ => (theme::tool_card(), theme::tool_card_rail()),
     };
     match row.kind {
-        RowKind::User => band_line(row, width, band, rail, None),
-        RowKind::ToolHeading => band_line(row, width, band, rail, None),
-        RowKind::ToolCard => band_line(row, width, band, rail, row.muted.clone()),
-        RowKind::Assistant => Line::from(Span::styled(row.text.as_str(), theme::prose())),
+        RowKind::User => band_line(row, width, band, rail),
+        RowKind::ToolHeading => band_line(row, width, band, rail),
+        RowKind::ToolCard => band_line(row, width, band, rail),
+        RowKind::Assistant => spans_line(row, theme::prose()),
         RowKind::Divider => Line::from(Span::styled(
             format!("\u{2014} {} \u{2014}", row.text),
             theme::divider(),
@@ -46,42 +59,75 @@ fn line_for(row: &Row, width: u16) -> Line<'_> {
     }
 }
 
+/// A line of prose, painted from the row's own spans.
+///
+/// `base` is the tone the row wears where nothing finer is set: assistant prose
+/// is `--ink-bright`, and a markdown span overrides only the properties it names
+/// — so a heading underlines and brightens without losing the canvas.
+fn spans_line(row: &Row, base: ratatui::style::Style) -> Line<'static> {
+    if row.spans.is_empty() {
+        return Line::from(Span::styled(row.text.clone(), base));
+    }
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    for (range, style) in &row.spans {
+        let start = range.start.min(row.text.len());
+        let end = range.end.min(row.text.len());
+        if start > cursor {
+            spans.push(Span::styled(row.text[cursor..start].to_owned(), base));
+        }
+        if end > start {
+            spans.push(Span::styled(
+                row.text[start..end].to_owned(),
+                base.patch(*style),
+            ));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < row.text.len() {
+        spans.push(Span::styled(row.text[cursor..].to_owned(), base));
+    }
+    Line::from(spans)
+}
+
 /// One row of a band: the rail cell, then the content and its fill.
 ///
-/// `muted` is a byte range of `row.text` drawn in the quieter tone — the `$` on
-/// a card's subject line — and is clamped so a stale range cannot panic.
+/// The row's spans are the byte ranges it wants painted in a finer tone — a
+/// card's `$` marker — and are clamped so a stale range cannot panic.
 fn band_line(
     row: &Row,
     width: u16,
     band: ratatui::style::Style,
     rail: ratatui::style::Style,
-    muted: Option<std::ops::Range<usize>>,
 ) -> Line<'static> {
     let rail_span = Span::styled(RAIL_CHAR.to_string(), rail);
     let body = row.text.strip_prefix(RAIL_CHAR).unwrap_or(&row.text);
-    let fill = usize::from(width).saturating_sub(display_width(&row.text));
-    let padded = format!("{body}{}", " ".repeat(fill));
-
-    // A muted range is measured against `row.text`, so shift it past the rail.
+    // Span ranges are measured against `row.text`, so shift them past the rail.
     let shift = row.text.len() - body.len();
-    let spans = match muted {
-        Some(range) if range.end <= row.text.len() && range.start >= shift => {
-            let start = range.start - shift;
-            let end = range.end - shift;
-            let mut spans = vec![rail_span];
-            for (part, style) in [
-                (&padded[..start], band),
-                (&padded[start..end], theme::tool_card_marker()),
-                (&padded[end..], band),
-            ] {
-                if !part.is_empty() {
-                    spans.push(Span::styled(part.to_owned(), style));
-                }
-            }
-            spans
+
+    let mut spans = vec![rail_span];
+    let mut cursor = 0usize;
+    for (range, style) in &row.spans {
+        let start = range.start.saturating_sub(shift).min(body.len());
+        let end = range.end.saturating_sub(shift).min(body.len());
+        if start > cursor {
+            spans.push(Span::styled(body[cursor..start].to_owned(), band));
         }
-        _ => vec![rail_span, Span::styled(padded, band)],
-    };
+        if end > start {
+            spans.push(Span::styled(body[start..end].to_owned(), *style));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < body.len() {
+        spans.push(Span::styled(body[cursor..].to_owned(), band));
+    }
+
+    // The fill to the full band width: `width` cells, minus the rail, minus
+    // what the text already covers.
+    let fill = usize::from(width).saturating_sub(display_width(&row.text));
+    if fill > 0 {
+        spans.push(Span::styled(" ".repeat(fill), band));
+    }
     Line::from(spans)
 }
 

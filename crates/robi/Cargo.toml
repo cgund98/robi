@@ -29,7 +29,18 @@ docs-viewer = ["semantic-index"]
 # T0: the terminal front end in `tui/` and the `robi-tui` binary. Not a
 # streamlining workstream: off by default so `robi-api` and `src-tauri` do not
 # compile ratatui. `tokio/signal` is for SIGTERM -> restore.
-tui = ["dep:ratatui", "dep:unicode-width", "tokio/signal"]
+tui = [
+    "dep:ratatui",
+    "dep:ratatui-textarea",
+    "dep:tui-markdown",
+    "dep:unicode-width",
+    "tokio/signal",
+]
+# The gVisor container sandbox in `agent/sandbox/container/`: an alternative to
+# bubblewrap and Seatbelt, selected by `sandbox_mechanism`. Off by default so the
+# default build does not compile bollard. Without it, choosing `container` is
+# refused rather than silently falling back to the host.
+container-sandbox = ["dep:bollard"]
 
 [dependencies]
 robi-core = { path = "../robi-core" }
@@ -53,6 +64,8 @@ ignore.workspace = true
 redb.workspace = true
 regex.workspace = true
 ratatui = { workspace = true, optional = true }
+ratatui-textarea = { workspace = true, optional = true }
+tui-markdown = { workspace = true, optional = true }
 reqwest.workspace = true
 scraper.workspace = true
 serde.workspace = true
@@ -78,6 +91,7 @@ rmcp = { version = "0.12", features = [
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
+bollard = { version = "0.21.1", default-features = false, features = ["http", "pipe"], optional = true }
 
 [[bin]]
 name = "robi-api"

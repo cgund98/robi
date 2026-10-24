@@ -351,14 +351,34 @@ impl Tool for Shell {
                 crate::domain::settings::keys::TIMEOUT_LIMIT_SECONDS,
             )
             .await;
-        let output = launch(
+        let timeout = std::time::Duration::from_secs(u64::from(timeout_seconds));
+        // The mechanism is the only sandbox setting the dispatch needs, and it is
+        // read here so the container path is skipped entirely when it is `os`.
+        let request = crate::agent::sandbox::Launch::new(
             &profile,
             command,
             run.cancel,
-            std::time::Duration::from_secs(u64::from(timeout_seconds)),
-        )
-        .await
-        .map_err(ToolError::Failed)?;
+            timeout,
+            self.ctx.session_id,
+        );
+        #[cfg(feature = "container-sandbox")]
+        let request = {
+            let settings = self.ctx.settings.clone();
+            let mechanism =
+                crate::agent::sandbox::container::config::mechanism(settings.as_deref()).await;
+            // A project file is opt-in: `sandbox_project_files` must be on before a
+            // checked-in `sandbox.toml` can name an image or widen egress.
+            let project_files_on = self
+                .ctx
+                .setting_value(crate::domain::settings::keys::SANDBOX_PROJECT_FILES)
+                .await
+                == crate::domain::settings::keys::PROJECT_FILES_ON;
+            request
+                .with_settings(self.ctx.settings.as_deref(), project_files_on)
+                .with_mechanism(mechanism)
+                .with_registry(crate::agent::sandbox::container::Registry::global())
+        };
+        let output = launch(request).await.map_err(ToolError::Failed)?;
         drop(temp_guard);
         let mut payload = json!({
             "exit_code": output.exit_code,

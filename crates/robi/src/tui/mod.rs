@@ -72,6 +72,12 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     let mut app = app::App::new(view, options.database_url.clone());
 
     let mut terminal = ratatui::init();
+    // After raw mode, before the first frame: the wheel has to reach the pump.
+    // A failure here restores first, so the shell is not left in raw mode.
+    if let Err(error) = lifecycle::enable_mouse() {
+        ratatui::restore();
+        return Err(error);
+    }
     let size = terminal.size()?;
     app.resize(size.width, size.height);
 
@@ -94,6 +100,7 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     // Saved before the alternate screen goes, and awaited: a fire-and-forget
     // task would die with the runtime.
     effects::save_view(&options, &app.snapshot()).await;
+    lifecycle::disable_mouse();
     ratatui::restore();
     outcome
 }

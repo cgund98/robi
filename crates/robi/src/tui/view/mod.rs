@@ -4,6 +4,7 @@
 //! never decides anything a test cannot reproduce: the transcript rows were
 //! wrapped in `state::transcript` and this module only styles them.
 
+pub mod composer;
 pub mod header;
 pub mod notice;
 pub mod transcript;
@@ -36,6 +37,13 @@ pub fn content_width(width: u16) -> u16 {
     width.saturating_sub(GUTTER * 2)
 }
 
+/// Rows of canvas between the transcript and the composer band.
+///
+/// The band is a raised surface; without a gap the last transcript row reads as
+/// part of it. One row, the same "one blank row between blocks" the transcript
+/// itself uses, so the spacing answers to one rule.
+pub const COMPOSER_GAP: u16 = 1;
+
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     // Paint the canvas first, so no cell keeps the terminal's own background.
@@ -47,15 +55,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     let content = inner(area);
-    let [top, body, bottom] = Layout::vertical([
+    // Five regions from T1 on: the header, the transcript, the gap, the composer
+    // band, and the footer. The band's height comes from the field, which grows
+    // with its text up to `MAX_COMPOSER_ROWS`, so `App::body_height` and this
+    // layout agree by construction.
+    let band = app.composer().height();
+    let [top, body, _, composer, bottom] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(COMPOSER_GAP),
+        Constraint::Length(band),
         Constraint::Length(1),
     ])
     .areas(content);
 
     header::draw(frame, top, app);
     transcript::draw(frame, body, app);
+    // The gap is deliberately undrawn: the canvas is already painted.
+    composer::draw(frame, composer, app);
     notice::draw(frame, bottom, app);
 }
 

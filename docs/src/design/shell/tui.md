@@ -274,7 +274,7 @@ same reason, and the status bar carries no index line.
 | GUI surface | TUI form | Phase |
 |---|---|---|
 | `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans; user turns as a blue-railed band | T1 |
-| `Composer` textarea, drafts per session | text area, draft kept per session in `App` | T1 |
+| `Composer` textarea, drafts per session | text area, draft kept per session in `App`, in memory | T1 |
 | Send / Stop button | `Enter` / `Ctrl-C` | T1 |
 | `ActivityLine`, streaming | header line: Thinking / Responding, elapsed | T1 |
 | `ToolCallCard` and its six variants | one background band per call, no border, muted heading and `$`, output cut to 6 lines; the per-variant bodies and expansion are T2 | T2 |
@@ -325,10 +325,15 @@ same reason, and the status bar carries no index line.
   |---|---|---|
   | User message | `--bg-user` | `--accent` (blue) |
   | Tool call | `--code-bg` | `--ink-faint` (gray) |
+  | Composer | `--bg-surface` | `--accent` (blue) |
 
   A user message is therefore a full-width band with the text left-aligned, not
   a right-aligned capsule. The blue is the transcript's one piece of state:
-  the user's own turn. Machinery is gray.
+  the user's own turn. Machinery is gray. **The composer wears the blue rail
+  too**, because it is the user's turn before it is sent — the same column, the
+  same accent, so the two read as one thing at either end of the transcript —
+  and one row of canvas separates it from the transcript above, so the last row
+  of prose never reads as part of the band.
 - A tool call's card reads, in order:
 
   ```text
@@ -361,15 +366,32 @@ renders a two-message transcript.
 
 **Goal** — the M2 exit criteria, in a terminal.
 
-- Composer: `ratatui-textarea`, `Enter` sends, `Alt-Enter` inserts a newline.
-  Draft per session. A failed send restores the buffer and attachments.
-- `message_delta` → phase; `message_added` / `message_updated` → `LoadMessage`;
-  `turn_finished` → reload, then idle. Deltas never write text.
+- Composer: `ratatui-textarea` on a `--bg-surface` band wearing the same blue
+  rail as a user message, two cells of horizontal padding inside the field, and
+  one blank row of canvas above the band. `Enter` sends, `Alt-Enter` inserts a
+  newline (`Ctrl-J` for terminals that deliver `Alt-Enter` as `Esc`, `Enter`).
+  Draft per session, **in memory**, keyed the way `composerDrafts.ts` keys it. A
+  failed send restores the buffer and attachments.
+- `message_delta` → phase; `message_added` / `message_updated` /
+  `tool_call_updated` → `LoadMessage` for **that row**; `turn_finished` → reload,
+  then idle. Deltas never write text.
 - `Ctrl-C` sends `Stop`; a cancelled turn leaves a resolvable transcript, so the
   view reloads rather than truncating.
 - Phase, elapsed, and a caret at the end of streaming text.
+- Assistant prose rendered as markdown — headings, lists, tables, fenced code,
+  links, quotes, GFM alerts — through `tui-markdown`, styled from `theme.rs`.
+- Scrolling: `↑`/`↓` (when the composer is empty or the transcript has focus),
+  `PageUp`/`PageDown`, `Ctrl-U`/`Ctrl-D`, `Home`/`End`, and the mouse wheel. The
+  wheel is enabled next to raw mode and turned off before the alternate screen
+  goes.
+- The footer's progress widget: eight cells with one moving head, right-aligned
+  under the composer, shown only while a turn runs or a stop is in flight.
 - The 2-second catch-up: while a turn is busy and no frame for the open session
-  has arrived, reload.
+  has arrived, reload. Elapsed time and the quiet stretch are counted in 250 ms
+  ticks, not wall clock, so `update` stays a pure function.
+- A send while a turn is running is **refused** with a notice naming `Ctrl-C`,
+  where the GUI interrupts and queues: in a terminal `Enter` mid-stream more
+  often means "newline", so the interrupt keeps one meaning.
 
 **Exit** — send a message, watch it stream, stop it, quit, restart, find the
 session intact. The turn ran through `SerializedChatRuntime` and the real
@@ -384,6 +406,9 @@ provider.
   whose only answer is `AwaitingApproval` is a bug. The modal lists every pending
   call in the turn, `a` / `r` per call, `A` approve all, `r` opens the reason
   field.
+- `AWAITING_APPROVAL` in T1: the phase goes idle and the footer says the turn
+  is waiting, and must be answered in the desktop app until T2 lands. T2 replaces
+  that with the modal below.
 - Card variants, matching `ToolCallCard`: edit diff, shell (with
   `getToolOriginal` for the uncapped output), MCP, retrieve, delegate steps,
   todos, generic. Expansion flags keyed by call id, persisted per the table above.
@@ -507,26 +532,90 @@ Global bindings, checked before the mode's own map:
 | Key | Does |
 |---|---|
 | `Ctrl-C` | Stop the running turn. Idle: quit |
-| `q` | Quit, idle only |
+| `q` | Quit, idle only **and transcript focus only** |
 | `Ctrl-N` | New chat |
 | `Ctrl-R` | Rename the open session |
 | `Ctrl-S` / `Ctrl-W` / `Ctrl-M` | Sessions / workspaces / model + effort |
 | `Ctrl-,` | Settings |
 | `Ctrl-L` | Compact |
 | `Tab` / `Shift-Tab` | Move focus between the transcript and the composer |
-| `PageUp` / `PageDown` | Scroll the transcript, and release the follow lock |
+| `↑` / `↓`, mouse wheel | Scroll the transcript one row (three for a wheel notch) |
+| `PageUp` / `PageDown` | Scroll the transcript by a screen, and release the follow lock |
+| `Ctrl-U` / `Ctrl-D` | Half a screen |
+| `Home` / `End` | The first row / the last, which re-arms the follow lock |
 | `?` | Keymap help |
 | `Esc` | Unwind one mode |
+
+**Focus is part of the keymap, not a check inside a handler.** From T1 the
+composer is on screen for the whole life of the process, so `q` cannot mean
+"quit" while it may be a character someone is typing. The map is
+`(Mode, Focus, Key) -> Command`, and the composer holds focus by default
+because typing is what a chat is for. The composer's own bindings:
+
+| Key | Does |
+|---|---|
+| `Enter` | Send |
+| `Alt-Enter`, `Ctrl-J` | Newline, without sending |
+| `Tab` / `Shift-Tab` | Give the keyboard to the transcript, and back |
+
+**The arrows scroll, and the field keeps them while it holds text.** `↑`/`↓` map
+to a one-row scroll from either focus, and `app::update` hands the key back to
+the text area when the composer is non-empty — a multi-line draft is navigated
+with arrows, and taking the caret away would make the field unusable. An empty
+field has no caret to move, so there the arrows scroll the transcript, which is
+the gesture people try first. `←`/`→` always belong to the caret.
+
+The wheel goes through the same `scroll_by` call as the keys, so the follow lock
+behaves identically however the reader scrolled. Mouse reporting is enabled by
+`tui::lifecycle` next to raw mode and disabled before the alternate screen goes;
+only wheel events are read, so text selection still works the usual way.
+
+The trade is `PageUp`/`PageDown`: with the composer focused they reach the text
+area's own scrolling, not the transcript. `Tab` moves focus to the transcript
+first.
 
 There is no `editor` mode and no key that opens a file. The screen belongs to the
 TUI for its whole life: an external program is started and left to its own
 window, so there is nothing to suspend for. Opening a file is `/open`, a
 composer command, which is why it does not appear in this table.
 
-Arrow keys always belong to the text area. This is why scrolling is a separate
-binding rather than `Up` / `Down`: a terminal chat has a text field on screen at
-all times, and stealing its cursor is the mistake every naive implementation
-makes.
+### The progress widget
+
+Under the composer, at the right edge of the footer, a row of eight `▪` cells:
+the track in `--ink-faint`, one head in `--ink` — the same leading-edge rule
+`visual-style.md` gives the desktop shell's running spinner. The head advances
+one cell every two ticks, so a pass takes four seconds.
+
+It is an **indeterminate** marquee, not a bar: a model turn reports no
+percentage, and a widget that filled would claim to know how much is left. It
+shows while a turn runs or a stop is in flight, and disappears when idle. The
+footer's notice is clipped to make room for it, never the other way round.
+
+### Assistant markdown
+
+Assistant prose is rendered as markdown, not as its source characters. The
+terminal's peer of `AssistantMarkdown.tsx` is `tui/state/markdown.rs`, which
+feeds the text to [`tui-markdown`](https://crates.io/crates/tui-markdown) — a
+`pulldown-cmark` front end that returns a ratatui `Text` — and then wraps it into
+the transcript's own rows.
+
+- **The palette is a `StyleSheet`, not a post-pass.** The renderer asks for a
+  `Style` per construct and every answer is a token from `tui/theme.rs`, so the
+  desktop and the terminal cannot drift. Headings drop their `#` marker and carry
+  weight instead; level 1 also underlines. Code, links, quotes, list markers,
+  table boxes and GFM alerts each get a token.
+- **Rows stay row-exact.** A `Row` carries styled byte ranges, so wrapping a
+  marked-up paragraph is the same `split_cells` the plain path uses, and the
+  scroll offset is still one row per visual line.
+- **A table is cut, not wrapped.** The renderer draws its box to its own width;
+  wrapping would tear the borders apart, so an over-wide table is truncated with
+  an ellipsis, which keeps the columns aligned.
+- **Syntax highlighting is off.** The `highlight-code` feature pulls in
+  `syntect`, which is a large build cost for one view; fenced code renders in
+  `--code-ink` on `--code-bg` with its language tag intact. Turning it on later is
+  one manifest line and one `Options` call.
+- Images render as their alt text, and a mermaid fence renders as its source —
+  T6's rule, unchanged.
 
 In `approval`: `a` approve, `r` reject, `A` approve all, `j` / `k` move,
 `Enter` expand the call's detail.
@@ -600,10 +689,13 @@ configuration, this is view state, and a scroll offset does not belong in a
 settings screen.
 
 Keys mirror the GUI's client state so the two can be compared: active workspace,
-open session, per-session composer draft, tool-card expansion keyed by call id
-(including `:diff` and `:answer`), scroll position, and the last mode. Never a
-secret. Nothing in it is required to start: a missing or malformed file starts at
-the defaults, because a bad scroll offset must not stop the app from opening.
+open session, tool-card expansion keyed by call id (including `:diff` and
+`:answer`), scroll position, and the last mode. **Composer drafts are not here:**
+they are held in memory per session, keyed the way `composerDrafts.ts` keys them,
+because typed text can be a secret and the GUI does not persist it either. Never
+a secret otherwise. Nothing in the file is required to start: a missing or
+malformed file starts at the defaults, because a bad scroll offset must not stop
+the app from opening.
 
 Dropped because the surface is gone or terminal-owned: per-document scroll,
 collapsed directories, docs-tray width, UI scale.
@@ -695,14 +787,21 @@ collapsed directories, docs-tray width, UI scale.
   - a tool card needed to be a band, not a bordered box;
   - user and tool bands needed rails in different colours, from the buffer, not
     from a glyph;
-  - the frame needed one gutter, which also caught the footer padding twice.
+  - the frame needed one gutter, which also caught the footer padding twice;
+  - an assistant heading and table painted their own `##` and `|` characters
+    instead of rendering as a document.
   Frames assert on substrings and on cell colours, never on a golden file, so a
   token change that does not move the layout does not fail.
-- Keymap: every binding in the table is reachable from `chat`, no key maps to two
-  `Msg`s in one mode, and `Esc` from each mode returns to `chat`.
-- The pump: publish `EventEnvelope`s onto a real `EventBus` — `turn_started`,
-  `message_delta`, `message_added`, `turn_finished` — and assert the phase
-  sequence and that exactly one refetch was issued per stored row.
+- Keymap: `(Mode, Focus, Key)` is a table, and **one** test walks it — `q` quits
+  only with transcript focus, `Enter` sends where `Alt-Enter` and `Ctrl-J` insert
+  a newline, no key means two things in one mode, and `Esc` from each mode
+  returns to `chat`. Not one test per binding.
+- The composer and the pump, one test each: a send records one `Submit` and keeps
+  its text until the actor takes it; the three refusals (blank, no session, a turn
+  already running) each say why inside that same test; `Ctrl-C` stops a running
+  turn and quits when idle; and a real `EventBus` publishing `turn_started` →
+  `message_delta` → `message_added` → `turn_finished` ends idle with exactly one
+  `LoadMessage` for the stored row and one `Reload` at the end.
 - The approval modal: with a fake `ChatRuntime`, a paused turn blocks a submit and
   `a` issues `Decide`. `SubmitOutcome::AwaitingApproval` keeps the composer
   locked.
@@ -728,7 +827,7 @@ collapsed directories, docs-tray width, UI scale.
 2. `Msg` / `Action` / `effects::run` and the input thread.
 3. `state/transcript.rs` and `view/transcript.rs` reading `list_messages`. This is
    T0.
-4. Composer, `Submit`, the event pump, phases and catch-up. T1.
+4. Composer, `Submit`, the event pump, phases and catch-up. **T1, done.**
 5. Approval modal, then the card variants. T2, in that order: the modal is the
    invariant, the cards are cosmetics.
 6. Sessions and workspaces overlays, then the status bar. T3.

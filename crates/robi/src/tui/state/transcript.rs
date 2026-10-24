@@ -10,10 +10,13 @@
 //! Wrapping here instead makes the offset exact, the follow lock trivial, and
 //! the wrap itself testable.
 
+use ratatui::style::Style;
 use robi_core::message::{ExecutionStatus, Message, Role};
 use unicode_width::UnicodeWidthChar;
 
+use crate::tui::state::markdown;
 use crate::tui::state::Phase;
+use crate::tui::theme;
 
 /// What one row is, which decides its style and its alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,10 +46,13 @@ pub struct Row {
     pub kind: RowKind,
     /// The whole line, which is what the width arithmetic counts.
     pub text: String,
-    /// The byte range of `text` drawn in the muted tone: the `$` or `>` marker
-    /// on a tool card's subject line. A range into `text`, not extra text, so
-    /// the row's width is the same however it is styled.
-    pub muted: Option<std::ops::Range<usize>>,
+    /// Styled byte ranges of `text`, sorted and non-overlapping.
+    ///
+    /// Empty means the view paints the row in the one tone its `RowKind` names.
+    /// A tool card's `$` marker and every markdown span set their own: the
+    /// range is into `text`, not extra text, so the row's width is the same
+    /// however it is painted.
+    pub spans: Vec<(std::ops::Range<usize>, Style)>,
 }
 
 impl Row {
@@ -54,17 +60,32 @@ impl Row {
         Self {
             kind,
             text: text.into(),
-            muted: None,
+            spans: Vec::new(),
         }
     }
 
-    /// A row with one span drawn muted. `start` is a byte offset into `text`,
-    /// `len` the span's length: the marker's, on a card's subject line.
-    fn with_muted(kind: RowKind, start: usize, len: usize, text: impl Into<String>) -> Self {
+    /// One styled row: the text and the runs of tone inside it.
+    pub(crate) fn styled(
+        kind: RowKind,
+        text: String,
+        spans: Vec<(std::ops::Range<usize>, Style)>,
+    ) -> Self {
+        Self { kind, text, spans }
+    }
+
+    /// A row with one span drawn in `style`. `start` is a byte offset into
+    /// `text`, `len` the span's length: the marker's, on a card's subject line.
+    fn with_span(
+        kind: RowKind,
+        start: usize,
+        len: usize,
+        style: Style,
+        text: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             text: text.into(),
-            muted: Some(start..start + len),
+            spans: vec![(start..start + len, style)],
         }
     }
 
@@ -181,6 +202,20 @@ impl Transcript {
     /// Replace the messages and rebuild. Keeps the follow lock.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
+        self.rebuild();
+    }
+
+    /// One stored row arrived: replace it by id, or append it.
+    ///
+    /// This is what `message_added` and `message_updated` land as, so the
+    /// transcript never has to be rebuilt from a delta. A row that is already
+    /// here is replaced in place, which keeps its position; a row that is not
+    /// is the newest, so it goes at the end.
+    pub fn upsert(&mut self, message: Message) {
+        match self.messages.iter_mut().find(|row| row.id == message.id) {
+            Some(existing) => *existing = message,
+            None => self.messages.push(message),
+        }
         self.rebuild();
     }
 
@@ -305,6 +340,13 @@ pub fn distance_from_bottom(offset: usize, rows: usize, viewport: usize) -> usiz
 /// A port of `src/features/chat/transcriptFollow.ts::pinnedAfterScroll`. A
 /// taller list, such as a tool call arriving, is not the reader leaving the
 /// end; an upward move that abandons the end is.
+///
+/// The upward test is `offset < previous_offset`, **not** the GUI's
+/// `offset + 1 < previous_offset`. The GUI counts pixels, where a one-pixel
+/// move is a rounding artefact; here one row is a gesture, and an arrow key
+/// that cannot release the follow lock would snap back on the next frame. A
+/// move that stays within [`FOLLOW_THRESHOLD`] of the end has already returned
+/// above, so this only fires when the reader really has left the end.
 pub fn pinned_after_scroll(
     pinned: bool,
     offset: usize,
@@ -320,7 +362,7 @@ pub fn pinned_after_scroll(
     if pinned && rows > previous_rows + 1 {
         return true;
     }
-    if offset + 1 < previous_offset {
+    if offset < previous_offset {
         return false;
     }
     pinned
@@ -357,12 +399,11 @@ pub fn build_rows(messages: &[Message], width: u16) -> Vec<Row> {
             }
             Role::Assistant => {
                 if !message.content.trim().is_empty() {
-                    blocks.push(
-                        wrap_text(&message.content, width)
-                            .into_iter()
-                            .map(|line| Row::new(RowKind::Assistant, line))
-                            .collect(),
-                    );
+                    // Markdown, not raw text: the assistant writes headings,
+                    // lists, tables and code, and a terminal that shows the
+                    // source characters is showing the author's markup rather
+                    // than the document.
+                    blocks.push(markdown::rows(&message.content, width));
                 }
                 // One block per call, so each gets its own blank line.
                 for call in &message.tool_calls {
@@ -441,10 +482,11 @@ fn tool_card_rows(call: &robi_core::message::ToolCall, width: usize) -> Vec<Row>
                 // the text starts inside the row's padding.
                 let text = band_line(&line, inner);
                 let start = text.find(&line).unwrap_or(0);
-                rows.push(Row::with_muted(
+                rows.push(Row::with_span(
                     RowKind::ToolCard,
                     start,
                     marker.len(),
+                    theme::tool_card_marker(),
                     text,
                 ));
             } else {
@@ -559,10 +601,12 @@ pub fn display_width(text: &str) -> usize {
 /// the whole row. Cells, not chars, so a wide character cannot overflow the
 /// frame. No character is dropped except the single space a break replaces.
 pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
     let mut rows = Vec::new();
     for hard_line in text.split('\n') {
-        wrap_line(hard_line, width, &mut rows);
+        let cells: Vec<(char, Style)> = hard_line.chars().map(|c| (c, Style::default())).collect();
+        for chunk in split_cells(&cells, width) {
+            rows.push(chunk.into_iter().map(|(c, _)| c).collect());
+        }
     }
     if rows.is_empty() {
         rows.push(String::new());
@@ -570,40 +614,68 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn wrap_line(line: &str, width: usize, rows: &mut Vec<String>) {
-    if line.is_empty() {
-        rows.push(String::new());
-        return;
+/// Split one line of characters into rows of at most `width` cells.
+///
+/// The one wrap algorithm: the plain-text path and the markdown path both go
+/// through it, so a hard split behaves the same whether or not the line is
+/// styled. Each character carries its own style so a wrapped row can carry the
+/// tone of the source span it came from.
+pub(crate) fn split_cells(cells: &[(char, Style)], width: usize) -> Vec<Vec<(char, Style)>> {
+    let width = width.max(1);
+    if cells.is_empty() {
+        return vec![Vec::new()];
     }
-    let mut row: Vec<(char, usize)> = Vec::new();
+    let mut rows = Vec::new();
+    let mut row: Vec<(char, Style)> = Vec::new();
     let mut row_width = 0usize;
     let mut break_at: Option<usize> = None;
-    for ch in line.chars() {
+    for &(ch, style) in cells {
         let cell = ch.width().unwrap_or(0);
         while row_width + cell > width && !row.is_empty() {
             match break_at {
                 Some(index) if index > 0 => {
-                    rows.push(row[..index].iter().map(|(c, _)| *c).collect());
+                    rows.push(row[..index].to_vec());
                     let rest = row.split_off(index + 1);
                     row = rest;
                 }
                 _ => {
-                    rows.push(row.iter().map(|(c, _)| *c).collect());
-                    row.clear();
+                    rows.push(std::mem::take(&mut row));
                 }
             }
-            row_width = row.iter().map(|(_, cell)| *cell).sum();
+            row_width = row.iter().map(|(c, _)| c.width().unwrap_or(0)).sum();
             break_at = row.iter().position(|(c, _)| *c == ' ');
         }
         if ch == ' ' {
             break_at = Some(row.len());
         }
-        row.push((ch, cell));
+        row.push((ch, style));
         row_width += cell;
     }
     if !row.is_empty() {
-        rows.push(row.iter().map(|(c, _)| *c).collect());
+        rows.push(row);
     }
+    rows
+}
+
+/// One row of styled text: the characters, and the runs of tone inside them.
+///
+/// Adjacent characters in the same style become one span, so a paragraph with
+/// one bold word carries three spans and not one per character.
+pub(crate) fn styled_row(
+    cells: Vec<(char, Style)>,
+) -> (String, Vec<(std::ops::Range<usize>, Style)>) {
+    let mut text = String::new();
+    let mut spans: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
+    for (ch, style) in cells {
+        let start = text.len();
+        text.push(ch);
+        let end = text.len();
+        match spans.last_mut() {
+            Some((range, last)) if *last == style && range.end == start => range.end = end,
+            _ => spans.push((start..end, style)),
+        }
+    }
+    (text, spans)
 }
 
 #[cfg(test)]
@@ -877,18 +949,18 @@ mod tests {
             ],
             40,
         );
-        let muted: Vec<&str> = rows
+        let markers: Vec<&str> = rows
             .iter()
-            .filter_map(|row| row.muted.as_ref().map(|range| &row.text[range.clone()]))
+            .flat_map(|row| row.spans.iter().map(|(range, _)| &row.text[range.clone()]))
             .collect();
         assert_eq!(
-            muted,
+            markers,
             vec!["$", ">"],
-            "the marker is the muted span, so the view can draw it gray"
+            "the marker is the row's span, so the view can draw it gray"
         );
 
         // The span is inside the row, so styling never changes the width.
-        for row in rows.iter().filter(|row| row.muted.is_some()) {
+        for row in rows.iter().filter(|row| !row.spans.is_empty()) {
             assert_eq!(
                 display_width(&row.text),
                 40,
@@ -971,7 +1043,7 @@ mod tests {
         let heading_column = column(&heading.text);
         let marker_column = band
             .iter()
-            .find(|row| row.muted.is_some())
+            .find(|row| !row.spans.is_empty())
             .map(|row| column(&row.text))
             .expect("a subject line");
         assert_eq!(

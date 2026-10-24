@@ -1146,6 +1146,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/src/design/tools/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | done |
 | `docs/src/design/tools/checkpoints.md` | Edit journal, undo, relation to git | M4 | done |
 | `docs/src/design/tools/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, output limits | M4 | done |
+| `docs/src/design/tools/container-sandbox.md` | A second mechanism: gVisor over the Docker API on macOS and Linux, the settings layering, services and the relay | M4 | started |
 | `docs/src/design/core/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | done |
 | `docs/src/design/core/subagents.md` | Child policy, caps, transcript surfacing | M5 | done |
 | `docs/src/design/review/code-review.md` | Read-only session review: strip, file tree, unified diff | M6 | done |
@@ -1156,7 +1157,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/src/design/compression/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
 | `docs/src/design/compression/mcp-output.md` | MCP result compression: JSON samples and counts, the line pass, `kind: "mcp"` originals | M9 | done |
 | `docs/src/design/tools/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit. Four slices: Rust with focus, then TypeScript, then Python and Go, then the depth and `compress` knobs | read tools | done |
-| `docs/src/design/shell/tui.md` | Terminal front end: module vs. crate, the TEA loop, the parity map, phases T0–T8. A surface, not a milestone | T0 | done |
+| `docs/src/design/shell/tui.md` | Terminal front end: module vs. crate, the TEA loop, the parity map, phases T0–T6. A surface, not a milestone | T1 | done |
 | `docs/src/design/shell/parallel-front-ends.md` | Per-session lease, the `redb` handle invariant it needs, the degraded transcript, and what parallel processes still share | T0 | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives

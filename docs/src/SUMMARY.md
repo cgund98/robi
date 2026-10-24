@@ -57,6 +57,7 @@
         - [Editing tools](design/tools/editing-tools.md)
         - [Checkpoints](design/tools/checkpoints.md)
         - [Shell tool](design/tools/shell-tool.md)
+        - [Container sandbox](design/tools/container-sandbox.md)
         - [Code outline](design/tools/code-outline.md)
         - [Web tools](design/tools/web-tools.md)
     - [Workspace]()

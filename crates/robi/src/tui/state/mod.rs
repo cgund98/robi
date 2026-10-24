@@ -2,13 +2,18 @@
 //!
 //! `state::transcript` is the one substantial piece: the transcript is
 //! pre-wrapped into rows so both the follow lock and the view are pure
-//! functions of state and a width.
+//! functions of state and a width. `state::composer` owns the text field and
+//! the per-session drafts, and `state::activity` the open turn's phase,
+//! elapsed time, and catch-up counter.
 
+pub mod activity;
+pub mod composer;
+pub mod markdown;
 pub mod transcript;
 
 /// Which surface owns the keyboard. Exactly one at a time.
 ///
-/// T0 only ever enters [`Mode::Chat`]. The rest are declared here because the
+/// T0 only ever entered [`Mode::Chat`]. The rest are declared here because the
 /// mode stack is the shape the later phases fill in, and a keymap that grows a
 /// variant at a time is how a mode ends up half-registered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -38,10 +43,40 @@ pub enum Mode {
     Editor,
 }
 
+/// Which region of the chat frame takes the keystrokes.
+///
+/// T1 is the first phase with a text field on screen, so it is the first that
+/// needs this. It is not cosmetic: without it, `q` typed into the composer
+/// would quit the app. The composer holds focus by default, because typing is
+/// what a chat is for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Focus {
+    /// The text field: every printable key is text.
+    #[default]
+    Composer,
+    /// The transcript: the scroll bindings, `q` to quit, and no text input.
+    Transcript,
+}
+
+impl Focus {
+    /// The other region.
+    pub fn other(self) -> Self {
+        match self {
+            Self::Composer => Self::Transcript,
+            Self::Transcript => Self::Composer,
+        }
+    }
+
+    pub fn is_composer(self) -> bool {
+        self == Self::Composer
+    }
+}
+
 /// How far the open turn has got.
 ///
-/// T0 never leaves [`Phase::Idle`]: there is no composer and no submit. T1
-/// moves it from `message_delta` and `turn_finished`, never from text.
+/// Moved by `message_delta` and `turn_finished`, never by text: the bus drops a
+/// queued delta under backpressure, so the terminal renders stored rows instead
+/// and reads the phase from the stream of frame kinds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Phase {
     /// No turn is running.

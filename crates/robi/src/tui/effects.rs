@@ -58,6 +58,52 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 message: error.to_string(),
             },
         },
+        Action::Submit {
+            session,
+            text,
+            files,
+        } => {
+            // T1 sends text only: the composer has no attachment surface until
+            // T6, and `submit_instruction` rejects an empty instruction with an
+            // empty attachment set on its own.
+            match state
+                .chat_message_service
+                .submit_instruction(session, &text, Vec::new(), files)
+                .await
+            {
+                Ok(outcome) => ActionOutcome::Submitted { session, outcome },
+                Err(error) => ActionOutcome::SubmitFailed {
+                    session,
+                    message: error.to_string(),
+                },
+            }
+        }
+        Action::Stop { session } => match state.chat_message_service.stop(session).await {
+            Ok(()) => ActionOutcome::Stopped { session },
+            Err(error) => ActionOutcome::Failed {
+                generation: None,
+                message: error.to_string(),
+            },
+        },
+        Action::LoadMessage {
+            session,
+            message,
+            generation,
+        } => match state
+            .chat_message_service
+            .get_message(session, message)
+            .await
+        {
+            Ok(message) => ActionOutcome::Message {
+                session,
+                generation,
+                message: Box::new(message),
+            },
+            Err(error) => ActionOutcome::Failed {
+                generation: Some(generation),
+                message: error.to_string(),
+            },
+        },
         Action::SaveView { view } => {
             let state_dir = options.state_dir.clone();
             match blocking::call(move || persist::save(&state_dir, &view)).await {
