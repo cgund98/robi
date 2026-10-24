@@ -82,6 +82,23 @@ pub fn workspace_relative(root: &Path, path: &Path) -> String {
     relative_with_parents(&root, &path)
 }
 
+/// Locate an executable by name on `PATH`.
+///
+/// One definition for the whole crate. Two callers ask the same question — the
+/// `grep` tool, to decide its backend, and the system prompt, to decide whether
+/// to recommend `rg` — and two scans could disagree.
+///
+/// This is the *host* `PATH`. The container sandbox runs the image's `PATH`
+/// instead, so a prompt line built from this answer is a recommendation with its
+/// own fallback rather than a promise.
+pub fn find_binary(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        let candidate = dir.join(name);
+        candidate.is_file().then_some(candidate)
+    })
+}
+
 fn expand_tilde(argument: &str, home: &Path) -> PathBuf {
     if argument == "~" {
         return home.to_path_buf();

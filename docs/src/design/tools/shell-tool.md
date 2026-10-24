@@ -105,8 +105,7 @@ flowchart TD
 
 This table describes the default `os` mechanism, which ships and stays the
 default. A second mechanism runs the command in a gVisor container over the
-Docker API, on macOS as well as Linux; `sandbox_mechanism` selects it, and it is
-behind the `container-sandbox` Cargo feature. See
+Docker API, on macOS as well as Linux; `sandbox_mechanism` selects it. See
 [container-sandbox.md](container-sandbox.md).
 
 ### Filesystem

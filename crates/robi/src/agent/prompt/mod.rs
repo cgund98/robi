@@ -96,6 +96,9 @@ pub struct SessionPrompt<'a> {
     pub workspace: Option<PathBuf>,
     pub mode: AgentMode,
     pub max_bytes: usize,
+    /// `sandbox_mechanism = "container"`. The container mounts the workspace at
+    /// `/workspace`, so the prompt names that path instead of the host one.
+    pub container_sandbox: bool,
 }
 
 /// Built-in prompt, then the user setting, then global files, then the
@@ -108,6 +111,8 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
     };
     let mut assembler = PromptAssembler::new().source(Builtin {
         tools: Arc::new(registry_snapshot(input.tools)),
+        ripgrep: builtin::ripgrep_available(),
+        container_sandbox: input.container_sandbox,
     });
     if let Some(text) = input.user_prompt {
         assembler = assembler.source(UserPrompt { text, max_bytes });
@@ -132,7 +137,11 @@ pub fn assemble_session(input: SessionPrompt<'_>) -> String {
             fallback_files: Vec::new(),
             max_bytes,
         });
-        assembler = assembler.source(WorkingDirectory { path: workspace });
+        // In the container the host path does not exist, and naming it invites a
+        // `cd` that fails. `/workspace` is stated once, in the built-in rules.
+        if !input.container_sandbox {
+            assembler = assembler.source(WorkingDirectory { path: workspace });
+        }
     }
     let skill_home = config_dir.and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
     let skills = crate::agent::skills::scan(skill_home.as_deref(), input.workspace.as_deref());
@@ -246,6 +255,7 @@ mod tests {
             workspace: Some(repo.join("pkg")),
             mode: AgentMode::Ask,
             max_bytes: DEFAULT_MAX_BYTES,
+            container_sandbox: false,
         });
 
         let settings = prompt.find("from settings").unwrap();
@@ -283,6 +293,7 @@ mod tests {
             workspace: Some(repo.clone()),
             mode: AgentMode::Agent,
             max_bytes: DEFAULT_MAX_BYTES,
+            container_sandbox: false,
         });
         assert!(prompt.contains("used"));
         assert!(!prompt.contains("ignored"));
@@ -348,6 +359,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_container_prompt_drops_the_host_working_directory() {
+        let repo = temp_dir("container");
+        let prompt = assemble_session(SessionPrompt {
+            tools: &ToolRegistry::new(),
+            user_prompt: None,
+            config_dir: None,
+            workspace: Some(repo.clone()),
+            mode: AgentMode::Agent,
+            max_bytes: DEFAULT_MAX_BYTES,
+            container_sandbox: true,
+        });
+        // The host path is not mounted at that path inside the container, so
+        // naming it invites a `cd` that fails.
+        assert!(!prompt.contains("<cwd>"));
+        assert!(prompt.contains("Every shell command starts in /workspace"));
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn the_os_prompt_keeps_the_host_working_directory() {
+        let repo = temp_dir("os-mechanism");
+        let prompt = assemble_session(SessionPrompt {
+            tools: &ToolRegistry::new(),
+            user_prompt: None,
+            config_dir: None,
+            workspace: Some(repo.clone()),
+            mode: AgentMode::Agent,
+            max_bytes: DEFAULT_MAX_BYTES,
+            container_sandbox: false,
+        });
+        assert!(prompt.contains("<cwd>"));
+        assert!(!prompt.contains("/workspace"));
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn the_assembled_prompt_matches_the_detected_search_backend() {
+        // Either answer is correct; the two must not disagree, because the
+        // built-in block is the only place the rule comes from.
+        let prompt = prompt_for(AgentMode::Agent, &[]);
+        assert_eq!(
+            prompt.contains("Prefer `rg` to `grep`"),
+            builtin::ripgrep_available()
+        );
+    }
+
     fn prompt_for(mode: AgentMode, tools: &[(&'static str, &'static str)]) -> String {
         let registry = ToolRegistry::new();
         for (name, description) in tools {
@@ -362,6 +420,7 @@ mod tests {
             workspace: None,
             mode,
             max_bytes: DEFAULT_MAX_BYTES,
+            container_sandbox: false,
         })
     }
 }

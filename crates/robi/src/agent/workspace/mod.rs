@@ -6,4 +6,6 @@ mod path_filter;
 mod paths;
 
 pub use path_filter::{directory_exclusion_globs, PathFilter};
-pub use paths::{resolve_path, user_home, workspace_relative, ResolveError, ResolvedPath};
+pub use paths::{
+    find_binary, resolve_path, user_home, workspace_relative, ResolveError, ResolvedPath,
+};

@@ -34,7 +34,12 @@ default chain, built by `assemble_session` when a session actor starts, is:
    path, and how `shell` stays inside the sandbox unless the user approves a
    wider call. When `delegate` is in the registry, the rules tell the model to
    use `delegate` with mode `explore` for a search that spans more than a
-   couple of files. An empty registry says that no tools are registered.
+   couple of files. When `rg` is on the host `PATH`, one rule says to prefer it
+   to `grep` and to fall back to `grep` when it is missing, which a container
+   image may be. When the mechanism is `container`, one rule says every command
+   starts in `/workspace` and forbids a `cd` there, and the `<cwd>` block is
+   dropped because the host path it names is not mounted at that path. An empty
+   registry says that no tools are registered.
 2. **User setting.** The `system_prompt` settings key, when it is non-empty,
    wrapped in `<user_prompt>`.
 3. **`~/.robi/system.md`.** The same tag, when the file exists.

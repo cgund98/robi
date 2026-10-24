@@ -36,12 +36,6 @@ tui = [
     "dep:unicode-width",
     "tokio/signal",
 ]
-# The gVisor container sandbox in `agent/sandbox/container/`: an alternative to
-# bubblewrap and Seatbelt, selected by `sandbox_mechanism`. Off by default so the
-# default build does not compile bollard. Without it, choosing `container` is
-# refused rather than silently falling back to the host.
-container-sandbox = ["dep:bollard"]
-
 [dependencies]
 robi-core = { path = "../robi-core" }
 # Optional: after S1 the default build has no user of `robi-index` at all, which
@@ -91,7 +85,9 @@ rmcp = { version = "0.12", features = [
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
-bollard = { version = "0.21.1", default-features = false, features = ["http", "pipe"], optional = true }
+# The container sandbox in `agent/sandbox/container/`. Selected at run time by
+# `sandbox_mechanism`, not by a Cargo feature: one switch, not two.
+bollard = { version = "0.21.1", default-features = false, features = ["http", "pipe"] }
 
 [[bin]]
 name = "robi-api"

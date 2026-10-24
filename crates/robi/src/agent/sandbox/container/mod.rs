@@ -7,15 +7,19 @@
 //!
 //! Nothing here spawns `docker`. Every call is `bollard` over the daemon socket.
 //!
-//! The three submodules hold the parts that do not need a daemon:
+//! The two submodules hold the parts that do not need a daemon:
 //!
 //! - [`config`] resolves the settings layers.
 //! - [`host`] builds the `HostConfig` and its mounts.
-//! - [`relay`] reaches a service that only listens on the host.
+//!
+//! Egress is per call and approval-gated. A command approved with `network:
+//! "unrestricted"` is connected to [`EGRESS_NETWORK`] for its own duration and
+//! disconnected afterwards; there is no workspace-wide network switch. A service
+//! that only listens on the host is reached the same way, or with
+//! `unsandboxed: true`.
 
 pub mod config;
 pub mod host;
-pub mod relay;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,7 +29,9 @@ use std::time::Duration;
 use bollard::container::LogOutput;
 use bollard::exec::CreateExecOptions;
 use bollard::exec::StartExecResults;
-use bollard::models::{ContainerCreateBody, NetworkConnectRequest};
+use bollard::models::{
+    ContainerCreateBody, NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest,
+};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, KillContainerOptionsBuilder,
     RemoveContainerOptionsBuilder,
@@ -37,10 +43,14 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::sandbox::masks;
+use crate::agent::sandbox::profile::NetworkMode;
 use crate::agent::sandbox::{CommandOutput, Profile, OUTPUT_LIMIT};
 use robi_core::ids::SessionId;
 
 use self::config::{Config, ConfigError};
+
+/// The bridge an approved `network: "unrestricted"` call is attached to.
+pub const EGRESS_NETWORK: &str = "robi-egress";
 
 /// The labels every sandbox container carries, so the reaper can find orphans.
 pub const LABEL: &str = "robi.sandbox";
@@ -78,8 +88,8 @@ struct State {
     name: String,
     masks: Vec<PathBuf>,
     config: Config,
-    /// Where the sandbox dials a declared service. A service name on a shared
-    /// network, or the relay's gateway address.
+    /// Where the sandbox dials a declared service: its DNS name on
+    /// `service_network`. `None` when the workspace declared no service.
     service_host: Option<String>,
     /// Set when the container must be recreated, because its masks, its config,
     /// or its liveness changed.
@@ -105,9 +115,6 @@ impl Sandbox {
     ) -> Result<Self, SandboxError> {
         let docker = Arc::new(Docker::connect_with_local_defaults()?);
         preflight(&docker, &config).await?;
-        if config.uses_relay() {
-            ensure_image(&docker, relay::RELAY_IMAGE).await?;
-        }
 
         let workspace = profile
             .workspace
@@ -149,6 +156,7 @@ impl Sandbox {
         timeout: Duration,
         cancel: CancellationToken,
         config: Config,
+        network: NetworkMode,
     ) -> Result<CommandOutput, SandboxError> {
         // Serialised: the container, its mounts, and its network attachment are
         // per session, and the `shell` tool is exclusive.
@@ -159,11 +167,21 @@ impl Sandbox {
         }
         self.ensure_ready_locked(&mut state).await?;
 
-        let env = config::command_env(
-            &host::base_env(),
-            &state.config,
-            state.service_host.as_deref().unwrap_or(host::RELAY_HOST),
-        );
+        // An approved `network: "unrestricted"` call gets an interface for its own
+        // duration. A container cannot change `network_mode` after creation, but
+        // it can be attached to a bridge and detached again. When the global
+        // toggle already opened the network, the default bridge provides it and
+        // there is nothing to attach.
+        let egress = matches!(network, NetworkMode::Unrestricted) && !state.config.egress_open();
+        if egress {
+            self.connect(&state.name, EGRESS_NETWORK).await?;
+        }
+
+        let env = config::command_env(&host::base_env(), &state.config);
+        // The profile's `cwd` is a host path, guaranteed inside the workspace.
+        // Rebase it, so `cwd: "crates/robi"` runs in `/workspace/crates/robi`
+        // instead of silently running in `/workspace`.
+        let cwd = container_cwd(&self.profile);
         let exec = self
             .docker
             .create_exec(
@@ -177,7 +195,7 @@ impl Sandbox {
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
                     tty: Some(false),
-                    working_dir: Some(host::WORKSPACE.to_owned()),
+                    working_dir: Some(cwd.clone()),
                     user: Some(format!("{}:{}", self.uid, self.gid)),
                     env: Some(env),
                     ..Default::default()
@@ -234,6 +252,12 @@ impl Sandbox {
             state.dirty = true;
         }
 
+        // Egress is for this call only. Leaving the interface attached would give
+        // the next command a network it was never approved for.
+        if egress {
+            self.disconnect_quietly(&state.name, EGRESS_NETWORK).await;
+        }
+
         let exit_code = if killed {
             -1
         } else {
@@ -258,11 +282,11 @@ impl Sandbox {
             stderr,
             truncated,
             killed,
+            cwd: Some(cwd),
         })
     }
 
-    /// Removes the container and the relay. The workspace and the cache volumes
-    /// are left alone.
+    /// Removes the container. The workspace and the cache volumes are left alone.
     pub async fn shutdown(&self) {
         let state = self.state.lock().await;
         let _ = self
@@ -272,7 +296,6 @@ impl Sandbox {
                 Some(RemoveContainerOptionsBuilder::default().force(true).build()),
             )
             .await;
-        relay::remove_all(&self.docker, &self.session.to_string()).await;
     }
 
     async fn ensure_ready(&self) -> Result<(), SandboxError> {
@@ -320,6 +343,8 @@ impl Sandbox {
                     // through `exec`.
                     cmd: Some(vec!["sleep".to_owned(), "infinity".to_owned()]),
                     user: Some(format!("{}:{}", self.uid, self.gid)),
+                    // The mount root, so a command that somehow arrives without an
+                    // exec `working_dir` still starts at the workspace.
                     working_dir: Some(host::WORKSPACE.to_owned()),
                     env: Some(
                         host::base_env()
@@ -358,45 +383,57 @@ impl Sandbox {
     }
 
     /// Joins the network that carries the workspace's declared services.
+    ///
+    /// Reaching one needs a Docker network: the container resolves the service
+    /// name there. A service that only listens on the host is not reachable this
+    /// way, and `config::resolve` refuses the declaration rather than starting a
+    /// container that cannot connect.
     async fn attach_services(&self, state: &mut State) -> Result<(), SandboxError> {
-        let network = state.config.service_network.clone();
-        if let Some(network) = network {
-            if state.config.services.is_empty() {
-                return Ok(());
-            }
-            self.docker
-                .connect_network(
-                    &network,
-                    NetworkConnectRequest {
-                        container: state.name.clone(),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            // Docker's embedded DNS resolves the service name on that network.
-            state.service_host = state
-                .config
-                .services
-                .first()
-                .map(|service| service.name.clone());
+        let Some(network) = state.config.service_network.clone() else {
+            return Ok(());
+        };
+        if state.config.services.is_empty() {
             return Ok(());
         }
-
-        if let Some(relay) =
-            relay::ensure(&self.docker, &self.session.to_string(), &state.config).await?
-        {
-            self.docker
-                .connect_network(
-                    &relay.network,
-                    NetworkConnectRequest {
-                        container: state.name.clone(),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            state.service_host = Some(relay.host);
-        }
+        self.connect(&state.name, &network).await?;
+        // Docker's embedded DNS resolves the service name on that network.
+        state.service_host = state
+            .config
+            .services
+            .first()
+            .map(|service| service.name.clone());
         Ok(())
+    }
+
+    async fn disconnect_quietly(&self, container: &str, network: &str) {
+        let _ = self
+            .docker
+            .disconnect_network(
+                network,
+                NetworkDisconnectRequest {
+                    container: container.to_owned(),
+                    force: Some(true),
+                },
+            )
+            .await;
+    }
+
+    async fn connect(&self, container: &str, network: &str) -> Result<(), SandboxError> {
+        // A user-defined network must exist; the workspace names an existing one.
+        // `robi-egress` is the harness's own and is created on first use.
+        if network == EGRESS_NETWORK {
+            ensure_network(&self.docker, network).await?;
+        }
+        self.docker
+            .connect_network(
+                network,
+                NetworkConnectRequest {
+                    container: container.to_owned(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|err| SandboxError::Setup(format!("connect {network}: {err}")))
     }
 
     /// Docker creates a volume owned by root, and the container runs as the host
@@ -407,14 +444,14 @@ impl Sandbox {
     /// Takes the name rather than locking state: the caller already holds that
     /// lock, and re-entering it would deadlock.
     async fn prepare_home(&self, name: &str) -> Result<(), SandboxError> {
-        self.run_setup(
-            name,
-            &format!("chown -R {}:{} {}", self.uid, self.gid, host::HOME),
-        )
-        .await
+        self.run_setup(name, &chown_script(self.uid, self.gid))
+            .await
     }
 
     /// Runs one setup command as root and waits for it.
+    ///
+    /// The output is kept for the error: a failed setup step is a sandbox that
+    /// cannot start, and `exited 1` on its own does not say why.
     async fn run_setup(&self, name: &str, command: &str) -> Result<(), SandboxError> {
         let exec = self
             .docker
@@ -433,10 +470,19 @@ impl Sandbox {
                 },
             )
             .await?;
-        let attached = self.docker.start_exec(&exec.id, None).await?;
-        if let StartExecResults::Attached { mut output, .. } = attached {
+        let mut collected = String::new();
+        if let StartExecResults::Attached { mut output, .. } =
+            self.docker.start_exec(&exec.id, None).await?
+        {
             // Drain so the setup command is not killed by a closed socket.
-            while output.next().await.is_some() {}
+            while let Some(chunk) = output.next().await {
+                match chunk {
+                    Ok(chunk) => {
+                        collected.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+                    }
+                    Err(err) => return Err(SandboxError::Daemon(err)),
+                }
+            }
         }
         let mut delay = Duration::from_millis(10);
         for _ in 0..200 {
@@ -446,13 +492,19 @@ impl Sandbox {
                 return if code == 0 {
                     Ok(())
                 } else {
-                    Err(SandboxError::Setup(format!("`{command}` exited {code}")))
+                    Err(SandboxError::Setup(format!(
+                        "setup command exited {code}: {}{}",
+                        first_lines(&collected, 8),
+                        hint_for_setup_failure(&collected)
+                    )))
                 };
             }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(Duration::from_millis(200));
         }
-        Err(SandboxError::Setup(format!("`{command}` did not finish")))
+        Err(SandboxError::Setup(
+            "setup command did not finish".to_owned(),
+        ))
     }
 
     async fn remove(&self, name: &str) {
@@ -463,6 +515,81 @@ impl Sandbox {
                 Some(RemoveContainerOptionsBuilder::default().force(true).build()),
             )
             .await;
+    }
+}
+
+/// Where a command runs, in container terms.
+///
+/// The default is the workspace root, so a command that names no `cwd` never needs
+/// a `cd`. A `cwd` is rebased through the same helper the mounts use, so it agrees
+/// with where the directory actually is. A directory that has gone missing falls
+/// back to the root rather than failing the exec, which is what a stale `cwd` on a
+/// fresh checkout looks like.
+fn container_cwd(profile: &Profile) -> String {
+    if !profile.cwd.is_dir() {
+        return host::WORKSPACE.to_owned();
+    }
+    host::target_for(&profile.workspace, &profile.cwd)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The shell script that hands the cache volumes to the host user.
+///
+/// Docker creates a named volume owned by root, and copies the image's ownership
+/// into it on first use. The container runs as the host user, so each volume root
+/// must be reassigned once.
+///
+/// A root whose owner already matches is skipped: on a recreation the volumes are
+/// already correct, and re-walking a populated cargo registry would cost seconds
+/// per container.
+fn chown_script(uid: u32, gid: u32) -> String {
+    let roots = host::CACHE_VOLUMES
+        .iter()
+        .map(|(_, target)| *target)
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        r#"set -e
+for dir in {roots}; do
+  [ -d "$dir" ] || continue
+  owner=$(stat -c %u "$dir" 2>/dev/null || echo unknown)
+  [ "$owner" = "{uid}" ] && continue
+  chown -R {uid}:{gid} "$dir"
+done"#
+    )
+}
+
+/// The first `n` non-empty lines of a command's output.
+fn first_lines(output: &str, n: usize) -> String {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(n)
+        .collect();
+    if lines.is_empty() {
+        "no output".to_owned()
+    } else {
+        lines.join("; ")
+    }
+}
+
+/// A next step for the setup failures worth explaining.
+///
+/// `chown` returning `Operation not permitted` means the container lost
+/// `CAP_CHOWN`, which is what happens if someone tightens the capability set
+/// again. The rest speak for themselves.
+fn hint_for_setup_failure(output: &str) -> String {
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("operation not permitted") {
+        ". The container needs CAP_CHOWN for this: it is granted back after \
+         `cap_drop: [\"ALL\"]` in `host::host_config`"
+            .to_owned()
+    } else if lower.contains("no such file or directory") {
+        ". The image does not have this path; check `docker/agent.Dockerfile`".to_owned()
+    } else {
+        String::new()
     }
 }
 
@@ -505,6 +632,26 @@ async fn ensure_image(docker: &Docker, image: &str) -> Result<(), SandboxError> 
     while let Some(chunk) = pull.next().await {
         chunk.map_err(|err| SandboxError::ImageMissing(image.to_owned(), err.to_string()))?;
     }
+    Ok(())
+}
+
+/// Creates `network` when the daemon does not have it.
+///
+/// Only the harness's own networks are created; a workspace's `service_network`
+/// must already exist, so a typo fails instead of silently starting an empty
+/// network the service is not on.
+async fn ensure_network(docker: &Docker, network: &str) -> Result<(), SandboxError> {
+    if docker.inspect_network(network, None).await.is_ok() {
+        return Ok(());
+    }
+    docker
+        .create_network(NetworkCreateRequest {
+            name: network.to_owned(),
+            driver: Some("bridge".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .map_err(|err| SandboxError::Setup(format!("create network {network}: {err}")))?;
     Ok(())
 }
 
@@ -631,7 +778,9 @@ pub async fn launch(
         return Err(SandboxError::Setup("command is required".to_owned()));
     }
     let sandbox = registry.get(profile, session, config.clone()).await?;
-    sandbox.exec(command, timeout, cancel, config).await
+    sandbox
+        .exec(command, timeout, cancel, config, profile.network)
+        .await
 }
 
 #[cfg(test)]
@@ -717,6 +866,99 @@ mod tests {
         // The container is opt-in: a workspace that sets nothing keeps
         // bubblewrap or Seatbelt.
         assert_eq!(Config::default().mechanism, config::Mechanism::Os);
+    }
+
+    /// A profile whose `cwd` is `sub` inside `root`.
+    fn profile_at(
+        root: &std::path::Path,
+        cwd: std::path::PathBuf,
+    ) -> crate::agent::sandbox::Profile {
+        crate::agent::sandbox::Profile {
+            sandboxed: true,
+            write: crate::agent::sandbox::WriteAccess::ReadWrite,
+            workspace: root.to_path_buf(),
+            home: std::path::PathBuf::from("/home/ada"),
+            temp_dir: std::path::PathBuf::from("/tmp/robi-call"),
+            cwd,
+            network: NetworkMode::Deny,
+            env: Vec::new(),
+            toolchain_reads: Vec::new(),
+            wide_reads: Vec::new(),
+            wide_writes: Vec::new(),
+            extra_writes: Vec::new(),
+            protected_read_files: Vec::new(),
+            protected_write_files: Vec::new(),
+            protected_read_dirs: Vec::new(),
+            protected_write_dirs: Vec::new(),
+            deny_reads: Vec::new(),
+            deny_writes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_default_working_directory_is_the_workspace_mount() {
+        // No `cwd` given: the command starts at the mount root, so it never needs
+        // a `cd /workspace`.
+        let root = crate::agent::sandbox::masks::testing::scratch_dir("container-cwd-default");
+        let profile = profile_at(&root, root.clone());
+        assert_eq!(container_cwd(&profile), "/workspace");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_subdirectory_cwd_is_rebased_under_the_mount() {
+        // The bug this replaced: `cwd` was accepted and then ignored, so every
+        // command ran at the root and a `cd` was the only way down.
+        let root = crate::agent::sandbox::masks::testing::scratch_dir("container-cwd-sub");
+        let sub = root.join("crates/robi");
+        std::fs::create_dir_all(&sub).unwrap();
+        let profile = profile_at(&root, sub);
+        assert_eq!(container_cwd(&profile), "/workspace/crates/robi");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_cwd_falls_back_to_the_mount_root() {
+        // A stale `cwd` after a branch switch should not fail the exec.
+        let root = crate::agent::sandbox::masks::testing::scratch_dir("container-cwd-gone");
+        let profile = profile_at(&root, root.join("deleted"));
+        assert_eq!(container_cwd(&profile), "/workspace");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_chown_script_targets_the_host_user_and_every_volume() {
+        let script = chown_script(502, 20);
+        assert!(script.contains("chown -R 502:20"));
+        for (_, target) in crate::agent::sandbox::container::host::CACHE_VOLUMES {
+            assert!(script.contains(target), "missing {target}");
+        }
+        // `set -e` so a failed chown fails the exec instead of being skipped.
+        assert!(script.starts_with("set -e"));
+    }
+
+    #[test]
+    fn the_chown_script_skips_a_root_that_is_already_correct() {
+        // A recreation must not re-walk a populated cargo registry.
+        let script = chown_script(502, 20);
+        assert!(script.contains(r#"[ "$owner" = "502" ] && continue"#));
+    }
+
+    #[test]
+    fn a_setup_failure_keeps_the_command_output() {
+        let output = "chown: /home/agent: Operation not permitted\n\n";
+        assert_eq!(
+            first_lines(output, 8),
+            "chown: /home/agent: Operation not permitted"
+        );
+        // And it names the likely cause, which is what was missing before.
+        assert!(hint_for_setup_failure(output).contains("CAP_CHOWN"));
+    }
+
+    #[test]
+    fn a_setup_failure_with_no_output_still_says_something() {
+        assert_eq!(first_lines("", 8), "no output");
+        assert_eq!(hint_for_setup_failure(""), "");
     }
 
     #[test]

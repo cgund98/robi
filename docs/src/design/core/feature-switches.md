@@ -17,14 +17,9 @@ Read [streamlining.md](../../streamlining.md) for what each workstream removes.
 | `review` | the `/chat_sessions/{id}/review` routes and the baseline reader | S2 |
 | `edit-tools` | `write_file`, `edit_file`, `delete_file` | S1 |
 | `docs-viewer` | `/workspaces/{id}/docs` and its search | S5 |
-| `container-sandbox` | the gVisor container in `agent/sandbox/container/`, and the `bollard` dependency | — |
 
 `default = []`. The streamlined harness ships; a feature is the return path.
 
-`container-sandbox` is not a streamlining workstream, like `tui`: it is off by
-default only so the default build does not compile `bollard`. With it off,
-`sandbox_mechanism = "container"` is refused with a message naming the feature;
-the command is never run on the host instead.
 
 ## The edges
 

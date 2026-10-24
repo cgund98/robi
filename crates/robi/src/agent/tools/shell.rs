@@ -169,10 +169,19 @@ impl Tool for Shell {
                 ApprovalDecision::NeedsApproval
             };
         }
+        // `network: "unrestricted"` only needs a card when it would change
+        // anything. With `sandbox_network = off` the container already has
+        // egress, so prompting would train the user to approve for nothing.
+        let network_asks = args.network.as_deref() == Some("unrestricted")
+            && self
+                .ctx
+                .setting_value(crate::domain::settings::keys::SANDBOX_NETWORK)
+                .await
+                != crate::domain::settings::keys::NETWORK_OFF;
         if args.unsandboxed
             || !args.read_paths.is_empty()
             || !args.write_paths.is_empty()
-            || args.network.as_deref() == Some("unrestricted")
+            || network_asks
         {
             return ApprovalDecision::NeedsApproval;
         }
@@ -361,7 +370,6 @@ impl Tool for Shell {
             timeout,
             self.ctx.session_id,
         );
-        #[cfg(feature = "container-sandbox")]
         let request = {
             let settings = self.ctx.settings.clone();
             let mechanism =
@@ -387,6 +395,12 @@ impl Tool for Shell {
             "truncated": output.truncated,
             "sandboxed": profile.sandboxed,
         });
+        // The container sandbox runs commands in `/workspace`, not at the host
+        // path. Reporting where the command ran is what stops a `cd` on every
+        // call: the model can see it already starts there.
+        if let Some(cwd) = &output.cwd {
+            payload["cwd"] = json!(cwd);
+        }
         if profile.sandboxed {
             if let Some(hint) = blocked_hint(&output.stderr) {
                 let hint = if self.plan_read_only() {

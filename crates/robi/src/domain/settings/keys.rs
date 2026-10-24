@@ -162,12 +162,24 @@ pub const SANDBOX_CPUS: &str = "sandbox_cpus";
 /// Container process limit. Not a secret.
 pub const SANDBOX_PIDS_LIMIT: &str = "sandbox_pids_limit";
 
-/// `deny` or `unrestricted`. Not a secret.
+/// `on` or `off`. Not a secret.
 ///
-/// `deny` is the default: one command may be approved for egress, but the
-/// workspace does not get it by default. A declared service is a third state and
-/// lives in the workspace file, not here.
+/// `on`, the default, keeps the container's network sandboxed: no interface
+/// unless a call is approved for egress or the workspace declares a service.
+/// `off` gives every sandboxed command full outbound networking.
+///
+/// Global only, and deliberately so: this is one decision about the machine, not
+/// a per-project one. A workspace file cannot reach it.
 pub const SANDBOX_NETWORK: &str = "sandbox_network";
+
+/// The network is sandboxed. The default.
+pub const NETWORK_ON: &str = "on";
+
+/// The container is fully networked to the outside.
+pub const NETWORK_OFF: &str = "off";
+
+/// Written on the first read of [`SANDBOX_NETWORK`].
+pub const DEFAULT_SANDBOX_NETWORK: &str = "on";
 
 /// `on` or `off`. Not a secret. `on` lets a workspace's `.robi/sandbox.toml`
 /// apply, under the settings screen's acknowledgement.
@@ -197,12 +209,6 @@ pub const DEFAULT_SANDBOX_CPUS: &str = "2";
 
 /// Written on the first read of [`SANDBOX_PIDS_LIMIT`].
 pub const DEFAULT_SANDBOX_PIDS_LIMIT: &str = "512";
-
-/// Written on the first read of [`SANDBOX_NETWORK`].
-pub const DEFAULT_SANDBOX_NETWORK: &str = "deny";
-
-/// Every command in the workspace has egress. Set by `sandbox_network`.
-pub const NETWORK_UNRESTRICTED: &str = "unrestricted";
 
 /// The sandbox runs in a gVisor container. Set by `sandbox_mechanism`.
 pub const MECHANISM_CONTAINER: &str = "container";
@@ -340,13 +346,13 @@ pub fn known_setting(key: &str) -> Option<KnownSetting> {
             secret: false,
             default_value: Some(DEFAULT_SANDBOX_PIDS_LIMIT),
         }),
-        SANDBOX_NETWORK => Some(KnownSetting {
-            secret: false,
-            default_value: Some(DEFAULT_SANDBOX_NETWORK),
-        }),
         SANDBOX_PROJECT_FILES => Some(KnownSetting {
             secret: false,
             default_value: Some(DEFAULT_SANDBOX_PROJECT_FILES),
+        }),
+        SANDBOX_NETWORK => Some(KnownSetting {
+            secret: false,
+            default_value: Some(DEFAULT_SANDBOX_NETWORK),
         }),
         _ => None,
     }

@@ -7,6 +7,7 @@ import { GeneralSettings } from '../features/settings/GeneralSettings'
 import { McpSettings } from '../features/settings/McpSettings'
 import { ModelProvidersSettings } from '../features/settings/ModelProvidersSettings'
 import { PermissionsSettings } from '../features/settings/PermissionsSettings'
+import { SandboxSettings } from '../features/settings/SandboxSettings'
 import { SettingsLayout } from '../features/settings/SettingsLayout'
 import { WorkspacesPage } from '../features/workspaces/WorkspacesPage'
 import { chatRoutePaths } from './routes'
@@ -34,6 +35,7 @@ export function SolidApp() {
         <Route path="/providers" component={ModelProvidersSettings} />
         <Route path="/mcp" component={McpSettings} />
         <Route path="/permissions" component={PermissionsSettings} />
+        <Route path="/sandbox" component={SandboxSettings} />
         <Route path="/general" component={GeneralSettings} />
         <Route path="/audit" component={AuditLogSettings} />
       </Route>

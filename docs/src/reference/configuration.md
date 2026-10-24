@@ -35,6 +35,14 @@ file_open_patterns = """
 file_open_command = "zed {file_path}:{line}"
 web_search_approval = "on"
 web_fetch_approval = "on"
+sandbox_mechanism = "os"
+sandbox_image = "robi/agent:0.1.0"
+sandbox_runtime = "runsc"
+sandbox_memory_mb = "4096"
+sandbox_cpus = "2"
+sandbox_pids_limit = "512"
+sandbox_network = "on"
+sandbox_project_files = "off"
 ```
 
 ```toml
@@ -86,6 +94,17 @@ files and later reads always agree.
 | `file_open_command` | no | none | One line. `{file_path}` is the absolute path and `{line}` is the 1-based line of the first change. A click with no line drops `{line}` and a colon before it. The line is split on whitespace into arguments; double quotes group one argument. It is not a shell command. Absent uses the system app. The desktop app posts the path to `POST /api/v1/workspaces/{id}/open` and waits up to 10 seconds. A program still running then has started. A failure to start, or a non-zero exit inside that window, is shown on the edit card. |
 | `web_search_approval` | no | `on` | `on` asks before every `web_search`. `off` runs the search without a card. Read when the session actor starts. |
 | `web_fetch_approval` | no | `on` | `on` asks the first time a host is fetched in the session. `off` fetches without a card. Read when the session actor starts. |
+| `sandbox_mechanism` | no | `os` | `os` runs commands under Seatbelt on macOS or bubblewrap on Linux. `container` runs them in a gVisor container over the Docker API. Read before every `shell` command. |
+| `sandbox_image` | no | `robi/agent:0.1.0` | Image the container starts from, as `repo/name[:tag]`. Whitespace and a leading `-` are refused. Read when the container is created and re-resolved on every command. |
+| `sandbox_runtime` | no | `runsc` | A runtime name in the daemon's runtime map, up to 64 characters of `[A-Za-z0-9_.-]`. |
+| `sandbox_memory_mb` | no | `4096` | Container memory limit in MiB, a whole number from 512 to 65536. |
+| `sandbox_cpus` | no | `2` | Container CPU limit in whole CPUs, from 1 to the machine's CPU count. |
+| `sandbox_pids_limit` | no | `512` | Most processes the container may run at once, a whole number from 64 to 8192. |
+| `sandbox_network` | no | `on` | `on` keeps the container's network sandboxed: no interface unless a single command is approved for egress, or the workspace joins a service network. `off` gives every sandboxed command full outbound networking through the daemon's NAT, and no approval card appears for egress because there is nothing left to grant. Global only: a workspace file cannot change it. |
+| `sandbox_project_files` | no | `off` | `on` lets a workspace's `.robi/sandbox.toml` narrow the sandbox values above, and name services and `[env]` entries that have no global key. `off` ignores the file. A project file can never choose `sandbox_mechanism`. |
+
+The container keys are read only when `sandbox_mechanism` is `container`; they are
+otherwise stored and unused. The **Settings → Sandbox** screen writes all eight.
 
 Any key not on this list is refused. `lsp` used to be one of them and is gone with
 the language-server tools (S4): writing it now returns `unknown setting: lsp`. MCP reads `~/.robi/secrets.toml` for a

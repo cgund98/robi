@@ -136,7 +136,6 @@ project that changes `memory_mb` keeps the user's `image`.
 | `memory_mb` | `sandbox_memory_mb` | `4096` | 512 to 65536 |
 | `cpus` | `sandbox_cpus` | `2` | 1 to the host CPU count |
 | `pids_limit` | `sandbox_pids_limit` | `512` | 64 to 8192 |
-| `network` | `sandbox_network` | `deny` | `deny`, `unrestricted` |
 | `services` | — | empty | `name:port` pairs; workspace file only |
 | `service_network` | — | unset | an existing Docker network; workspace file only |
 | `env` | — | empty | `KEY = "value"`; workspace file only |
@@ -144,8 +143,14 @@ project that changes `memory_mb` keeps the user's `image`.
 The global keys join the existing whitelist in
 `domain/settings/keys.rs`; the values are strings there, so they reuse
 `SettingsService`, `parse_bounded`, and the `on`/`off`-style validator that
-`provider_*` already uses. `sandbox_mechanism`, `sandbox_network`, and
-`sandbox_project_files` take the same two-value check as `web_search_approval`.
+`provider_*` already uses. `sandbox_mechanism` and `sandbox_project_files` take
+the same two-value check as `web_search_approval`.
+
+`sandbox_network` is global only, and it is the one setting that trades the
+container's network boundary for convenience. `on`, the default, keeps the
+sandbox: no interface unless a call is approved for egress or the workspace
+declares a service. `off` gives every sandboxed command full outbound networking.
+A workspace file cannot reach it, so a repository cannot open its own network.
 
 `services`, `service_network`, and `env` have no global key. They name a specific
 project's dependencies, and a machine-wide default would be wrong for every other
@@ -180,6 +185,33 @@ applies to the next command, not to the running container.
 
 On macOS only the mechanism differs. The settings mean the same thing; the
 `runtime` value has to exist in the Linux VM that hosts the daemon.
+
+#### The settings screen
+
+**Settings → Sandbox** is a tab in `src/features/settings/SandboxSettings.tsx`,
+registered in `SettingsLayout.tsx` (`ITEMS`) and routed at `/settings/sandbox` in
+`src/app/SolidApp.tsx`. It reads and writes the eight keys through the generic
+`/api/v1/settings` routes, so there is no sandbox-specific endpoint and no DTO:
+`SETTING_KEYS` in `src/api/settings.ts` names them and `getSettings` loads all
+eight in one request.
+
+The tab has four sections, in the order a user meets the decision:
+
+| Section | Control | Keys |
+|---|---|---|
+| Mechanism | segmented `OS` / `Container` | `sandbox_mechanism` |
+| Container | image and runtime text fields, memory, CPU, and process-limit number fields | `sandbox_image`, `sandbox_runtime`, `sandbox_memory_mb`, `sandbox_cpus`, `sandbox_pids_limit` |
+| Network | segmented `Sandboxed` / `Open` | `sandbox_network` |
+| Project files | switch | `sandbox_project_files` |
+
+The container fields stay editable when the mechanism is `OS`, so a user can
+stage a configuration before switching. A segmented control and the switch write
+on click and revert if the write fails; a text or number field writes on blur, and
+an empty or unchanged value restores what is stored rather than clearing the key,
+because the service refuses an empty value for all five.
+
+The tab does not yet show which layer a value came from. A workspace file's
+pending values, and the resolved value per layer, are still a follow-up.
 
 ### Container lifetime
 
@@ -274,9 +306,10 @@ does not run.
 | `nano_cpus` | `config.cpus`, 2 by default | Bounds a runaway parallel build |
 | `pids_limit` | `config.pids_limit`, 512 by default | Bounds a fork bomb |
 | `cap_drop` | `["ALL"]` | A sandboxed command needs no Linux capability |
+| `cap_add` | `["CHOWN"]` | The one-time setup exec hands the root-owned cache volumes to the host user, and `cap_drop: ALL` would take `CAP_CHOWN` from it too. A non-root exec gains nothing: `no-new-privileges` blocks the setuid and file-capability routes |
 | `security_opt` | `["no-new-privileges:true"]` | A setuid binary in the image cannot raise privilege |
 | `readonly_rootfs` | `false` | The container's own overlay layer accepts `pip install` and `apt-get`; the image is untouched, and the layer dies with the container. See [Container lifetime](#container-lifetime) |
-| `network_mode` | `"none"` | No interface and no DNS unless the call is approved for egress or `config.network` allows it |
+| `network_mode` | `"none"`, or `"bridge"` when `sandbox_network` is `off` | `none` means no interface and no DNS. `bridge` is the default bridge plus the daemon's NAT, which is what "fully networked" means |
 | `init` | `true` | Reaps orphans left by an exec, so the container does not accumulate zombies |
 | `tmpfs` | `/tmp`, `nosuid,size=1g` | A private temp directory that is not a host bind |
 | `log_config` | driver `none` | The stream is the record; the daemon keeps no second copy |
@@ -285,14 +318,10 @@ does not run.
 
 The four settings-backed fields are the ones a project may tune. Everything else
 is fixed: a `sandbox.toml` cannot add a capability, mount the host, or reach the
-network outside the egress approval.
+network outside the egress approval. In particular it cannot add `CHOWN` to a
+setting: the capability set is code, not configuration.
 
-`config.network = "unrestricted"` attaches the egress network for the whole
-session, so every command in that workspace has egress without a card. It is
-`deny` by default, and asking for it in a project file is why the gate above
-exists.
-
-A writable root filesystem is not a way out of the sandbox: `cap_drop: ["ALL"]`,
+A writable root filesystem is not a way out of the sandbox:
 `no-new-privileges`, UID mapping, and the read-only mounts are unchanged. It only
 lets a command change the environment that later commands in the same session
 see.
@@ -352,8 +381,18 @@ filesystem and hides most of it.
 
 Absolute paths outside the workspace are mounted at the same path so a command
 that names one still resolves. Inside the workspace the path changes: the host
-repository is `/workspace`, not its host path. `cwd` is rebased the same way, and
-a command that prints `$PWD` sees `/workspace`.
+repository is `/workspace`, not its host path.
+
+`cwd` is rebased the same way, so the tool's existing `cwd` argument keeps
+working: `cwd: "crates/robi"` runs in `/workspace/crates/robi`. A command that
+names no `cwd` runs at the mount root, which is why a session never needs
+`cd /workspace` — the prompt states that once and forbids the `cd`, and the tool
+result reports `cwd` so the model can see where it ran rather than guess.
+
+The two rules differ by mechanism. The `<cwd>` prompt block carries the *host*
+path, which the container does not have, so the container prompt omits it and the
+built-in rules state `/workspace` instead. Under Seatbelt and bubblewrap the host
+path is correct and the block stays.
 
 `toolchain_reads` is intentionally dropped. Mounting `~/.cargo/bin` into a
 different image gives a binary that links against host libraries the image does
@@ -451,9 +490,15 @@ attached to the service network instead of `none`, because the connection has to
 exist for the whole session, not for one approved call. See [Reaching a dev
 database](#reaching-a-dev-database).
 
-`robi-egress` is a user-defined bridge, created at preflight. It is not the
+`robi-egress` is a user-defined bridge, created on first use. It is not the
 default `bridge`, so the disconnect is unconditional and does not depend on the
 daemon's default-network behaviour.
+
+`sandbox_network = "off"` is the exception, and it is machine-wide. The container
+is created on the default bridge, which reaches the outside through the daemon's
+NAT, so every sandboxed command has egress. A per-call `network:
+"unrestricted"` then asks for nothing and gets no card, because the interface is
+already there.
 
 ### Reaching a dev database
 
@@ -478,32 +523,26 @@ the one that wastes an afternoon:
 | `-p 127.0.0.1:5432:5432` | no | the packet arrives on the bridge interface, and the socket only listens on loopback |
 | `ports: ["127.0.0.1:5432:5432"]` in compose | no | same |
 
-The decision is a `services` list in `sandbox.toml`, with the transport chosen by
-`service_network`:
+The decision is a `services` list in `sandbox.toml`, and every entry needs the
+Docker network it lives on:
 
 ```toml
-# The database is another container on a compose network. Preferred.
 services = ["postgres:5432"]
 service_network = "myproj_default"
 ```
 
-```toml
-# The database is a process on the host, or is bound to 127.0.0.1.
-services = ["postgres:5432"]
-```
-
 `services` is an allowlist, not a blanket. The sandbox joins one network that
-holds those endpoints and has no default route: it cannot resolve or reach
-anything the list does not name. This is not `unrestricted`, and a workspace that
-sets no `services` keeps `network_mode: none`.
+holds those endpoints: it cannot resolve or reach anything the list does not
+name. This is not `unrestricted`, and a workspace that sets no `services` keeps
+`network_mode: none`.
 
 #### A containerized service
 
 When `service_network` names a Docker network, the sandbox joins it for the life
 of the session. Docker's embedded DNS then resolves `postgres` on that network, and
 no host port is involved at all — which is why this is the preferred shape. It
-removes the `127.0.0.1` binding problem, the `host.docker.internal` portability
-problem, and the port collision on 5432 between two projects.
+removes the `127.0.0.1` binding problem entirely and the port collision on 5432
+between two projects.
 
 The blast radius is the network, not the port: joining `myproj_default` lets the
 sandboxed command reach every container on it, not only `postgres:5432`. Put the
@@ -511,41 +550,40 @@ database on its own network if that matters.
 
 #### A host process, or a loopback-bound port
 
-Without `service_network`, the sandbox gets a relay and nothing else. The relay
-is a harness-owned `socat` with one rule per entry in `services`, generated from
-the resolved settings and never from anything the model wrote:
+There is no relay, and that is a deliberate MVP boundary.
 
-```text
-socat TCP-LISTEN:15432,fork,reuseaddr TCP:127.0.0.1:5432
-```
+A service published with `-p 127.0.0.1:5432:5432` listens only on the host's
+loopback. Reaching it from a bridge container needs a process inside the host's
+network namespace — a `socat` container with `network_mode: host`, which was two
+extra moving parts and a standing host-network grant for a case the approval card
+already covers. So this case escalates instead:
 
-Two details in that rule matter.
+| The service is | You can | Cost |
+|---|---|---|
+| On a Docker network | `service_network = "<network>"` and `services` | The blast radius of that network |
+| Published on all interfaces (`-p 5432:5432`) | `network: "unrestricted"` on the call, approved | Egress for that one command |
+| Bound to `127.0.0.1` | `unsandboxed: true`, approved | The command runs on the host |
 
-It forwards to `127.0.0.1:5432`, not to an external address, and the relay runs
-with `network_mode: host`, so it is the one component whose packet originates
-inside the host's network namespace. That is the only way to reach a service bound
-to the host's loopback, and a fixed relay is a smaller trust surface than giving
-the sandbox itself `network_mode: host`.
+The second row is the usual fix and needs no new machinery: `config.network_mode`
+is `bridge` only when `services` is non-empty, and an approved call is otherwise
+attached to `robi-egress` for its own duration. The sandbox then reaches the
+service at the bridge gateway address.
 
-It listens on `15432` rather than `5432`, because the host already has that port
-taken by the Postgres that published it. The sandbox therefore reaches
-`host.docker.internal:15432`, and `POSTGRES_PORT` carries the offset port so a test
-does not need to know. `host.docker.internal` resolves through
-`extra_hosts: ["host.docker.internal:host-gateway"]`, which a stock Linux daemon
-needs and Docker Desktop provides already.
-
-On macOS the relay reaches the published port through the daemon's Linux VM
-instead, because that is where Docker's port proxy listens.
+Declaring `services` without a `service_network` is refused rather than silently
+starting a container that cannot connect: the error names the escalation. That is
+the whole point of dropping the relay — a workspace either has a path to its
+service or it is told why it does not, instead of discovering `Connection refused`
+inside a test run.
 
 #### The address the test sees
 
 The sandbox sets one environment variable per service, so a test reads the
 address instead of hardcoding it:
 
-| Service | Variable | Shared network | Relay |
-|---|---|---|---|
-| `postgres:5432` | `DATABASE_URL` | `postgres://postgres:5432` | `postgres://host.docker.internal:15432` |
-| `postgres:5432` | `POSTGRES_HOST`, `POSTGRES_PORT` | `postgres`, `5432` | `host.docker.internal`, `15432` |
+| Service | Variable | Value |
+|---|---|---|
+| `postgres:5432` | `DATABASE_URL` | `postgres://postgres:5432` |
+| `postgres:5432` | `POSTGRES_HOST`, `POSTGRES_PORT` | `postgres`, `5432` |
 
 Set these in `sandbox.toml` as literals when the test needs something the harness
 cannot guess:
@@ -603,7 +641,9 @@ The image is the `PATH` contract. Add a toolchain to
 ### Execution
 
 `exec` creates one exec per command with `attach_stdout` and `attach_stderr`,
-`tty: false`, `working_dir: /workspace`, and the container user and environment.
+`tty: false`, the rebased `working_dir`, and the container user and environment.
+The container is also created with `/workspace` as its own workdir, so an exec that
+somehow arrives without one still starts there.
 `start_exec` returns `StartExecResults::Attached { output, .. }`, where `output`
 is one multiplexed stream. `LogOutput::StdOut` and `LogOutput::Console` go to the
 stdout buffer, `LogOutput::StdErr` to the stderr buffer, and `LogOutput::StdIn`
@@ -693,23 +733,22 @@ therefore cleaned up without user action.
 
 ## Module layout
 
-The code lives under `crates/robi/src/agent/sandbox/`, behind the
-`container-sandbox` feature. That feature is off by default, so a default build
-compiles no `bollard`; choosing `container` without it is refused rather than run
-on the host.
+The code lives under `crates/robi/src/agent/sandbox/`. `bollard` is an ordinary
+dependency: the container sandbox is selected at run time by `sandbox_mechanism`,
+not by a Cargo feature. One switch, not two, and no way for a build to accept the
+setting and quietly do something else with it.
 
 | File | Role |
 |---|---|
 | `sandbox/masks.rs` | The workspace floor. Every mechanism emits this one list, so `bwrap`, Seatbelt, and the container cannot drift apart |
 | `sandbox/container/config.rs` | The settings layers: `Config`, `Mechanism`, `resolve`, `parse_service`, and the per-command environment |
 | `sandbox/container/host.rs` | The `HostConfig`, its mounts, the UID/GID, and the base environment. Pure construction, so it is testable without a daemon |
-| `sandbox/container/relay.rs` | The `socat` relay for a service that only listens on the host |
 | `sandbox/container/mod.rs` | The lifecycle: preflight, create, exec, streaming, timeout, shutdown, and the per-session registry |
 
-The split is by what needs a daemon. `config`, `host`, and `relay`'s rules are
-functions of the profile and the settings, so their tests run with no Docker at
-all. Only `mod.rs` talks to the socket, and the only part of it with interesting
-logic is `StreamBuffer`, which is unit-tested directly.
+The split is by what needs a daemon. `config` and `host` are functions of the
+profile and the settings, so their tests run with no Docker at all. Only `mod.rs`
+talks to the socket, and the only part of it with interesting logic is
+`StreamBuffer`, which is unit-tested directly.
 
 Each module's tests cover the behaviour its doc comment claims:
 
@@ -718,14 +757,12 @@ Each module's tests cover the behaviour its doc comment claims:
 - `config` — the defaults are `os` with no network; a workspace file overrides only
   the fields it sets; an unacknowledged file contributes nothing; a project file
   cannot name a mechanism; out-of-range values are refused; a service entry needs
-  a name and a port.
+  a name and a port; a service without `service_network` is refused.
 - `host` — the workspace mounts where the container expects it; a read-only profile
   mounts it read-only; a grant inside the workspace is rebased and one outside
   keeps its host path; the floor becomes a `/dev/null` bind; the cache volumes are
   present; the security posture is fixed while the settings-backed fields follow
   the config.
-- `relay` — one rule per service, listening on the offset port, bound to the
-  gateway rather than `0.0.0.0`, forwarding to the host's loopback.
 - `mod` — the two streams stay apart, each gets its own cap, a frame crossing the
   cap is cut, stdin frames are ignored, and invalid UTF-8 does not panic.
 
@@ -745,7 +782,6 @@ pub struct Launch<'a> {
     pub mechanism: Mechanism,
     pub settings: Option<&'a dyn SettingsStore>,
     pub project_trusted: bool,
-    #[cfg(feature = "container-sandbox")]
     pub registry: Option<&'a container::Registry>,
 }
 
@@ -761,9 +797,6 @@ pub async fn launch(request: Launch<'_>) -> Result<CommandOutput, String> {
 }
 ```
 
-`with_registry` is behind the feature, and the field is behind the feature, so a
-default build has no registry to pass and no `bollard` to compile.
-
 `container::Registry::global()` is the only shared state. One daemon, one process,
 one map keyed by session id: a process-wide map keeps the sandbox out of every
 `AgentFactory` and `ToolContext` literal, and it is what lets the container survive
@@ -771,8 +804,8 @@ the per-turn rebuild of the tool registry. `get` returns the cached sandbox with
 comparing config, because `exec` compares it and recreates the container, so one
 place decides whether the container goes.
 
-`shutdown` removes the container and the relay. The workspace and the cache
-volumes are left alone.
+`shutdown` removes the container. The workspace and the cache volumes are left
+alone.
 
 ## Integration guide
 
@@ -787,7 +820,6 @@ let request = crate::agent::sandbox::Launch::new(
     timeout,
     self.ctx.session_id,
 );
-#[cfg(feature = "container-sandbox")]
 let request = {
     let settings = self.ctx.settings.clone();
     let mechanism = container::config::mechanism(settings.as_deref()).await;
@@ -806,7 +838,9 @@ let output = launch(request).await.map_err(ToolError::Failed)?;
 
 The mechanism is read once, before the profile is built, because `os` skips the
 container preflight entirely. A workspace that keeps the default pays one settings
-read for this, not a daemon round trip.
+read for this, not a daemon round trip. `resolve` repeats the read when the
+container path is taken; it is cheap and it keeps the mechanism decision in one
+place.
 
 Nothing after that line changes. The result payload is still:
 
@@ -902,11 +936,12 @@ $ curl -X PUT http://127.0.0.1:1431/api/v1/settings/sandbox_mechanism \
     -H 'content-type: application/json' -d '{"value":"container"}'
 ```
 
-To keep the OS sandbox in one repository and the container in another, leave the
-global setting at `os` and put `mechanism = "container"` in that repository's
-`.robi/sandbox.toml`.
+The setting is global, not per workspace: `mechanism` is absent from
+`.robi/sandbox.toml`, so a repository cannot decide whether its own code is
+containerised. A workspace file tunes the container — image, limits, services,
+environment — for a machine that already runs one.
 
-The harness creates `robi-egress` and the six volumes on first use. Remove them
+The harness creates `robi-egress` and the cache volumes on first use. Remove them
 only when the user asks, with `docker network rm` or `docker volume rm`.
 
 ## Rejected alternatives
@@ -958,11 +993,18 @@ only when the user asks, with `docker network rm` or `docker volume rm`.
   current design already rejects. A refusal names the `os` mechanism instead.
 - **`network_mode: host` for the sandbox, so it can reach `localhost`.** That is
   the whole host network namespace, and it removes the boundary this page exists
-  for. A fixed relay reaches the loopback port with a rule the model cannot
-  change.
-- **Declaring a service by port only, with no allowlist.** That is
-  `sandbox_network = "unrestricted"` under another name. `services` names the
-  endpoints the workspace needs.
+  for. An approved `network: "unrestricted"` call reaches egress without it.
+- **A `socat` relay container for a loopback-bound port.** Two extra containers
+  and a standing `network_mode: host` grant to solve a case the approval card
+  already covers. `unsandboxed: true` is the escalation, and the user sees it.
+- **A per-workspace network toggle.** The switch is global, so a repository
+  cannot open its own network. It is also named for what it does (`Open`, not
+  `unrestricted`) and sits beside the mechanism it affects.
+- **An approval card on every command when the network is open.** There is
+  nothing left to grant, so the card would only train the user to approve
+  without reading. The toggle is the one place the decision is made.
+- **Declaring a service by port only, with no allowlist.** That is unrestricted
+  egress under another name. `services` names the endpoints the workspace needs.
 - **Mounting the Docker socket so the test can start its own database.** That is
   root on the host behind a path, and it is the standard container escape. The
   project provides the service.
@@ -1002,15 +1044,22 @@ only when the user asks, with `docker network rm` or `docker volume rm`.
 - A test that connects to `localhost` reports `Connection refused`, or to an
   undeclared service reports `Network is unreachable`. Neither is a sandbox bug;
   name the service in `sandbox.toml` and read the address from the environment.
-- A service published to `127.0.0.1` and declared without `service_network` works
-  through the relay. Declared with `service_network`, it fails: a container on a
-  bridge cannot reach the host's loopback. Publish on all interfaces, or drop
-  `service_network`.
-- The relay container cannot bind its port because something else on the host
-  holds it: the error names the port; the relay port is `service port + 10000`.
-- A volume cannot be written after preparation: the first command fails with
-  `Permission denied` on a path under `/home/agent`. The preparation exec logs
-  the failing `chown`; check that the container user matches the volume owner.
+- `services` is declared without `service_network`: the sandboxed call is refused
+  with the escalation named, and the command does not run.
+- `sandbox_network = "off"` and a command cannot reach a host port anyway: the
+  default bridge still cannot see the host's loopback. Publish on all interfaces
+  or use `unsandboxed: true`.
+- A service published to `127.0.0.1` is not reachable from the sandbox even with
+  `service_network`. Publish it on all interfaces, or approve `network:
+  "unrestricted"` for the call, or run that command with `unsandboxed: true`.
+- The setup exec fails: `setup command exited N: <its output>`, with a hint when
+  the output names a known cause. `chown: ...: Operation not permitted` means the
+  container lost `CAP_CHOWN`, which is what `cap_drop: ["ALL"]` does on its own.
+  `No such file or directory` means the image lacks the path.
+- A volume cannot be written after a successful setup: the first command fails
+  with `Permission denied` on a path under `/home/agent`. Setup skips a volume
+  root whose owner already matches, so a root left root-owned by a failure stays
+  that way until the container is recreated.
 - A command exceeds `tool_timeout_seconds` or the call is cancelled: the
   container is killed, the result is `exit_code: -1`, `killed: true`, and stderr
   ends with `command was killed`. The next command recreates the container.
@@ -1039,10 +1088,12 @@ only when the user asks, with `docker network rm` or `docker volume rm`.
 - **GPU and device access.** The profile drops all capabilities and mounts no
   devices. A project that needs a GPU needs a new, explicit grant, not a
   privileged container.
-- **A settings screen for the container.** The keys work through the existing
-  `/api/v1/settings` routes today. A form that shows the resolved value per layer,
-  and the project file's pending values before acknowledgement, belongs with the
-  settings UI.
+- **A resolved-value view.** The **Settings → Sandbox** tab writes the eight
+  global keys, but it shows what is stored, not what will apply. A form that
+  shows the value each layer contributes — the default, the global key, and the
+  workspace file — and the project file's pending values before acknowledgement,
+  would make the layering visible. It needs a read route that returns the
+  resolved `Config`, which does not exist yet.
 - **Measured overhead.** gVisor intercepts syscalls, so a `cargo build` is slower
   than the same build under `bwrap`, and on macOS it also crosses the VM boundary.
   Publish the number for a reference build so the choice between `os` and

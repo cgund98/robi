@@ -211,11 +211,7 @@ fn rg_arguments(query: &GrepQuery, globs: &[String]) -> Vec<String> {
 }
 
 fn find_rg() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
-        let candidate = dir.join("rg");
-        candidate.is_file().then_some(candidate)
-    })
+    crate::agent::workspace::find_binary("rg")
 }
 
 async fn search_ripgrep(

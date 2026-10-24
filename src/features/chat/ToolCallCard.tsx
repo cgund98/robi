@@ -118,6 +118,7 @@ export function ToolCallCard(props: {
             output={shellDetail()?.output ?? ''}
             originalId={props.call.original_id}
             status={<StatusMark status={status()} />}
+            running={status() === 'running'}
           />
         </Show>
         <Show when={detail()?.kind === 'retrieve' && props.call.name !== 'delegate'}>
@@ -576,13 +577,22 @@ function ShellCard(props: {
   actions?: JSX.Element
   status?: JSX.Element
   defaultOpen?: boolean
+  running?: boolean
 }) {
   const shown = useCappedOutput(
     () => chat.activeSessionId,
     () => props.originalId,
     () => props.output
   )
-  const [open, setOpen] = createOpen(props.expansionKey, props.defaultOpen ?? false)
+  const [open, setOpen] = createOpen(
+    props.expansionKey,
+    (props.defaultOpen ?? false) || (props.running ?? false)
+  )
+  createEffect(() => {
+    if (props.running && expandedToolCalls.get(props.expansionKey) === undefined) {
+      setOpen(true)
+    }
+  })
   return (
     <Show
       when={open()}

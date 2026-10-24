@@ -121,14 +121,11 @@ impl SettingsService {
                 keys::MECHANISM_CONTAINER
             )));
         }
-        if key == keys::SANDBOX_NETWORK
-            && value != keys::DEFAULT_SANDBOX_NETWORK
-            && value != keys::NETWORK_UNRESTRICTED
-        {
+        if key == keys::SANDBOX_NETWORK && value != keys::NETWORK_ON && value != keys::NETWORK_OFF {
             return Err(ServiceError::BadRequest(format!(
                 "{key} must be {} or {}",
-                keys::DEFAULT_SANDBOX_NETWORK,
-                keys::NETWORK_UNRESTRICTED
+                keys::NETWORK_ON,
+                keys::NETWORK_OFF
             )));
         }
         if key == keys::FILE_OPEN_PATTERNS {

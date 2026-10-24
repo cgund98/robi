@@ -9,7 +9,6 @@
 //! replaces the other.
 
 mod bwrap;
-#[cfg(feature = "container-sandbox")]
 pub mod container;
 mod env;
 mod launch;
@@ -27,21 +26,9 @@ pub use profile::{
 };
 pub use seatbelt::seatbelt_policy;
 
-/// Which sandbox runs a command.
-///
-/// Re-exported from the container module when the feature is on, so the setting
-/// has one definition. Without the feature the enum still exists, with only
-/// [`Mechanism::Os`] reachable: choosing `container` is then refused.
-#[cfg(feature = "container-sandbox")]
+/// Which sandbox runs a command. Defined once, in the container module, so the
+/// setting and the dispatch cannot disagree.
 pub use container::config::Mechanism;
-
-#[cfg(not(feature = "container-sandbox"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Mechanism {
-    #[default]
-    Os,
-    Container,
-}
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -60,6 +47,12 @@ pub struct CommandOutput {
     pub stderr: String,
     pub truncated: bool,
     pub killed: bool,
+    /// The directory the command actually ran in, as the sandbox sees it.
+    ///
+    /// `Some` only for the container mechanism, where the path differs from the
+    /// host's. The tool reports it so the model does not have to run `pwd` to
+    /// learn where it is, and does not guess a `cd`.
+    pub cwd: Option<String>,
 }
 
 /// Everything one call needs beyond the profile.
@@ -74,8 +67,7 @@ pub struct Launch<'a> {
     pub settings: Option<&'a dyn crate::domain::settings::store::SettingsStore>,
     /// Whether the workspace acknowledged its `sandbox.toml`.
     pub project_trusted: bool,
-    /// The session's containers. Present only in a build that has them.
-    #[cfg(feature = "container-sandbox")]
+    /// The session's containers, reused across calls.
     pub registry: Option<&'a container::Registry>,
 }
 
@@ -96,7 +88,6 @@ impl<'a> Launch<'a> {
             mechanism: Mechanism::Os,
             settings: None,
             project_trusted: false,
-            #[cfg(feature = "container-sandbox")]
             registry: None,
         }
     }
@@ -118,7 +109,6 @@ impl<'a> Launch<'a> {
     }
 
     /// Attaches the session registry the container mechanism reuses.
-    #[cfg(feature = "container-sandbox")]
     pub fn with_registry(mut self, registry: &'a container::Registry) -> Self {
         self.registry = Some(registry);
         self
@@ -179,7 +169,6 @@ async fn launch_os(
     .await
 }
 
-#[cfg(feature = "container-sandbox")]
 async fn launch_container(request: Launch<'_>) -> Result<CommandOutput, String> {
     let Some(registry) = request.registry else {
         return Err(
@@ -216,17 +205,6 @@ async fn launch_container(request: Launch<'_>) -> Result<CommandOutput, String> 
     )
     .await
     .map_err(|err| format!("sandbox could not be applied: {err}"))
-}
-
-#[cfg(not(feature = "container-sandbox"))]
-async fn launch_container(_request: Launch<'_>) -> Result<CommandOutput, String> {
-    // This build has no container sandbox. Refuse rather than run the command on
-    // the host: a setting the user chose must not become a silent bypass.
-    Err(
-        "sandbox could not be applied: this build has no container sandbox. \
-         Rebuild with `--features container-sandbox`, or set sandbox_mechanism to os."
-            .to_owned(),
-    )
 }
 
 fn launch_argv(profile: &Profile, command: &str) -> Result<Vec<String>, String> {

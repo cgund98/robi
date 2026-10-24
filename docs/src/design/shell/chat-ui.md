@@ -119,7 +119,7 @@ A turn that is still running, or waiting on approval, does not show it.
 
 Tool rows from later iterations of the same turn sit in that same stack, with
 no extra gap between quiet rows. An edit card has a little space above and
-below it. A shell card has a little space above and below it, so two panels do not touch. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
+below it. A shell card has a little space above and below it, so two panels do not touch. It opens itself when its command starts running, and completion leaves it open. Closing it is the user's choice, remembered across transcript refreshes. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
 `Listed`), and the path or pattern. A `read_file` call that names `offset` and
 `limit` adds the inclusive window after the path, in `--ink-faint`, as `L240-299`.
 `limit` alone is `L1-N`. `offset` alone is `L240`. A call that reads the whole file

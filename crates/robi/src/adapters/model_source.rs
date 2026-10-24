@@ -203,6 +203,11 @@ impl ModelSource for SettingsModelSource {
             Some(setting) if !setting.value.trim().is_empty() => Some(setting.value),
             _ => None,
         };
+        // Resolved before the blocking call: the prompt needs to know whether the
+        // workspace will be mounted at `/workspace` or stay at its host path.
+        let container_sandbox =
+            crate::agent::sandbox::container::config::mechanism(Some(self.settings.as_ref())).await
+                == crate::agent::sandbox::Mechanism::Container;
         let tools_for_prompt = Arc::clone(&tools);
         settings.system_prompt = crate::agent::blocking::call(move || {
             crate::agent::prompt::assemble_session(crate::agent::prompt::SessionPrompt {
@@ -212,6 +217,7 @@ impl ModelSource for SettingsModelSource {
                 workspace,
                 mode,
                 max_bytes: crate::agent::prompt::DEFAULT_MAX_BYTES,
+                container_sandbox,
             })
         })
         .await

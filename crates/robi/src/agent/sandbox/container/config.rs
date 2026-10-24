@@ -59,14 +59,20 @@ pub struct Config {
     pub memory_mb: u32,
     pub cpus: u32,
     pub pids_limit: u32,
-    /// Whether every command in the workspace has egress, not just an approved
-    /// call. `false` is the default.
-    pub egress: bool,
     /// Endpoints the workspace declares, as `(name, port)`.
+    ///
+    /// Reaching one needs `service_network`: the container joins that Docker
+    /// network and resolves the name. A service that only listens on the host is
+    /// not reachable this way, and the escalation is an approved `network:
+    /// "unrestricted"` call or `unsandboxed`.
     pub services: Vec<Service>,
-    /// The Docker network holding those services. `None` reaches them through
-    /// the host relay instead.
+    /// The Docker network holding those services.
     pub service_network: Option<String>,
+    /// `sandbox_network = "off"`: every sandboxed command reaches the outside.
+    ///
+    /// A machine-wide trust decision the user makes once. Per call, the default
+    /// is the opposite: no interface unless that call was approved for egress.
+    pub network_open: bool,
     /// Project environment after the secret filter.
     pub env: BTreeMap<String, String>,
 }
@@ -97,14 +103,6 @@ impl Service {
     }
 }
 
-/// The port the relay listens on.
-///
-/// Offset from the service port, because the host's own listener already holds
-/// the original: a Postgres published on 5432 cannot also be relayed on 5432.
-pub fn relay_port(port: u16) -> u16 {
-    port.saturating_add(10_000)
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -114,9 +112,9 @@ impl Default for Config {
             memory_mb: 4096,
             cpus: 2,
             pids_limit: 512,
-            egress: false,
             services: Vec::new(),
             service_network: None,
+            network_open: false,
             env: BTreeMap::new(),
         }
     }
@@ -131,21 +129,29 @@ impl Config {
         i64::from(self.memory_mb) * 1024 * 1024
     }
 
-    /// `none` unless the workspace declared a service. A declared service is
-    /// attached for the whole session, so the container needs a network to
-    /// attach to.
+    /// The interface the container starts with.
+    ///
+    /// `bridge` only when `sandbox_network` is `off`: the default bridge plus the
+    /// daemon's NAT is what "fully networked to the outside" means.
+    ///
+    /// A declared service does *not* switch this to `bridge`. Doing that would put
+    /// the container on the default bridge as well as its service network, so
+    /// declaring a database would quietly grant full outbound egress. The service
+    /// network is attached with `connect_network` instead, which works from
+    /// `none`.
     pub fn network_mode(&self) -> &'static str {
-        if self.services.is_empty() && !self.egress {
-            "none"
-        } else {
+        if self.network_open {
             "bridge"
+        } else {
+            "none"
         }
     }
 
-    /// True when the services are reached through the host relay rather than a
-    /// shared Docker network.
-    pub fn uses_relay(&self) -> bool {
-        !self.services.is_empty() && self.service_network.is_none()
+    /// Whether the container already reaches the outside without a per-call
+    /// approval. Then an approved `network: "unrestricted"` call needs no extra
+    /// interface, because the default bridge already provides one.
+    pub fn egress_open(&self) -> bool {
+        self.network_open
     }
 }
 
@@ -161,7 +167,6 @@ struct ProjectFile {
     memory_mb: Option<u32>,
     cpus: Option<u32>,
     pids_limit: Option<u32>,
-    egress: Option<bool>,
     #[serde(default)]
     services: Vec<String>,
     service_network: Option<String>,
@@ -183,6 +188,12 @@ pub enum ConfigError {
     Pids(u32),
     #[error("services entry `{0}` must look like `name:port`")]
     Service(String),
+    #[error(
+        "a declared service needs `service_network` naming the Docker network it is on. \
+         A service that only listens on the host is not reachable from the sandbox: \
+         publish it on all interfaces, or approve `network: \"unrestricted\"` for the call"
+    )]
+    ServiceNetworkRequired,
 }
 
 pub const MIN_MEMORY_MB: u32 = keys::SANDBOX_MEMORY_FLOOR_MB;
@@ -204,7 +215,7 @@ pub async fn mechanism(settings: Option<&dyn SettingsStore>) -> Mechanism {
 /// Resolves the three layers.
 ///
 /// `trusted` is `sandbox_project_files` being on. Without it the workspace file
-/// contributes nothing: `image` and `egress` are privilege decisions, and a
+/// contributes nothing: `image` and `network` are privilege decisions, and a
 /// cloned repository should not make them.
 pub async fn resolve(
     settings: Option<&dyn SettingsStore>,
@@ -216,6 +227,10 @@ pub async fn resolve(
     if let Some(settings) = settings {
         config.mechanism =
             Mechanism::parse(read(settings, keys::SANDBOX_MECHANISM).await.as_deref());
+        // `off` is the only value that opens the network; anything unreadable
+        // stays sandboxed.
+        config.network_open =
+            read(settings, keys::SANDBOX_NETWORK).await.as_deref() == Some(keys::NETWORK_OFF);
         if let Some(value) = read(settings, keys::SANDBOX_IMAGE).await {
             config.image = value;
         }
@@ -231,8 +246,6 @@ pub async fn resolve(
         if let Some(value) = read(settings, keys::SANDBOX_PIDS_LIMIT).await {
             config.pids_limit = value.parse().unwrap_or(config.pids_limit);
         }
-        config.egress = read(settings, keys::SANDBOX_NETWORK).await.as_deref()
-            == Some(keys::NETWORK_UNRESTRICTED);
     }
 
     if trusted {
@@ -280,9 +293,6 @@ fn apply_project_file(config: &mut Config, file: ProjectFile) -> Result<(), Conf
     }
     if let Some(pids_limit) = file.pids_limit {
         config.pids_limit = pids_limit;
-    }
-    if let Some(egress) = file.egress {
-        config.egress = egress;
     }
     // `mechanism` is deliberately absent from `ProjectFile`. A repository does
     // not get to decide whether its own code is containerised.
@@ -345,6 +355,9 @@ fn validate(config: &Config) -> Result<(), ConfigError> {
     if !(MIN_PIDS..=MAX_PIDS).contains(&config.pids_limit) {
         return Err(ConfigError::Pids(config.pids_limit));
     }
+    if !config.services.is_empty() && config.service_network.is_none() {
+        return Err(ConfigError::ServiceNetworkRequired);
+    }
     Ok(())
 }
 
@@ -369,17 +382,13 @@ async fn read(settings: &dyn SettingsStore, key: &str) -> Option<String> {
 /// The base environment, then one address per declared service so a test reads a
 /// host instead of hardcoding one, then the project's `[env]`, which wins. The
 /// secret filter already ran on `[env]`.
-pub fn command_env(base: &[(String, String)], config: &Config, relay_host: &str) -> Vec<String> {
+pub fn command_env(base: &[(String, String)], config: &Config) -> Vec<String> {
     let mut env: BTreeMap<String, String> = base
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     for service in &config.services {
-        let (host, port) = if config.uses_relay() {
-            (relay_host.to_owned(), relay_port(service.port))
-        } else {
-            (service.name.clone(), service.port)
-        };
+        let (host, port) = (service.name.clone(), service.port);
         let upper = service.upper();
         env.entry(format!("{upper}_URL"))
             .or_insert_with(|| service.url(&host, port));
@@ -419,7 +428,38 @@ mod tests {
         assert_eq!(config.runtime, "runsc");
         assert_eq!(config.memory_mb, 4096);
         assert_eq!(config.network_mode(), "none");
-        assert!(!config.uses_relay());
+    }
+
+    #[tokio::test]
+    async fn the_global_toggle_off_opens_the_network() {
+        let store = store_with(&[(keys::SANDBOX_NETWORK, keys::NETWORK_OFF)]).await;
+        let config = resolve(Some(store.as_ref()), Path::new("/nonexistent"), false)
+            .await
+            .unwrap();
+        assert!(config.network_open);
+        assert_eq!(config.network_mode(), "bridge");
+        assert!(config.egress_open());
+    }
+
+    #[tokio::test]
+    async fn the_global_toggle_defaults_to_on() {
+        // Nothing stored: the network stays sandboxed.
+        let config = resolve(None, Path::new("/nonexistent"), false)
+            .await
+            .unwrap();
+        assert!(!config.network_open);
+        assert_eq!(config.network_mode(), "none");
+    }
+
+    #[tokio::test]
+    async fn a_workspace_file_cannot_open_the_network() {
+        // The toggle is a machine-wide trust decision. `deny_unknown_fields`
+        // makes the attempt a parse error rather than a silent no-op.
+        let root = scratch_dir("cfg-network");
+        std::fs::write(root.join(PROJECT_FILE), "network = \"off\"\n").unwrap();
+        let error = resolve(None, &root, true).await.unwrap_err();
+        assert!(matches!(error, ConfigError::Parse(_)), "got {error:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -427,7 +467,6 @@ mod tests {
         let store = store_with(&[
             (keys::SANDBOX_MECHANISM, "container"),
             (keys::SANDBOX_MEMORY_MB, "8192"),
-            (keys::SANDBOX_NETWORK, "unrestricted"),
         ])
         .await;
         let config = resolve(Some(store.as_ref()), Path::new("/nonexistent"), false)
@@ -435,8 +474,8 @@ mod tests {
             .unwrap();
         assert_eq!(config.mechanism, Mechanism::Container);
         assert_eq!(config.memory_mb, 8192);
-        assert!(config.egress);
-        assert_eq!(config.network_mode(), "bridge");
+        // The toggle is untouched, so the network stays sandboxed.
+        assert_eq!(config.network_mode(), "none");
     }
 
     #[tokio::test]
@@ -444,7 +483,7 @@ mod tests {
         let root = scratch_dir("cfg-layer");
         std::fs::write(
             root.join(PROJECT_FILE),
-            "memory_mb = 16384\nservices = [\"postgres:5432\"]\n",
+            "memory_mb = 16384\nservice_network = \"myproj_default\"\nservices = [\"postgres:5432\"]\n",
         )
         .unwrap();
         let store = store_with(&[
@@ -522,12 +561,6 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_port_does_not_collide_with_the_service_port() {
-        assert_eq!(relay_port(5432), 15432);
-        assert_ne!(relay_port(5432), 5432);
-    }
-
-    #[test]
     fn the_secret_filter_drops_a_credential_bearing_url() {
         // `[env]` filtering happens in `apply_project_file`; this pins the
         // predicate it relies on.
@@ -536,24 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_service_is_addressed_through_the_relay() {
-        let config = Config {
-            services: vec![Service {
-                name: "postgres".to_owned(),
-                port: 5432,
-            }],
-            ..Config::default()
-        };
-        assert!(config.uses_relay());
-
-        let env = command_env(&[], &config, "host.docker.internal");
-        assert!(env.contains(&"POSTGRES_HOST=host.docker.internal".to_owned()));
-        assert!(env.contains(&"POSTGRES_PORT=15432".to_owned()));
-        assert!(env.contains(&"POSTGRES_URL=postgres://host.docker.internal:15432".to_owned()));
-    }
-
-    #[test]
-    fn a_shared_network_addresses_the_service_by_name() {
+    fn a_declared_service_is_addressed_by_name_on_its_network() {
         let config = Config {
             services: vec![Service {
                 name: "postgres".to_owned(),
@@ -562,11 +578,26 @@ mod tests {
             service_network: Some("myproj_default".to_owned()),
             ..Config::default()
         };
-        assert!(!config.uses_relay());
 
-        let env = command_env(&[], &config, "unused");
+        let env = command_env(&[], &config);
         assert!(env.contains(&"POSTGRES_HOST=postgres".to_owned()));
         assert!(env.contains(&"POSTGRES_PORT=5432".to_owned()));
+        assert!(env.contains(&"POSTGRES_URL=postgres://postgres:5432".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_service_without_a_network_is_refused() {
+        // Without the relay there is no path to a host-only port, and a silent
+        // no-op would make the test fail later with `Connection refused`. The
+        // error names the escalation instead.
+        let root = scratch_dir("cfg-service-no-network");
+        std::fs::write(root.join(PROJECT_FILE), "services = [\"postgres:5432\"]\n").unwrap();
+        let error = resolve(None, &root, true).await.unwrap_err();
+        assert!(
+            matches!(error, ConfigError::ServiceNetworkRequired),
+            "got {error:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -582,7 +613,7 @@ mod tests {
             "POSTGRES_URL".to_owned(),
             "postgres://app@postgres:5432/app".to_owned(),
         );
-        let env = command_env(&[], &config, "host.docker.internal");
+        let env = command_env(&[], &config);
         assert!(env.contains(&"POSTGRES_URL=postgres://app@postgres:5432/app".to_owned()));
     }
 }

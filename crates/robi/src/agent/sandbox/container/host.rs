@@ -39,10 +39,6 @@ pub const CACHE_VOLUMES: &[(&str, &str)] = &[
     ("agent_npm_cache", "/home/agent/.npm"),
 ];
 
-/// The hostname the relay is reached on. `host-gateway` backs it on Linux;
-/// Docker Desktop provides it already.
-pub const RELAY_HOST: &str = "host.docker.internal";
-
 /// The invoking user's UID.
 ///
 /// `std::process` has no accessor, and the crate has no `nix` dependency, so this
@@ -82,16 +78,6 @@ pub fn container_name(session: &str) -> String {
     format!("robi-agent-{session}")
 }
 
-/// The relay container for one session.
-pub fn relay_name(session: &str) -> String {
-    format!("robi-agent-{session}-relay")
-}
-
-/// The per-session bridge that carries the relay.
-pub fn relay_network_name(session: &str) -> String {
-    format!("robi-agent-{session}-net")
-}
-
 /// The `HostConfig` for the sandbox container.
 pub fn host_config(config: &Config, mounts: Vec<Mount>) -> HostConfig {
     HostConfig {
@@ -102,16 +88,24 @@ pub fn host_config(config: &Config, mounts: Vec<Mount>) -> HostConfig {
         memory_swap: Some(config.memory_bytes()),
         nano_cpus: Some(config.nano_cpus()),
         pids_limit: Some(i64::from(config.pids_limit)),
-        // A sandboxed command needs no capability, and a setuid binary in the
-        // image cannot regain one.
+        // The model's commands run as the host user, so they hold no effective
+        // capability whatever the bounding set says: a non-root process only gains
+        // one through a setuid binary or file capabilities, and
+        // `no-new-privileges` blocks both.
         cap_drop: Some(vec!["ALL".to_owned()]),
+        // `CHOWN` is back for one reason: Docker creates a named volume owned by
+        // root, and the container runs as the host user. The one-time setup exec
+        // runs as root and needs this to hand the volume over, and `cap_drop: ALL`
+        // would otherwise take it away. A non-root exec never holds it effectively.
+        cap_add: Some(vec!["CHOWN".to_owned()]),
         security_opt: Some(vec!["no-new-privileges:true".to_owned()]),
         // Writable on purpose: `pip install` lands in the container's own overlay
         // layer, which is what lets a later command in the same session use it.
         // The image is untouched and the layer dies with the container.
         readonly_rootfs: Some(false),
-        // `none` unless the workspace declared a service or asked for egress. A
-        // declared service network is attached after start.
+        // `none` unless the workspace declared a service. A declared service
+        // network is attached after start; an approved egress call is connected
+        // for its own duration and disconnected afterwards.
         network_mode: Some(config.network_mode().to_owned()),
         // Reaps the orphans an exec leaves behind.
         init: Some(true),
@@ -129,11 +123,6 @@ pub fn host_config(config: &Config, mounts: Vec<Mount>) -> HostConfig {
             name: Some(RestartPolicyNameEnum::NO),
             maximum_retry_count: None,
         }),
-        // Needed for `host.docker.internal` on a stock Linux daemon. Docker
-        // Desktop provides the name already; the entry is harmless there.
-        extra_hosts: config
-            .uses_relay()
-            .then(|| vec![format!("{RELAY_HOST}:host-gateway")]),
         mounts: Some(mounts),
         ..Default::default()
     }
@@ -226,10 +215,16 @@ pub fn grants(profile: &Profile) -> Vec<Grant> {
 }
 
 /// Rebase a host path to where the container sees it.
+///
+/// The workspace itself rebases to exactly `/workspace`: `join("")` would produce
+/// `/workspace/`, which Docker accepts but is the wrong string to hand a model or
+/// put in a mount table.
 pub fn target_for(workspace: &Path, path: &Path) -> PathBuf {
-    path.strip_prefix(workspace)
-        .map(|relative| Path::new(WORKSPACE).join(relative))
-        .unwrap_or_else(|_| path.to_path_buf())
+    match path.strip_prefix(workspace) {
+        Ok(relative) if relative.as_os_str().is_empty() => PathBuf::from(WORKSPACE),
+        Ok(relative) => Path::new(WORKSPACE).join(relative),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 fn bind(source: &Path, target: &str, writable: bool) -> Mount {
@@ -438,6 +433,10 @@ mod tests {
         let config = Config::default();
         let host = host_config(&config, Vec::new());
         assert_eq!(host.cap_drop, Some(vec!["ALL".to_owned()]));
+        // Granted back so the one-time `chown` of the volume roots can run as root.
+        // A non-root exec gains nothing from it: `no-new-privileges` blocks setuid
+        // and file capabilities.
+        assert_eq!(host.cap_add, Some(vec!["CHOWN".to_owned()]));
         assert_eq!(
             host.security_opt,
             Some(vec!["no-new-privileges:true".to_owned()])
@@ -466,30 +465,35 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_service_switches_the_network_mode() {
+    fn a_declared_service_does_not_open_the_default_bridge() {
         let config = Config {
             services: vec![Service {
                 name: "postgres".to_owned(),
                 port: 5432,
             }],
+            ..Config::default()
+        };
+        let host = host_config(&config, Vec::new());
+        // Attached with `connect_network` at start, so declaring a database does
+        // not also hand the container outbound egress through the default bridge.
+        assert_eq!(host.network_mode.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn the_global_toggle_opens_the_default_bridge() {
+        let config = Config {
+            network_open: true,
             ..Config::default()
         };
         let host = host_config(&config, Vec::new());
         assert_eq!(host.network_mode.as_deref(), Some("bridge"));
-        assert!(host.extra_hosts.is_some());
     }
 
     #[test]
-    fn a_shared_service_network_does_not_need_the_host_gateway() {
-        let config = Config {
-            services: vec![Service {
-                name: "postgres".to_owned(),
-                port: 5432,
-            }],
-            service_network: Some("myproj_default".to_owned()),
-            ..Config::default()
-        };
-        let host = host_config(&config, Vec::new());
+    fn a_sandboxed_network_means_no_interface() {
+        let host = host_config(&Config::default(), Vec::new());
+        assert_eq!(host.network_mode.as_deref(), Some("none"));
+        // Nothing a settings file can do adds a host gateway entry.
         assert!(host.extra_hosts.is_none());
     }
 
