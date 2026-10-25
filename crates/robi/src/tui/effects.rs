@@ -10,9 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::blocking;
 use crate::agent::workspace::{resolve_path, user_home};
-use crate::domain::chat_session::model::{
-    AgentMode, CreateChatSessionCommand, ModelConfig, UpdateChatSessionCommand,
-};
+use crate::domain::chat_session::model::{CreateChatSessionCommand, UpdateChatSessionCommand};
 use crate::tui::action::{Action, ActionOutcome};
 use crate::tui::app::Msg;
 use crate::tui::persist;
@@ -122,6 +120,69 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 },
             }
         }
+        Action::LoadModels { generation } => {
+            let models =
+                crate::adapters::model_source::pickable_models(&state.settings_service).await;
+            match crate::adapters::model_source::ModeDefaults::load(&state.settings_service).await {
+                Ok(defaults) => ActionOutcome::Models {
+                    generation,
+                    models,
+                    defaults,
+                },
+                Err(error) => ActionOutcome::failed(error.to_string()),
+            }
+        }
+        Action::LoadSkills {
+            workspace,
+            generation,
+        } => match skills_for(state, workspace).await {
+            Ok(skills) => ActionOutcome::Skills {
+                workspace,
+                generation,
+                skills,
+            },
+            Err(message) => ActionOutcome::Failed {
+                generation: Some(generation),
+                message,
+            },
+        },
+        Action::SetSessionMode { session, mode } => {
+            let command = crate::domain::chat_session::model::UpdateChatSessionCommand::set_mode(
+                session, mode,
+            );
+            match state
+                .chat_session_service
+                .update_chat_session(command)
+                .await
+            {
+                Ok(session) => ActionOutcome::SessionUpdated(Box::new(session)),
+                Err(error) => ActionOutcome::failed(error.to_string()),
+            }
+        }
+        Action::SetSessionChoice {
+            session,
+            mode,
+            pick,
+        } => {
+            let command = crate::domain::chat_session::model::UpdateChatSessionCommand::set_choice(
+                session,
+                mode,
+                pick.key(),
+                pick.value(),
+            );
+            match state
+                .chat_session_service
+                .update_chat_session(command)
+                .await
+            {
+                Ok(session) => ActionOutcome::SessionUpdated(Box::new(session)),
+                Err(error) => ActionOutcome::failed(error.to_string()),
+            }
+        }
+        Action::Compact { session } => match state.chat_message_service.compact(session).await {
+            Ok(()) => ActionOutcome::Compacted { session },
+            Err(error) => ActionOutcome::failed(error.to_string()),
+        },
         Action::LoadOriginal {
             session,
             call,
@@ -201,18 +262,27 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
             workspace,
             text,
             files,
+            mode,
+            model_config,
         } => {
             // The landing page's one gesture: create the row, then send into it.
             // Creating first is what makes the row exist at all — the terminal has
             // no draft session — and sending immediately is what keeps an
             // abandoned new chat from leaving an empty one behind.
+            // The draft's mode and choice ride into the create, exactly as the
+            // webview's `draftConfig` does: the terminal has no draft session, so
+            // the first message is what fixes them.
             let command = CreateChatSessionCommand {
                 workspace_id: workspace,
                 title: None,
-                mode: AgentMode::Agent,
-                model_config: ModelConfig::default(),
+                mode,
+                model_config,
             };
-            let session = match state.chat_session_service.create_chat_session(command).await {
+            let session = match state
+                .chat_session_service
+                .create_chat_session(command)
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => return ActionOutcome::failed(error.to_string()),
             };
@@ -238,7 +308,11 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
         }
         Action::RenameSession { session, title } => {
             let command = UpdateChatSessionCommand::rename(session, title);
-            match state.chat_session_service.update_chat_session(command).await {
+            match state
+                .chat_session_service
+                .update_chat_session(command)
+                .await
+            {
                 Ok(session) => ActionOutcome::SessionRenamed(Box::new(session)),
                 Err(error) => ActionOutcome::RenameFailed {
                     message: error.to_string(),
@@ -253,7 +327,11 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                     message: error.to_string(),
                 };
             }
-            match state.chat_session_service.delete_chat_session(session).await {
+            match state
+                .chat_session_service
+                .delete_chat_session(session)
+                .await
+            {
                 Ok(()) => ActionOutcome::SessionDeleted { session },
                 Err(error) => ActionOutcome::DeleteFailed {
                     message: error.to_string(),
@@ -285,10 +363,7 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 error: match probe.await {
                     Ok(Ok(_)) => None,
                     Ok(Err(error)) => Some(error.to_string()),
-                    Err(_) => Some(format!(
-                        "no answer in {} s",
-                        PROBE_TIMEOUT.as_secs()
-                    )),
+                    Err(_) => Some(format!("no answer in {} s", PROBE_TIMEOUT.as_secs())),
                 },
             }
         }
@@ -365,8 +440,8 @@ fn absolute_path(argument: &str) -> Result<String, String> {
     }
     let cwd = std::env::current_dir().map_err(|error| format!("no working directory: {error}"))?;
     let home = user_home().map_err(|error| error.to_string())?;
-    let resolved =
-        resolve_path(&cwd, argument, &home).map_err(|error| format!("could not resolve: {error}"))?;
+    let resolved = resolve_path(&cwd, argument, &home)
+        .map_err(|error| format!("could not resolve: {error}"))?;
     Ok(resolved.absolute.to_string_lossy().into_owned())
 }
 
@@ -416,6 +491,45 @@ async fn complete(text: &str) -> Vec<String> {
     let mut read = read;
     read.truncate(CANDIDATE_LIMIT);
     read
+}
+
+/// This workspace's user-invocable skills, mapped to the menu's row type.
+///
+/// The scan walks the filesystem, so it goes through `agent::blocking::call` the
+/// way every other blocking read in this crate does. The whole `Skill` is not
+/// carried any further than here: the menu shows an id, a label, a description and
+/// a scope, and the body is loaded by the runtime from the message text.
+async fn skills_for(
+    state: &AppState,
+    workspace: robi_core::ids::WorkspaceId,
+) -> Result<Vec<crate::tui::state::completion::SkillEntry>, String> {
+    let workspace = state
+        .workspace_service
+        .get_workspace(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let root = std::path::PathBuf::from(&workspace.root);
+    let root = root.canonicalize().unwrap_or(root);
+    let home = crate::adapters::settings::home_dir()
+        .ok()
+        .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
+    let skills =
+        blocking::call(move || crate::agent::skills::user_invocable(home.as_deref(), Some(&root)))
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(skills
+        .into_iter()
+        .map(|skill| {
+            let scope = crate::tui::state::completion::SkillScope::parse(skill.scope_name());
+            crate::tui::state::completion::SkillEntry {
+                id: skill.id,
+                label: skill.label,
+                description: skill.description,
+                scope,
+                manual: !skill.model_invocable,
+            }
+        })
+        .collect())
 }
 
 /// Write the view state before the process leaves, and wait for it.

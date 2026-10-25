@@ -313,7 +313,7 @@ the index itself, so nothing in the frame carries an index line.
 
 | GUI surface | TUI form | Phase |
 |---|---|---|
-| `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans; user turns as a blue-railed band | T1 |
+| `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans; every message railed in the ink of the mode that produced its turn | T1, T4 |
 | `Composer` textarea, drafts per session | text area, draft kept per session in `App`, in memory | T1 |
 | Send / Stop button | `Enter` / `Esc` (`Ctrl-C` also stops) | T1, T2 |
 | `ActivityLine`, streaming | status strip above the composer: `Thinking for 4s` and animated dots, at the end of the transcript | T1 |
@@ -328,11 +328,13 @@ the index itself, so nothing in the frame carries an index line.
 | MCP marks in the tray | one word at the header's right edge: `MCP Online` / `MCP Failed` (per-server detail later) | T3 |
 | New chat | `Ctrl-N`: the landing page, and no session until the first message | T3 |
 | `EmptyGreeting` + welcome composer | the landing page: the greeting centred in green, the composer under it | T3 |
-| Mode `ChoiceMenu` | mode cycle in the header | T4 |
-| `ModelEffortMenu` | model picker overlay | T4 |
-| `SkillMenu` (`@` at the caret) | `@` completion over the composer | T4 |
-| `ContextMeter` | token count in the status strip, compact from a menu | T4 |
-| Compact | `Ctrl-L`, divider row on `transcript_compacted` | T4 |
+| Mode `ChoiceMenu` | `Ctrl-T` cycles, `/mode` names one; the word and the rail colour are the state | T4 |
+| `ModelEffortMenu` | `Ctrl-M`: one overlay with a model group and an effort group, `Use default` in each | T4 |
+| `SkillMenu` | `@` completion over the composer, with `· manual` and scope; accepting leaves `@id ` | T4 |
+| `ContextMeter` | the token count at the right edge of the composer's facts row | T4 |
+| Compact | `Ctrl-L` or `/compact`, behind a confirmation; divider row on `transcript_compacted` | T4 |
+| Composer command surface | `/models`, `/sessions`, `/workspaces`, `/new`, `/rename`, `/mode`, `/compact`, `/help` — each a keybinding's twin | T4 |
+| Nothing (the design promised `?`) | `?` from the transcript, or `/help`: a page of every key and command | T4 |
 | General settings | settings surface, section list | T5 |
 | Model provider settings | settings surface, secrets masked | T5 |
 | Permissions, MCP, audit log | settings surface, audit paged | T5 |
@@ -640,21 +642,38 @@ flight.
 
 ### T4 — Modes, model, effort, skills, context
 
-**Goal** — everything the composer carries, minus attachments.
+**Goal** — everything the composer carries, minus attachments. **Done.**
 
-- Mode cycle (ask → plan → agent) writing to `model_config[mode]` on the session
-  row, or to the draft when there is no row yet.
-- Model and effort pickers over `ModelCatalog::tool_capable()` filtered by the
-  provider-enabled settings — the same filter `web_api/models.rs` applies. That
-  helper is lifted, not copied; see *Gaps*.
-- `/` completion over two kinds of name: built-in commands (see *Composer
-  commands*), then `list_skills(workspace_id)` with `· manual` and scope,
-  replacing the token with `/id `.
-- Context meter from `Usage` on the last assistant message; `Ctrl-L` compacts and
-  a divider row appears on `transcript_compacted`.
+- **The facts row is the composer band's last row**: `Agent · GLM-5.3 ·
+  OpenCode Go · High` on the left, the token meter on the right. It is the row
+  `view/composer.rs` already reserved as the band's bottom padding, so the band does
+  not grow and T3's layout is untouched. See *The composer band*.
+- **The rail is the mode.** Agent `--accent`, ask `--mode-ask`, plan `--mode-plan`,
+  on the user band and the composer — not on the assistant's reply, which is the
+  model's output rather than a statement of mode. The colour follows the mode a
+  message was **submitted** under, so a plan-mode message keeps its orange after
+  `Ctrl-T`; see *The mode on the rail*.
+- `Ctrl-T` cycles ask → plan → agent, writing `mode` on the session row or the draft
+  when there is no row yet.
+- `Ctrl-M` opens one picker over `pickable_models` — `tool_capable()` filtered by the
+  provider-enabled settings, the same function `/api/v1/models` calls. That helper
+  is lifted, not copied; see *Gaps*. **Effort comes first**: three fixed rows should
+  not sit below thirty models.
+- **Two sigils.** `@` completes this workspace's skills (`· manual` and scope) and
+  leaves `@id `; `/` completes commands, and each one is a keybinding's twin. See
+  *The two sigils* and *Composer commands*.
+- A leading `@` or `/` that names nothing is **refused without being sent**, and the
+  field keeps its text.
+- The meter is `contextUsage.ts`'s estimate, ported; `Ctrl-L` compacts behind a
+  confirmation, and the divider appears on `transcript_compacted`.
+- `?` from the transcript, or `/help`: a page of every key and command, sectioned,
+  with its own scroll. The key was documented since T0 and never mapped.
 
-**Exit** — switch model and mode mid-session, invoke a skill with `/`, compact and
-see the divider. The next actor picks up the override.
+**Exit** — cycle the mode mid-session and watch the band and the new turn's rail
+change colour while the earlier turns keep theirs; pick another model and put it
+back with `Use default`; type `@` and accept a skill; send, press `Ctrl-L`, answer
+`y`, and see the divider and a smaller meter; type `/nope` and get a refusal with
+the text still in the field.
 
 ### T5 — Settings
 
@@ -725,11 +744,13 @@ owns the keyboard; `chat` is the base.
 | `sessions` | `Ctrl-S` | `Esc`; `Ctrl-W` replaces it |
 | `workspaces` | `Ctrl-W` | `Esc`, which steps back a screen before closing; `Ctrl-S` replaces it |
 | `manage` | the switcher's `Manage workspaces…` row | `Esc`, back to the chat; `Ctrl-S` and `Ctrl-W` replace it |
-| `models` | `Ctrl-M` | `Esc` |
+| `models` | `Ctrl-M`, or `/models` | `Enter` writes and closes; `Esc` closes |
+| `help` | `?` from the transcript, or `/help` | `Esc`, back to the chat |
+| `complete` (the `/` and `@` menu) | typing the sigil in the composer | `Enter`/`Tab` accept; `Esc` closes the menu alone; it closes itself when nothing matches |
 | `settings` | `Ctrl-,` | `Esc` |
 | `detail` | `Enter` on a card | `Esc`, back to the transcript |
 | `prompt` (reject reason, rename) | `r` on a pending card, `Ctrl-R` | `Enter`, or `Esc` which keeps the text where that matters |
-| `confirm` (delete a session or workspace) | `Ctrl-D` / `Del` in a list | `y` accepts; `n` or `Esc` cancels back to the list |
+| `confirm` (delete a session or workspace, compact) | `Ctrl-D` / `Del` in a list, `Ctrl-L`, `/compact` | `y` accepts; `n` or `Esc` cancels back to the list |
 
 The confirmation is its own mode rather than a flag on the list because the list's
 field owns printable keys: `y` would otherwise be a character in a filter and an
@@ -766,7 +787,11 @@ Global bindings, checked before the mode's own map:
 | `PageUp` / `PageDown` | Scroll by a screen, and release the follow lock |
 | `Ctrl-U` / `Ctrl-D` | Half a screen |
 | `Home` / `End` | The first row / the last, which re-arms the follow lock |
-| `?` | Keymap help |
+| `Ctrl-T` | Cycle the mode: ask → plan → agent |
+| `Ctrl-M` | The model and effort picker |
+| `Ctrl-L` | Compact, behind a confirmation |
+| `?` | The help page — transcript focus only, because `?` typed in the field is a character |
+| `/` | Commands, and `@` skills, as completion over the field |
 
 **Focus is part of the keymap, not a check inside a handler.** From T1 the
 composer is on screen for the whole life of the process, so `q` cannot mean
@@ -869,6 +894,137 @@ the hint below.
   parked under the draft key the GUI's `composerDrafts.ts` uses for a chat with no
   row yet.
 
+### The composer band
+
+The webview puts the mode, model and effort controls inside the composer, and the
+terminal does the same: the band's last row carries them, on the band's own surface,
+with the rail unbroken beside.
+
+```text
+  ┃ Message robi…
+  ┃
+  ┃ Agent · GLM-5.3 · OpenCode Go · High            214k / 1.0M · 21%
+  ┃
+```
+
+**The facts row is boxed in by a blank row on each side.** The facts say what the
+next send will carry; the text is what is being typed, so a gap above stops the mode
+line reading as part of the message. The gap below keeps it off the band's bottom
+edge, so it is a caption on the band rather than the field's last line. The band is
+four rows taller than the text — a padding row, the text, a blank row, the facts row,
+a blank row — and `App::body_height` follows `Composer::height`.
+
+**Every span on the row carries the band's background.** The theme's text helpers are
+built for the canvas, so a `theme::faint()` separator here paints `--bg-canvas` in the
+middle of a `--surface` band, which reads as a dark dot. The background is patched
+last, the same rule `rows::row` follows and for the same reason: a colour helper must
+not be able to punch a hole in a band.
+
+- **Clipping order**: the meter goes first, then the provider, then the effort, then
+  the model. The mode word is never cut — it is the one fact the row exists to state
+  and the one `Ctrl-T` changes.
+- The provider name is derived from the id's prefix (`ProviderKind::display_name`),
+  never stored: one less field to fall out of step with the model.
+- **Before the first settings read** the row names the mode and nothing else. A
+  guessed model id would be the band lying about what the next send carries.
+- The model's name is the catalog's, with the `OCG - ` prefix where the webview's
+  `modelDisplayName` adds one, so the two front ends label a model the same way.
+
+### The mode on the rail
+
+| Mode | Token | Ink |
+|---|---|---|
+| Agent | `--accent` | `#55a2fb` |
+| Ask | `--mode-ask` | `#6fbf7a` |
+| Plan | `--mode-plan` | `#e39a3c` |
+
+**Two surfaces wear it: the composer's rail and a user message's band.** A mode is
+what a *person* asked for, so it colours what they typed and what they are about to
+type, and it stops there. A reply is the model's output, not a statement of mode.
+
+**Assistant prose gained a rail in T4**, and that is the phase's one layout change: it
+wraps one rail and one pad narrower and starts in the same column as a user message.
+Its rail is `--ink-faint` — the quiet tone a tool card's rail wears — in every mode.
+
+**Per message, not per session.** The band says which mode *that* message was typed
+under, so a session cycled from plan into agent keeps a readable history. Nothing else
+remembers that: the session row holds only the mode in force now. So the mode is
+stamped on the **user message** itself (`Message::mode`, an opaque label
+`robi-core`'s loop writes and never reads back). A message with no stamp — everything
+written before the label existed — follows the session's current mode, so an old
+transcript is one coherent colour rather than a bare one.
+
+**Tool cards keep their own rail.** A card is machinery inside the turn, not the
+turn's voice. Its waiting rail is `--attention`, which is now **cyan** (`#4ec9d6`)
+rather than `--mode-plan`'s orange: with the mode's ink on the band and the composer,
+a card asking a question in a plan-mode turn would otherwise share the one colour the
+turn already wears, and the question would be the least visible thing in the frame. The palette documented
+`--attention` as a second name for that value "so 'this needs you' can diverge"; T4
+is when it does. The animated `waiting for approval` dots stay `--ink-muted`: the cyan
+is one cell and the word does the rest.
+
+### One overlay style
+
+Every panel over the frame — the sessions list, the workspaces switcher, the manage
+view, the model picker, the `/` and `@` menu, and a confirmation — is drawn by
+`rows::panel` and `rows::row`. That is not tidiness: it is what stops one surface
+having a background the next one lacks.
+
+- **`rows::panel`** erases the rect (`Clear`, then a canvas `Block`), draws one
+  `Block::bordered()` with `--ink-faint` sides and a strong title, and hands back the
+  inner rect. A panel that forgot the clear let the transcript's empty state read
+  through it; a panel that built its own background painted a darker rectangle than
+  the one beside it. One function, one answer.
+- **`rows::row`** paints each row's background *last*, over the span's own style, and
+  pads to the panel's width. A theme helper carries `--bg-canvas`; composed in the
+  other order it replaces a selection with the canvas, which is the bug that made the
+  first cut of these panels look wrong on screen.
+- **A heading is a row too.** A group label in the picker is painted on the same band
+  as any other row, so the label does not end in a ragged darker patch.
+- **The completion menu** is the one panel that places itself instead of centring: it
+  belongs at the caret, one keystroke above the field. It uses the same border and
+  fill, so the difference is its position alone.
+
+**A confirmation is a panel**, in `view/confirm.rs`. A question that takes the keyboard
+should look like it takes the keyboard, and the row it used to occupy came out of the
+transcript — so asking about a compaction moved the transcript under the reader's eyes.
+It takes no layout row: `App::prompt_rows` counts the one-line prompt only.
+
+### The two sigils
+
+| Prefix | Kind | Source | On submit |
+|---|---|---|---|
+| `/` | built-in command | `tui/command.rs`, a fixed table | the terminal acts, and the field clears |
+| `@` | skill mention | `list_skills` for this workspace | sent as text, unchanged |
+
+- **`/` lists commands and nothing else**, and each one is a keybinding's twin — see
+  *Composer commands*. A `/` token that names a skill is refused with the sigil to
+  use instead: `"/create-skill is a skill — type @create-skill"`. Two prefixes only
+  stay distinct if each one holds its side.
+- **`@` lists this workspace's user-invocable skills**, marked `· manual` when the
+  model may not invoke them and with their scope. Accepting rewrites the token in place
+  and adds a space; the message is then sent as typed, and the runtime loads the skill
+  from the mention.
+- **A leading token that names nothing is refused**, and the text stays exactly as it
+  was typed. `/nope` is never sent to the model as prose, because the terminal acting
+  as though a command ran is worse than saying it does not exist.
+- **Only the first token of the first line decides.** `either/or` mid-message, a path,
+  and a mention the domain cannot resolve are prose; `agent::skills::loads_for_text`
+  already ignores an unknown mention, and refusing a message for what it says in the
+  middle would be the terminal reading over the user's shoulder.
+- A refusal is a `Notice::error` in the footer — an answer to a keystroke — while a
+  failure the app *observed* stays on the strip.
+- **The domain reads both sigils.** `agent::skills::mention_ids` matches `[ @/ ]` after
+  whitespace, so the webview keeps `/` and the terminal adds `@`, with one loader
+  behind both.
+
+The menu is `Mode::Complete` while it is open, because `keys::command` is a pure
+function of `(Mode, Focus, KeyEvent)` and cannot see whether a menu is up: `↑`/`↓`
+move, `Enter`/`Tab` accept, `Esc` closes the menu alone (so it never becomes the
+interrupt, and a running turn is not stopped by dismissing a menu), and every other
+printable key goes to the field, after which the query is recomputed and the menu
+closes itself when nothing matches. A picked command takes one more `Enter` to run.
+
 ### The status strip
 
 One row between the transcript and the composer, and it is the only place a
@@ -963,50 +1119,68 @@ it is answered with a notice rather than a decision.
 
 ## Composer commands
 
-`/` is a command prefix, the same prefix the GUI uses for skills. The TUI keeps
-one namespace and two kinds of name, so a user does not have to remember which
-list to look in:
+`/` and `@` are the two prefixes, and each one is honest about what it does: see
+*The two sigils*. A command never reaches the model; a skill mention always does.
 
-| Kind | Source | Sent to the model? |
-|---|---|---|
-| Built-in | `tui/command.rs`, a fixed table | Never. The TUI acts, then clears the composer |
-| Skill | `list_skills(workspace_id)`, as today | Yes, unchanged |
+| Command | Argument | Key | Does |
+|---|---|---|---|
+| `/models` | none | `Ctrl-M` | the model and effort picker |
+| `/sessions` | none | `Ctrl-S` | the sessions overlay |
+| `/workspaces` | none | `Ctrl-W` | the workspace switcher |
+| `/new` | none | `Ctrl-N` | the landing page |
+| `/rename` | optional title | `Ctrl-R` | the rename prompt, or the title outright |
+| `/mode` | optional `ask`\|`plan`\|`agent` | `Ctrl-T` | cycle, or set that mode |
+| `/compact` | none | `Ctrl-L` | the confirmation, then the compact |
+| `/help` | none | `?` | the help page |
 
-The completion menu merges both, built-ins first, and marks a skill
-`· manual` as the GUI does. A built-in wins a name collision, because a skill
-that quietly shadowed `/open` would break the one path to an external file, so
-the menu renders such a skill as unavailable rather than hiding it.
+**Every command is a keybinding's twin.** They are not a second interface with
+powers of their own; they are the discoverable spelling of keys a reader may not
+know yet, and `state/help.rs` prints the pair. That is also why `/settings` waits
+for T5: a command that opened nothing would be a menu row that lies.
 
-One built-in command:
+`Arg` is `None`, `Optional` or `Required` in the table, so T6's `/open <path>` is
+one entry and no new parser. A command given an argument it does not take is
+refused by name rather than ignored.
 
-| Command | Does |
-|---|---|
-| `/open <path>` | Resolve `<path>` inside the workspace, then run the configured `file_open_command` with `{file_path}` and `{line}` substituted |
+### The help page
 
-`/open` follows the rules of `POST /workspaces/{id}/open`, deliberately: the same
-confinement, the same template rendering, the same 10-second wait before the
-process is left running, and the same refusal when `file_open_command` is unset.
-There is no `$EDITOR` fallback and no in-app viewer. A path outside the workspace
-is an error in the composer, not a prompt.
+`/help`, or `?` from the transcript, opens a dedicated view — the shape `manage` and
+`detail` use, because a reader who opened it went somewhere on purpose. Sections, in
+the order a reader meets them: **Sending**, **Moving**, **Approvals**, **Overlays and
+views**, **Composing**, **Commands**, **Leaving**.
 
-`<path>` accepts a trailing `:<line>` — `/open crates/robi/src/tui/app.rs:210` —
-so a line number from an edit card survives the round trip. Invalid input, an
-absolute path, and an unset command each produce one line under the composer and
-leave the buffer intact, so the user can fix the path instead of retyping it.
+**The list is data, and it fails the build rather than drifting.** `state/help.rs`
+holds `SECTIONS` of `Entry { keys, what, command }`, and `section_of(Command)` is an
+exhaustive `match` over `Command`: a new keybinding is a new `Command` variant, so the
+crate does not compile until the binding is classified. Two tests close the rest — no
+key is listed twice in one section, and every entry is filed in a section
+`section_of` gives it. A command genuinely in two places says so: `Ctrl-C` stops a
+turn, declines a paused batch and leaves from idle, and `Alt-Enter`/`Ctrl-J` are two
+spellings of one `Newline`.
 
-A focused tool card offers the same command pre-filled for its path; that is a
-typing shortcut, not a second code path.
+**The Commands section is generated** from `command::BUILT_INS`, so a new command
+appears on the page the moment it exists. `/help` is also the one command whose key
+was documented and missing: the global bindings table has promised `?` since T0, and
+T4 finally maps it.
+
+The guard's honest scope: it catches an unclassified or misfiled *command*, not a
+stale *key string*. `keys` is prose, so rebinding `Ctrl-T` and leaving the row alone
+would pass every test. Documenting every binding is enforced; keeping every string
+true is a review duty.
 
 ## Gaps to lift out of `web_api`
 
-Three pieces of logic live in a controller and are needed by the TUI. Each one is
+Four pieces of logic a controller owned and the TUI also needs. Each one is
 **lifted into `domain` (or `agent`), never copied**: two front ends reading one
-implementation is the point of the module boundary.
+implementation is the point of the module boundary. Three landed in T4 with their
+callers switched over.
 
 | Logic | Today | Needed by | Action |
 |---|---|---|---|
 | Attachment ingestion — `build_files`, `classify_path`, `decode_base64`, `decode_text`, `matches_media_type` | `web_api/chat_message.rs` | T6 | Lift to `domain/chat_message` before T6 |
-| Provider-enabled model filter — `provider_on` + `tool_capable` | `web_api/models.rs` | T4 | Lift one function, both callers |
+| Provider-enabled model filter — `provider_on` + `tool_capable` | `web_api/models.rs` | T4 | **Done**, as `adapters::model_source::pickable_models`; the route calls it |
+| User-invocable skill list — `scan` + the filter | `web_api/workspace.rs` | T4 | **Done**, as `agent::skills::user_invocable`; the handler also moved its scan onto `spawn_blocking` |
+| Model and effort resolution — override → mode key → fallback → default | `adapters/model_source.rs::provider_settings` | T4 | **Done**, as `effective_choice`; the builder and the facts row both read it |
 | File opener — `spawn_opener`, template rendering, the 10-second wait | `web_api/workspace.rs` | T6 (`/open`) | Lift to `agent/workspace`; both callers keep the same refusal when the command is unset |
 
 The docs merge (`merge3`, `version_hash`, `docs_edits`, the `409` path) and the
@@ -1334,6 +1508,43 @@ collapsed directories, docs-tray width, UI scale.
   a `!` is `DANGER`, `MCP Online` is `SUCCESS`, and a `Worked for` row is
   `INK_MUTED`.
 
+- T4, the two sigils: prose sends; a leading `@id` sends unchanged; `/nope`,
+  `@nope`, a lone sigil, `/create-skill` and an argument where none is taken each
+  refuse with their own sentence; a sigil mid-line and a command on a second line
+  are prose. A refusal leaves the field exactly as it was and sets a `DANGER`
+  footer notice.
+- T4, the two menus: the trigger (line start, after a space, inside a word, a
+  second line, a bare sigil), the rows a query matches, `· manual` and scope, and
+  the replacement length on a multibyte line — with a test that the rewrite
+  *replaces* the token, because `delete_str` runs forward from the cursor.
+- T4, the rail: `mode_ink`'s three values are the tokens'; a stamped user band keeps
+  the mode's ink after the session has moved on, an unstamped one follows the session,
+  and **the reply under it is `--ink-faint` in every mode** — the reply is the model's
+  output, so a mode colour there was the transcript claiming the assistant was in ask
+  or plan mode. A **waiting card in a plan-mode turn is cyan and not `MODE_PLAN`** —
+  the case the old shared value made invisible.
+- T4, the keys: `Ctrl-T` cycles and issues one `SetSessionMode`, and on the landing
+  page changes the draft and issues nothing; `Ctrl-M` opens the picker on the row in
+  force; `Ctrl-L` is refused while a turn runs and opens the confirmation when idle,
+  where `n` sends nothing and `y` is one `Compact`.
+- T4, the help page: every entry is filed where `section_of` puts it, no key is
+  listed twice in a section, every `BuiltIn` appears in the generated Commands
+  section, `/help` names `?`, and the scroll stops at both ends. `/help` opens with
+  no session at all; `?` from the composer is a character and from the transcript
+  opens the page; `PageDown` inside it moves the page and leaves the transcript's
+  offset alone.
+- T4, the band: the facts row is the band's last row with a blank row above it — both
+  asserted on cell contents, the rail glyph trimmed before the gap is judged empty —
+  and a cell test pins the separator's background to `--surface`, because a
+  `--bg-canvas` dot in a band is invisible to a glyph assertion. The row drops the
+  meter, then the provider, then the effort as the band narrows, never the mode.
+- T4, one overlay style: the picker and the completion menu both draw a bordered
+  panel with a title, a panel row's cell background is the panel's own, and a
+  confirmation reports `prompt_rows() == 0` — it is a panel, so the transcript keeps
+  its rows. The picker's groups put effort first, and the test walks to the first
+  model by *kind* rather than by counting rows, so a reorder fails only where it is
+  wrong.
+
 ## Implementation order
 
 1. Workspace dependency, feature, `[[bin]]`, `tui/mod.rs::run`, terminal
@@ -1357,8 +1568,14 @@ collapsed directories, docs-tray width, UI scale.
    `New session…` first in the sessions overlay, and fixed two things only the
    screen showed: a highlighted action row that was not, and an empty state
    reading through a panel.
-7. Lift the model-filter helper; modes, model, effort, skills, and the `/`
-   command surface. T4.
+7. Lift the model-filter helper and the model/effort resolution; the mode label
+   and the mode-coloured rail; modes, the picker, the two sigils, the confirmation,
+   and the help page. **T4, done.** The phase shipped the facts row inside the
+   composer band rather than above it, added a rail to assistant prose (the one
+   layout change), stamped the mode on each turn's user message so history keeps
+   its colour, took `--attention` to cyan now that a plan-mode turn is orange
+   throughout, and implemented `?` — the one key the global bindings table had
+   promised since T0 and nothing had mapped.
 8. Settings surface. T5.
 9. Lift the file opener and the attachment ingestion together; `/open`; path
    attachments; mermaid fallback. T6.

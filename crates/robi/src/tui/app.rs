@@ -29,8 +29,12 @@ use ratatui_textarea::CursorMove;
 use robi_core::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use robi_core::message::{Message, ToolCall};
 
+use crate::adapters::model_source::{EffectiveChoice, ModeDefaults};
+use crate::agent::providers::ModelInfo;
 use crate::domain::chat_message::runtime::SubmitOutcome;
-use crate::domain::chat_session::model::ChatSession;
+use crate::domain::chat_session::model::{
+    AgentMode, ChatSession, ChoiceKey, ModeOverride, ModelConfig,
+};
 use crate::domain::events::{
     EventEnvelope, APP_ERROR, AWAITING_APPROVAL, MCP_STATUS, MESSAGE_ADDED, MESSAGE_DELTA,
     MESSAGE_UPDATED, SESSION_CREATED, SESSION_DELETED, SESSION_UPDATED, TOOL_CALL_UPDATED,
@@ -38,16 +42,21 @@ use crate::domain::events::{
 };
 use crate::domain::workspace::model::Workspace;
 use crate::tui::action::{Action, ActionOutcome};
+use crate::tui::command::{self, Verdict};
 use crate::tui::keys::{self, Command};
 use crate::tui::lifecycle;
 use crate::tui::persist::ViewState;
 use crate::tui::state::activity::{Activity, DeltaKind};
 use crate::tui::state::approval::{Approval, Decision};
+use crate::tui::state::completion::{Completion, SkillEntry};
 use crate::tui::state::composer::Composer;
 use crate::tui::state::confirm::{Confirm, Target};
-use crate::tui::state::manage::ManageView;
 use crate::tui::state::detail::Detail;
+use crate::tui::state::facts::Facts;
+use crate::tui::state::help::HelpView;
 use crate::tui::state::landing::Greeting;
+use crate::tui::state::manage::ManageView;
+use crate::tui::state::models::Picker;
 use crate::tui::state::prompt::{Prompt, PromptKind};
 use crate::tui::state::sessions::{self, Mark, SessionsView};
 use crate::tui::state::status::Status;
@@ -180,6 +189,33 @@ pub struct App {
     stopping: bool,
     quit: bool,
     actions: Vec<Action>,
+    /// The mode a chat with no session row will be created in.
+    ///
+    /// The webview's `draftMode`. Not persisted: a mode is a fact about a session
+    /// once the session exists, and a draft is view state that dies with the
+    /// process, like the composer's text.
+    draft_mode: AgentMode,
+    /// The model this chat will be created with. `None` inherits the mode's
+    /// setting, which is what `Use default` means.
+    draft_model: Option<String>,
+    /// The reasoning effort this chat will be created with.
+    draft_effort: Option<String>,
+    /// The models a turn can drive, as the provider filter allows.
+    models: Vec<ModelInfo>,
+    /// Each mode's inheritable choice, read with the list.
+    defaults: Option<ModeDefaults>,
+    models_generation: u64,
+    /// This workspace's user-invocable skills, for the `@` menu.
+    skills: Vec<SkillEntry>,
+    /// The workspace the skill list belongs to, so a switch can clear it.
+    skills_workspace: Option<WorkspaceId>,
+    skills_generation: u64,
+    /// The model and effort picker, when it is open.
+    picker: Option<Picker>,
+    /// The `/` or `@` menu over the composer, when it is open.
+    completion: Option<Completion>,
+    /// The help page's scroll.
+    help: HelpView,
 }
 
 impl App {
@@ -231,6 +267,18 @@ impl App {
             stopping: false,
             quit: false,
             actions: Vec::new(),
+            draft_mode: AgentMode::Agent,
+            draft_model: None,
+            draft_effort: None,
+            models: Vec::new(),
+            defaults: None,
+            models_generation: 0,
+            skills: Vec::new(),
+            skills_workspace: None,
+            skills_generation: 0,
+            picker: None,
+            completion: None,
+            help: HelpView::default(),
         }
     }
 
@@ -239,6 +287,9 @@ impl App {
     /// Everything after this chains through [`Msg::Done`].
     pub fn boot(&mut self) -> Vec<Action> {
         self.load_workspaces();
+        // The picker's offer and the facts row's model name both need this, and it
+        // does not depend on a workspace, so it goes with the first action.
+        self.load_models();
         self.take_actions()
     }
 
@@ -274,6 +325,19 @@ impl App {
 
     pub fn focus(&self) -> Focus {
         self.focus
+    }
+
+    /// The agent mode in force: the open session's, or the draft's on the landing
+    /// page.
+    ///
+    /// Read by the rails, the facts row and `Ctrl-T`, so one resolution serves all
+    /// three. Not to be confused with [`App::mode`], which is which surface owns
+    /// the keyboard.
+    pub fn agent_mode(&self) -> AgentMode {
+        match self.open_session() {
+            Some(session) => session.mode,
+            None => self.draft_mode,
+        }
     }
 
     pub fn workspaces(&self) -> &[Workspace] {
@@ -353,10 +417,7 @@ impl App {
     /// rather than from the last list read: the mark must not wait a query.
     pub fn mark_of(&self, session: &ChatSession) -> Mark {
         let mark = sessions::mark(session, &self.running);
-        if mark == Mark::Idle
-            && Some(session.id) == self.view.open_session_id
-            && self.is_busy()
-        {
+        if mark == Mark::Idle && Some(session.id) == self.view.open_session_id && self.is_busy() {
             return Mark::Running;
         }
         mark
@@ -444,8 +505,7 @@ impl App {
     /// Whether this session's actor is live, including a turn this process just
     /// started and no list read has reported yet.
     fn is_running(&self, id: SessionId) -> bool {
-        self.running.contains(&id)
-            || (Some(id) == self.view.open_session_id && self.is_busy())
+        self.running.contains(&id) || (Some(id) == self.view.open_session_id && self.is_busy())
     }
 
     /// One call from the open transcript, for the modal's detail.
@@ -509,6 +569,19 @@ impl App {
 
     pub fn mcp_generation(&self) -> u64 {
         self.mcp_generation
+    }
+
+    pub fn models_generation(&self) -> u64 {
+        self.models_generation
+    }
+
+    pub fn skills_generation(&self) -> u64 {
+        self.skills_generation
+    }
+
+    /// The skills the `@` menu offers.
+    pub fn skills(&self) -> &[SkillEntry] {
+        &self.skills
     }
 
     pub fn active_workspace_id(&self) -> Option<WorkspaceId> {
@@ -587,10 +660,13 @@ impl App {
         }
     }
 
-    /// Rows the one-line prompt or the confirmation takes between the composer
-    /// and the footer. Zero when neither is up, so the transcript keeps the row.
+    /// Rows the one-line prompt takes between the composer and the footer.
+    ///
+    /// The confirmation is not here: it is a panel over the frame
+    /// (`view::confirm`), so it takes no layout row and the transcript keeps the
+    /// one it used to give up.
     pub fn prompt_rows(&self) -> u16 {
-        u16::from(self.prompt.is_some() || self.confirm.is_some())
+        u16::from(self.prompt.is_some())
     }
 
     pub fn should_quit(&self) -> bool {
@@ -668,12 +744,8 @@ impl App {
             // The startup prompt asks its two answers with the same keys a
             // destructive confirmation does, and only `update` knows which
             // question is on screen.
-            Some(Command::ConfirmYes) if self.workspace_missing() => {
-                self.create_target_workspace()
-            }
-            Some(Command::ConfirmNo) if self.workspace_missing() => {
-                self.choose_another_workspace()
-            }
+            Some(Command::ConfirmYes) if self.workspace_missing() => self.create_target_workspace(),
+            Some(Command::ConfirmNo) if self.workspace_missing() => self.choose_another_workspace(),
             Some(Command::ConfirmYes) => self.confirm_yes(),
             Some(Command::ConfirmNo) | Some(Command::CancelConfirm) => self.cancel_confirm(),
             Some(Command::SelectNext) => self.select(1),
@@ -694,6 +766,13 @@ impl App {
             Some(Command::CloseOverlay) => self.close_overlay(),
             Some(Command::CloseManage) => self.close_manage(),
             Some(Command::AcceptCandidate) => self.accept_candidate(),
+            Some(Command::CycleMode) => self.cycle_mode(),
+            Some(Command::OpenModels) => self.open_models(),
+            Some(Command::Compact) => self.open_compact(),
+            Some(Command::OpenHelp) => self.open_help(),
+            Some(Command::CloseHelp) => self.close_help(),
+            Some(Command::CompleteAccept) => self.accept_completion(),
+            Some(Command::CompleteDismiss) => self.dismiss_completion(),
             None => self.unclaimed(key),
         }
     }
@@ -704,6 +783,26 @@ impl App {
     /// both. One command set, so the keys are the same in both.
     fn scroll(&mut self, direction: isize, amount: Scroll) {
         let viewport = self.detail_height();
+        if self.mode() == Mode::Help {
+            let rows = crate::tui::state::help::page()
+                .iter()
+                .map(|(_, rows)| rows.len() + 2)
+                .sum();
+            match (amount, direction.is_negative()) {
+                (Scroll::Page, true) => self.help.page_up(rows, viewport),
+                (Scroll::Page, false) => self.help.page_down(rows, viewport),
+                (Scroll::Half, true) => {
+                    self.help
+                        .scroll_by(-((viewport / 2) as isize), rows, viewport)
+                }
+                (Scroll::Half, false) => {
+                    self.help.scroll_by((viewport / 2) as isize, rows, viewport)
+                }
+                (Scroll::Line, true) => self.help.scroll_by(-1, rows, viewport),
+                (Scroll::Line, false) => self.help.scroll_by(1, rows, viewport),
+            }
+            return;
+        }
         if let Some(detail) = self.detail.as_mut() {
             match (amount, direction.is_negative()) {
                 (Scroll::Page, true) => detail.page_up(viewport),
@@ -732,6 +831,18 @@ impl App {
     /// `Home` / `End`, on whichever surface is on top.
     fn scroll_to_end(&mut self, bottom: bool) {
         let viewport = self.detail_height();
+        if self.mode() == Mode::Help {
+            if bottom {
+                let rows = crate::tui::state::help::page()
+                    .iter()
+                    .map(|(_, rows)| rows.len() + 2)
+                    .sum();
+                self.help.bottom(rows, viewport);
+            } else {
+                self.help.top();
+            }
+            return;
+        }
         if let Some(detail) = self.detail.as_mut() {
             if bottom {
                 detail.bottom(viewport);
@@ -781,6 +892,15 @@ impl App {
             }
             Mode::Chat if self.focus.is_composer() && !self.composer.sending() => {
                 self.composer.input(&key);
+                // Every character that reaches the field can open, narrow, or
+                // close the completion menu.
+                self.refresh_completion();
+            }
+            Mode::Complete => {
+                // The menu takes the arrows and `Enter`; everything else is the
+                // field's, and the query is recomputed after it lands.
+                self.composer.input(&key);
+                self.refresh_completion();
             }
             _ => {}
         }
@@ -804,6 +924,25 @@ impl App {
             self.notice = Some(Notice::info("nothing to send"));
             return;
         }
+        // The sigil rule, before anything else: a leading `/` or `@` that names
+        // nothing is refused, and the text stays. A refusal changes nothing — no
+        // submit, no clear, no session — so the reader can fix the word instead of
+        // retyping the message. This runs before the landing-page branch, because a
+        // command has to work with no session open: `/sessions` should not create
+        // one on its way to opening an overlay.
+        match command::verdict(&self.composer.text(), &self.skills) {
+            Verdict::Send => {}
+            Verdict::Refuse(message) => {
+                self.notice = Some(Notice::error(message));
+                return;
+            }
+            Verdict::Run(run) => {
+                self.composer.clear();
+                self.notice = None;
+                self.run_command(run);
+                return;
+            }
+        }
         // The landing page: the session does not exist until this message does.
         // One action creates the row and sends into it, which is what keeps an
         // abandoned new chat from leaving an empty session behind.
@@ -820,6 +959,8 @@ impl App {
                 workspace,
                 text,
                 files: Vec::new(),
+                mode: self.draft_mode,
+                model_config: self.draft_config(),
             });
             return;
         }
@@ -846,6 +987,314 @@ impl App {
             text,
             files: Vec::new(),
         });
+    }
+
+    /// Run a `/` command, by the same path its keybinding takes.
+    ///
+    /// Every command is a key's twin, so this is a dispatch and not an
+    /// implementation: a command that did something its key could not would be a
+    /// second interface, which is what the table exists to avoid.
+    fn run_command(&mut self, run: crate::tui::command::Run) {
+        use crate::tui::command::{Arg, BuiltIn};
+        match run.built_in {
+            BuiltIn::Models => self.open_models(),
+            BuiltIn::Sessions => self.open_sessions(),
+            BuiltIn::Workspaces => self.open_workspaces(),
+            BuiltIn::New => self.new_session(),
+            BuiltIn::Help => self.open_help(),
+            BuiltIn::Compact => self.open_compact(),
+            BuiltIn::Rename => match run.argument {
+                Some(title) => self.rename_to(title),
+                // With no argument it is the prompt, which is what `Ctrl-R` opens.
+                None => self.open_rename(),
+            },
+            BuiltIn::Mode => match run.argument.as_deref() {
+                None => self.cycle_mode(),
+                Some(name) => match AgentMode::parse(name.trim()) {
+                    Ok(mode) => {
+                        self.set_mode(mode);
+                        self.notice = Some(Notice::info(format!("{name} mode")));
+                    }
+                    Err(error) => self.notice = Some(Notice::error(error)),
+                },
+            },
+        }
+        // `Arg::Required` has no command yet (T6's `/open`); the table's rule is
+        // enforced in `command::verdict`, and this is where the compile-time check
+        // that the arm exists lives.
+        let _ = Arg::Required;
+    }
+
+    /// Rename the open session to `title`, without the prompt.
+    fn rename_to(&mut self, title: String) {
+        let Some(session) = self.open_session().map(|session| session.id) else {
+            self.notice = Some(Notice::info("no session is open"));
+            return;
+        };
+        if title.trim().is_empty() {
+            self.notice = Some(Notice::info("a title is required"));
+            return;
+        }
+        self.actions.push(Action::RenameSession { session, title });
+    }
+
+    /// `Ctrl-T`: ask, then plan, then agent.
+    ///
+    /// A write to the session row, or to the draft when there is no row yet. The
+    /// running actor keeps the model it was given; the next one reads the row, so
+    /// there is nothing to restart and no reason to refuse mid-turn.
+    fn cycle_mode(&mut self) {
+        let next = match self.agent_mode() {
+            AgentMode::Agent => AgentMode::Ask,
+            AgentMode::Ask => AgentMode::Plan,
+            AgentMode::Plan => AgentMode::Agent,
+        };
+        self.set_mode(next);
+        self.notice = Some(Notice::info(format!(
+            "{} mode",
+            crate::tui::state::facts::mode_label(next).to_lowercase()
+        )));
+    }
+
+    /// Set the mode: the session's row, or the draft.
+    ///
+    /// The row is updated locally as well as written, so the rail and the facts row
+    /// move on the keystroke rather than a round trip later; the outcome replaces it
+    /// with what the service stored, which is the same value or a refusal.
+    fn set_mode(&mut self, mode: AgentMode) {
+        match self.open_session().map(|session| session.id) {
+            Some(session) => {
+                if let Some(slot) = self.sessions.iter_mut().find(|held| held.id == session) {
+                    slot.mode = mode;
+                }
+                self.actions.push(Action::SetSessionMode { session, mode });
+            }
+            None => self.draft_mode = mode,
+        }
+    }
+
+    /// `Ctrl-M`: the model and effort picker.
+    fn open_models(&mut self) {
+        self.confirm = None;
+        self.completion = None;
+        // Before the settings read lands there is no effective choice to show, so
+        // the picker opens on what is stored rather than waiting: `Use default`
+        // still means what it says.
+        let effective = self.effective_choice().unwrap_or_else(|| EffectiveChoice {
+            model: self.model_label(
+                &self
+                    .current_override()
+                    .model
+                    .unwrap_or_else(|| crate::domain::settings::keys::DEFAULT_MODEL.to_owned()),
+            ),
+            effort: self.current_override().reasoning_effort,
+        });
+        let override_ = self.current_override();
+        self.picker = Some(Picker::new(&self.models, &override_, &effective));
+        self.enter(Mode::Models);
+    }
+
+    fn close_models(&mut self) {
+        self.picker = None;
+        self.leave_mode(Mode::Models);
+    }
+
+    /// Write the picked row, then close.
+    fn commit_pick(&mut self) {
+        let Some(pick) = self.picker.as_ref().and_then(Picker::pick).cloned() else {
+            return;
+        };
+        self.close_models();
+        let mode = self.agent_mode();
+        match self.open_session().map(|session| session.id) {
+            Some(session) => self.actions.push(Action::SetSessionChoice {
+                session,
+                mode,
+                pick,
+            }),
+            None => match pick.key() {
+                ChoiceKey::Model => self.draft_model = pick.value(),
+                ChoiceKey::Effort => self.draft_effort = pick.value(),
+            },
+        }
+    }
+
+    /// `Ctrl-L`: summarize older messages, behind the same confirmation a delete
+    /// uses.
+    ///
+    /// The guard runs first: with nothing to compact or a turn in flight, asking a
+    /// question would be noise, so the refusal is the answer.
+    fn open_compact(&mut self) {
+        if self.is_busy() {
+            self.notice = Some(Notice::info(
+                "a turn is running \u{2014} Esc stops it first",
+            ));
+            return;
+        }
+        let Some(session) = self.open_session().map(|session| session.id) else {
+            self.notice = Some(Notice::info("no session is open"));
+            return;
+        };
+        let title = self
+            .open_session()
+            .and_then(|session| session.title.clone())
+            .unwrap_or_else(|| sessions::UNTITLED.to_owned());
+        self.confirm = Some(Confirm::compact(session, &title));
+        self.enter(Mode::Confirm);
+    }
+
+    /// `?` from the transcript, or `/help`.
+    fn open_help(&mut self) {
+        self.help.open();
+        self.enter(Mode::Help);
+    }
+
+    fn close_help(&mut self) {
+        self.leave_mode(Mode::Help);
+    }
+
+    /// The draft's choice as the create command wants it.
+    ///
+    /// `chatStore.ts::draftConfig`, one for one: the mode, then that mode's
+    /// override, and nothing at all when there is no override to write.
+    fn draft_config(&self) -> ModelConfig {
+        let mut config = ModelConfig::default();
+        let override_ = config.for_mode_mut(self.draft_mode);
+        override_.model = self.draft_model.clone();
+        override_.reasoning_effort = self.draft_effort.clone();
+        config
+    }
+
+    /// The session's override for the current mode, or the draft's.
+    fn current_override(&self) -> ModeOverride {
+        match self.open_session() {
+            Some(session) => session.model_config.for_mode(session.mode).clone(),
+            None => ModeOverride {
+                model: self.draft_model.clone(),
+                reasoning_effort: self.draft_effort.clone(),
+            },
+        }
+    }
+
+    /// What the next turn will use, resolved the way the runtime resolves it.
+    ///
+    /// Before the settings read lands, the caller's `None` is the honest answer: the
+    /// band says the mode and nothing else rather than guessing a model id.
+    pub fn effective_choice(&self) -> Option<EffectiveChoice> {
+        let defaults = self.defaults.as_ref()?;
+        let mode = self.agent_mode();
+        let inherited = defaults.for_mode(mode);
+        let override_ = self.current_override();
+        Some(EffectiveChoice {
+            model: override_
+                .model
+                .clone()
+                .unwrap_or_else(|| inherited.model.clone()),
+            effort: override_
+                .reasoning_effort
+                .clone()
+                .or_else(|| inherited.effort.clone()),
+        })
+    }
+
+    /// The models the picker offers.
+    pub fn models(&self) -> &[ModelInfo] {
+        &self.models
+    }
+
+    pub fn picker(&self) -> Option<&Picker> {
+        self.picker.as_ref()
+    }
+
+    pub fn completion(&self) -> Option<&Completion> {
+        self.completion.as_ref()
+    }
+
+    pub fn help(&self) -> &HelpView {
+        &self.help
+    }
+
+    /// The composer band's facts row.
+    pub fn facts(&self) -> Facts {
+        let effective = self.effective_choice();
+        let usage = crate::tui::state::context::estimate(
+            self.transcript.messages(),
+            &self.composer.text(),
+            self.effective_window(),
+        );
+        Facts::build(self.agent_mode(), effective.as_ref(), usage, |model| {
+            self.model_label(model)
+        })
+    }
+
+    /// The menu label for one model id.
+    fn model_label(&self, model: &str) -> String {
+        match self.models.iter().find(|info| info.id.as_str() == model) {
+            Some(info) => crate::agent::providers::catalog::menu_label(info),
+            None => model.to_owned(),
+        }
+    }
+
+    /// The effective model's window, for the meter.
+    fn effective_window(&self) -> Option<u64> {
+        let effective = self.effective_choice()?;
+        self.models
+            .iter()
+            .find(|info| info.id.as_str() == effective.model)
+            .map(|info| info.context_window)
+    }
+
+    /// Recompute the completion menu from the field, or close it.
+    ///
+    /// Called after every key that reaches the field, so a typed character narrows
+    /// the menu and a deleted one closes it.
+    fn refresh_completion(&mut self) {
+        if let Some(open) = self.completion.as_mut() {
+            if open.refresh(self.composer.textarea(), &self.skills) {
+                return;
+            }
+            self.completion = None;
+            self.leave_mode(Mode::Complete);
+            return;
+        }
+        self.completion = Completion::open(self.composer.textarea(), &self.skills);
+        if self.completion.is_some() {
+            self.enter(Mode::Complete);
+        }
+    }
+
+    /// Accept the highlighted row: rewrite the token and close the menu.
+    ///
+    /// `delete_str` deletes forward from the caret, so the cursor goes to the
+    /// token's first character first, then the token is replaced by the full name
+    /// and a space. Submitting is a second `Enter`: a picked command takes one more
+    /// keystroke, which is what stops a typo from running something.
+    fn accept_completion(&mut self) {
+        let Some(open) = self.completion.clone() else {
+            return;
+        };
+        let Some((row, column, length, insert)) = open.rewrite(self.composer.textarea()) else {
+            self.completion = None;
+            self.leave_mode(Mode::Complete);
+            return;
+        };
+        let field = self.composer.textarea_mut();
+        field.move_cursor(CursorMove::Jump(u16::try_from(row).unwrap_or(0), column));
+        field.delete_str(length);
+        field.insert_str(insert);
+        self.completion = None;
+        self.leave_mode(Mode::Complete);
+    }
+
+    fn dismiss_completion(&mut self) {
+        self.completion = None;
+        self.leave_mode(Mode::Complete);
+    }
+
+    fn list_move_models(&mut self, delta: isize) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.move_by(delta);
+        }
     }
 
     /// `q`: leave, but never mid-turn.
@@ -959,9 +1408,8 @@ impl App {
             // cannot be read cannot be answered, and saying nothing would leave
             // the screen looking merely stale.
             tracing::error!(data = %envelope.data, "approval frame without a call id");
-            self.status.set_error(
-                "a tool call is waiting for approval but the request could not be read",
-            );
+            self.status
+                .set_error("a tool call is waiting for approval but the request could not be read");
             return;
         };
         self.activity.idle();
@@ -1237,7 +1685,8 @@ impl App {
             self.sessions_view.open();
             // Start on the session that is on screen, so `Enter` keeps the
             // reader where they were; the action row is one `Up` away.
-            self.sessions_view.set_selected(self.view.open_session_id, &rows);
+            self.sessions_view
+                .set_selected(self.view.open_session_id, &rows);
             // One surface at a time: `Esc` must close this one, not step back to
             // whichever list was opened before it.
             self.leave_mode(Mode::Workspaces);
@@ -1251,13 +1700,11 @@ impl App {
     fn open_workspaces(&mut self) {
         self.confirm = None;
         if !self.workspaces_open() {
-            let recent: Vec<&Workspace> = workspaces::order_recent(
-                &self.workspaces,
-                &self.view.recent_workspace_ids,
-            )
-            .into_iter()
-            .take(RECENT_LIMIT)
-            .collect();
+            let recent: Vec<&Workspace> =
+                workspaces::order_recent(&self.workspaces, &self.view.recent_workspace_ids)
+                    .into_iter()
+                    .take(RECENT_LIMIT)
+                    .collect();
             self.workspaces_view
                 .open(self.view.active_workspace_id, &recent);
             self.leave_mode(Mode::Sessions);
@@ -1377,6 +1824,9 @@ impl App {
             Target::DeleteWorkspace(workspace) => {
                 self.actions.push(Action::DeleteWorkspace { workspace });
             }
+            Target::Compact(session) => {
+                self.actions.push(Action::Compact { session });
+            }
         }
     }
 
@@ -1387,6 +1837,11 @@ impl App {
 
     /// `Enter` on the row or the screen under the cursor.
     fn overlay_open(&mut self) {
+        // The picker's `Enter` is a write and a close, and nothing below applies.
+        if self.mode() == Mode::Models {
+            self.commit_pick();
+            return;
+        }
         match self.mode() {
             Mode::Sessions => {
                 let rows = self.session_ids();
@@ -1474,6 +1929,10 @@ impl App {
             }
             Mode::Sessions => self.leave_mode(Mode::Sessions),
             Mode::Workspaces => self.leave_mode(Mode::Workspaces),
+            Mode::Models => {
+                self.picker = None;
+                self.leave_mode(Mode::Models);
+            }
             _ => {}
         }
         self.confirm = None;
@@ -1507,6 +1966,12 @@ impl App {
                 let rows = self.manage_rows().len();
                 self.manage.select(delta, rows);
             }
+            Mode::Models => self.list_move_models(delta),
+            Mode::Complete => {
+                if let Some(open) = self.completion.as_mut() {
+                    open.move_by(delta);
+                }
+            }
             _ => {}
         }
     }
@@ -1531,6 +1996,12 @@ impl App {
             Mode::Manage => {
                 let rows = self.manage_rows().len();
                 self.manage.select(delta * LIST_PAGE as isize, rows);
+            }
+            Mode::Models => self.list_move_models(delta * LIST_PAGE as isize),
+            Mode::Complete => {
+                if let Some(open) = self.completion.as_mut() {
+                    open.move_by(delta * LIST_PAGE as isize);
+                }
             }
             _ => {}
         }
@@ -1592,7 +2063,11 @@ impl App {
     /// return a `BadRequest` for a keystroke the field can answer itself. The
     /// field stays open so the title can be typed.
     fn commit_rename(&mut self, session: SessionId) {
-        let Some(title) = self.prompt.as_ref().map(|prompt| prompt.text().trim().to_owned()) else {
+        let Some(title) = self
+            .prompt
+            .as_ref()
+            .map(|prompt| prompt.text().trim().to_owned())
+        else {
             return;
         };
         if title.is_empty() {
@@ -1806,6 +2281,51 @@ impl App {
 
     fn on_done(&mut self, outcome: ActionOutcome) {
         match outcome {
+            ActionOutcome::Models {
+                generation,
+                models,
+                defaults,
+            } => {
+                if generation != self.models_generation {
+                    return;
+                }
+                self.models = models;
+                self.defaults = Some(defaults);
+                self.status.clear_error();
+            }
+            ActionOutcome::Skills {
+                workspace,
+                generation,
+                skills,
+            } => {
+                // A list for a workspace the reader has left is dropped, the way a
+                // stale session read is.
+                if generation != self.skills_generation
+                    || self.view.active_workspace_id != Some(workspace)
+                {
+                    return;
+                }
+                self.skills = skills;
+                self.status.clear_error();
+            }
+            ActionOutcome::SessionUpdated(session) => {
+                let session = *session;
+                self.status.clear_error();
+                if let Some(slot) = self.sessions.iter_mut().find(|held| held.id == session.id) {
+                    *slot = session.clone();
+                }
+                // Nothing to rebuild: the rail's fallback is read from the session
+                // at draw time, so an unstamped row follows the write on the next
+                // frame without the transcript knowing a mode exists.
+            }
+            ActionOutcome::Compacted { session } => {
+                self.status.clear_error();
+                if self.view.open_session_id == Some(session) {
+                    // The rewrite is announced on the bus; this only says the job
+                    // was accepted, so a reader is not left wondering.
+                    self.notice = Some(Notice::info("compacting\u{2026}"));
+                }
+            }
             ActionOutcome::Workspaces {
                 generation,
                 workspaces,
@@ -1835,7 +2355,11 @@ impl App {
                 } else if let Some(active) = self.view.active_workspace_id {
                     // A refresh keeps the reader where they are unless the row
                     // they are on has gone.
-                    if !self.workspaces.iter().any(|workspace| workspace.id == active) {
+                    if !self
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.id == active)
+                    {
                         let next = self.workspaces.first().map(|workspace| workspace.id);
                         self.select_workspace(next);
                     }
@@ -2257,6 +2781,11 @@ impl App {
         if let Some(workspace) = id {
             self.load_sessions();
             self.load_mcp();
+            // Skills are per workspace: the list for the old one would offer ids
+            // this workspace may not have, so it is cleared and re-read.
+            self.skills.clear();
+            self.completion = None;
+            self.load_skills();
             if self.focused_mcp != Some(workspace) {
                 self.actions.push(Action::FocusMcp { workspace });
             }
@@ -2300,7 +2829,9 @@ impl App {
         if self.view.recent_workspace_ids.first() == Some(&workspace) {
             return false;
         }
-        self.view.recent_workspace_ids.retain(|held| *held != workspace);
+        self.view
+            .recent_workspace_ids
+            .retain(|held| *held != workspace);
         self.view.recent_workspace_ids.insert(0, workspace);
         true
     }
@@ -2334,6 +2865,27 @@ impl App {
         self.actions.push(Action::LoadMcp {
             workspace,
             generation: self.mcp_generation,
+        });
+    }
+
+    /// Issue the model list and each mode's inheritable choice.
+    fn load_models(&mut self) {
+        self.models_generation += 1;
+        self.actions.push(Action::LoadModels {
+            generation: self.models_generation,
+        });
+    }
+
+    /// Issue this workspace's skill list. A switch clears the old one first.
+    fn load_skills(&mut self) {
+        let Some(workspace) = self.view.active_workspace_id else {
+            return;
+        };
+        self.skills_generation += 1;
+        self.skills_workspace = Some(workspace);
+        self.actions.push(Action::LoadSkills {
+            workspace,
+            generation: self.skills_generation,
         });
     }
 

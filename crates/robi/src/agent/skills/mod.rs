@@ -104,6 +104,18 @@ pub fn scan(home: Option<&Path>, workspace: Option<&Path>) -> Vec<Skill> {
     chosen
 }
 
+/// The skills a person may invoke by name: [`scan`] plus the filter every caller
+/// wants.
+///
+/// `/api/v1/workspaces/{id}/skills` and the terminal's `@` completion both ask
+/// exactly this, so the filter lives here rather than in each handler.
+pub fn user_invocable(home: Option<&Path>, workspace: Option<&Path>) -> Vec<Skill> {
+    scan(home, workspace)
+        .into_iter()
+        .filter(|skill| skill.user_invocable)
+        .collect()
+}
+
 /// `<skills>` for skills the model may load. Empty when none qualify.
 pub fn catalog_block(skills: &[Skill]) -> Option<String> {
     let mut lines: Vec<String> = skills
@@ -173,8 +185,15 @@ pub fn skill_block(load: &SkillLoad) -> String {
     )
 }
 
+/// The ids a message mentions, by either sigil.
+///
+/// `/id` is the webview's spelling of a skill and `@id` is the terminal's, so the
+/// pattern takes both: one loader serves two front ends, and a message that names
+/// a skill loads it whichever way the reader typed it. A token must start the text
+/// or follow whitespace, and an id that names no skill is skipped by
+/// [`loads_for_text`], so a bare `@` or a stray `a/b` is harmless.
 pub fn mention_ids(text: &str) -> Vec<String> {
-    let pattern = Regex::new(r"(^|\s)/([a-z0-9]+(?:-[a-z0-9]+)*)").expect("mention pattern");
+    let pattern = Regex::new(r"(^|\s)[@/]([a-z0-9]+(?:-[a-z0-9]+)*)").expect("mention pattern");
     pattern
         .captures_iter(text)
         .filter_map(|caps| caps.get(2).map(|id| id.as_str().to_owned()))
@@ -665,6 +684,46 @@ mod tests {
         assert!(!skill.user_invocable);
         assert!(skill.model_invocable);
         assert!(catalog_block(&skills).unwrap().contains("internal-review"));
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn both_sigils_name_a_mention_and_only_after_whitespace() {
+        // The webview spells a mention `/id` and the terminal `@id`. One loader
+        // reads both, so a skill loads whichever front end typed it.
+        assert_eq!(mention_ids("@create-skill please"), ["create-skill"]);
+        assert_eq!(mention_ids("please @create-skill"), ["create-skill"]);
+        assert_eq!(mention_ids("/create-skill"), ["create-skill"]);
+        assert_eq!(
+            mention_ids("@create-skill and /configure-mcp"),
+            ["create-skill", "configure-mcp"]
+        );
+        // Mid-word is not a mention, which is what keeps a path and an email
+        // address out of the loader.
+        assert!(mention_ids("see docs/@create-skill").is_empty());
+        assert!(mention_ids("someone@example.com").is_empty());
+        assert!(mention_ids("either/or").is_empty());
+
+        let skills = scan(None, None);
+        let loads = loads_for_text("@create-skill", &skills);
+        assert_eq!(loads.len(), 1);
+        assert_eq!(loads[0].id, "create-skill");
+    }
+
+    #[test]
+    fn user_invocable_hides_a_skill_the_menu_may_not_offer() {
+        let repo = temp("user-invocable");
+        write_skill(
+            &repo.join(".robi/skills"),
+            "internal-review",
+            "description: Review privately\nuser-invocable: false",
+            "steps",
+        );
+        let all = scan(None, Some(&repo));
+        assert!(all.iter().any(|skill| skill.id == "internal-review"));
+        let menu = user_invocable(None, Some(&repo));
+        assert!(!menu.iter().any(|skill| skill.id == "internal-review"));
+        assert!(menu.iter().all(|skill| skill.user_invocable));
         let _ = fs::remove_dir_all(repo);
     }
 

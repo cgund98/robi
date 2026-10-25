@@ -322,6 +322,16 @@ pub struct Message {
     /// Old rows have no field and deserialize as `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub compaction: bool,
+    /// Which mode submitted this turn: `ask`, `plan`, or `agent`.
+    ///
+    /// Set on the user message a turn starts with, by the loop, from the mode the
+    /// runtime resolved for that turn. A front end reads it to colour a turn by
+    /// the mode that produced it, which the session row cannot answer: it holds
+    /// only the mode in force *now*. The loop never reads it back, and an id it
+    /// does not recognise is passed through untouched, so the field stays opaque
+    /// history. Old rows have no field and deserialize as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 /// Serde helper: omit `compaction` when it is `false`.
@@ -343,6 +353,7 @@ impl Message {
             usage: None,
             reasoning: None,
             compaction: false,
+            mode: None,
         }
     }
 
@@ -369,6 +380,12 @@ impl Message {
     }
 
     /// Attach text files the user picked. Only meaningful on a user message.
+    /// Record which mode submitted this turn. Only meaningful on a user message.
+    pub fn with_mode_label(mut self, mode: impl Into<String>) -> Self {
+        self.mode = Some(mode.into());
+        self
+    }
+
     pub fn with_files(mut self, files: Vec<FileAttachment>) -> Self {
         self.files = files;
         self
@@ -387,6 +404,7 @@ impl Message {
             usage: None,
             reasoning: None,
             compaction: false,
+            mode: None,
         }
     }
 
@@ -413,6 +431,7 @@ impl Message {
             usage: None,
             reasoning: None,
             compaction: false,
+            mode: None,
         }
     }
 

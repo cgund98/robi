@@ -1157,7 +1157,7 @@ Statuses: **needed**, **later**, **done**.
 | `docs/src/design/compression/tool-output-compression.md` | **D11, D12** for built-in JSON and search hits, content routing beyond shell and MCP | M9 | later |
 | `docs/src/design/compression/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
 | `docs/src/design/compression/mcp-output.md` | MCP result compression: JSON samples and counts, the line pass, `kind: "mcp"` originals | M9 | done |
-| `docs/src/design/shell/tui.md` | Terminal front end: module vs. crate, the TEA loop, the parity map, phases T0–T6. A surface, not a milestone | T3 | done |
+| `docs/src/design/shell/tui.md` | Terminal front end: module vs. crate, the TEA loop, the parity map, phases T0–T6. A surface, not a milestone | T4 | done |
 | `docs/src/design/shell/parallel-front-ends.md` | Per-session lease, the `redb` handle invariant it needs, the degraded transcript, and what parallel processes still share | T0 | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives

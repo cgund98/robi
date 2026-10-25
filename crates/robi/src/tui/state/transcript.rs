@@ -18,6 +18,7 @@ use robi_core::message::ExecutionStatus;
 use robi_core::message::{Message, Role};
 use unicode_width::UnicodeWidthChar;
 
+use crate::domain::chat_session::model::AgentMode;
 use crate::tui::state::markdown;
 use crate::tui::state::tool_card::{self, CardLine, CardLineKind};
 use crate::tui::state::Phase;
@@ -106,6 +107,13 @@ pub struct Row {
     /// range is into `text`, not extra text, so the row's width is the same
     /// however it is painted.
     pub spans: Vec<(std::ops::Range<usize>, Style)>,
+    /// The mode the turn that owns this row was submitted under.
+    ///
+    /// Set on the rows a front end paints with the mode's ink — a user band and
+    /// assistant prose. Resolved in [`build_rows_with`] from the turn's stamped
+    /// user message, falling back to the session's current mode for a row written
+    /// before the label existed.
+    pub mode: Option<AgentMode>,
 }
 
 impl Row {
@@ -116,6 +124,7 @@ impl Row {
             attention: false,
             text: text.into(),
             spans: Vec::new(),
+            mode: None,
         }
     }
 
@@ -131,6 +140,12 @@ impl Row {
         self
     }
 
+    /// Paint this row's rail in the mode's ink, when the turn carries one.
+    fn in_mode_opt(mut self, mode: Option<AgentMode>) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// One styled row: the text and the runs of tone inside it.
     pub(crate) fn styled(
         kind: RowKind,
@@ -143,6 +158,7 @@ impl Row {
             attention: false,
             text,
             spans,
+            mode: None,
         }
     }
 
@@ -161,6 +177,7 @@ impl Row {
             attention: false,
             text: text.into(),
             spans: vec![(start..start + len, style)],
+            mode: None,
         }
     }
 
@@ -215,6 +232,25 @@ fn band_line(text: &str, inner: usize) -> String {
         " ".repeat(PAD_X),
         " ".repeat(PAD_X + pad)
     )
+}
+
+/// One assistant row as a railed line: `▍` and the padding, then the prose.
+///
+/// The markdown renderer draws to `inner` columns, so prefixing the rail keeps the
+/// row exactly one rail wider than its text and never wraps it again. `spans` are
+/// byte ranges into the row's own text, so every one of them shifts by the prefix
+/// length; without that, the markdown's bold and code tones would land on the
+/// wrong characters — a bug that reads as a styling glitch rather than a shift.
+fn railed(mut row: Row, inner: usize) -> Row {
+    // The rail, then `band_line`'s left pad. The view subtracts the rail's own
+    // bytes before slicing, so this is what puts a span on its own character.
+    let prefix_len = RAIL_CHAR.len_utf8() + PAD_X;
+    let padded = band_line(&row.text, inner);
+    for (range, _) in row.spans.iter_mut() {
+        *range = range.start + prefix_len..range.end + prefix_len;
+    }
+    row.text = padded;
+    row
 }
 
 /// What the transcript renders beyond the messages themselves.
@@ -395,12 +431,7 @@ impl Transcript {
 
     fn rebuild(&mut self) {
         self.open_turn = self.last_turn_open();
-        self.rows = build_rows_with_turns(
-            &self.messages,
-            self.width,
-            &self.render,
-            self.phase,
-        );
+        self.rows = build_rows_with_turns(&self.messages, self.width, &self.render, self.phase);
         // A block that vanished cannot stay selected.
         if let Some(selected) = self.selection {
             if !self.rows.iter().any(|row| row.block == Some(selected)) {
@@ -839,6 +870,10 @@ pub fn build_rows_with(
     // and a key acts on the selected one. A compaction divider is not a block: it
     // has nothing to act on.
     let mut blocks: Vec<Vec<Row>> = Vec::new();
+    // The mode of the turn being read, taken from the user message that started
+    // it. A turn with no stamp — every turn written before the label existed —
+    // leaves its rows unstamped, and the view falls back to the session's mode.
+    let mut stamped: Option<AgentMode> = None;
     for message in messages {
         let prose = BlockRef::message(message.id);
         match message.role {
@@ -847,13 +882,27 @@ pub fn build_rows_with(
                     blocks.push(vec![Row::new(RowKind::Divider, COMPACTION_LABEL)]);
                     continue;
                 }
-                // A band like a tool card's, with a blue rail instead of gray.
+                stamped = message
+                    .mode
+                    .as_deref()
+                    .and_then(|label| AgentMode::parse(label).ok());
+                // A band like a tool card's, with the mode's rail instead of gray.
                 let inner = inner_width(width);
-                let mut block = vec![Row::new(RowKind::User, band_line("", inner)).in_block(prose)];
+                let mut block = vec![Row::new(RowKind::User, band_line("", inner))
+                    .in_block(prose)
+                    .in_mode_opt(stamped)];
                 for line in wrap_text(&message.content, inner) {
-                    block.push(Row::new(RowKind::User, band_line(&line, inner)).in_block(prose));
+                    block.push(
+                        Row::new(RowKind::User, band_line(&line, inner))
+                            .in_block(prose)
+                            .in_mode_opt(stamped),
+                    );
                 }
-                block.push(Row::new(RowKind::User, band_line("", inner)).in_block(prose));
+                block.push(
+                    Row::new(RowKind::User, band_line("", inner))
+                        .in_block(prose)
+                        .in_mode_opt(stamped),
+                );
                 blocks.push(block);
             }
             Role::Assistant => {
@@ -862,10 +911,17 @@ pub fn build_rows_with(
                     // lists, tables and code, and a terminal that shows the
                     // source characters is showing the author's markup rather
                     // than the document.
+                    //
+                    // Railed, and wrapped one rail narrower, so the turn's colour
+                    // runs from the user band through the reply. The band itself
+                    // is the canvas: the rail and the aligned column are the only
+                    // marks prose takes, because prose is not a surface.
+                    let inner = inner_width(width);
                     blocks.push(
-                        markdown::rows(&message.content, width)
+                        markdown::rows(&message.content, inner)
                             .into_iter()
-                            .map(|row| row.in_block(prose))
+                            .map(|row| row.in_block(prose).in_mode_opt(stamped))
+                            .map(|row| railed(row, inner))
                             .collect(),
                     );
                 }
@@ -1752,7 +1808,9 @@ mod tests {
         // The id just above the footer is the row that grew.
         let visible = transcript.visible();
         assert!(
-            visible.last().is_some_and(|row| row.kind == RowKind::TurnFooter),
+            visible
+                .last()
+                .is_some_and(|row| row.kind == RowKind::TurnFooter),
             "the footer closes the turn"
         );
         assert_eq!(
@@ -1760,7 +1818,7 @@ mod tests {
                 .iter()
                 .rev()
                 .find(|row| row.kind == RowKind::Assistant)
-                .map(|row| row.text.as_str()),
+                .map(content),
             Some("three")
         );
     }

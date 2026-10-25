@@ -206,6 +206,76 @@ pub fn land(app: &mut App, session: SessionId, messages: Vec<Message>) {
     land_transcript(app, session, messages);
 }
 
+/// Land a model list and the mode defaults the picker and the facts row read.
+///
+/// Two models from two providers, both tool-capable, so a test can tell a filtered
+/// list from a stale row.
+pub fn land_models(app: &mut App) {
+    let generation = app.models_generation();
+    let models = vec![
+        crate::agent::providers::ModelInfo {
+            id: crate::agent::providers::ModelId::new("ocg_glm-5.3"),
+            display_name: "GLM-5.3".to_owned(),
+            context_window: 1_000_000,
+            max_output: 131_072,
+            supports_tools: true,
+            supports_reasoning: true,
+            supports_effort: false,
+            supports_vision: false,
+        },
+        crate::agent::providers::ModelInfo {
+            id: crate::agent::providers::ModelId::new("ant_claude"),
+            display_name: "Claude".to_owned(),
+            context_window: 200_000,
+            max_output: 64_000,
+            supports_tools: true,
+            supports_reasoning: true,
+            supports_effort: true,
+            supports_vision: true,
+        },
+    ];
+    let defaults = crate::adapters::model_source::ModeDefaults {
+        ask: effective("ocg_glm-5.3", None),
+        plan: effective("ocg_glm-5.3", None),
+        agent: effective("ocg_glm-5.3", Some("high")),
+    };
+    app.update(Msg::Done(ActionOutcome::Models {
+        generation,
+        models,
+        defaults,
+    }));
+}
+
+/// Land the skill list the `@` menu offers, for the app's active workspace.
+pub fn land_skills(app: &mut App, skills: &[(&str, bool)]) {
+    let Some(workspace) = app.active_workspace_id() else {
+        panic!("the fixture has a workspace");
+    };
+    let generation = app.skills_generation();
+    let skills = skills
+        .iter()
+        .map(|(id, manual)| crate::tui::state::completion::SkillEntry {
+            id: (*id).to_owned(),
+            label: (*id).to_owned(),
+            description: format!("does {id}"),
+            scope: crate::tui::state::completion::SkillScope::Project,
+            manual: *manual,
+        })
+        .collect();
+    app.update(Msg::Done(ActionOutcome::Skills {
+        workspace,
+        generation,
+        skills,
+    }));
+}
+
+fn effective(model: &str, effort: Option<&str>) -> crate::adapters::model_source::EffectiveChoice {
+    crate::adapters::model_source::EffectiveChoice {
+        model: model.to_owned(),
+        effort: effort.map(str::to_owned),
+    }
+}
+
 /// A call that is waiting on a decision, which is how a pause arrives.
 pub fn pending_call(name: &str, args: serde_json::Value) -> ToolCall {
     let mut call = ToolCall::new(name, args);
@@ -1042,11 +1112,19 @@ fn an_assistant_heading_and_table_render_as_a_document() {
         .iter()
         .position(|row| row.contains("Migrations"))
         .expect("the heading's row") as u16;
-    let heading_tone = foreground(&app, 60, 24, 2, heading_row);
+    // Prose is railed now, so the text starts one rail and one pad cell in. The
+    // rail column itself carries the mode's ink, which is what makes a turn one
+    // colour from the user band down through the reply.
+    let heading_tone = foreground(&app, 60, 24, 4, heading_row);
     assert_eq!(
         heading_tone,
         crate::tui::theme::INK_STRONG,
         "a heading is titled, not body text"
+    );
+    assert_eq!(
+        foreground(&app, 60, 24, 2, heading_row),
+        crate::tui::theme::INK_FAINT,
+        "a reply's rail is quiet, whatever mode asked for it"
     );
 }
 
@@ -2062,7 +2140,9 @@ fn a_session_frame_refreshes_the_list_without_rereading_the_transcript() {
     // The rename in another window is a list fact, not a transcript fact.
     let actions = app.take_actions();
     assert!(
-        !actions.iter().any(|action| matches!(action, Action::Reload { .. })),
+        !actions
+            .iter()
+            .any(|action| matches!(action, Action::Reload { .. })),
         "no transcript read follows a session frame"
     );
     let workspace = app.active_workspace_id().expect("a workspace");
@@ -2082,7 +2162,10 @@ fn a_session_list_refresh_that_keeps_the_open_session_does_not_reload_it() {
     app.update(Msg::Done(ActionOutcome::Sessions {
         workspace,
         generation,
-        sessions: vec![titled(app.open_session().expect("a session").clone(), "renamed")],
+        sessions: vec![titled(
+            app.open_session().expect("a session").clone(),
+            "renamed",
+        )],
         running: Vec::new(),
     }));
     assert_eq!(app.open_session_id(), Some(session));
@@ -2522,9 +2605,9 @@ fn opening_a_workspace_switches_promotes_and_loads_its_list_and_marks() {
     assert!(actions.iter().any(
         |action| matches!(action, Action::LoadMcp { workspace, .. } if *workspace == second_id)
     ));
-    assert!(actions.iter().any(
-        |action| matches!(action, Action::FocusMcp { workspace } if *workspace == second_id)
-    ));
+    assert!(actions
+        .iter()
+        .any(|action| matches!(action, Action::FocusMcp { workspace } if *workspace == second_id)));
     assert_eq!(app.workspace_rows().first().map(|w| w.id), Some(second_id));
     assert_eq!(app.open_session_id(), None, "the old transcript is gone");
 }
@@ -2534,13 +2617,18 @@ fn an_mcp_frame_refreshes_only_the_active_workspaces_marks() {
     let (mut app, workspace, _) = booted(80, 24);
     app.take_actions();
 
-    app.update(Msg::Agent(EventEnvelope::mcp_status(&workspace.to_string())));
+    app.update(Msg::Agent(EventEnvelope::mcp_status(
+        &workspace.to_string(),
+    )));
     assert_eq!(mcp_loads(&mut app), vec![workspace]);
 
     app.update(Msg::Agent(EventEnvelope::mcp_status(
         &WorkspaceId::new().to_string(),
     )));
-    assert!(mcp_loads(&mut app).is_empty(), "another workspace's servers");
+    assert!(
+        mcp_loads(&mut app).is_empty(),
+        "another workspace's servers"
+    );
 }
 
 #[test]
@@ -2573,9 +2661,7 @@ fn the_overlay_marks_a_running_and_a_waiting_session() {
     // wait for the list read that a frame would trigger.
     let open = app.sessions()[0].clone();
     app.update(Msg::Agent(EventEnvelope::from_core_event(
-        robi_core::event::Event::TurnStarted {
-            session: open.id,
-        },
+        robi_core::event::Event::TurnStarted { session: open.id },
     )));
     assert_eq!(app.mark_of(&open), Mark::Running);
     assert_eq!(app.open_session_id(), Some(open.id));
@@ -2589,11 +2675,11 @@ fn the_sessions_overlay_draws_a_panel_over_the_transcript() {
 
     press(&mut app, ctrl(KeyCode::Char('s')));
     let frame = screen(&app, 80, 24);
-    assert!(frame.contains("sessions"), "the panel names itself: {frame}");
     assert!(
-        frame.contains("a session"),
-        "the row is drawn: {frame}"
+        frame.contains("sessions"),
+        "the panel names itself: {frame}"
     );
+    assert!(frame.contains("a session"), "the row is drawn: {frame}");
     assert!(
         frame
             .lines()
@@ -2718,7 +2804,10 @@ fn an_open_turn_shows_its_activity_line_and_no_footer() {
     app.update(Msg::Done(ActionOutcome::Transcript {
         session,
         generation: app.transcript().generation(),
-        messages: vec![Message::user("read the config"), Message::assistant("working")],
+        messages: vec![
+            Message::user("read the config"),
+            Message::assistant("working"),
+        ],
     }));
     app.update(Msg::Agent(turn_started(session)));
     let frame = screen(&app, 80, 24);
@@ -2733,7 +2822,6 @@ fn an_open_turn_shows_its_activity_line_and_no_footer() {
     assert!(!frame.contains("Thinking"), "{frame}");
     assert!(frame.contains("Worked for"), "{frame}");
 }
-
 
 #[test]
 fn the_switcher_paints_the_row_the_keys_act_on_as_a_full_width_band() {
@@ -2786,10 +2874,29 @@ fn the_switcher_paints_the_row_the_keys_act_on_as_a_full_width_band() {
     }
 }
 
+/// The rows a bordered panel occupies, borders included.
+///
+/// Asserting on the panel's own rect is what "nothing shows through" means: an
+/// overlay floats over the transcript, so transcript text around it is correct and
+/// only text *inside* it is a bug. The old whole-frame assertion held only while the
+/// panel happened to sit exactly over the centred empty state.
+fn panel_span(rows: &[String]) -> (usize, usize) {
+    let top = rows
+        .iter()
+        .position(|row| row.contains('\u{250c}'))
+        .unwrap_or_else(|| panic!("no panel in this frame: {rows:#?}"));
+    let bottom = rows
+        .iter()
+        .rposition(|row| row.contains('\u{2514}'))
+        .unwrap_or_else(|| panic!("no panel in this frame: {rows:#?}"));
+    (top, bottom)
+}
+
 #[test]
 fn the_switcher_erases_what_the_transcript_drew_under_it() {
-    // The empty state's sentence is centred in the transcript, which is where the
-    // panel lands: without a clear, it read through the panel's background.
+    // The empty state's sentence is centred in the transcript, which is roughly
+    // where the panel lands: without a clear, it read through the panel's
+    // background.
     let (mut app, _, _) = booted(70, 22);
     app.take_actions();
     assert!(
@@ -2798,18 +2905,27 @@ fn the_switcher_erases_what_the_transcript_drew_under_it() {
     );
 
     press(&mut app, ctrl(KeyCode::Char('w')));
-    let frame = screen(&app, 70, 22);
-    assert!(frame.contains("workspaces"), "{frame}");
+    let frame = rows(&app, 70, 22);
+    let (top, bottom) = panel_span(&frame);
+    assert!(frame.join("\n").contains("workspaces"), "{frame:#?}");
     assert!(
-        !frame.contains("No messages yet."),
-        "nothing shows through the panel: {frame}"
+        !frame[top..=bottom]
+            .iter()
+            .any(|row| row.contains("No messages yet.")),
+        "nothing shows through the panel: {frame:#?}"
     );
 
     // The create screen lands in the same place and must erase it too.
     press(&mut app, ctrl(KeyCode::Char('n')));
-    let frame = screen(&app, 70, 22);
-    assert!(frame.contains("path"), "{frame}");
-    assert!(!frame.contains("No messages yet."), "{frame}");
+    let frame = rows(&app, 70, 22);
+    let (top, bottom) = panel_span(&frame);
+    assert!(frame.join("\n").contains("path"), "{frame:#?}");
+    assert!(
+        !frame[top..=bottom]
+            .iter()
+            .any(|row| row.contains("No messages yet.")),
+        "nothing shows through the panel: {frame:#?}"
+    );
 }
 
 #[test]
@@ -3106,7 +3222,10 @@ fn the_path_of_the_process_picks_its_workspace() {
 
     assert!(!app.workspace_missing());
     assert_eq!(app.active_workspace_id(), Some(target.id));
-    assert_eq!(app.snapshot().recent_workspace_ids.first(), Some(&target.id));
+    assert_eq!(
+        app.snapshot().recent_workspace_ids.first(),
+        Some(&target.id)
+    );
 }
 
 #[test]
@@ -3217,9 +3336,6 @@ fn the_sessions_panel_puts_the_action_row_above_the_sessions() {
     let left = frame_rows[y as usize].find('+').expect("the marker") as u16;
     assert_eq!(background(&app, 80, 24, left, y), band);
 }
-
-
-
 
 #[test]
 fn the_landing_page_draws_a_green_greeting_over_the_composer() {
@@ -3353,15 +3469,9 @@ fn a_tool_call_next_in_line_is_not_a_waiting_card() {
         "a running turn does not ask: {frame}"
     );
     assert!(frame.contains(tool_card::RUNNING_LABEL), "{frame}");
+    assert!(app.approval().is_none(), "and no approval is open for it");
     assert!(
-        app.approval().is_none(),
-        "and no approval is open for it"
-    );
-    assert!(
-        app.transcript()
-            .rows()
-            .iter()
-            .all(|row| !row.attention),
+        app.transcript().rows().iter().all(|row| !row.attention),
         "no card wears the attention rail"
     );
     let _ = id;
@@ -3383,10 +3493,12 @@ fn the_same_call_becomes_a_waiting_card_when_the_turn_pauses() {
         .flat_map(|message| message.tool_calls.iter())
         .find(|call| call.id == id)
         .expect("the call");
-    assert!(tool_card::needs_decision(pending, crate::tui::state::Phase::Idle));
+    assert!(tool_card::needs_decision(
+        pending,
+        crate::tui::state::Phase::Idle
+    ));
     let _ = session;
 }
-
 
 #[test]
 fn zz_dump_paused() {
@@ -3394,4 +3506,583 @@ fn zz_dump_paused() {
     println!("{}", screen(&app, 80, 24));
 }
 
+// ---------------------------------------------------------------------------
+// T4: modes, the picker, the menus, and the help page
+// ---------------------------------------------------------------------------
 
+use crate::tui::state::Mode as Surface;
+
+fn typing(code: KeyCode) -> Msg {
+    Msg::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+fn typing_ctrl(ch: char) -> Msg {
+    Msg::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL))
+}
+
+/// The open session's id, for a test that needs to name it.
+fn open_id(app: &App) -> SessionId {
+    app.open_session().expect("the fixture opens a session").id
+}
+
+/// Every action of one shape the app has queued, and nothing else.
+fn actions_matching<F: Fn(&Action) -> bool>(app: &mut App, predicate: F) -> Vec<Action> {
+    app.take_actions()
+        .into_iter()
+        .filter(|action| predicate(action))
+        .collect()
+}
+
+#[test]
+fn ctrl_t_cycles_the_mode_and_writes_it_to_the_session() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    assert_eq!(app.agent_mode(), AgentMode::Agent);
+
+    app.update(typing_ctrl('t'));
+    assert_eq!(app.agent_mode(), AgentMode::Ask, "agent cycles to ask");
+    // The write goes to the service; the row is only replaced when it lands.
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SetSessionMode { .. })
+    });
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        &sent[0],
+        Action::SetSessionMode {
+            mode: AgentMode::Ask,
+            ..
+        }
+    ));
+
+    app.update(typing_ctrl('t'));
+    assert_eq!(app.agent_mode(), AgentMode::Plan, "ask cycles to plan");
+    app.update(typing_ctrl('t'));
+    assert_eq!(app.agent_mode(), AgentMode::Agent, "plan cycles to agent");
+    let _ = actions_matching(&mut app, |_| true);
+}
+
+#[test]
+fn a_mode_write_lands_on_the_row_and_the_rail_follows_it() {
+    let mut app = with_messages(60, 20, vec![Message::user("hi")]);
+    // The stored row comes back changed; the app replaces its copy.
+    let mut updated = app.open_session().expect("a session").clone();
+    updated.mode = AgentMode::Plan;
+    app.update(Msg::Done(ActionOutcome::SessionUpdated(Box::new(updated))));
+
+    assert_eq!(app.agent_mode(), AgentMode::Plan);
+    assert_eq!(
+        crate::tui::view::composer::rail_style(app.agent_mode()).fg,
+        Some(crate::tui::theme::MODE_PLAN),
+        "the composer's rail is the mode's ink"
+    );
+}
+
+#[test]
+fn the_landing_page_cycles_a_draft_mode_and_creates_the_session_with_it() {
+    let (mut app, _, _) = booted(80, 24);
+    land_models(&mut app);
+    // Land the landing page: no session open.
+    app.update(typing_ctrl('n'));
+    assert!(app.landing());
+    app.update(typing_ctrl('t'));
+    assert_eq!(
+        app.agent_mode(),
+        AgentMode::Ask,
+        "the draft is what changes"
+    );
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SetSessionMode { .. })
+    });
+    assert!(sent.is_empty(), "there is no row to write yet");
+
+    // The first message carries the draft's mode into the create.
+    for ch in "hello".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Enter));
+    let created = actions_matching(&mut app, |action| {
+        matches!(action, Action::StartSession { .. })
+    });
+    assert_eq!(created.len(), 1);
+    match &created[0] {
+        Action::StartSession { mode, .. } => assert_eq!(*mode, AgentMode::Ask),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn ctrl_m_opens_the_picker_on_the_row_in_force() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    app.update(typing_ctrl('m'));
+    assert_eq!(app.mode(), Surface::Models);
+    let picker = app.picker().expect("the picker is open");
+    assert_eq!(
+        picker.current().unwrap().label,
+        "Use default",
+        "the effort group comes first, so its default is where the cursor lands"
+    );
+
+    // Walk down to the first model row rather than counting rows: the group order
+    // is a product decision, and a test that hard-codes the count fails on a change
+    // that is not a bug.
+    let mut guard = 0;
+    while !matches!(
+        app.picker().and_then(|picker| picker.pick()),
+        Some(crate::tui::state::models::Pick::Model(_))
+    ) {
+        app.update(typing(KeyCode::Down));
+        guard += 1;
+        assert!(guard < 20, "the picker never reached a model row");
+    }
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Surface::Chat, "choosing closes the picker");
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SetSessionChoice { .. })
+    });
+    assert_eq!(sent.len(), 1);
+    // What landed is the row the cursor reached, named so a wrong order fails here
+    // rather than as a bare `false`.
+    match &sent[0] {
+        Action::SetSessionChoice { pick, .. } => assert_eq!(
+            pick.value().as_deref(),
+            Some("ocg_glm-5.3"),
+            "the first model row"
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn use_default_clears_one_key_and_leaves_the_other() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    app.update(typing_ctrl('m'));
+    // The cursor opens on the first group's `Use default`, which is the effort's:
+    // clearing it must leave the model alone, and this is the row that proves it.
+    assert_eq!(
+        app.picker().unwrap().current().unwrap().label,
+        "Use default"
+    );
+    app.update(typing(KeyCode::Enter));
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SetSessionChoice { .. })
+    });
+    assert!(
+        matches!(&sent[0], Action::SetSessionChoice { pick, .. } if pick.key() == crate::domain::chat_session::model::ChoiceKey::Effort && pick.value().is_none()),
+        "an effort default writes no model"
+    );
+}
+
+#[test]
+fn at_opens_the_skill_menu_and_enter_leaves_the_mention() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_skills(&mut app, &[("create-skill", false), ("review-agent", true)]);
+    app.update(typing(KeyCode::Char('@')));
+    assert_eq!(app.mode(), Surface::Complete, "the menu owns the keyboard");
+    let menu = app.completion().expect("a menu");
+    assert!(menu.rows.len() >= 2);
+
+    // Narrow to one row and accept it.
+    for ch in "create".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Surface::Chat);
+    assert_eq!(
+        app.composer().text(),
+        "@create-skill ",
+        "the whole token was replaced, not appended to"
+    );
+    assert!(app.completion().is_none());
+}
+
+#[test]
+fn esc_closes_the_menu_and_keeps_the_text_without_stopping_the_turn() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_skills(&mut app, &[("create-skill", false)]);
+    app.update(Msg::Agent(turn_started(open_id(&app))));
+    app.update(typing(KeyCode::Char('@')));
+    assert_eq!(app.mode(), Surface::Complete);
+
+    app.update(typing(KeyCode::Esc));
+    assert_eq!(app.mode(), Surface::Chat, "the menu closed");
+    assert_eq!(app.composer().text(), "@", "and the text stayed");
+    assert!(app.is_busy(), "the running turn was not interrupted");
+
+    let stopped = actions_matching(&mut app, |action| matches!(action, Action::Stop { .. }));
+    assert!(stopped.is_empty(), "no stop was issued");
+}
+
+#[test]
+fn slash_lists_the_commands_and_a_leading_slash_that_names_nothing_is_refused() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_skills(&mut app, &[("create-skill", false)]);
+    app.update(typing(KeyCode::Char('/')));
+    assert_eq!(app.mode(), Surface::Complete);
+    assert_eq!(
+        app.completion().unwrap().rows.len(),
+        crate::tui::command::BUILT_INS.len()
+    );
+    app.update(typing(KeyCode::Esc));
+
+    // A name that exists nowhere: refused, and the field keeps every character.
+    for ch in "nope".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.composer().text(), "/nope");
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.composer().text(), "/nope", "nothing was cleared");
+    assert!(
+        app.notice().is_some_and(|notice| notice.is_error()),
+        "the refusal is an error, not a hint"
+    );
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::Submit { .. } | Action::StartSession { .. })
+    });
+    assert!(sent.is_empty(), "nothing was sent");
+}
+
+#[test]
+fn a_skill_typed_with_a_slash_is_refused_and_names_the_other_sigil() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_skills(&mut app, &[("create-skill", false)]);
+    for ch in "/create-skill".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    // The menu would have accepted it; the verdict is what a submit asks.
+    app.update(typing(KeyCode::Esc));
+    app.update(typing(KeyCode::Enter));
+    let notice = app.notice().expect("a notice");
+    assert!(notice.is_error());
+    assert!(notice.text.contains("@create-skill"), "{}", notice.text);
+    assert_eq!(app.composer().text(), "/create-skill");
+}
+
+#[test]
+fn a_command_opens_its_overlay_and_clears_the_field() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    for ch in "/sessions".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Esc));
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(
+        app.mode(),
+        Surface::Sessions,
+        "the same overlay Ctrl-S opens"
+    );
+    assert!(app.composer().is_blank(), "a command clears the field");
+}
+
+#[test]
+fn slash_help_opens_the_page_with_no_session_open_at_all() {
+    let (mut app, _, _) = booted(80, 24);
+    app.update(typing_ctrl('n'));
+    assert!(app.landing());
+    for ch in "/help".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    // The menu offered `/help`; `Enter` accepts it, and the second `Enter` runs it.
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(
+        app.composer().text(),
+        "/help ",
+        "the completion filled the name"
+    );
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Surface::Help);
+
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("Sending"), "{frame}");
+    assert!(frame.contains("ctrl") || frame.contains("Ctrl-T") || frame.contains("Enter"));
+    app.update(typing(KeyCode::Esc));
+    assert_eq!(app.mode(), Surface::Chat, "Esc goes back");
+}
+
+#[test]
+fn question_mark_opens_help_from_the_transcript_only() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    // The composer owns the field, so `?` is a character there.
+    app.update(typing(KeyCode::Char('?')));
+    assert_eq!(app.mode(), Surface::Chat);
+    assert_eq!(app.composer().text(), "?");
+
+    // From the transcript it opens the page.
+    app.update(typing(KeyCode::Tab));
+    assert_eq!(app.focus(), Focus::Transcript);
+    app.update(typing(KeyCode::Char('?')));
+    assert_eq!(app.mode(), Surface::Help);
+}
+
+#[test]
+fn page_down_in_help_moves_the_help_and_not_the_transcript_behind_it() {
+    let messages: Vec<Message> = (0..40)
+        .map(|n| Message::user(format!("line {n}")))
+        .collect();
+    let mut app = with_messages(80, 24, messages);
+    let before = app.transcript().offset();
+    for ch in "/help".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Enter));
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Surface::Help);
+
+    app.update(typing(KeyCode::PageDown));
+    assert!(app.help().offset > 0, "the page scrolled");
+    assert_eq!(app.transcript().offset(), before, "the transcript did not");
+}
+
+#[test]
+fn ctrl_l_is_refused_while_a_turn_runs_and_asks_when_idle() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    app.update(Msg::Agent(turn_started(open_id(&app))));
+    app.update(typing_ctrl('l'));
+    assert!(app.confirm().is_none(), "no question while a turn runs");
+    assert!(app
+        .notice()
+        .is_some_and(|notice| notice.is_error() || !notice.is_error()));
+    let _ = actions_matching(&mut app, |_| true);
+
+    // Idle: the confirmation opens, and `y` is one compact.
+    app.update(Msg::Agent(finished(open_id(&app))));
+    app.update(typing_ctrl('l'));
+    let confirm = app.confirm().expect("the confirmation");
+    assert!(confirm.question.contains("Compact"), "{}", confirm.question);
+    assert_eq!(app.mode(), Surface::Confirm);
+
+    app.update(typing(KeyCode::Char('y')));
+    let sent = actions_matching(&mut app, |action| matches!(action, Action::Compact { .. }));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(app.mode(), Surface::Chat);
+}
+
+#[test]
+fn n_cancels_the_compact_and_sends_nothing() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    app.update(typing_ctrl('l'));
+    assert!(app.confirm().is_some());
+    app.update(typing(KeyCode::Char('n')));
+    assert!(app.confirm().is_none());
+    assert_eq!(app.mode(), Surface::Chat);
+    let sent = actions_matching(&mut app, |action| matches!(action, Action::Compact { .. }));
+    assert!(sent.is_empty());
+}
+
+#[test]
+fn the_facts_row_names_the_mode_and_sits_in_the_band() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    let frame = rows(&app, 80, 24);
+    let facts_y = y_of(&frame, "Agent");
+    let hint_y = y_of(&frame, "Ctrl-J newline");
+    assert!(facts_y < hint_y, "the facts row is above the hint");
+    // It is the band's last row: the row directly above it carries the field.
+    let facts = &frame[facts_y as usize];
+    assert!(
+        facts.contains("GLM-5.3") || facts.contains("OCG - GLM-5.3"),
+        "{facts}"
+    );
+    assert!(facts.contains("OpenCode Go"), "{facts}");
+}
+
+#[test]
+fn the_rail_carries_the_mode_the_turn_was_submitted_under() {
+    let mut plan = Message::user("plan this");
+    plan.mode = Some("plan".to_owned());
+    let app = with_messages(60, 20, vec![plan, Message::assistant("ok")]);
+
+    // The user's band wears the mode the turn was submitted under, even though the
+    // session is in agent mode: the stamp is what decides.
+    let screen = rows(&app, 60, 20);
+    let user_y = y_of(&screen, "plan this");
+    assert_eq!(
+        foreground(&app, 60, 20, 2, user_y),
+        crate::tui::theme::MODE_PLAN,
+        "the user's band wears the mode that produced the turn"
+    );
+
+    // The reply does not. A mode is what a person asked for, so it stops at the
+    // user's band; a reply wears the quiet rail in every mode.
+    let reply_y = y_of(&screen, "ok");
+    assert_eq!(
+        foreground(&app, 60, 20, 2, reply_y),
+        crate::tui::theme::INK_FAINT,
+        "the reply's rail is not the mode's ink"
+    );
+}
+
+#[test]
+fn an_unstamped_row_follows_the_session_mode() {
+    let app = with_messages(
+        60,
+        20,
+        vec![Message::user("no stamp"), Message::assistant("ok")],
+    );
+    let screen = rows(&app, 60, 20);
+    let y = y_of(&screen, "no stamp");
+    assert_eq!(
+        foreground(&app, 60, 20, 2, y),
+        crate::tui::theme::ACCENT,
+        "an old row follows the session, in agent mode's blue"
+    );
+}
+
+#[test]
+fn a_waiting_card_keeps_its_gray_rail_until_it_is_asked_about() {
+    let mut user = Message::user("run it");
+    user.mode = Some("plan".to_owned());
+    let mut assistant = Message::assistant_with_tool_calls(
+        "",
+        vec![pending_call("shell", serde_json::json!({"command": "ls"}))],
+    );
+    assistant.mode = Some("plan".to_owned());
+    let app = with_messages(70, 24, vec![user, assistant]);
+
+    let screen = rows(&app, 70, 24);
+    let card_y = y_of(&screen, "waiting for approval");
+    let ink = foreground(&app, 70, 24, 2, card_y);
+    assert_eq!(
+        ink,
+        crate::tui::theme::ATTENTION,
+        "the waiting card is cyan, not the plan-mode orange beside it"
+    );
+    assert_ne!(ink, crate::tui::theme::MODE_PLAN);
+}
+
+// ---------------------------------------------------------------------------
+// T4 feedback: one overlay style, a gap in the band, and the confirm as a panel
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_span_on_the_facts_row_carries_the_bands_background() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    let frame = rows(&app, 80, 24);
+    let y = y_of(&frame, "Agent");
+    // The separator between the mode and the model used to be `theme::faint()`,
+    // which carries the canvas: one dark cell in the middle of the band.
+    let separator_x = frame[y as usize]
+        .chars()
+        .position(|ch| ch == '\u{b7}')
+        .expect("a separator on the band") as u16;
+    assert_eq!(
+        background(&app, 80, 24, separator_x, y),
+        crate::tui::theme::BG_SURFACE,
+        "the separator is on the band, not punched out of it"
+    );
+}
+
+#[test]
+fn the_band_keeps_a_blank_row_between_the_text_and_the_facts() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    for ch in "hello".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    let frame = rows(&app, 80, 24);
+    let facts_y = y_of(&frame, "Agent");
+    // Both blank rows keep the band's rail — they are canvas with a rail, not empty
+    // rows — so the rail glyph comes out before the emptiness is judged.
+    let gap_row = |y: usize| {
+        frame[y]
+            .trim_matches(crate::tui::state::transcript::RAIL_CHAR)
+            .trim()
+            .to_owned()
+    };
+    assert!(
+        gap_row(facts_y as usize - 1).is_empty(),
+        "one blank row above the facts row: {frame:#?}"
+    );
+    assert!(
+        gap_row(facts_y as usize + 1).is_empty(),
+        "and one below it, so it reads as a caption: {frame:#?}"
+    );
+    let text_y = y_of(&frame, "hello");
+    assert_eq!(
+        facts_y,
+        text_y + 2,
+        "the text, a blank row, then the facts row"
+    );
+}
+
+#[test]
+fn the_picker_and_the_completion_menu_wear_the_panel_border() {
+    // One border, one fill, for every overlay: a bordered panel is what the
+    // sessions and workspaces lists draw, so a menu without one was a second
+    // design.
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    app.update(typing_ctrl('m'));
+    let screen = rows(&app, 80, 24);
+    let (top, _) = panel_span(&screen);
+    assert!(
+        screen[top].contains("model and effort"),
+        "the picker is a titled panel: {:#?}",
+        screen[top]
+    );
+
+    // And the completion menu, which is anchored rather than centred.
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_skills(&mut app, &[("create-skill", false)]);
+    app.update(typing(KeyCode::Char('@')));
+    let screen = rows(&app, 80, 24);
+    let (top, _) = panel_span(&screen);
+    assert!(
+        screen[top].contains('@'),
+        "the menu is a titled panel: {:#?}",
+        screen[top]
+    );
+    // Its rows sit on the panel's background, not the band's or the canvas's.
+    let row_y = (top + 1) as u16;
+    let x = screen[row_y as usize]
+        .chars()
+        .position(|ch| ch == '@')
+        .expect("a row") as u16;
+    // The first row is the highlighted one, so it wears the panel's selection band;
+    // either way the cell is the panel's own colour, not the band's.
+    assert_eq!(
+        background(&app, 80, 24, x, row_y),
+        crate::tui::view::rows::SELECTED_BG,
+        "a panel row is painted on the panel's own background"
+    );
+}
+
+#[test]
+fn the_compact_confirmation_is_a_panel_and_takes_no_layout_row() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    app.update(typing_ctrl('l'));
+    assert!(app.confirm().is_some());
+    assert_eq!(
+        app.prompt_rows(),
+        0,
+        "the confirmation is an overlay, so the transcript keeps its rows"
+    );
+
+    let screen = rows(&app, 80, 24);
+    let (top, _) = panel_span(&screen);
+    assert!(screen[top].contains("confirm"), "{:#?}", screen[top]);
+    let body = screen[top..].join("\n");
+    assert!(body.contains("Compact"), "{body}");
+    assert!(body.contains("y confirm"), "{body}");
+    // It is a panel, not a row under the composer: the composer band is still drawn
+    // in full below the question rather than giving up a row to it.
+    assert!(
+        screen.iter().any(|row| row.contains("Message robi")),
+        "the composer is still whole: {screen:#?}"
+    );
+}
+
+#[test]
+fn the_effort_group_is_the_first_thing_in_the_picker() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    land_models(&mut app);
+    app.update(typing_ctrl('m'));
+    let screen = rows(&app, 80, 24);
+    let (top, _) = panel_span(&screen);
+    let body = screen[top..].join("\n");
+    let effort = body.find("Effort").expect("an effort group");
+    let model = body.find("Model").expect("a model group");
+    assert!(effort < model, "effort comes first: {body}");
+}

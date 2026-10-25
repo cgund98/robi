@@ -192,7 +192,7 @@ impl Assembler {
             let mut deltas = Vec::new();
             self.close_open_call(&mut deltas);
             self.completed = true;
-            deltas.push(Delta::Finished(self.assemble()));
+            deltas.push(Delta::Finished(Box::new(self.assemble())));
             return Ok(deltas);
         }
 
@@ -245,7 +245,7 @@ impl Assembler {
         let mut deltas = Vec::new();
         self.close_open_call(&mut deltas);
         self.completed = true;
-        deltas.push(Delta::Finished(self.assemble()));
+        deltas.push(Delta::Finished(Box::new(self.assemble())));
         Ok(deltas)
     }
 
@@ -421,7 +421,7 @@ mod tests {
         let finished = deltas
             .iter()
             .find_map(|delta| match delta {
-                Delta::Finished(message) => Some(message.clone()),
+                Delta::Finished(message) => Some((**message).clone()),
                 _ => None,
             })
             .expect("a finished message");

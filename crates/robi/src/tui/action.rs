@@ -25,12 +25,16 @@
 use robi_core::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use robi_core::message::{FileAttachment, Message};
 
+use crate::adapters::model_source::ModeDefaults;
 use crate::agent::mcp::McpServerStatus;
+use crate::agent::providers::ModelInfo;
 use crate::domain::chat_message::runtime::SubmitOutcome;
-use crate::domain::chat_session::model::ChatSession;
+use crate::domain::chat_session::model::{AgentMode, ChatSession, ModelConfig};
 use crate::domain::workspace::model::Workspace;
 use crate::tui::persist::ViewState;
 use crate::tui::state::approval::Decision;
+use crate::tui::state::completion::SkillEntry;
+use crate::tui::state::models::Pick;
 
 /// One effect `update` asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,10 +51,7 @@ pub enum Action {
     /// `generation` is the value the transcript held when the action was
     /// issued. Two reloads of one session can be in flight together, and the
     /// older one landing last must not win.
-    Reload {
-        session: SessionId,
-        generation: u64,
-    },
+    Reload { session: SessionId, generation: u64 },
     /// Hand one instruction to the session's actor.
     ///
     /// T1 sends text only; T6 adds `files`, and images arrive with it. The
@@ -104,9 +105,29 @@ pub enum Action {
         workspace: WorkspaceId,
         text: String,
         files: Vec<FileAttachment>,
+        /// The mode the chat is created in, and its choice.
+        mode: AgentMode,
+        model_config: ModelConfig,
     },
     /// Rename a session.
     RenameSession { session: SessionId, title: String },
+    /// The models a turn can drive, and each mode's inheritable choice.
+    LoadModels { generation: u64 },
+    /// This workspace's user-invocable skills, for the `@` menu.
+    LoadSkills {
+        workspace: WorkspaceId,
+        generation: u64,
+    },
+    /// Switch the session's mode.
+    SetSessionMode { session: SessionId, mode: AgentMode },
+    /// Set or clear one key of one mode's override.
+    SetSessionChoice {
+        session: SessionId,
+        mode: AgentMode,
+        pick: Pick,
+    },
+    /// Summarize an older prefix.
+    Compact { session: SessionId },
     /// Stop the session's turn if one is running, then remove the row.
     DeleteSession { session: SessionId },
     /// This workspace's MCP servers, with connection status.
@@ -175,6 +196,24 @@ pub enum ActionOutcome {
         call: ToolCallId,
         message: String,
     },
+    /// The models a turn can drive, and each mode's inheritable choice.
+    Models {
+        generation: u64,
+        models: Vec<ModelInfo>,
+        defaults: ModeDefaults,
+    },
+    /// This workspace's user-invocable skills, in menu order.
+    Skills {
+        workspace: WorkspaceId,
+        generation: u64,
+        skills: Vec<SkillEntry>,
+    },
+    /// A session's mode or choice was written, and this is the row as stored.
+    SessionUpdated(Box<ChatSession>),
+    /// The compaction was accepted. The rewrite announces itself on the bus.
+    Compacted {
+        session: SessionId,
+    },
     /// The uncapped body behind a compressed result.
     Original {
         session: SessionId,
@@ -220,9 +259,13 @@ pub enum ActionOutcome {
         servers: Vec<McpServerStatus>,
     },
     /// The servers were told to start. Nothing to draw: a status frame follows.
-    McpFocused { workspace: WorkspaceId },
+    McpFocused {
+        workspace: WorkspaceId,
+    },
     /// The health probe finished. `error` is `None` when the store answered.
-    Probed { error: Option<String> },
+    Probed {
+        error: Option<String>,
+    },
     /// Path completion for `text`. A later keystroke has issued its own read.
     Paths {
         generation: u64,
@@ -230,10 +273,16 @@ pub enum ActionOutcome {
         candidates: Vec<String>,
     },
     /// The path could not be opened, so the typed text stays where it is.
-    CreateWorkspaceFailed { message: String },
+    CreateWorkspaceFailed {
+        message: String,
+    },
     /// The rename was refused, so the field stays open with the typed title.
-    RenameFailed { message: String },
-    DeleteFailed { message: String },
+    RenameFailed {
+        message: String,
+    },
+    DeleteFailed {
+        message: String,
+    },
     /// The view state was written.
     Saved,
     /// An effect failed. `generation` is set by the effect that can go stale.

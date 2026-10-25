@@ -1,9 +1,12 @@
-//! The one-row prompt and confirmation between the composer and the footer.
+//! The one-row prompt between the composer and the footer: the reject reason and
+//! the rename field.
 //!
 //! One row because it is an aside, not a screen: the transcript stays where it
 //! was, the composer stays visible, and the field is unmistakably the keyboard's
-//! from the footer hint and from the caret. It is drawn from `Mode::Prompt` and
-//! `Mode::Confirm`, which are the two things that own printable keys.
+//! from the footer hint and from the caret.
+//!
+//! A **confirmation is not here**: it takes the keyboard for a question, so it is a
+//! panel over the frame (`view/confirm.rs`), the shape every other overlay uses.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -17,18 +20,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    if let Some(confirm) = app.confirm() {
-        let mut spans = vec![Span::styled(confirm.question.clone(), theme::strong())];
-        if let Some(detail) = &confirm.detail {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(detail.clone(), theme::muted()));
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)).style(theme::canvas()),
-            area,
-        );
-        return;
-    }
     let Some(prompt) = app.prompt() else {
         return;
     };
@@ -36,8 +27,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let label_width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
     if label_width >= area.width {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(label, theme::muted())))
-                .style(theme::canvas()),
+            Paragraph::new(Line::from(Span::styled(label, theme::muted()))).style(theme::canvas()),
             area,
         );
         return;

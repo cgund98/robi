@@ -344,6 +344,13 @@ pub struct CreateChatSessionCommand {
     pub model_config: ModelConfig,
 }
 
+/// Which half of a mode's override a write touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceKey {
+    Model,
+    Effort,
+}
+
 /// Change a chat session's title, path rules, or model config. The workspace stays put.
 ///
 /// A `None` field is left as stored. `updated_at` moves only when a field is
@@ -363,6 +370,55 @@ pub struct UpdateChatSessionCommand {
 }
 
 impl UpdateChatSessionCommand {
+    /// Switch the session's mode. Every other field is left as stored.
+    pub fn set_mode(id: SessionId, mode: AgentMode) -> Self {
+        Self {
+            mode: Some(mode),
+            ..Self::empty(id)
+        }
+    }
+
+    /// Set or clear one key of one mode's override.
+    ///
+    /// One key, not a whole [`ModeOverride`]: a model change must not clear the
+    /// effort, because the two are written by two different controls. `None`
+    /// clears the key — which is what `Use default` means — and the other key is
+    /// absent, so the service leaves it alone.
+    pub fn set_choice(
+        id: SessionId,
+        mode: AgentMode,
+        key: ChoiceKey,
+        value: Option<String>,
+    ) -> Self {
+        let mut update = ModeOverrideUpdate::default();
+        match key {
+            ChoiceKey::Model => update.model = Some(value),
+            ChoiceKey::Effort => update.reasoning_effort = Some(value),
+        }
+        let mut config = ModelConfigUpdate::default();
+        *config.for_mode_mut(mode) = Some(update);
+        Self {
+            model_config: Some(config),
+            ..Self::empty(id)
+        }
+    }
+
+    /// Every field absent, which is the base the constructors above vary from.
+    fn empty(id: SessionId) -> Self {
+        Self {
+            id,
+            title: None,
+            allow_read: None,
+            allow_write: None,
+            deny_read: None,
+            deny_write: None,
+            allow_hosts: None,
+            mcp_allows: None,
+            mode: None,
+            model_config: None,
+        }
+    }
+
     pub fn rename(id: SessionId, title: impl Into<String>) -> Self {
         Self {
             id,
@@ -453,4 +509,70 @@ pub fn apply_session_update(session: &mut ChatSession, command: &UpdateChatSessi
         }
     }
     true
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    #[test]
+    fn set_mode_touches_only_the_mode() {
+        let id = SessionId::new();
+        let command = UpdateChatSessionCommand::set_mode(id, AgentMode::Plan);
+        assert_eq!(command.mode, Some(AgentMode::Plan));
+        assert!(command.model_config.is_none());
+        assert!(command.title.is_none());
+        assert!(!command.is_empty(), "a mode is a change");
+    }
+
+    #[test]
+    fn set_choice_names_one_key_of_one_mode() {
+        let id = SessionId::new();
+        let command = UpdateChatSessionCommand::set_choice(
+            id,
+            AgentMode::Agent,
+            ChoiceKey::Model,
+            Some("ocg_glm-5.3".into()),
+        );
+        let config = command.model_config.as_ref().expect("a model config");
+        let agent = config.agent.as_ref().expect("the agent mode");
+        assert_eq!(agent.model, Some(Some("ocg_glm-5.3".to_owned())));
+        assert_eq!(agent.reasoning_effort, None, "the effort is untouched");
+        assert!(
+            config.ask.is_none() && config.plan.is_none(),
+            "one mode only"
+        );
+
+        // `Use default` is `Some(None)`: clear this key, leave its sibling.
+        let cleared =
+            UpdateChatSessionCommand::set_choice(id, AgentMode::Agent, ChoiceKey::Effort, None);
+        let agent = cleared.model_config.unwrap().agent.unwrap();
+        assert_eq!(agent.reasoning_effort, Some(None));
+        assert_eq!(agent.model, None);
+    }
+
+    #[test]
+    fn a_choice_write_merges_into_the_stored_override() {
+        let mut stored = ModeOverride {
+            model: Some("ant_claude".into()),
+            reasoning_effort: Some("high".into()),
+        };
+        // Setting the model leaves the effort alone...
+        ModeOverrideUpdate {
+            model: Some(Some("ocg_glm-5.3".into())),
+            reasoning_effort: None,
+        }
+        .apply(&mut stored);
+        assert_eq!(stored.model.as_deref(), Some("ocg_glm-5.3"));
+        assert_eq!(stored.reasoning_effort.as_deref(), Some("high"));
+
+        // ...and clearing the effort leaves the model alone.
+        ModeOverrideUpdate {
+            model: None,
+            reasoning_effort: Some(None),
+        }
+        .apply(&mut stored);
+        assert_eq!(stored.model.as_deref(), Some("ocg_glm-5.3"));
+        assert_eq!(stored.reasoning_effort, None);
+    }
 }

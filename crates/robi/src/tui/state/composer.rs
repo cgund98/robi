@@ -71,6 +71,15 @@ impl Composer {
         &self.textarea
     }
 
+    /// The field itself, for the completion menu's rewrite.
+    ///
+    /// Nothing outside this module inserts text otherwise, and opening the buffer
+    /// is what lets the menu replace a token in place without `Composer` knowing
+    /// what a completion is.
+    pub fn textarea_mut(&mut self) -> &mut TextArea<'static> {
+        &mut self.textarea
+    }
+
     /// The buffer as it would be sent: the lines joined, without the trailing
     /// newline `TextArea` always keeps.
     pub fn text(&self) -> String {
@@ -151,13 +160,19 @@ impl Composer {
     }
 
     /// How many rows the field needs, including the band's two padding rows.
+    /// How many rows the band needs.
+    ///
+    /// One padding row above the text, the text, a blank row, the facts row, and a
+    /// blank row under it. The gap above keeps the mode and model line from reading
+    /// as part of the message being typed; the gap below keeps it off the band's
+    /// edge, so it reads as a caption rather than as a last line.
     pub fn height(&self) -> u16 {
         let lines = self
             .textarea
             .lines()
             .len()
             .clamp(1, usize::from(MAX_COMPOSER_ROWS));
-        (lines as u16).saturating_add(2)
+        (lines as u16).saturating_add(4)
     }
 }
 

@@ -443,7 +443,7 @@ mod tests {
                 json!({ "kind": "usage", "usage": { "input": 3, "output": 4, "cached": 1 } }),
             ),
             (
-                Delta::Finished(Message::assistant(finished_body)),
+                Delta::Finished(Box::new(Message::assistant(finished_body))),
                 json!({ "kind": "finished" }),
             ),
             (

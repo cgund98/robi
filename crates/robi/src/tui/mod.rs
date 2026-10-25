@@ -22,6 +22,7 @@
 
 pub mod action;
 pub mod app;
+pub mod command;
 pub mod effects;
 pub mod input;
 pub mod keys;

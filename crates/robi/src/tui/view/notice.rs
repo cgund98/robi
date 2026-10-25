@@ -22,6 +22,14 @@ fn hint(app: &App) -> &'static str {
     if let Some(prompt) = app.prompt() {
         return prompt.kind.hint();
     }
+    // The views that own the frame and the menus that own a keystroke each name
+    // their own keys, before anything about the transcript's selection.
+    match app.mode() {
+        crate::tui::state::Mode::Models => return HINT_MODELS,
+        crate::tui::state::Mode::Help => return HINT_HELP,
+        crate::tui::state::Mode::Complete => return HINT_COMPLETE,
+        _ => {}
+    }
     if app.sessions_open() {
         return HINT_SESSIONS;
     }
@@ -79,6 +87,17 @@ pub const HINT_PENDING: &str =
 /// While the sessions overlay is up.
 pub const HINT_SESSIONS: &str =
     "Enter open \u{b7} Ctrl-N new \u{b7} Ctrl-R rename \u{b7} Ctrl-D delete \u{b7} Esc close";
+
+/// The model and effort picker.
+pub const HINT_MODELS: &str = "Enter choose \u{b7} \u{2191}\u{2193} move \u{b7} Esc close";
+
+/// The help page: the detail view's scroll keys.
+pub const HINT_HELP: &str =
+    "Esc back \u{b7} \u{2191}\u{2193} scroll \u{b7} PageUp PageDown \u{b7} Home End";
+
+/// The `/` and `@` menu over the composer.
+pub const HINT_COMPLETE: &str =
+    "Enter insert \u{b7} \u{2191}\u{2193} pick \u{b7} Esc dismiss \u{b7} typing filters";
 
 /// The workspace overlay's recent list.
 pub const HINT_WORKSPACES: &str =

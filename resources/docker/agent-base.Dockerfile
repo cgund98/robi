@@ -95,15 +95,30 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     RUST_VERSION=stable
 
+# `--profile minimal` ships rustc, cargo and rust-std and nothing else, which
+# leaves `cargo fmt` and `cargo clippy` — the two halves of `make lint` — missing,
+# and `make fix` needs them just as much. They are rustup components rather than
+# separate installs, so asking for them here is what lets this image run the
+# repository's own gate.
+#
+# `--profile default` would also bring both, but it adds rust-docs too, and the
+# docs are tens of megabytes this image has no use for: a sandboxed command reads
+# the toolchain it is given, not the standard library's prose.
+#
 # The container runs as an arbitrary host UID, so rustup cannot assume it owns
 # RUSTUP_HOME. Keep the shims readable and let the invoking user add components
 # or toolchains; the sandbox still drops every capability.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+        | sh -s -- -y --no-modify-path --profile minimal \
+            --default-toolchain "${RUST_VERSION}" \
+            --component clippy \
+            --component rustfmt \
     && chmod -R a+rwX /usr/local/rustup \
     && chmod -R a+rX /usr/local/cargo \
     && /usr/local/cargo/bin/rustc --version \
-    && /usr/local/cargo/bin/cargo --version
+    && /usr/local/cargo/bin/cargo --version \
+    && /usr/local/cargo/bin/cargo-clippy --version \
+    && /usr/local/cargo/bin/rustfmt --version
 
 # pnpm is not in Ubuntu's archive, and Corepack's bundled version is not
 # guaranteed by the `nodejs` package, so install it from npm.
@@ -118,6 +133,22 @@ RUN npm install -g "pnpm@${PNPM_VERSION}" \
     && mkdir -p "${PNPM_HOME}" \
     && pnpm --version \
     && node --version
+
+# mdbook builds `docs/` for `make docs`, which is the check for the repository's
+# rule that a behaviour change updates its page. It is a Rust binary, not a
+# toolchain component, so it installs through cargo rather than rustup.
+#
+# No version pin: `.github/workflows/ci.yml` asks `peaceiris/actions-mdbook` for
+# `latest`, and an image that pinned a different one would disagree with CI about
+# whether a page builds. Drop this block if a sandboxed command should never build
+# the book — it is a documentation tool, not part of compiling the project.
+#
+# The crate cache is removed afterwards: it is build scratch, not image content,
+# and an agent that installs another binary re-fetches what it needs. Nothing
+# between the `&&`s may be a comment — a `#` there would end the whole shell line.
+RUN /usr/local/cargo/bin/cargo install mdbook --locked \
+    && /usr/local/cargo/bin/mdbook --version \
+    && rm -rf /usr/local/cargo/registry /usr/local/cargo/git
 
 # A named account, not a fixed identity: the container is created with the
 # host's UID:GID, and a preparation exec chowns /home/agent to that owner. The

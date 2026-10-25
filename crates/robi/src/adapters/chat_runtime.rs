@@ -62,6 +62,17 @@ pub struct AgentFactory {
     pub originals: Option<Arc<dyn crate::agent::compress::OriginalStore>>,
 }
 
+/// What one session actor is built from: the model and registry it drives, and the
+/// mode its turns are stamped with.
+///
+/// A bundle rather than three parameters, because the three always travel together
+/// and every `start_*` and `spawn_actor` would otherwise take each of them.
+struct Actor {
+    model: Arc<dyn Model>,
+    tools: Arc<ToolRegistry>,
+    mode: AgentMode,
+}
+
 impl AgentFactory {
     fn build(
         &self,
@@ -69,14 +80,19 @@ impl AgentFactory {
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
         max_iterations: u32,
+        mode: AgentMode,
     ) -> Agent {
+        // The mode is stamped on each turn's user message, so a front end can
+        // colour a turn by the mode that produced it after the session has moved
+        // on. The loop never reads it back.
         let agent = Agent::new(
             Arc::clone(&self.store),
             Arc::clone(&self.events),
             model,
             tools,
             self.config.with_max_iterations(max_iterations),
-        );
+        )
+        .with_mode_label(mode.as_str());
         match &self.originals {
             Some(store) => agent.with_compressor(Arc::new(
                 crate::agent::compress::ShellCompressor::new(Arc::clone(store), session),
@@ -277,16 +293,15 @@ impl SerializedChatRuntime {
         }
     }
 
-    fn spawn_actor(
-        &self,
-        session: SessionId,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
-        max_iterations: u32,
-    ) {
-        let agent = self
-            .factory
-            .build(session, Arc::clone(&model), tools, max_iterations);
+    fn spawn_actor(&self, session: SessionId, actor: Actor, max_iterations: u32) {
+        let model = actor.model;
+        let agent = self.factory.build(
+            session,
+            Arc::clone(&model),
+            actor.tools,
+            max_iterations,
+            actor.mode,
+        );
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
@@ -302,8 +317,7 @@ impl SerializedChatRuntime {
         instruction: String,
         images: Vec<robi_core::message::ImageAttachment>,
         files: Vec<robi_core::message::FileAttachment>,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
+        actor: Actor,
     ) -> Result<SubmitOutcome, ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
@@ -320,7 +334,7 @@ impl SerializedChatRuntime {
         });
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
-        self.spawn_actor(session, model, tools, max_iterations);
+        self.spawn_actor(session, actor, max_iterations);
         Ok(SubmitOutcome::Accepted)
     }
 
@@ -329,8 +343,7 @@ impl SerializedChatRuntime {
         session: SessionId,
         call: ToolCallId,
         reject: Option<String>,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
+        actor: Actor,
     ) -> Result<(), ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
@@ -343,16 +356,11 @@ impl SerializedChatRuntime {
         slot.pending = Some(Work::Decision { call, reject });
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
-        self.spawn_actor(session, model, tools, max_iterations);
+        self.spawn_actor(session, actor, max_iterations);
         Ok(())
     }
 
-    async fn start_compact(
-        &self,
-        session: SessionId,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
-    ) -> Result<(), ServiceError> {
+    async fn start_compact(&self, session: SessionId, actor: Actor) -> Result<(), ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
@@ -364,7 +372,7 @@ impl SerializedChatRuntime {
         slot.pending = Some(Work::Compact);
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
-        self.spawn_actor(session, model, tools, max_iterations);
+        self.spawn_actor(session, actor, max_iterations);
         Ok(())
     }
 
@@ -463,7 +471,13 @@ impl ChatRuntime for SerializedChatRuntime {
             }
         };
         let outcome = self
-            .start_actor(session, instruction, images, files, model, tools)
+            .start_actor(
+                session,
+                instruction,
+                images,
+                files,
+                Actor { model, tools, mode },
+            )
             .await?;
         self.note_turn_display(session, TurnDisplay::Pending).await;
         Ok(outcome)
@@ -494,7 +508,7 @@ impl ChatRuntime for SerializedChatRuntime {
         };
         let approved = reject.is_none();
         tracing::info!(%session, %call, approved, "tool decision accepted");
-        self.start_decision(session, call, reject, model, tools)
+        self.start_decision(session, call, reject, Actor { model, tools, mode })
             .await?;
         self.note_turn_display(session, TurnDisplay::Pending).await;
         Ok(())
@@ -572,7 +586,8 @@ impl ChatRuntime for SerializedChatRuntime {
             .models
             .model(Arc::clone(&tools), workspace, mode, choice)
             .await?;
-        self.start_compact(session, model, tools).await
+        self.start_compact(session, Actor { model, tools, mode })
+            .await
     }
 }
 
@@ -921,7 +936,9 @@ mod tests {
 
             self.release.notified().await;
             let (tx, rx) = mpsc::channel(1);
-            let _ = tx.send(Delta::Finished(Message::assistant("done"))).await;
+            let _ = tx
+                .send(Delta::Finished(Box::new(Message::assistant("done"))))
+                .await;
             Ok(ModelStream::new(rx))
         }
     }
@@ -1241,7 +1258,9 @@ mod tests {
             let _ = self.started.send(session);
             self.release.cancelled().await;
             let (tx, rx) = mpsc::channel(1);
-            let _ = tx.send(Delta::Finished(Message::assistant("done"))).await;
+            let _ = tx
+                .send(Delta::Finished(Box::new(Message::assistant("done"))))
+                .await;
             Ok(ModelStream::new(rx))
         }
     }
@@ -1382,7 +1401,9 @@ mod tests {
                 } else {
                     "done"
                 };
-                let _ = tx.send(Delta::Finished(Message::assistant(text))).await;
+                let _ = tx
+                    .send(Delta::Finished(Box::new(Message::assistant(text))))
+                    .await;
             }
             Ok(ModelStream::new(rx))
         }

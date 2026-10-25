@@ -144,9 +144,20 @@ pub async fn list_skills(
     let home = crate::adapters::settings::home_dir()
         .ok()
         .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()));
-    let skills = crate::agent::skills::scan(home.as_deref(), Some(&root))
+    // The scan walks the filesystem, so it goes off the async worker. The filter
+    // for `user_invocable` is inside the lift: the terminal's `@` completion asks
+    // the same question.
+    let skills = crate::agent::blocking::call({
+        let root = root.clone();
+        let home = home.clone();
+        move || crate::agent::skills::user_invocable(home.as_deref(), Some(&root))
+    })
+    .await
+    // A join error is a panic inside the scan. Failing the request is honest;
+    // answering with an empty list would say the workspace has no skills.
+    .map_err(|_| ServiceError::Unknown)?;
+    let skills = skills
         .into_iter()
-        .filter(|skill| skill.user_invocable)
         .map(|skill| {
             let scope = skill.scope_name().to_owned();
             SkillEntry {

@@ -107,10 +107,34 @@ pub fn user_bubble() -> Style {
     Style::default().bg(BG_USER).fg(INK_BRIGHT)
 }
 
-/// The rail on a user message's left edge. `--accent`, because the user's turn
-/// is the one thing in the transcript that is *state* rather than output.
-pub fn user_rail() -> Style {
-    Style::default().bg(BG_USER).fg(ACCENT)
+/// The ink a message's rail wears, from the mode that produced the turn.
+///
+/// One function so the transcript, the composer and the facts row cannot
+/// disagree about what a mode looks like. Agent is `--accent`, the product's
+/// blue, because there is no `--mode-agent` token and inventing a value the
+/// design's palette does not have would put one front end ahead of the other.
+pub fn mode_ink(mode: crate::domain::chat_session::model::AgentMode) -> Color {
+    use crate::domain::chat_session::model::AgentMode;
+    match mode {
+        AgentMode::Ask => MODE_ASK,
+        AgentMode::Plan => MODE_PLAN,
+        AgentMode::Agent => ACCENT,
+    }
+}
+
+/// The rail on a user message's left edge: the mode that submitted it.
+pub fn user_rail(mode: crate::domain::chat_session::model::AgentMode) -> Style {
+    Style::default().bg(BG_USER).fg(mode_ink(mode))
+}
+
+/// The rail beside assistant prose.
+///
+/// `--ink-faint`, the tone a tool card's rail wears, and deliberately **not the
+/// mode's ink**: a mode describes what a person asked for, so it colours the user's
+/// band and the composer and stops there. A reply is the model's, and colouring it
+/// by mode made the transcript claim the assistant was in ask or plan mode.
+pub fn prose_rail() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK_FAINT)
 }
 
 /// The rail on a tool call's card. Gray, so a card reads as machinery beside
@@ -166,18 +190,24 @@ pub fn composer_surface() -> Style {
     Style::default().bg(BG_SURFACE).fg(INK_BRIGHT)
 }
 
-/// The composer's rail: `--accent`, the same column a user message wears.
+/// The composer's rail: the mode that the next send will carry, in the same ink
+/// the message it becomes will wear.
 ///
 /// The composer is the user's turn before it is sent, so it is state, not
 /// machinery — the tool card's gray rail is the contrast, not the model.
-pub fn composer_rail() -> Style {
-    Style::default().bg(BG_SURFACE).fg(ACCENT)
+pub fn composer_rail(mode: crate::domain::chat_session::model::AgentMode) -> Style {
+    Style::default().bg(BG_SURFACE).fg(mode_ink(mode))
 }
 
-/// The composer's metadata row: the mode and model from T4, and the lock status
-/// until then.
+/// The composer's metadata row: mode, model, provider, effort, and the meter.
 pub fn composer_status() -> Style {
     Style::default().bg(BG_SURFACE).fg(INK_MUTED)
+}
+
+/// The mode word on the composer's facts row: the mode's own ink, on the band's
+/// own surface, so the row is a label rather than a break in the band.
+pub fn facts_mode(mode: crate::domain::chat_session::model::AgentMode) -> Style {
+    Style::default().bg(BG_SURFACE).fg(mode_ink(mode))
 }
 
 /// The header's activity segment. `--ink-muted`, the same tone as a timestamp:
@@ -285,10 +315,14 @@ pub fn selected(base: Style) -> Style {
 /// A card waiting on the user: the left rail of a tool call whose approval is
 /// still `pending`.
 ///
-/// The same orange as `--mode-plan`, under its own name: the palette gains no new
-/// value, but "this needs you" and "this session is in plan mode" are different
-/// facts and should be able to diverge.
-pub const ATTENTION: Color = rgb(0xe39a3c);
+/// Cyan, and deliberately not a mode's colour. It was `--mode-plan`'s orange
+/// under its own name — held there so the two could diverge — and they do now: a
+/// message's rail is its mode's ink, so a plan-mode turn is orange from the user
+/// band to the composer, and a card asking a question in that turn has to be
+/// something else or the question is the least visible thing in the frame. So the
+/// palette gains its first cyan, and "this needs you" reads as a channel of its
+/// own: a card, never a turn.
+pub const ATTENTION: Color = rgb(0x4ec9d6);
 
 /// The rail on a card that is waiting for a decision.
 pub fn attention_rail() -> Style {
@@ -327,6 +361,58 @@ pub fn code() -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_modes_ink_colours_what_a_person_asked_for() {
+        use crate::domain::chat_session::model::AgentMode;
+        assert_eq!(mode_ink(AgentMode::Agent), ACCENT);
+        assert_eq!(mode_ink(AgentMode::Ask), MODE_ASK);
+        assert_eq!(mode_ink(AgentMode::Plan), MODE_PLAN);
+        // Three inks, three values: a plan turn must not read as an ask turn.
+        assert_ne!(mode_ink(AgentMode::Plan), mode_ink(AgentMode::Ask));
+
+        // Each rail keeps its surface's background, so the band or canvas behind
+        // it is unbroken and only the one column changes.
+        assert_eq!(user_rail(AgentMode::Plan).bg, Some(BG_USER));
+        assert_eq!(composer_rail(AgentMode::Plan).bg, Some(BG_SURFACE));
+        assert_eq!(facts_mode(AgentMode::Plan).bg, Some(BG_SURFACE));
+        for style in [
+            user_rail(AgentMode::Ask),
+            composer_rail(AgentMode::Ask),
+            facts_mode(AgentMode::Ask),
+        ] {
+            assert_eq!(style.fg, Some(MODE_ASK));
+        }
+    }
+
+    #[test]
+    fn a_replys_rail_is_quiet_whatever_mode_asked_for_it() {
+        // The mode is what a person asked for, so it colours the user's band and the
+        // composer. A reply is the model's; colouring it by mode made the transcript
+        // claim the assistant was in ask or plan mode.
+        assert_eq!(prose_rail().fg, Some(INK_FAINT));
+        assert_eq!(prose_rail().bg, Some(BG_CANVAS), "the canvas is unbroken");
+        for ink in [MODE_ASK, MODE_PLAN, ACCENT] {
+            assert_ne!(prose_rail().fg, Some(ink), "never a mode's ink");
+        }
+    }
+
+    #[test]
+    fn attention_is_cyan_and_is_not_a_modes_colour() {
+        // It was `--mode-plan`'s orange under its own name. Now that a message's
+        // rail is its mode's ink, a plan-mode turn is orange throughout, so the
+        // rail that asks a question has to be its own value.
+        assert_eq!(ATTENTION, rgb(0x4ec9d6));
+        for ink in [MODE_ASK, MODE_PLAN, ACCENT] {
+            assert_ne!(ATTENTION, ink, "cyan must not be a mode's ink");
+        }
+        assert_ne!(
+            ATTENTION, FIND_HIT_CURRENT,
+            "a search hit keeps its own orange"
+        );
+        assert_eq!(attention_rail().fg, Some(ATTENTION));
+        assert_eq!(attention_rail().bg, Some(CODE_BG), "the card is unbroken");
+    }
 
     #[test]
     fn the_user_bubble_is_lighter_than_the_canvas() {

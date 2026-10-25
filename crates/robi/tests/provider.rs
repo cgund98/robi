@@ -253,7 +253,7 @@ async fn drain(mut stream: ModelStream) -> (Vec<Delta>, Option<Message>) {
     let mut finished = None;
     while let Some(delta) = stream.next().await {
         if let Delta::Finished(message) = &delta {
-            finished = Some(message.clone());
+            finished = Some((**message).clone());
         }
         deltas.push(delta);
     }

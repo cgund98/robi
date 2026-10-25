@@ -11,6 +11,7 @@ use robi_core::ids::{SessionId, WorkspaceId};
 pub enum Target {
     DeleteSession(SessionId),
     DeleteWorkspace(WorkspaceId),
+    Compact(SessionId),
 }
 
 /// The question, and the thing it is about.
@@ -30,6 +31,19 @@ impl Confirm {
             target: Target::DeleteSession(id),
             question: format!("Delete \u{201c}{title}\u{201d}?"),
             detail: running.then(|| "a running turn will be stopped".to_owned()),
+        }
+    }
+
+    /// `Compact “a chat”?` and what it does to the transcript.
+    ///
+    /// A confirmation, not a mode of its own: it asks one yes/no question, which is
+    /// exactly what the delete confirmation asks, and a second chrome for one
+    /// question would be two ways to answer it.
+    pub fn compact(id: SessionId, title: &str) -> Self {
+        Self {
+            target: Target::Compact(id),
+            question: format!("Compact \u{201c}{title}\u{201d}?"),
+            detail: Some("older messages become one summary".to_owned()),
         }
     }
 

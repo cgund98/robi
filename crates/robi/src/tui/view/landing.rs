@@ -60,4 +60,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         strip::draw(frame, strip_area, app);
     }
     composer::draw(frame, composer_area, app);
+    // The `/` and `@` menus work on the landing page too: a command has to work
+    // with no session open, and `@` narrows before the first message exists.
+    crate::tui::view::completion::draw(frame, composer_area.y, app);
 }

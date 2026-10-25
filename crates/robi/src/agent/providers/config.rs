@@ -104,6 +104,19 @@ impl ProviderKind {
             ProviderKind::DeepSeek => "deepseek",
         }
     }
+
+    /// The name a person reads: the provider, spelled as its product.
+    ///
+    /// `as_str` is the wire name and the settings key suffix; this is the label
+    /// the composer band shows beside the model, where `opencode-go` would read as
+    /// an id rather than a name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ProviderKind::OpenCodeGo => "OpenCode Go",
+            ProviderKind::Anthropic => "Anthropic",
+            ProviderKind::DeepSeek => "DeepSeek",
+        }
+    }
 }
 
 /// Drop a known provider prefix, leaving the bare id the wire wants.

@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let paint = Paint {
         selection: transcript.selection(),
         dots: app.pending_dots(),
+        mode: app.agent_mode(),
     };
     let mut lines: Vec<Line<'_>> = transcript
         .visible()
@@ -60,6 +61,13 @@ struct Paint {
     selection: Option<crate::tui::state::transcript::BlockRef>,
     /// Dots after a waiting card's label. 1, 2, or 3.
     dots: usize,
+    /// The mode the session is in now, which a row with no stamp falls back to.
+    ///
+    /// A row is stamped by the user message that started its turn, so a turn keeps
+    /// the colour of the mode that produced it after `Ctrl-T`. Everything written
+    /// before that label existed is unstamped, and follows the session: one
+    /// coherent colour for an old transcript rather than a bare one.
+    mode: crate::domain::chat_session::model::AgentMode,
 }
 
 fn line_for(row: &Row, width: u16, paint: Paint) -> Line<'static> {
@@ -150,8 +158,10 @@ fn card_rail(row: &Row) -> ratatui::style::Style {
 
 fn plain_line(row: &Row, width: u16, paint: Paint) -> Line<'static> {
     let selected = paint.selection.is_some() && row.block == paint.selection;
+    // The turn's own mode, or the session's when the row has no stamp.
+    let mode = row.mode.unwrap_or(paint.mode);
     let (band, rail) = match row.kind {
-        RowKind::User => (theme::user_bubble(), theme::user_rail()),
+        RowKind::User => (theme::user_bubble(), theme::user_rail(mode)),
         RowKind::ToolHeading => (theme::tool_card_heading(), card_rail(row)),
         RowKind::ToolHint => (theme::tool_card_marker(), card_rail(row)),
         RowKind::DiffAdd => (theme::diff_add(), card_rail(row)),
@@ -173,7 +183,11 @@ fn plain_line(row: &Row, width: u16, paint: Paint) -> Line<'static> {
         RowKind::ToolHeading => band_line(row, width, band, rail),
         RowKind::ToolCard | RowKind::ToolHint => band_line(row, width, band, rail),
         RowKind::DiffAdd | RowKind::DiffDel => band_line(row, width, band, rail),
-        RowKind::Assistant => spans_line(row, theme::prose()),
+        // Railed prose: the band is the canvas, so only the rail and the aligned
+        // column show. **The rail is quiet, not the turn's mode**: the mode belongs
+        // to what a person asked for, so it colours the user's band and the composer
+        // and stops there. A reply is the model's, whichever mode asked for it.
+        RowKind::Assistant => band_line(row, width, theme::prose(), theme::prose_rail()),
         // The closed turn's duration. Gray and unmarked, like the webview's:
         // it is a footnote to the turn, not another block in it.
         RowKind::TurnFooter => Line::from(Span::styled(row.text.clone(), theme::muted())),
@@ -198,37 +212,6 @@ fn marked_heading(row: &Row) -> Option<Row> {
     marked.text = text;
     marked.spans = vec![(at..at + '\u{25b8}'.len_utf8(), theme::cursor_marker())];
     Some(marked)
-}
-
-/// A line of prose, painted from the row's own spans.
-///
-/// `base` is the tone the row wears where nothing finer is set: assistant prose
-/// is `--ink-bright`, and a markdown span overrides only the properties it names
-/// — so a heading underlines and brightens without losing the canvas.
-fn spans_line(row: &Row, base: ratatui::style::Style) -> Line<'static> {
-    if row.spans.is_empty() {
-        return Line::from(Span::styled(row.text.clone(), base));
-    }
-    let mut spans = Vec::new();
-    let mut cursor = 0usize;
-    for (range, style) in &row.spans {
-        let start = range.start.min(row.text.len());
-        let end = range.end.min(row.text.len());
-        if start > cursor {
-            spans.push(Span::styled(row.text[cursor..start].to_owned(), base));
-        }
-        if end > start {
-            spans.push(Span::styled(
-                row.text[start..end].to_owned(),
-                base.patch(*style),
-            ));
-        }
-        cursor = cursor.max(end);
-    }
-    if cursor < row.text.len() {
-        spans.push(Span::styled(row.text[cursor..].to_owned(), base));
-    }
-    Line::from(spans)
 }
 
 /// One row of a band: the rail cell, then the content and its fill.

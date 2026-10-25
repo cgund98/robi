@@ -141,7 +141,7 @@ Do not sprinkle raw hex in components.
 | `--warn` | `#e8c547` | Yellow text for the review **Reject with reason** menu item and its **Reject and send** button |
 | `--mode-ask` | `#6fbf7a` | Ask mode in the composer |
 | `--mode-plan` | `#e39a3c` | Plan mode, and the plan Build and View Plan buttons |
-| `--attention` | `#e39a3c` | A tool call waiting on a decision: the card's left rail. Same value as `--mode-plan`, named separately so "this needs you" can diverge from "this session is in plan mode" |
+| `--attention` | `#4ec9d6` | A tool call waiting on a decision: the card's left rail. Cyan rather than a mode's ink, because a message's rail is its mode's colour: a plan-mode turn is orange from the user band to the composer, so "this needs you" has to be its own value or the question is the least visible thing in the frame |
 | `--diff-add` | `#5db27b` | `+N` line counts in edit summaries |
 | `--diff-del` | `#c46b6b` | `-N` line counts in edit summaries |
 | `--find-hit` | `#6b5416` | Find-in-document match background |
@@ -156,6 +156,13 @@ Scrollbar thumbs are `--bg-surface-active`, thin, with a transparent track.
 `--accent` is for **state and focus**, not decoration. Do not tint large panels
 blue. User messages stay a dark gray (`--bg-user`); assistant messages stay unbubbled on
 `--bg-canvas`.
+
+**A user message's left rail is its mode's ink** — `--accent` for agent, `--mode-ask`
+for ask, `--mode-plan` for plan — and the composer's rail matches what it will send.
+Nothing else wears a mode colour: a mode is what a person asked for, so it stops at
+what they typed. Assistant prose is railed too, for the aligned column, but its rail is
+`--ink-faint` in every mode; the reply is the model's output. `--attention` is
+deliberately outside the mode set.
 
 ## Typography
 

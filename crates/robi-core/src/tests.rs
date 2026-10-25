@@ -138,10 +138,10 @@ fn no_cancel() -> CancellationToken {
 /// A model script that asks for these calls, then answers with `then`.
 fn asking_then(names: &[&str], then: &str) -> StubModel {
     StubModel::new(vec![
-        Script::Message(assistant_asking_for(
+        Script::Message(Box::new(assistant_asking_for(
             names.iter().map(|name| call(name)).collect(),
-        )),
-        Script::Message(Message::assistant(then)),
+        ))),
+        Script::Message(Box::new(Message::assistant(then))),
     ])
 }
 
@@ -194,6 +194,31 @@ async fn a_single_turn_without_tools_completes() {
 }
 
 #[tokio::test]
+async fn the_mode_label_lands_on_the_user_message_and_nowhere_else() {
+    let model = StubModel::saying("hello");
+    let h = harness(model, vec![], LoopConfig::default());
+    let agent = h.agent.with_mode_label("plan");
+    let session = agent.new_chat(WorkspaceId::new());
+
+    agent.user_input(session, "hi", no_cancel()).await;
+
+    let transcript = h.store.messages(session).await.unwrap();
+    assert_eq!(transcript[0].mode.as_deref(), Some("plan"));
+    assert_eq!(transcript[1].mode, None, "the reply carries no mode");
+}
+
+#[tokio::test]
+async fn an_agent_with_no_label_stamps_nothing() {
+    let model = StubModel::saying("hello");
+    let h = harness(model, vec![], LoopConfig::default());
+
+    h.agent.user_input(h.session, "hi", no_cancel()).await;
+
+    let transcript = h.store.messages(h.session).await.unwrap();
+    assert_eq!(transcript[0].mode, None);
+}
+
+#[tokio::test]
 async fn a_tool_loop_reaches_a_second_model_turn() {
     let probe = Probe::new();
     let tools = vec![FunctionTool::new("read").probed(probe.clone()).arc()];
@@ -215,9 +240,9 @@ async fn a_tool_loop_reaches_a_second_model_turn() {
 async fn the_cap_counts_model_turns_not_tool_calls() {
     let tools = vec![FunctionTool::new("noop").arc()];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("noop")])),
-        Script::Message(assistant_asking_for(vec![call("noop")])),
-        Script::Message(assistant_asking_for(vec![call("noop")])),
+        Script::Message(Box::new(assistant_asking_for(vec![call("noop")]))),
+        Script::Message(Box::new(assistant_asking_for(vec![call("noop")]))),
+        Script::Message(Box::new(assistant_asking_for(vec![call("noop")]))),
     ]);
     let config = LoopConfig::default().with_max_iterations(2);
     let h = harness(model, tools, config);
@@ -236,8 +261,8 @@ async fn the_cap_counts_model_turns_not_tool_calls() {
 async fn a_turn_paused_by_the_cap_leaves_its_transcript_intact() {
     let tools = vec![FunctionTool::new("noop").arc()];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("noop")])),
-        Script::Message(assistant_asking_for(vec![call("noop")])),
+        Script::Message(Box::new(assistant_asking_for(vec![call("noop")]))),
+        Script::Message(Box::new(assistant_asking_for(vec![call("noop")]))),
     ]);
     let config = LoopConfig::default().with_max_iterations(1);
     let h = harness(model, tools, config);
@@ -260,7 +285,7 @@ async fn text_and_reasoning_deltas_reach_the_sink() {
         deltas: vec![
             Delta::Reasoning("thinking".to_owned()),
             Delta::Text("answer".to_owned()),
-            Delta::Finished(Message::assistant("answer")),
+            Delta::Finished(Box::new(Message::assistant("answer"))),
         ],
         gap: Duration::ZERO,
     }]);
@@ -293,7 +318,7 @@ async fn every_delta_event_names_the_message_the_loop_will_append() {
     let model = StubModel::new(vec![Script::Deltas {
         deltas: vec![
             Delta::Text("a".to_owned()),
-            Delta::Finished(Message::assistant("a")),
+            Delta::Finished(Box::new(Message::assistant("a"))),
         ],
         gap: Duration::ZERO,
     }]);
@@ -428,11 +453,10 @@ async fn unparseable_arguments_fail_the_call_without_asking() {
     let probe = Probe::new();
     let tools = vec![FunctionTool::new("read").probed(probe.clone()).arc()];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![ToolCall::with_args_error(
-            "read",
-            "expected a JSON object",
-        )])),
-        Script::Message(Message::assistant("carried on")),
+        Script::Message(Box::new(assistant_asking_for(vec![
+            ToolCall::with_args_error("read", "expected a JSON object"),
+        ]))),
+        Script::Message(Box::new(Message::assistant("carried on"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -552,9 +576,9 @@ async fn an_executed_call_is_not_pending_while_a_later_call_waits() {
             .arc(),
     ];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("read")])),
-        Script::Message(assistant_asking_for(vec![call("write")])),
-        Script::Message(Message::assistant("done")),
+        Script::Message(Box::new(assistant_asking_for(vec![call("read")]))),
+        Script::Message(Box::new(assistant_asking_for(vec![call("write")]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -841,8 +865,11 @@ async fn deciding_is_whole_turn_so_nothing_runs_when_a_late_call_waits() {
             .arc(),
     ];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("read"), call("write")])),
-        Script::Message(Message::assistant("done")),
+        Script::Message(Box::new(assistant_asking_for(vec![
+            call("read"),
+            call("write"),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -912,14 +939,14 @@ async fn an_exclusive_call_is_a_barrier() {
             .arc(),
     ];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![
+        Script::Message(Box::new(assistant_asking_for(vec![
             call("read-a"),
             call("read-c"),
             call("write"),
             call("read-d"),
             call("read-e"),
-        ])),
-        Script::Message(Message::assistant("done")),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -951,8 +978,12 @@ async fn execution_follows_model_order_around_an_exclusive_call() {
         FunctionTool::new("c").slow(gap).probed(probe.clone()).arc(),
     ];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("a"), call("b"), call("c")])),
-        Script::Message(Message::assistant("done")),
+        Script::Message(Box::new(assistant_asking_for(vec![
+            call("a"),
+            call("b"),
+            call("c"),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -985,8 +1016,12 @@ async fn reads_before_an_exclusive_call_still_batch() {
             .arc(),
     ];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("a"), call("c"), call("b")])),
-        Script::Message(Message::assistant("done")),
+        Script::Message(Box::new(assistant_asking_for(vec![
+            call("a"),
+            call("c"),
+            call("b"),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -1009,13 +1044,13 @@ async fn the_in_flight_limit_is_respected() {
         })
         .collect();
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![
+        Script::Message(Box::new(assistant_asking_for(vec![
             call("t0"),
             call("t1"),
             call("t2"),
             call("t3"),
-        ])),
-        Script::Message(Message::assistant("done")),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let config = LoopConfig::default().with_max_concurrent_tools(2);
     let h = harness(model, tools, config);
@@ -1036,8 +1071,11 @@ async fn results_are_in_model_order_when_the_first_tool_is_slowest() {
             .arc(),
     ];
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![call("slow"), call("fast")])),
-        Script::Message(Message::assistant("done")),
+        Script::Message(Box::new(assistant_asking_for(vec![
+            call("slow"),
+            call("fast"),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::default());
 
@@ -1062,8 +1100,12 @@ async fn serial_mode_produces_the_same_transcript_as_concurrent_mode() {
             FunctionTool::new("c").slow(Duration::from_millis(5)).arc(),
         ];
         let model = StubModel::new(vec![
-            Script::Message(assistant_asking_for(vec![call("a"), call("b"), call("c")])),
-            Script::Message(Message::assistant("done")),
+            Script::Message(Box::new(assistant_asking_for(vec![
+                call("a"),
+                call("b"),
+                call("c"),
+            ]))),
+            Script::Message(Box::new(Message::assistant("done"))),
         ]);
         let h = harness(model, tools, config);
         h.agent.user_input(h.session, "go", no_cancel()).await;
@@ -1091,12 +1133,12 @@ async fn serial_mode_runs_one_call_at_a_time() {
         })
         .collect();
     let model = StubModel::new(vec![
-        Script::Message(assistant_asking_for(vec![
+        Script::Message(Box::new(assistant_asking_for(vec![
             call("t0"),
             call("t1"),
             call("t2"),
-        ])),
-        Script::Message(Message::assistant("done")),
+        ]))),
+        Script::Message(Box::new(Message::assistant("done"))),
     ]);
     let h = harness(model, tools, LoopConfig::serial());
 
@@ -1283,12 +1325,12 @@ impl Tool for ReportingTool {
 async fn a_reporter_records_child_steps_and_the_model_does_not_see_them() {
     let h = harness(
         StubModel::new(vec![
-            Script::Message(assistant_asking_for(vec![ToolCall::new(
+            Script::Message(Box::new(assistant_asking_for(vec![ToolCall::new(
                 "delegate",
                 serde_json::json!({}),
             )
-            .approved()])),
-            Script::Message(Message::assistant("done")),
+            .approved()]))),
+            Script::Message(Box::new(Message::assistant("done"))),
         ]),
         vec![Arc::new(ReportingTool)],
         LoopConfig::default(),

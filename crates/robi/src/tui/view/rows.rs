@@ -34,6 +34,46 @@ pub fn fill(frame: &mut Frame, area: Rect) {
     frame.render_widget(Block::default().style(theme::canvas()), area);
 }
 
+/// The border every overlay wears: one hairline in `--ink-faint`, on the canvas.
+///
+/// A named constant rather than a style built at each call site, because two
+/// overlays with two border tones is the exact drift this module exists to stop.
+pub fn border() -> Block<'static> {
+    Block::bordered()
+        .border_style(Style::default().fg(theme::INK_FAINT))
+        .style(theme::canvas())
+}
+
+/// A panel centred in `area`, filled, and titled — the shape every overlay uses.
+///
+/// Returns the panel's inner rect, or `None` when the frame cannot hold it. The
+/// caller passes the size it needs; the panel is clamped to the frame and never
+/// drawn smaller than a border and one row.
+///
+/// **This is the one place an overlay is painted.** A panel that cleared and a
+/// panel that did not produced two different backgrounds for the same rows, and
+/// the difference was only visible on screen; going through one function is what
+/// makes "all overlays look alike" a property of the code rather than a habit.
+pub fn panel(frame: &mut Frame, area: Rect, width: u16, height: u16, title: &str) -> Option<Rect> {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    if width < 8 || height < 3 {
+        return None;
+    }
+    let panel = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    // Erase first: whatever was drawn here is still legible through a style.
+    fill(frame, panel);
+    let block = border().title(Span::styled(format!(" {title} "), theme::strong()));
+    let inner = block.inner(panel);
+    frame.render_widget(block, panel);
+    (inner.height > 0).then_some(inner)
+}
+
 /// One row of a list: `spans`, on the row's background, padded to `width`.
 ///
 /// The background is applied last, over whatever the span's own style carries,

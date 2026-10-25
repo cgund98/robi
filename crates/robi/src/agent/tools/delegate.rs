@@ -366,7 +366,7 @@ mod tests {
                 .ok_or_else(|| ModelError::Provider("no scripted turn".into()))?;
             let (tx, rx) = mpsc::channel(1);
             tokio::spawn(async move {
-                let _ = tx.send(Delta::Finished(message)).await;
+                let _ = tx.send(Delta::Finished(Box::new(message))).await;
             });
             Ok(ModelStream::new(rx))
         }

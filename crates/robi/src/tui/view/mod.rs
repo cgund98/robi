@@ -4,13 +4,18 @@
 //! never decides anything a test cannot reproduce: the transcript rows were
 //! wrapped in `state::transcript` and this module only styles them.
 
+pub mod completion;
+pub mod confirm;
 pub mod composer;
 pub mod detail;
+pub mod facts;
 pub mod header;
+pub mod help;
 pub mod landing;
-pub mod notice;
 pub mod manage;
 pub mod missing;
+pub mod models;
+pub mod notice;
 pub mod prompt;
 pub mod rows;
 pub mod sessions;
@@ -87,6 +92,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         crate::tui::state::Mode::Manage => {
             manage::draw(frame, area, app);
+            return;
+        }
+        crate::tui::state::Mode::Help => {
+            help::draw(frame, area, app);
             return;
         }
         _ => {}
@@ -167,6 +176,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         prompt::draw(frame, prompt_row, app);
     }
     notice::draw(frame, bottom, app);
+    // The completion menu floats over the transcript's last rows, anchored to the
+    // band's top edge: it belongs at the caret, and reserving rows for it would
+    // move the text being typed on every keystroke.
+    completion::draw(frame, composer.y, app);
 
     draw_overlays(frame, content, app);
 }
@@ -181,6 +194,14 @@ fn draw_overlays(frame: &mut Frame, content: Rect, app: &App) {
     }
     if app.workspaces_open() {
         workspaces::draw(frame, content, app);
+    }
+    if app.mode() == crate::tui::state::Mode::Models {
+        models::draw(frame, content, app);
+    }
+    // The confirmation answers a question, so it is drawn last and over anything
+    // it was opened from: the sessions list, the manage view, the chat frame.
+    if app.confirm().is_some() {
+        confirm::draw(frame, content, app);
     }
 }
 

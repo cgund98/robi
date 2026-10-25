@@ -10,12 +10,17 @@
 
 pub mod activity;
 pub mod approval;
+pub mod completion;
 pub mod composer;
 pub mod confirm;
+pub mod context;
 pub mod detail;
+pub mod facts;
+pub mod help;
 pub mod landing;
 pub mod manage;
 pub mod markdown;
+pub mod models;
 pub mod prompt;
 pub mod sessions;
 pub mod status;
@@ -27,10 +32,12 @@ pub mod workspaces;
 ///
 /// T2 made this a real stack: a pause no longer adds a mode — approvals are
 /// answered on the selected card — but the detail view does. T3 adds the two
-/// overlays and the confirmation that sits above one of them. `Models` and
-/// `Settings` are declared here because the later phases fill them in, and a
-/// keymap that grows a variant at a time is how a mode ends up half-registered;
-/// a variant no phase reaches yet is not declared at all.
+/// overlays and the confirmation that sits above one of them. T4 adds the picker,
+/// the help page, and the completion menu: each owns the keyboard for what it is,
+/// because `keys::command` is a pure function of `(Mode, Focus, KeyEvent)` and
+/// cannot see whether a menu is up. `Settings` is declared because T5 fills it in,
+/// and a keymap that grows a variant at a time is how a mode ends up
+/// half-registered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
     /// The base mode: the transcript, the composer, and the global bindings.
@@ -57,6 +64,10 @@ pub enum Mode {
     Settings,
     /// One tool call, read in full: its own scroll, `Esc` back.
     Detail,
+    /// The completion menu over the composer, after `/` or `@`.
+    Complete,
+    /// The help page: every key and command, on its own scroll.
+    Help,
     /// A one-line prompt: rename, reject reason.
     Prompt,
     /// The confirmation above an overlay: `y` accepts, `n` or `Esc` cancels.

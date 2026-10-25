@@ -27,7 +27,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::tui::state::{Focus, Mode};
 
 /// What a key asks for. `app::update` turns one into a state change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
     /// Leave. The transcript owns the keyboard and no turn is running.
     Quit,
@@ -117,6 +117,20 @@ pub enum Command {
     CloseManage,
     /// `Tab` on the create screen: put the highlighted directory in the field.
     AcceptCandidate,
+    /// `Ctrl-T`: ask, then plan, then agent.
+    CycleMode,
+    /// `Ctrl-M`: the model and effort picker.
+    OpenModels,
+    /// `Ctrl-L`: summarize older messages, behind a confirmation.
+    Compact,
+    /// `?`, from the transcript: every key and command.
+    OpenHelp,
+    /// `Esc` in the help view.
+    CloseHelp,
+    /// `Enter` or `Tab` in the completion menu: rewrite the token.
+    CompleteAccept,
+    /// `Esc` in the completion menu: close it and keep the text.
+    CompleteDismiss,
 }
 
 /// The command `key` runs in `mode` with `focus`.
@@ -135,6 +149,9 @@ pub fn command(mode: Mode, focus: Focus, key: &KeyEvent) -> Option<Command> {
         Mode::Manage => manage(key),
         Mode::WorkspaceMissing => missing(key),
         Mode::Confirm => confirm(key),
+        Mode::Models => models(key),
+        Mode::Help => help(key),
+        Mode::Complete => complete(focus, key),
         // A mode that owns its keys from the phase that adds it: an unmapped key
         // does nothing rather than falling through to a stale binding.
         _ => None,
@@ -204,6 +221,7 @@ fn sessions(key: &KeyEvent) -> Option<Command> {
             KeyCode::Char('n') => Some(Command::NewSession),
             KeyCode::Char('r') => Some(Command::RenameSession),
             KeyCode::Char('d') => Some(Command::DeleteSelected),
+            KeyCode::Char('m') => Some(Command::OpenModels),
             _ => None,
         };
     }
@@ -233,6 +251,7 @@ fn manage(key: &KeyEvent) -> Option<Command> {
             KeyCode::Char('w') => Some(Command::OpenWorkspaces),
             KeyCode::Char('n') => Some(Command::NewWorkspace),
             KeyCode::Char('d') => Some(Command::DeleteSelected),
+            KeyCode::Char('m') => Some(Command::OpenModels),
             _ => None,
         };
     }
@@ -276,6 +295,7 @@ fn workspaces(key: &KeyEvent) -> Option<Command> {
             KeyCode::Char('w') => Some(Command::OpenWorkspaces),
             KeyCode::Char('n') => Some(Command::NewWorkspace),
             KeyCode::Char('d') => Some(Command::DeleteSelected),
+            KeyCode::Char('m') => Some(Command::OpenModels),
             _ => None,
         };
     }
@@ -288,6 +308,71 @@ fn workspaces(key: &KeyEvent) -> Option<Command> {
         KeyCode::PageUp => Some(Command::ListPageUp),
         KeyCode::PageDown => Some(Command::ListPageDown),
         KeyCode::Delete => Some(Command::DeleteSelected),
+        _ => None,
+    }
+}
+
+/// The model and effort picker: a list with no field, so a letter is free.
+///
+/// `j`/`k` move as well as the arrows, which is the detail view's rule: a surface
+/// that owns no text field can take the vi keys.
+fn models(key: &KeyEvent) -> Option<Command> {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc if !alt => Some(Command::CloseOverlay),
+        KeyCode::Enter if !alt => Some(Command::OverlayOpen),
+        KeyCode::Up if !alt => Some(Command::ListPrev),
+        KeyCode::Down if !alt => Some(Command::ListNext),
+        KeyCode::Char('k') if !control && !alt => Some(Command::ListPrev),
+        KeyCode::Char('j') if !control && !alt => Some(Command::ListNext),
+        KeyCode::PageUp => Some(Command::ListPageUp),
+        KeyCode::PageDown => Some(Command::ListPageDown),
+        KeyCode::Char('m') if control => Some(Command::OpenModels),
+        _ => None,
+    }
+}
+
+/// The help page: the detail view's scroll keys and nothing else.
+fn help(key: &KeyEvent) -> Option<Command> {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc if !alt => Some(Command::CloseHelp),
+        KeyCode::Char('j') if !control => Some(Command::LineDown),
+        KeyCode::Char('k') if !control => Some(Command::LineUp),
+        KeyCode::Down if !control => Some(Command::LineDown),
+        KeyCode::Up if !control => Some(Command::LineUp),
+        KeyCode::PageDown => Some(Command::PageDown),
+        KeyCode::PageUp => Some(Command::PageUp),
+        KeyCode::Char('d') if control => Some(Command::HalfPageDown),
+        KeyCode::Char('u') if control => Some(Command::HalfPageUp),
+        KeyCode::Home => Some(Command::Top),
+        KeyCode::End => Some(Command::Bottom),
+        _ => None,
+    }
+}
+
+/// The completion menu: move, accept, dismiss.
+///
+/// **Every other printable key is the field's**, and that is deliberate: a reader
+/// typing `@create-skill` narrows the menu one character at a time, so the menu has
+/// to keep its hands off the keyboard it is completing. `Esc` here closes the menu
+/// rather than interrupting, because a menu is the thing on top.
+fn complete(focus: Focus, key: &KeyEvent) -> Option<Command> {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc if !alt => Some(Command::CompleteDismiss),
+        KeyCode::Enter if !alt => Some(Command::CompleteAccept),
+        KeyCode::Tab if !control => Some(Command::CompleteAccept),
+        KeyCode::Up if !alt => Some(Command::ListPrev),
+        KeyCode::Down if !alt => Some(Command::ListNext),
+        KeyCode::PageUp => Some(Command::ListPageUp),
+        KeyCode::PageDown => Some(Command::ListPageDown),
+        // `Tab` was the way between regions; inside the menu it accepts, so
+        // `Shift-Tab` still leaves. Nothing else is claimed.
+        KeyCode::Tab if focus.is_composer() => Some(Command::CompleteAccept),
         _ => None,
     }
 }
@@ -328,6 +413,9 @@ fn chat(focus: Focus, key: &KeyEvent) -> Option<Command> {
             KeyCode::Char('w') => return Some(Command::OpenWorkspaces),
             KeyCode::Char('n') => return Some(Command::NewSession),
             KeyCode::Char('r') => return Some(Command::RenameSession),
+            KeyCode::Char('t') => return Some(Command::CycleMode),
+            KeyCode::Char('m') => return Some(Command::OpenModels),
+            KeyCode::Char('l') => return Some(Command::Compact),
             _ => {}
         }
     }
@@ -363,6 +451,9 @@ fn chat(focus: Focus, key: &KeyEvent) -> Option<Command> {
         KeyCode::Char('a') if !control && !alt => Some(Command::Approve),
         KeyCode::Char('A') if !control => Some(Command::ApproveAll),
         KeyCode::Char('r') if !control && !alt => Some(Command::OpenReason),
+        // Help is transcript-only for the same reason `q` is: `?` is a printable
+        // character, so with the composer focused it has to reach the field.
+        KeyCode::Char('?') if !control && !alt => Some(Command::OpenHelp),
         // Quit is idle-only and transcript-only; `update` checks the phase.
         KeyCode::Char('q') if !control && !alt => Some(Command::Quit),
         KeyCode::Char('u') if control => Some(Command::HalfPageUp),
@@ -648,7 +739,11 @@ mod tests {
             (control(KeyCode::Char('n')), Command::NewSession),
             (control(KeyCode::Char('w')), Command::OpenWorkspaces),
         ] {
-            assert_eq!(command(Mode::Sessions, Focus::Composer, &key), Some(expected), "{key:?}");
+            assert_eq!(
+                command(Mode::Sessions, Focus::Composer, &key),
+                Some(expected),
+                "{key:?}"
+            );
         }
         // The filter owns every other printable key, `j` and `k` included.
         for key in [
@@ -685,12 +780,20 @@ mod tests {
             );
         }
         assert_eq!(
-            command(Mode::Workspaces, Focus::Composer, &press(KeyCode::Char('y'))),
+            command(
+                Mode::Workspaces,
+                Focus::Composer,
+                &press(KeyCode::Char('y'))
+            ),
             None,
             "the path and the filter are text"
         );
         assert_eq!(
-            command(Mode::Workspaces, Focus::Composer, &press(KeyCode::Char('n'))),
+            command(
+                Mode::Workspaces,
+                Focus::Composer,
+                &press(KeyCode::Char('n'))
+            ),
             None,
             "a bare n is a character, not a new workspace"
         );
@@ -705,7 +808,11 @@ mod tests {
             (press(KeyCode::Char('N')), Command::ConfirmNo),
             (press(KeyCode::Esc), Command::CancelConfirm),
         ] {
-            assert_eq!(command(Mode::Confirm, Focus::Composer, &key), Some(expected), "{key:?}");
+            assert_eq!(
+                command(Mode::Confirm, Focus::Composer, &key),
+                Some(expected),
+                "{key:?}"
+            );
         }
         for key in [
             press(KeyCode::Enter),
@@ -752,5 +859,117 @@ mod tests {
             None,
             "the approval keys belong to the transcript"
         );
+    }
+
+    #[test]
+    fn t4_adds_three_control_keys_and_help_on_the_transcript_only() {
+        // The three from `chat`. `Ctrl-M` is a newline inside the text area, and
+        // the global map is asked first, so the binding wins.
+        for (key, expected) in [
+            (control(KeyCode::Char('t')), Command::CycleMode),
+            (control(KeyCode::Char('m')), Command::OpenModels),
+            (control(KeyCode::Char('l')), Command::Compact),
+        ] {
+            assert_eq!(
+                command(Mode::Chat, Focus::Composer, &key),
+                Some(expected),
+                "{key:?}"
+            );
+            assert_eq!(
+                command(Mode::Chat, Focus::Transcript, &key),
+                Some(expected),
+                "{key:?} works from either region"
+            );
+        }
+
+        // `?` is a character in the field and the help key on the transcript.
+        assert_eq!(
+            command(Mode::Chat, Focus::Composer, &press(KeyCode::Char('?'))),
+            None,
+            "a question mark typed in the field is a question mark"
+        );
+        assert_eq!(
+            command(Mode::Chat, Focus::Transcript, &press(KeyCode::Char('?'))),
+            Some(Command::OpenHelp)
+        );
+
+        // And the picker can be opened from the overlays that name it.
+        for mode in [Mode::Sessions, Mode::Workspaces, Mode::Manage] {
+            assert_eq!(
+                command(mode, Focus::Composer, &control(KeyCode::Char('m'))),
+                Some(Command::OpenModels),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_picker_and_the_help_page_move_and_close() {
+        for (key, expected) in [
+            (press(KeyCode::Esc), Command::CloseOverlay),
+            (press(KeyCode::Enter), Command::OverlayOpen),
+            (press(KeyCode::Up), Command::ListPrev),
+            (press(KeyCode::Down), Command::ListNext),
+            (press(KeyCode::Char('j')), Command::ListNext),
+            (press(KeyCode::Char('k')), Command::ListPrev),
+        ] {
+            assert_eq!(
+                command(Mode::Models, Focus::Composer, &key),
+                Some(expected),
+                "{key:?}"
+            );
+        }
+
+        for (key, expected) in [
+            (press(KeyCode::Esc), Command::CloseHelp),
+            (press(KeyCode::PageDown), Command::PageDown),
+            (press(KeyCode::PageUp), Command::PageUp),
+            (press(KeyCode::Home), Command::Top),
+            (press(KeyCode::End), Command::Bottom),
+        ] {
+            assert_eq!(
+                command(Mode::Help, Focus::Composer, &key),
+                Some(expected),
+                "{key:?}"
+            );
+        }
+        // The help page cannot quit or approve: it is a page you are reading.
+        for key in [press(KeyCode::Char('q')), press(KeyCode::Char('a'))] {
+            assert_eq!(command(Mode::Help, Focus::Composer, &key), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_completion_menu_accepts_on_enter_and_esc_alone_closes() {
+        for (key, expected) in [
+            (press(KeyCode::Enter), Command::CompleteAccept),
+            (press(KeyCode::Tab), Command::CompleteAccept),
+            (press(KeyCode::Esc), Command::CompleteDismiss),
+            (press(KeyCode::Up), Command::ListPrev),
+            (press(KeyCode::Down), Command::ListNext),
+        ] {
+            assert_eq!(
+                command(Mode::Complete, Focus::Composer, &key),
+                Some(expected),
+                "{key:?}"
+            );
+        }
+
+        // `Esc` in the menu is not the interrupt: a reader dismissing a menu must
+        // not stop the turn they were typing into.
+        assert_ne!(
+            command(Mode::Complete, Focus::Composer, &press(KeyCode::Esc)),
+            Some(Command::Interrupt)
+        );
+
+        // Every printable key but the sigils is the field's, so a query can be
+        // typed one character at a time.
+        for ch in ['a', 'z', '0', '-', '?', '/', '@', ' '] {
+            assert_eq!(
+                command(Mode::Complete, Focus::Composer, &press(KeyCode::Char(ch))),
+                None,
+                "{ch:?} belongs to the field"
+            );
+        }
     }
 }
