@@ -11,6 +11,7 @@
 //!
 //! - [`config`] resolves the settings layers.
 //! - [`host`] builds the `HostConfig` and its mounts.
+//! - [`reaper`] removes a container that has been idle for too long.
 //!
 //! Egress is per call and approval-gated. A command approved with `network:
 //! "unrestricted"` is connected to [`EGRESS_NETWORK`] for its own duration and
@@ -20,6 +21,7 @@
 
 pub mod config;
 pub mod host;
+pub mod reaper;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,6 +42,7 @@ use bollard::Docker;
 use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::sandbox::masks;
@@ -59,6 +62,12 @@ pub const LABEL_SESSION: &str = "robi.session";
 /// Upper bound on floor mounts. Past it, container creation is slow enough that
 /// the workspace is almost certainly misconfigured.
 pub const MAX_MASKS: usize = 2_000;
+
+/// How long a `force` remove may take before the caller gives up.
+///
+/// The sweep and a session delete both remove while holding the registry lock,
+/// so a wedged daemon must not stall every later `shell` call behind it.
+pub const REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error)]
 pub enum SandboxError {
@@ -94,6 +103,9 @@ struct State {
     /// Set when the container must be recreated, because its masks, its config,
     /// or its liveness changed.
     dirty: bool,
+    /// When the last command finished. The reaper compares it to the idle
+    /// timeout; `exec` stamps it on every exit.
+    last_used: Instant,
 }
 
 /// The container serving one session.
@@ -140,6 +152,7 @@ impl Sandbox {
                 config,
                 service_host: None,
                 dirty: true,
+                last_used: Instant::now(),
             }),
         };
         sandbox.ensure_ready().await?;
@@ -161,11 +174,32 @@ impl Sandbox {
         // Serialised: the container, its mounts, and its network attachment are
         // per session, and the `shell` tool is exclusive.
         let mut state = self.state.lock().await;
+        let output = self
+            .exec_locked(&mut state, command, timeout, cancel, config, network)
+            .await;
+        // Stamped on completion rather than on entry, so a command that runs
+        // longer than the idle timeout is not reaped the moment it ends.
+        state.last_used = Instant::now();
+        output
+    }
+
+    /// [`Self::exec`] with the state lock already held.
+    ///
+    /// Split out so the idle clock is stamped on every exit, an error included.
+    async fn exec_locked(
+        &self,
+        state: &mut State,
+        command: &str,
+        timeout: Duration,
+        cancel: CancellationToken,
+        config: Config,
+        network: NetworkMode,
+    ) -> Result<CommandOutput, SandboxError> {
         if config != state.config {
             state.config = config;
             state.dirty = true;
         }
-        self.ensure_ready_locked(&mut state).await?;
+        self.ensure_ready_locked(state).await?;
 
         // An approved `network: "unrestricted"` call gets an interface for its own
         // duration. A container cannot change `network_mode` after creation, but
@@ -289,13 +323,60 @@ impl Sandbox {
     /// Removes the container. The workspace and the cache volumes are left alone.
     pub async fn shutdown(&self) {
         let state = self.state.lock().await;
-        let _ = self
-            .docker
-            .remove_container(
-                &state.name,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-            )
-            .await;
+        self.remove_bounded(&state.name).await;
+    }
+
+    /// Removes the container when nothing has run in it for `timeout`.
+    ///
+    /// Returns how long it had been idle, or `None` when nothing was removed.
+    /// The state lock is taken with `try_lock`: `exec` holds it for the whole
+    /// command, so a held lock means a command is in flight and the sweep skips
+    /// the container rather than queueing behind a long build. The state is left
+    /// dirty, so the next command finds no container and
+    /// [`Self::ensure_ready_locked`] creates one.
+    pub async fn reap_if_idle(&self, timeout: Duration) -> Option<Duration> {
+        let Ok(mut state) = self.state.try_lock() else {
+            return None;
+        };
+        // Already due for recreation, which is also what a previous reap left
+        // behind: there is nothing to remove, and this keeps the sweep from
+        // logging the same session on every tick until a command runs again.
+        if state.dirty {
+            return None;
+        }
+        let now = Instant::now();
+        if !is_reapable(state.last_used, now, timeout) {
+            return None;
+        }
+        let idle = now.duration_since(state.last_used);
+        if self.remove_bounded(&state.name).await {
+            state.dirty = true;
+            Some(idle)
+        } else {
+            None
+        }
+    }
+
+    /// A force remove that gives up after [`REMOVE_TIMEOUT`].
+    ///
+    /// True when the container is gone, including when it was already gone.
+    async fn remove_bounded(&self, name: &str) -> bool {
+        let remove = self.docker.remove_container(
+            name,
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+        );
+        match tokio::time::timeout(REMOVE_TIMEOUT, remove).await {
+            Ok(Ok(())) => true,
+            Ok(Err(err)) if is_not_found(&err) => true,
+            Ok(Err(err)) => {
+                tracing::warn!(container = name, %err, "could not remove the sandbox container");
+                false
+            }
+            Err(_) => {
+                tracing::warn!(container = name, "timed out removing the sandbox container");
+                false
+            }
+        }
     }
 
     async fn ensure_ready(&self) -> Result<(), SandboxError> {
@@ -516,6 +597,15 @@ impl Sandbox {
             )
             .await;
     }
+}
+
+/// Whether a container idle since `last_used` may be removed at `now`.
+///
+/// Separate from the removal so the boundary is testable without a daemon. The
+/// timeout is inclusive: at exactly the timeout the container has been idle long
+/// enough.
+fn is_reapable(last_used: Instant, now: Instant, timeout: Duration) -> bool {
+    now.duration_since(last_used) >= timeout
 }
 
 /// Where a command runs, in container terms.
@@ -755,12 +845,73 @@ impl Registry {
         Ok(sandbox)
     }
 
+    /// Removes every container this process owns and forgets them.
+    ///
+    /// Called on a clean exit, so a container does not outlive the process that
+    /// made it. Returns how many went. A remove that fails or times out is
+    /// logged and does not stop the rest: this runs on the way out, and leaving
+    /// early would strand the remaining containers.
+    pub async fn shutdown_all(&self) -> usize {
+        let mut map = self.sandboxes.lock().await;
+        let sandboxes: Vec<(SessionId, Arc<Sandbox>)> = map.drain().collect();
+        let total = sandboxes.len();
+        for (session, sandbox) in sandboxes {
+            // A command may still hold the state lock. Waiting on it here would
+            // let an ordinary quit hang, so each remove gets the same budget as
+            // its own daemon call and is skipped past that.
+            let removed = tokio::time::timeout(REMOVE_TIMEOUT, sandbox.shutdown()).await;
+            if removed.is_err() {
+                tracing::warn!(
+                    %session,
+                    "a command was still running; the sandbox container stays behind"
+                );
+            } else {
+                tracing::info!(%session, "removed the sandbox container on exit");
+            }
+        }
+        total
+    }
+
     /// Removes the session's container and drops the entry.
+    ///
+    /// The remove happens under the map lock, so a concurrent [`Self::get`]
+    /// cannot create a second container with the same name in the gap. Best
+    /// effort: the entry goes even if the remove failed, because the session row
+    /// this names is already gone and no later pass would retry it.
     pub async fn release(&self, session: SessionId) {
-        let sandbox = self.sandboxes.lock().await.remove(&session);
-        if let Some(sandbox) = sandbox {
+        let mut map = self.sandboxes.lock().await;
+        if let Some(sandbox) = map.remove(&session) {
             sandbox.shutdown().await;
         }
+    }
+
+    /// Removes every container that has been idle for `timeout`.
+    ///
+    /// Returns the sessions whose containers went. The entry stays: it is left
+    /// dirty, so the next command for that session recreates the container, and
+    /// a caller already holding the `Arc` cannot be holding one whose entry was
+    /// pulled out from under it. Only [`Self::release`] drops an entry, and only
+    /// for a session that no longer exists.
+    ///
+    /// The map lock stays held for the whole sweep, for the same name-collision
+    /// reason as [`Self::release`]; the per-container remove is bounded by
+    /// [`REMOVE_TIMEOUT`], so the lock is never held indefinitely.
+    pub async fn sweep_idle(&self, timeout: Duration) -> Vec<SessionId> {
+        let map = self.sandboxes.lock().await;
+        let mut reaped = Vec::new();
+        for (session, sandbox) in map.iter() {
+            let Some(idle) = sandbox.reap_if_idle(timeout).await else {
+                continue;
+            };
+            tracing::info!(
+                %session,
+                idle_seconds = idle.as_secs(),
+                container = %host::container_name(&session.to_string()),
+                "removed an idle sandbox container"
+            );
+            reaped.push(*session);
+        }
+        reaped
     }
 }
 

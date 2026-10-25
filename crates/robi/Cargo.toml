@@ -24,13 +24,13 @@ edit-tools = ["review"]
 docs-viewer = ["dep:ignore"]
 # T0: the terminal front end in `tui/` and the `robi-tui` binary. Not a
 # streamlining workstream: off by default so `robi-api` and `src-tauri` do not
-# compile ratatui. `tokio/signal` is for SIGTERM -> restore.
+# compile ratatui. `tokio/signal` is not here: every surface needs it, to catch
+# Ctrl-C and SIGTERM and remove its sandbox containers on the way out.
 tui = [
     "dep:ratatui",
     "dep:ratatui-textarea",
     "dep:tui-markdown",
     "dep:unicode-width",
-    "tokio/signal",
 ]
 [dependencies]
 robi-core = { path = "../robi-core" }
@@ -61,7 +61,16 @@ sqlx.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 # `net` and `rt-multi-thread` drive `robi-api` and the provider-test SSE server.
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "process", "io-util"] }
+# `signal` catches Ctrl-C and SIGTERM so an exit can remove the sandbox
+# containers first.
+tokio = { workspace = true, features = [
+    "net",
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "signal",
+] }
 tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 tracing-appender.workspace = true

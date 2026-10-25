@@ -6,6 +6,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use http::{header::CONTENT_TYPE, HeaderValue, Method};
@@ -13,6 +14,7 @@ use robi_core::config::LoopConfig;
 use robi_core::tool::ToolRegistry;
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -26,7 +28,7 @@ use crate::{
         model_source::SettingsModelSource,
         originals::BlobOriginals,
         session_blobs::{evacuate_sqlite, SessionBlobs},
-        session_data::FilesystemSessionData,
+        session_data::SessionCleanup,
         settings::TomlSettingsStore,
         sqlite,
         workspace::repo::SqliteWorkspaceRepository,
@@ -186,7 +188,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces: workspaces.clone(),
         events: Some(Arc::clone(&event_bus)),
-        session_cleaner: Some(Arc::new(FilesystemSessionData::new(blobs))),
+        session_cleaner: Some(Arc::new(SessionCleanup::new(blobs))),
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
@@ -223,6 +225,9 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         .reconcile_turn_displays(store.as_ref())
         .await
         .map_err(|err| BootstrapError::Prune(err.to_string()))?;
+    // Removes a sandbox container that nothing has run in for a while. On the
+    // runtime that serves the API, so it ends with the process.
+    crate::agent::sandbox::container::reaper::spawn();
     Ok(AppState {
         workspace_service: Arc::new(WorkspaceService {
             repository: workspaces,
@@ -252,9 +257,96 @@ pub fn router(state: AppState) -> Router {
         .layer(cors_layer())
 }
 
+/// A running API server: where it listens, and how to stop it.
+///
+/// The desktop app holds one so it can shut the server down, and with it the
+/// sandbox containers, before the process exits. `robi-api` and `robi-tui` own
+/// the runtime themselves and do not need it.
+pub struct ApiServer {
+    addr: SocketAddr,
+    shutdown: CancellationToken,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl ApiServer {
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Stops the server, waits for the sandbox cleanup, and gives up after
+    /// `timeout`.
+    ///
+    /// Returns whether the cleanup finished. Called on the way out, so a slow or
+    /// wedged daemon delays the quit by at most `timeout` and never hangs it.
+    pub fn shutdown(self, timeout: Duration) -> bool {
+        self.shutdown.cancel();
+        match self.done.recv_timeout(timeout) {
+            Ok(()) => true,
+            Err(_) => {
+                tracing::warn!("the API server did not shut down in time");
+                false
+            }
+        }
+    }
+}
+
+/// Removes every sandbox container this process owns.
+///
+/// The containers are labels in a daemon, not files a process holds, so they
+/// outlive an exit unless something removes them. Every surface calls this once,
+/// late, on its own runtime: the Docker client is only used from the runtime
+/// that built it.
+pub async fn shutdown_sandboxes() {
+    let removed = crate::agent::sandbox::container::Registry::global()
+        .shutdown_all()
+        .await;
+    if removed > 0 {
+        tracing::info!(removed, "removed sandbox containers on exit");
+    }
+}
+
+/// Resolves on `Ctrl-C` or, on Unix, `SIGTERM`.
+///
+/// `SIGTERM` is what a supervisor sends and what a terminal close turns into, so
+/// handling only `Ctrl-C` would leave the common case unhandled. A `SIGKILL` and
+/// a crash cannot be caught, and the sandbox containers from those are the gap
+/// the container page documents.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%err, "could not listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "could not listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutting down");
+}
+
 /// Start the server on a background thread. Returns after the listener is bound.
-pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapError> {
+pub fn spawn(config: AppConfig, listen: Listen) -> Result<ApiServer, BootstrapError> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let shutdown = CancellationToken::new();
+    let serve_token = shutdown.clone();
     std::thread::Builder::new()
         .name("robi-api".into())
         .spawn(move || {
@@ -284,16 +376,23 @@ pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapE
                 match started {
                     Ok((listener, app, addr)) => {
                         let _ = tx.send(Ok(addr));
-                        if let Err(err) =
-                            rt.block_on(async move { axum::serve(listener, app).await })
-                        {
+                        let served = rt.block_on(async move {
+                            let stop = async move { serve_token.cancelled().await };
+                            axum::serve(listener, app)
+                                .with_graceful_shutdown(stop)
+                                .await
+                        });
+                        if let Err(err) = served {
                             tracing::error!(%err, "server stopped");
                         }
+                        // On this runtime, where the Docker client was built.
+                        rt.block_on(shutdown_sandboxes());
                     }
                     Err(err) => {
                         let _ = tx.send(Err(err));
                     }
                 }
+                let _ = done_tx.send(());
             }));
             if let Err(payload) = panicked {
                 let message = panic_payload(payload.as_ref());
@@ -305,9 +404,14 @@ pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapE
             }
         })
         .map_err(|err| BootstrapError::Bind(format!("failed to spawn the server thread: {err}")))?;
-    rx.recv().map_err(|_| {
+    let addr = rx.recv().map_err(|_| {
         BootstrapError::Bind("the server thread stopped before it bound a port".into())
-    })?
+    })??;
+    Ok(ApiServer {
+        addr,
+        shutdown,
+        done: done_rx,
+    })
 }
 
 /// Bind `listen` and return the listener. The bound port is `local_addr`.

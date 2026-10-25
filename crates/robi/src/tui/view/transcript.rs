@@ -153,6 +153,7 @@ fn plain_line(row: &Row, width: u16, paint: Paint) -> Line<'static> {
     let (band, rail) = match row.kind {
         RowKind::User => (theme::user_bubble(), theme::user_rail()),
         RowKind::ToolHeading => (theme::tool_card_heading(), card_rail(row)),
+        RowKind::ToolHint => (theme::tool_card_marker(), card_rail(row)),
         RowKind::DiffAdd => (theme::diff_add(), card_rail(row)),
         RowKind::DiffDel => (theme::diff_del(), card_rail(row)),
         _ => (theme::tool_card(), card_rail(row)),
@@ -170,7 +171,7 @@ fn plain_line(row: &Row, width: u16, paint: Paint) -> Line<'static> {
     match row.kind {
         RowKind::User => band_line(row, width, band, rail),
         RowKind::ToolHeading => band_line(row, width, band, rail),
-        RowKind::ToolCard => band_line(row, width, band, rail),
+        RowKind::ToolCard | RowKind::ToolHint => band_line(row, width, band, rail),
         RowKind::DiffAdd | RowKind::DiffDel => band_line(row, width, band, rail),
         RowKind::Assistant => spans_line(row, theme::prose()),
         // The closed turn's duration. Gray and unmarked, like the webview's:
@@ -510,7 +511,7 @@ mod waiting_tests {
         }
         // The gutter's two cells, then the rail, then one cell of pad. The dot
         // field is three cells wide, so it reads the same however many are lit.
-        let label = |dots: &str| format!("  \u{2502} {}{dots}", tool_card::WAITING_LABEL);
+        let label = |dots: &str| format!("  {RAIL_CHAR} {}{dots}", tool_card::WAITING_LABEL);
         assert_eq!(
             drawn,
             vec![label("."), label(".."), label("...")],

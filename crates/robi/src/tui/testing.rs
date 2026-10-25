@@ -27,6 +27,7 @@ use crate::tui::action::{Action, ActionOutcome};
 use crate::tui::app::{App, Msg};
 use crate::tui::persist::ViewState;
 use crate::tui::state::approval::Decision;
+use crate::tui::state::transcript::RAIL_CHAR;
 use crate::tui::state::{Focus, Mode, Phase};
 
 /// Render one frame and return each row as a trimmed string.
@@ -327,6 +328,52 @@ fn a_terminal_below_the_minimum_draws_one_line() {
 }
 
 #[test]
+fn a_retrieve_keeps_its_page_for_the_detail_view() {
+    // A retrieve's page is another call's log: the transcript names the window
+    // and the way in, and only the detail page shows the text.
+    let (mut app, _, session) = booted(80, 24);
+    let mut call = pending_call(
+        "retrieve",
+        serde_json::json!({ "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "stream": "stdout" }),
+    );
+    call.approval_status = ApprovalStatus::Approved;
+    call.execution_status = ExecutionStatus::Succeeded;
+    call.result = Some(serde_json::json!({
+        "stdout": "the paged line\nthe second paged line",
+        "start_line": 10,
+        "end_line": 11,
+        "total_lines": 300,
+    }));
+    land(
+        &mut app,
+        session,
+        vec![Message::assistant_with_tool_calls("", vec![call])],
+    );
+
+    let frame = screen(&app, 80, 24);
+    assert!(
+        frame.contains("0193a1b2 stdout"),
+        "the window is still named: {frame}"
+    );
+    assert!(!frame.contains("the paged line"), "{frame}");
+    assert!(frame.contains("Enter opens the output"), "{frame}");
+
+    // Opening the card in place does not reveal it either: the page has one
+    // home, and it is not the transcript.
+    press(&mut app, key(KeyCode::Tab));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    let detail = screen(&app, 80, 24);
+    assert_eq!(app.mode(), Mode::Detail, "{detail}");
+    assert!(detail.contains("the paged line"), "{detail}");
+    assert!(detail.contains("the second paged line"), "{detail}");
+    assert!(
+        !detail.contains("Enter opens the output"),
+        "the hint belongs to the card, not the page: {detail}"
+    );
+}
+
+#[test]
 fn a_rule_closes_the_header_and_stops_where_its_text_does() {
     let gutter = usize::from(crate::tui::view::GUTTER);
     let width = usize::from(crate::tui::view::content_width(60));
@@ -530,7 +577,7 @@ fn a_user_message_and_a_tool_call_have_rails_of_different_colours() {
     for (row, what) in [(user_row, "user band"), (card_row, "card")] {
         assert_eq!(
             frame[usize::from(row)].chars().nth(usize::from(rail)),
-            Some('\u{2502}'),
+            Some(RAIL_CHAR),
             "the {what} has a rail"
         );
     }
@@ -547,7 +594,7 @@ fn a_user_message_and_a_tool_call_have_rails_of_different_colours() {
     // Everything is inset: nothing is drawn in the first or last column.
     for (index, row) in frame.iter().enumerate() {
         assert!(
-            !row.starts_with('\u{2502}'),
+            !row.starts_with(RAIL_CHAR),
             "row {index} is not inset by the gutter: {row:?}"
         );
     }
@@ -896,7 +943,7 @@ fn the_empty_composer_shows_its_placeholder_behind_an_accent_rail() {
     // band's first row is the rail on its top padding row.
     let band_start = typed
         .iter()
-        .position(|row| row.chars().nth(gutter) == Some('\u{2502}'))
+        .position(|row| row.chars().nth(gutter) == Some(RAIL_CHAR))
         .expect("the band's first row");
     assert!(band_start > 0, "the band is not the first region");
     assert!(
@@ -2303,7 +2350,7 @@ fn the_strip_sits_above_the_composer_and_the_prompt_above_the_footer() {
     assert!(frame.contains("Thinking"), "{frame}");
     let band = frame
         .lines()
-        .position(|row| row.contains('\u{2502}'))
+        .position(|row| row.contains(RAIL_CHAR))
         .expect("the composer's rail");
     let activity = frame
         .lines()
@@ -3185,7 +3232,7 @@ fn the_landing_page_draws_a_green_greeting_over_the_composer() {
         .expect("the greeting");
     let band = frame_rows
         .iter()
-        .position(|row| row.contains('│'))
+        .position(|row| row.contains(RAIL_CHAR))
         .expect("the composer's rail");
     assert!(
         greeting < band,
@@ -3346,4 +3393,5 @@ fn zz_dump_paused() {
     let (app, _, _) = paused(80, 24);
     println!("{}", screen(&app, 80, 24));
 }
+
 

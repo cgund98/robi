@@ -35,6 +35,9 @@ pub enum RowKind {
     ToolHeading,
     /// One body or subject line of a tool call's card.
     ToolCard,
+    /// A card line that points somewhere instead of showing content, such as a
+    /// `retrieve` card's way to its page. Muted, like a heading: it is not output.
+    ToolHint,
     /// A line an edit adds. Tinted so a diff reads as a change, not prose.
     DiffAdd,
     /// A line an edit removes.
@@ -187,7 +190,14 @@ const PAD_X: usize = 1;
 
 /// The vertical rail on a band's left edge. One column, on every row of the
 /// band, so the line is continuous from the top padding to the bottom.
-pub const RAIL_CHAR: char = '\u{2502}';
+///
+/// A block rather than the hairline `│`: the rail is how a block says what it is,
+/// and one box-drawing line is a hairline at a normal cell size. Three eighths of
+/// a cell is about three pixels of solid ink — a bar the eye catches without the
+/// band turning into a box — and it still measures one cell, so the wrap width,
+/// the band width, and the scroll arithmetic are what they were. `\u{258c}` (half
+/// block) and `\u{2588}` (full block) are the next steps up.
+pub const RAIL_CHAR: char = '\u{258d}';
 
 /// Cells the rail takes out of the content width, with the padding.
 fn inner_width(width: usize) -> usize {
@@ -993,6 +1003,7 @@ fn tool_card_rows(
             let kind = match line.kind {
                 CardLineKind::DiffAdd => RowKind::DiffAdd,
                 CardLineKind::DiffDel => RowKind::DiffDel,
+                CardLineKind::Hint => RowKind::ToolHint,
                 _ => RowKind::ToolCard,
             };
             for wrapped in wrap_text(&line.text, inner) {
@@ -1182,6 +1193,7 @@ mod tests {
                 RowKind::Assistant => 'a',
                 RowKind::ToolHeading => 'h',
                 RowKind::ToolCard => 'c',
+                RowKind::ToolHint => '?',
                 RowKind::DiffAdd => '+',
                 RowKind::DiffDel => '-',
                 RowKind::Divider => 'd',
@@ -1370,6 +1382,7 @@ mod tests {
                 let kind = match row.kind {
                     RowKind::ToolHeading => "heading",
                     RowKind::ToolCard => "card",
+                    RowKind::ToolHint => "hint",
                     RowKind::DiffAdd => "add",
                     RowKind::DiffDel => "del",
                     RowKind::Spacer => "spacer",

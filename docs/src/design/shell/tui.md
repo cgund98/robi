@@ -362,7 +362,12 @@ the index itself, so nothing in the frame carries an index line.
   one-cell rail on its left edge, one cell of horizontal padding, and one row of
   padding above and below. The rail is the only vertical rule in the transcript
   — there is no drawn border, so the band contrast plus the rail is the whole
-  affordance. The rail's colour is what identifies the block:
+  affordance. The rail's colour is what identifies the block. The rail cell
+  itself is `\u{258d}` (left three-eighths block) rather than the hairline `│`:
+  one box-drawing line is nearly invisible at a normal cell size, and the rail is
+  what a reader scans for. A block glyph costs the same one cell, so the wrap
+  width, the band width, and the scroll arithmetic are unchanged, and the colour
+  is still the whole signal — the glyph only decides how much ink it carries.
 
   | Block | Band | Rail |
   |---|---|---|
@@ -538,6 +543,13 @@ provider.
   lines; the detail view is what shows the rest, so an opened card no longer
   fetches anything by itself — opening the view does, through
   `OriginalStore::lookup`, the same body `getToolOriginal` serves the GUI.
+- **A retrieve card shows no output at all.** Its body is a page of *another*
+  call's log, so the transcript is the wrong place for it: the card keeps the
+  window — `# retrieve` over `> 0193a1b2 stdout`, the id and the stream — and one
+  muted `… Enter opens the output`. The page is built only by
+  `tool_card::full_body`, the uncapped form the detail view calls, so the two
+  cannot drift apart, and the transcript pays nothing for a log it would have had
+  to truncate anyway.
 - `awaiting_approval` while the window is unfocused → terminal bell, and the
   title becomes **robi — approval needed** either way. No OS notification; that is
   Tauri-only. Focus reporting is optional (DECSET 1004), so a terminal that does
@@ -1253,6 +1265,9 @@ collapsed directories, docs-tray width, UI scale.
   when any server has failed; frame tests assert the label and the cell colour. A
   frame test asserts the row under it is one unbroken rule that starts at the
   gutter and ends at the header's right edge.
+- A retrieve card: the page text is absent from the frame, the hint is there, and
+  the detail view opened from the card holds both paged lines. The card builder's
+  own test pins the same two facts against `card` and `full_body`.
 - The turn footer: `Worked for 12m 42s` from two ids 12m 42s apart, none while a
   turn is open, one per closed turn when the last is still going, none for a
   single-message turn or a compaction divider, and a rebuild only when the last

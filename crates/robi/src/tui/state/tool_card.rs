@@ -79,6 +79,9 @@ pub enum CardLineKind {
     DiffDel,
     /// The `… (+N lines)` count that ends a capped body.
     More,
+    /// A line that points somewhere instead of showing content. A `retrieve`
+    /// card's page is another call's log, and it belongs on the detail page.
+    Hint,
     /// Why the call failed.
     Error,
 }
@@ -95,6 +98,14 @@ impl CardLine {
     pub fn body(text: impl Into<String>) -> Self {
         Self {
             kind: CardLineKind::Body,
+            text: text.into(),
+        }
+    }
+
+    /// A line that points at where the content is, rather than showing it.
+    pub fn hint(text: impl Into<String>) -> Self {
+        Self {
+            kind: CardLineKind::Hint,
             text: text.into(),
         }
     }
@@ -320,8 +331,7 @@ fn heading(call: &ToolCall, phase: Phase) -> String {
     }
     // A call that has not started while the turn is busy is next in line, not
     // stalled: the heading says what the reader is watching, which is the turn.
-    let status = if is_running(call, phase)
-        && call.execution_status == ExecutionStatus::NotStarted
+    let status = if is_running(call, phase) && call.execution_status == ExecutionStatus::NotStarted
     {
         "running"
     } else {
@@ -365,6 +375,9 @@ const TARGET_ARGS: &[&str] = &["command", "path", "pattern", "query", "url", "na
 /// The result fields that hold a readable body, in priority order.
 const BODY_FIELDS: &[&str] = &["output", "stdout", "content", "text", "result", "body"];
 
+/// What a `retrieve` card says instead of the page it fetched.
+const RETRIEVE_HINT: &str = "\u{2026} Enter opens the output";
+
 fn body(call: &ToolCall, form: Form, hidden: &mut usize) -> Vec<CardLine> {
     if let Some(error) = &call.error {
         return error
@@ -393,6 +406,15 @@ fn body(call: &ToolCall, form: Form, hidden: &mut usize) -> Vec<CardLine> {
     }
     if call.result.is_none() && needs_decision(call, form.phase) {
         return vec![CardLine::body(WAITING_LABEL)];
+    }
+
+    // A retrieve's page is another call's log, not this call's own output, and it
+    // is the reason the detail view exists: the card keeps the window — the
+    // subject names the id and the stream, the summary carries the line range —
+    // and says where the text is. Only the uncapped form, which is the detail
+    // page, builds the page, so the two cannot drift apart.
+    if call.name == "retrieve" && !form.uncapped {
+        return vec![CardLine::hint(RETRIEVE_HINT)];
     }
 
     let Some(result) = &call.result else {
@@ -933,9 +955,15 @@ mod tests {
             serde_json::json!({ "command": "seq 60" }),
             serde_json::json!({ "stdout": output }),
         );
-        assert_eq!(card(&call, Phase::Idle, false).lines.len(), MAX_TOOL_OUTPUT_LINES);
+        assert_eq!(
+            card(&call, Phase::Idle, false).lines.len(),
+            MAX_TOOL_OUTPUT_LINES
+        );
         assert_eq!(card(&call, Phase::Idle, false).hidden, 54);
-        assert_eq!(card(&call, Phase::Idle, true).lines.len(), MAX_EXPANDED_TOOL_LINES);
+        assert_eq!(
+            card(&call, Phase::Idle, true).lines.len(),
+            MAX_EXPANDED_TOOL_LINES
+        );
         assert_eq!(card(&call, Phase::Idle, true).hidden, 20);
     }
 
@@ -1001,6 +1029,16 @@ mod tests {
             card(&call, Phase::Idle, false).subject.as_deref(),
             Some("0193a1b2 stdout")
         );
+
+        // The page itself is not the transcript's: a card says where it is, and
+        // opening a card in place does not change that. Only the detail view's
+        // uncapped form builds the text.
+        for expanded in [false, true] {
+            let card = card(&call, Phase::Idle, expanded);
+            assert_eq!(texts(&card.lines), vec![RETRIEVE_HINT]);
+            assert_eq!(card.hidden, 0, "there is no count to report");
+        }
+        assert_eq!(texts(&full_body(&call, Phase::Idle)), vec!["the log"]);
     }
 
     #[test]
@@ -1135,7 +1173,10 @@ mod decision_tests {
         let mut call = pending();
         call.execution_status = ExecutionStatus::Running;
         assert!(is_running(&call, Phase::Idle));
-        assert_eq!(texts(&card(&call, Phase::Idle, false).lines), vec![RUNNING_LABEL]);
+        assert_eq!(
+            texts(&card(&call, Phase::Idle, false).lines),
+            vec![RUNNING_LABEL]
+        );
     }
 
     #[test]

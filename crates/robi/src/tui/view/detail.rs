@@ -58,7 +58,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
                 CardLineKind::DiffAdd => Style::default().fg(theme::DIFF_ADD),
                 CardLineKind::DiffDel => Style::default().fg(theme::DIFF_DEL),
                 CardLineKind::Error => Style::default().fg(theme::DANGER),
-                CardLineKind::More => theme::faint(),
+                CardLineKind::More | CardLineKind::Hint => theme::faint(),
                 CardLineKind::Body => theme::prose(),
             };
             Line::from(Span::styled(line.text.clone(), style))

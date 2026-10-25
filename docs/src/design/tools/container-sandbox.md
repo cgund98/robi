@@ -74,9 +74,10 @@ switch to `os` or fix the runtime; the command is never retried on the host.
 
 One container serves one chat session. It is created on the first sandboxed
 command, reused by every later command in that session, and removed when the
-session ends or when it has been idle for seven days. The workspace and the
-cache volumes outlive it. [Container lifetime](#container-lifetime) records why
-the container is preserved rather than created per call.
+session is deleted, when no command has run in it for ten minutes, or when the
+process exits. The workspace and the cache volumes outlive it.
+[Container lifetime](#container-lifetime) records why the container is preserved
+rather than created per call, and [Reaping](#reaping) when it goes.
 
 Settings resolve per workspace: a `.robi/sandbox.toml` in the workspace
 overrides the global settings in `~/.robi/config.toml`, field by field. The
@@ -733,11 +734,77 @@ robi.session=<session id>
 robi.workspace=<canonical workspace path>
 ```
 
-On session end, `shutdown` calls `remove_container` with `force: true`. On
-startup, the harness lists containers with `label=robi.sandbox=container` and
-removes any whose `robi.session` is no longer in the session store, or whose
-last-used annotation is older than seven days. A container left by a crash is
-therefore cleaned up without user action.
+A container is removed three ways, and all of them keep the workspace mount and
+the cache volumes:
+
+| Trigger | Owner | Effect |
+|---|---|---|
+| The chat session is deleted | `SessionCleanup`, as the session's `session_cleaner` | The container goes with the row, under the registry lock |
+| No command for ten minutes | the reaper task | The container goes; the registry entry stays, marked for recreation |
+| The process exits | each surface, through `bootstrap::shutdown_sandboxes` | Every entry goes, with its container |
+
+`SessionCleanup` (`adapters/session_data.rs`) composes the container release with
+the blob removal, so all three delete paths — `DELETE
+/api/v1/chat_sessions/{id}`, the TUI's delete, and the startup prune — release
+the container without each handler remembering to. The release runs first, so a
+blob failure cannot strand a container.
+
+The reaper (`container/reaper.rs`) is one task started by
+`bootstrap::build_app_state`, so `robi-api`, `robi-tui`, and the desktop app all
+get it from the one place they share. It ticks every `REAP_INTERVAL` (120 s) and
+removes a container whose `last_used` is at least `IDLE_TIMEOUT` (600 s) old. Both
+are constants for now; `Registry::sweep_idle` takes the timeout as an argument, so
+turning it into a setting is one call site.
+
+Three details keep the sweep out of the way of a running command:
+
+- `last_used` is stamped when a command **finishes**, not when it starts, so a
+  build that outlives the timeout is not reaped the moment it ends.
+- The sweep takes each sandbox's state lock with `try_lock`. That lock is held
+  for the whole command, so a held lock means work is in flight and the container
+  is skipped rather than queued behind it.
+- The remove is bounded by `REMOVE_TIMEOUT` (30 s), and both the sweep and
+  `release` remove while holding the registry lock. A wedged daemon therefore
+  costs one slow sweep, not a permanently stuck `shell` call.
+
+An `exec` already waiting on that state lock wakes to find no container, and
+`ensure_ready_locked` creates one. The call succeeds and loses only the
+installed-package layer, which is exactly what an idle removal costs.
+
+The sweep removes the container and leaves the registry entry, marked `dirty`.
+Only `release` drops an entry, and only for a session that no longer exists. That
+ordering matters: a caller holding the `Arc` but not yet having taken the state
+lock would otherwise recreate a container that no entry names, which nothing would
+ever reap again. The `dirty` flag also stops one reap from being logged on every
+tick while the session stays idle, because an already-dirty sandbox is skipped.
+
+### On exit
+
+A container is a label in a daemon, not a file the process holds, so nothing
+removes it when the process goes. Each surface therefore removes its own on the
+way out, and each does it on the runtime that built the Docker client:
+
+| Surface | Where the cleanup runs |
+|---|---|
+| `robi-api` | After `axum::serve` returns from `with_graceful_shutdown`, which resolves on `Ctrl-C` or `SIGTERM` |
+| `robi-tui` | After `tui::run` returns, which already turns `SIGTERM` into a quit |
+| Desktop app | On `RunEvent::Exit`, which asks the API thread to stop and waits up to 10 s for its cleanup |
+
+`Registry::shutdown_all` drains the registry under its lock and removes each
+container with the same `REMOVE_TIMEOUT` budget as any other remove. A command
+still running in one of them holds its state lock; that container is logged and
+skipped rather than allowed to hang the quit.
+
+`tokio/signal` is a dependency of the crate, not of the `tui` feature, because
+`robi-api` needs it for the same reason the terminal app does.
+
+**A container left by a crash, `SIGKILL`, or a failed shutdown is not covered.** It belongs to no live process, so
+no in-process registry knows it exists, and neither the sweep, a session delete,
+nor the exit cleanup can reach it. Closing that gap needs a signal that outlives
+the process — a create-time owner label plus an owner-PID liveness check, so a
+later process can prove the owner is gone before removing anything — and it is not
+built. Removing by label alone is wrong: two processes can share a daemon, and
+that would delete a container the other one is using.
 
 ## Module layout
 
@@ -752,11 +819,12 @@ setting and quietly do something else with it.
 | `sandbox/container/config.rs` | The settings layers: `Config`, `Mechanism`, `resolve`, `parse_service`, and the per-command environment |
 | `sandbox/container/host.rs` | The `HostConfig`, its mounts, the UID/GID, and the base environment. Pure construction, so it is testable without a daemon |
 | `sandbox/container/mod.rs` | The lifecycle: preflight, create, exec, streaming, timeout, shutdown, and the per-session registry |
+| `sandbox/container/reaper.rs` | The idle sweep: `REAP_INTERVAL`, `IDLE_TIMEOUT`, the tick loop |
 
 The split is by what needs a daemon. `config` and `host` are functions of the
 profile and the settings, so their tests run with no Docker at all. Only `mod.rs`
-talks to the socket, and the only part of it with interesting logic is
-`StreamBuffer`, which is unit-tested directly.
+talks to the socket, and its logic that is worth testing is `StreamBuffer` and
+`is_reapable`, both unit-tested directly. `reaper` is a clock and a call.
 
 Each module's tests cover the behaviour its doc comment claims:
 
@@ -773,6 +841,11 @@ Each module's tests cover the behaviour its doc comment claims:
   the config.
 - `mod` — the two streams stay apart, each gets its own cap, a frame crossing the
   cap is cut, stdin frames are ignored, and invalid UTF-8 does not panic.
+- `reaper` — a container is reapable at the timeout and not one second before;
+  the interval is shorter than the timeout.
+- `session_data` — deleting a session with no container still removes its blobs,
+  which is the common case on the `os` mechanism; an inner failure is reported
+  rather than skipping the work.
 
 ### Dispatching from `sandbox::launch`
 
@@ -812,8 +885,10 @@ the per-turn rebuild of the tool registry. `get` returns the cached sandbox with
 comparing config, because `exec` compares it and recreates the container, so one
 place decides whether the container goes.
 
-`shutdown` removes the container. The workspace and the cache volumes are left
-alone.
+`shutdown` removes the container, bounded by `REMOVE_TIMEOUT`. The workspace and
+the cache volumes are left alone. `release` drops the entry and calls it under the
+registry lock, and `sweep_idle` walks the same map at the end of each reaper tick;
+see [Reaping](#reaping).
 
 ## Integration guide
 

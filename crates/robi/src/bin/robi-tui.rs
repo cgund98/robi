@@ -107,7 +107,7 @@ async fn main() {
         }
     };
 
-    if let Err(err) = tui::run(
+    let outcome = tui::run(
         state,
         Options {
             state_dir,
@@ -115,8 +115,11 @@ async fn main() {
             workspace_path,
         },
     )
-    .await
-    {
+    .await;
+    // The terminal is restored by now, so this is the last thing the process
+    // does: a container is a label in a daemon, not a file this process holds.
+    bootstrap::shutdown_sandboxes().await;
+    if let Err(err) = outcome {
         eprintln!("{err}");
         std::process::exit(1);
     }
