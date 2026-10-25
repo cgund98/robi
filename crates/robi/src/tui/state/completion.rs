@@ -120,7 +120,13 @@ impl Row {
     /// The right column: what it does.
     pub fn detail(&self) -> String {
         match self {
-            Self::Command(spec) => format!("{} \u{b7} {}", spec.about, spec.key),
+            // A command with no key prints no separator: `/attach` and `/open`
+            // take an argument a keystroke cannot carry, and a trailing `\u{b7} `
+            // reads as a column that failed to render.
+            Self::Command(spec) if !spec.key.is_empty() => {
+                format!("{} \u{b7} {}", spec.about, spec.key)
+            }
+            Self::Command(spec) => spec.about.to_owned(),
             Self::Skill(skill) => skill.description.clone(),
         }
     }

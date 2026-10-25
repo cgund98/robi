@@ -228,6 +228,18 @@ pub fn progress_head() -> Style {
     Style::default().bg(BG_CANVAS).fg(INK)
 }
 
+/// The transcript scrollbar's track: `--rule`, dark enough that a full-height
+/// track reads as the gutter's edge rather than as a second rule.
+pub fn scroll_track() -> Style {
+    Style::default().bg(BG_CANVAS).fg(RULE)
+}
+
+/// The transcript scrollbar's thumb: `--ink-faint`, the same quiet grey as a
+/// card's rail, so the bar answers "where am I" without competing with prose.
+pub fn scroll_thumb() -> Style {
+    Style::default().bg(BG_CANVAS).fg(INK_FAINT)
+}
+
 /// The caret drawn at the end of streaming text.
 pub fn caret() -> Style {
     Style::default().bg(BG_CANVAS).fg(ACCENT)

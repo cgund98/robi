@@ -58,6 +58,12 @@ pub enum Command {
     /// `update` decides which, because it is the only place that knows what is
     /// on top and whether anything is running.
     StopOrQuit,
+    /// `Backspace` on an empty composer: take the last attachment off.
+    ///
+    /// Mapped here and decided in `app::update`, because this function is a pure
+    /// `(Key, Mode) -> Command` and cannot see whether the field has text. With
+    /// text it deletes a character, which is what the field would have done.
+    DetachLast,
     /// `Esc`: stop the running turn, or clear the card cursor when idle.
     ///
     /// Never quits. `Esc` is the key people reach for to call off the thing that
@@ -478,6 +484,10 @@ fn chat(focus: Focus, key: &KeyEvent) -> Option<Command> {
             KeyCode::Enter if alt => Some(Command::Newline),
             KeyCode::Char('j') if control => Some(Command::Newline),
             KeyCode::Enter if !control && !alt => Some(Command::Submit),
+            // The chip row has no cursor and the menu has no focus, so the
+            // gesture lives where the text is not. `update` hands the key back to
+            // the field when there is text, so this never eats a deletion.
+            KeyCode::Backspace if !control && !alt => Some(Command::DetachLast),
             // An empty field has no caret to move, so `Up` reaches the transcript
             // and selects the last block. With text in it, `update` keeps the
             // arrows for the caret — a multi-line draft needs them.

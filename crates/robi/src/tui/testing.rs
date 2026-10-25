@@ -4528,3 +4528,370 @@ fn the_surfaces_keys_do_not_type_into_it_and_j_k_move_the_row() {
     app.update(typing(KeyCode::PageDown));
     assert!(app.settings().selected > before, "a page is several rows");
 }
+
+// ---------------------------------------------------------------------------
+// T6: /attach, /detach, and /open
+// ---------------------------------------------------------------------------
+
+/// A file attachment outcome, as the effect would hand it back.
+fn attached(session: Option<SessionId>, source: &str, text: &str) -> ActionOutcome {
+    ActionOutcome::Attached {
+        session,
+        source: source.to_owned(),
+        pending: crate::tui::state::composer::Pending::File(robi_core::message::FileAttachment {
+            name: source.rsplit('/').next().unwrap_or(source).to_owned(),
+            path: Some(source.to_owned()),
+            start_line: None,
+            end_line: None,
+            text: text.to_owned(),
+        }),
+    }
+}
+
+fn attaches(app: &mut App) -> Vec<(String, Option<SessionId>)> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::Attach {
+                source, session, ..
+            } => Some((source, session)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn opens(app: &mut App) -> Vec<String> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::OpenFile { path, .. } => Some(path),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run one `/` command by typing it and pressing `Enter`.
+///
+/// A line whose leading token is a command opens the `/` menu, and the menu's own
+/// `Enter` accepts the highlighted row rather than running it: a picked command
+/// takes one more keystroke, which is what stops a typo from running something.
+/// So the second `Enter` is the one that acts, exactly as it is for a reader.
+fn command(app: &mut App, line: &str) {
+    type_text(app, line);
+    press(app, key(KeyCode::Enter));
+    // A command that ran cleared the field; one the `/` menu accepted did not, so
+    // the next `Enter` is the one that runs it — the same two keystrokes a reader
+    // makes.
+    if !app.composer().text().is_empty() {
+        press(app, key(KeyCode::Enter));
+    }
+}
+
+#[test]
+fn attach_issues_one_read_for_the_path_it_was_given() {
+    let (mut app, _, session) = booted(80, 24);
+    land(&mut app, session, Vec::new());
+    app.take_actions();
+
+    command(&mut app, "/attach src/app.rs:40-80");
+    assert_eq!(
+        attaches(&mut app),
+        vec![("src/app.rs:40-80".to_owned(), Some(session))],
+        "the whole argument, range and all, is the effect's to split"
+    );
+    assert_eq!(app.composer().text(), "", "a command clears the field");
+}
+
+#[test]
+fn attach_refuses_a_blank_or_two_line_argument_and_issues_nothing() {
+    let (mut app, _, _) = booted(80, 24);
+    command(&mut app, "/attach   ");
+    assert!(attaches(&mut app).is_empty());
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("/attach needs an argument")
+    );
+    assert!(app.notice().is_some_and(|notice| notice.is_error()));
+
+    // `verdict` takes the argument from the whole message, so a second line would
+    // otherwise walk into the path.
+    command(&mut app, "/attach a.rs\nb.rs");
+    assert!(attaches(&mut app).is_empty());
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("/attach takes one path on one line")
+    );
+}
+
+#[test]
+fn attach_refuses_a_file_already_on_the_message() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "fn main")));
+
+    command(&mut app, "/attach src/app.rs");
+    assert!(attaches(&mut app).is_empty(), "no second read");
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("src/app.rs is already attached")
+    );
+    assert_eq!(app.composer().attachment_count(), 1);
+}
+
+#[test]
+fn a_read_that_lands_after_a_session_switch_is_dropped() {
+    let (mut app, _, _) = booted(80, 24);
+    // A read issued for the draft, landing once a chat is open.
+    app.update(Msg::Done(ActionOutcome::Attached {
+        session: None,
+        source: "src/app.rs".to_owned(),
+        pending: crate::tui::state::composer::Pending::Image(
+            crate::tui::state::composer::PendingImage {
+                name: "shot.png".to_owned(),
+                media_type: "image/png".to_owned(),
+                bytes: vec![0; 4],
+            },
+        ),
+    }));
+    assert_eq!(
+        app.composer().attachment_count(),
+        0,
+        "a chip must not land under another chat"
+    );
+}
+
+#[test]
+fn the_caps_that_need_what_is_already_attached_are_enforced_here() {
+    let (mut app, _, session) = booted(80, 24);
+    for index in 0..crate::domain::chat_message::attachment::MAX_ATTACHMENTS {
+        app.update(Msg::Done(attached(
+            Some(session),
+            &format!("src/f{index}.rs"),
+            "x",
+        )));
+    }
+    assert_eq!(
+        app.composer().attachment_count(),
+        crate::domain::chat_message::attachment::MAX_ATTACHMENTS
+    );
+    // The ninth is refused, and says so in the footer.
+    app.update(Msg::Done(attached(
+        Some(session),
+        "src/one-too-many.rs",
+        "x",
+    )));
+    assert_eq!(
+        app.composer().attachment_count(),
+        crate::domain::chat_message::attachment::MAX_ATTACHMENTS
+    );
+    assert!(app.notice().is_some_and(|notice| notice.is_error()));
+}
+
+#[test]
+fn detach_takes_one_by_name_or_everything() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "one")));
+    app.update(Msg::Done(attached(Some(session), "src/error.rs", "two")));
+    assert_eq!(app.composer().attachment_count(), 2);
+
+    command(&mut app, "/detach app.rs");
+    assert_eq!(app.composer().attachment_count(), 1);
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("app.rs detached")
+    );
+
+    command(&mut app, "/detach");
+    assert_eq!(app.composer().attachment_count(), 0);
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("1 attachment removed")
+    );
+
+    // With nothing attached it is an answer, not a failure.
+    command(&mut app, "/detach");
+    assert!(app.notice().is_some_and(|notice| !notice.is_error()));
+}
+
+#[test]
+fn detach_of_an_unknown_name_is_a_footer_error_and_removes_nothing() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "one")));
+    command(&mut app, "/detach nope.rs");
+    assert_eq!(app.composer().attachment_count(), 1);
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("nope.rs is not attached")
+    );
+}
+
+#[test]
+fn backspace_takes_the_last_attachment_off_an_empty_field() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "one")));
+    assert_eq!(app.composer().attachment_count(), 1);
+
+    press(&mut app, key(KeyCode::Backspace));
+    assert_eq!(app.composer().attachment_count(), 0);
+    assert_eq!(
+        app.notice().map(|notice| notice.text.as_str()),
+        Some("app.rs detached")
+    );
+}
+
+#[test]
+fn backspace_with_text_still_deletes_a_character() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "one")));
+    type_text(&mut app, "abc");
+
+    press(&mut app, key(KeyCode::Backspace));
+    assert_eq!(app.composer().text(), "ab", "the field keeps the key");
+    assert_eq!(
+        app.composer().attachment_count(),
+        1,
+        "the attachment is not what was being deleted"
+    );
+}
+
+#[test]
+fn a_message_with_only_an_attachment_is_sendable() {
+    let (mut app, _, session) = booted(80, 24);
+    land(&mut app, session, Vec::new());
+    app.take_actions();
+    app.update(Msg::Done(ActionOutcome::Attached {
+        session: Some(session),
+        source: "shot.png".to_owned(),
+        pending: crate::tui::state::composer::Pending::Image(
+            crate::tui::state::composer::PendingImage {
+                name: "shot.png".to_owned(),
+                media_type: "image/png".to_owned(),
+                bytes: vec![0; 2048],
+            },
+        ),
+    }));
+
+    press(&mut app, key(KeyCode::Enter));
+    let sent: Vec<Action> = app.take_actions();
+    let submit = sent
+        .into_iter()
+        .find_map(|action| match action {
+            Action::Submit { text, images, .. } => Some((text, images)),
+            _ => None,
+        })
+        .expect("one submit");
+    assert_eq!(submit.0, "");
+    assert_eq!(submit.1.len(), 1);
+    assert_eq!(submit.1[0].name, "shot.png");
+}
+
+#[test]
+fn a_refused_send_keeps_the_text_and_the_attachments() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "one")));
+    type_text(&mut app, "look at this");
+    press(&mut app, key(KeyCode::Enter));
+    app.take_actions();
+
+    app.update(Msg::Done(ActionOutcome::SubmitFailed {
+        session,
+        message: "the store refused".to_owned(),
+    }));
+    assert_eq!(app.composer().text(), "look at this");
+    assert_eq!(app.composer().attachment_count(), 1);
+}
+
+#[test]
+fn open_issues_one_call_for_a_workspace_relative_path() {
+    let (mut app, _, _) = booted(80, 24);
+    command(&mut app, "/open src/app.rs");
+    assert_eq!(opens(&mut app), vec!["src/app.rs".to_owned()]);
+    assert_eq!(app.composer().text(), "");
+}
+
+#[test]
+fn open_refuses_an_absolute_path_a_tilde_and_a_blank_one() {
+    let (mut app, _, _) = booted(80, 24);
+    for (line, expected) in [
+        (
+            "/open /etc/passwd",
+            "/open takes a path inside this workspace, not an absolute one",
+        ),
+        (
+            "/open ~/notes.md",
+            "/open takes a path inside this workspace, not ~",
+        ),
+        ("/open   ", "/open needs an argument"),
+    ] {
+        command(&mut app, line);
+        assert!(opens(&mut app).is_empty(), "{line} issued a call");
+        let notice = app.notice().expect("a notice");
+        assert!(notice.is_error(), "{line} was not an error");
+        assert_eq!(notice.text, expected, "{line}");
+    }
+}
+
+#[test]
+fn an_unset_open_command_is_the_effect_error_and_not_a_fallback() {
+    let (mut app, _, _) = booted(80, 24);
+    app.update(Msg::Done(ActionOutcome::OpenFailed {
+        message: "no file open command is set \u{2014} set one in Ctrl-,".to_owned(),
+    }));
+    let notice = app.notice().expect("a notice");
+    assert!(notice.is_error());
+    assert!(notice.text.contains("no file open command is set"));
+}
+
+#[test]
+fn the_composer_draws_a_chip_row_and_the_band_grows_for_it() {
+    let (mut app, _, session) = booted(80, 24);
+    land(&mut app, session, Vec::new());
+    app.take_actions();
+    let bare = app.body_height();
+
+    app.update(Msg::Done(attached(Some(session), "src/app.rs", "fn main")));
+    let lines = rows(&app, 80, 24);
+    assert!(
+        lines.iter().any(|line| line.contains("app.rs")),
+        "the chip is on screen: {lines:#?}"
+    );
+    assert_eq!(
+        app.body_height(),
+        bare - 1,
+        "the band took one of the transcript's rows"
+    );
+}
+
+#[test]
+fn a_sent_attachment_reads_as_a_chip_in_the_user_band() {
+    let mut message = Message::user("look");
+    message.files.push(robi_core::message::FileAttachment {
+        name: "app.rs".to_owned(),
+        path: Some("src/app.rs".to_owned()),
+        start_line: Some(40),
+        end_line: Some(80),
+        text: "fn main".to_owned(),
+    });
+    message.images.push(robi_core::message::ImageAttachment {
+        id: "img".to_owned(),
+        media_type: "image/png".to_owned(),
+    });
+    let app = with_messages(80, 24, vec![message]);
+    let screen = screen(&app, 80, 24);
+    assert!(screen.contains("app.rs (40-80)"), "{screen}");
+    assert!(screen.contains("[image, image/png]"), "{screen}");
+}
+
+#[test]
+fn the_slash_menu_offers_the_three_path_commands() {
+    // The menu is forty columns wide, so it cuts the about text; what it cannot
+    // cut is the name, which is the part a reader is choosing between.
+    for (typed, name) in [("/att", "/attach"), ("/det", "/detach"), ("/ope", "/open")] {
+        let (mut app, _, _) = booted(80, 24);
+        type_text(&mut app, typed);
+        let screen = screen(&app, 80, 24);
+        assert!(
+            screen.contains(name),
+            "{typed} does not offer {name}: {screen}"
+        );
+    }
+}

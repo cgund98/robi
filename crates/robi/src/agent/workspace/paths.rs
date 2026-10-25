@@ -15,6 +15,36 @@ pub struct ResolvedPath {
     pub relative: String,
 }
 
+/// Why a path was not a file inside the workspace.
+///
+/// Its sentences are the ones the HTTP route and the terminal both print: a
+/// caller that needs a status maps the variant, and no caller restates the words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    /// Nothing was named.
+    Blank,
+    /// The path resolved outside the workspace root, or was the root itself.
+    Outside,
+    /// The path could not be resolved at all.
+    Resolve(String),
+}
+
+impl std::fmt::Display for PathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blank => f.write_str("path must name a file in the workspace"),
+            Self::Outside => f.write_str("path is outside the workspace"),
+            Self::Resolve(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<ResolveError> for PathError {
+    fn from(error: ResolveError) -> Self {
+        Self::Resolve(error.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     WorkspaceRoot(String),
@@ -65,6 +95,28 @@ pub fn resolve_path(
         relative: workspace_relative(&root, &absolute),
         absolute,
     })
+}
+
+/// Canonical absolute path of `relative` under `root`.
+///
+/// A blank path, the workspace root itself, and any path that resolves outside
+/// the root are [`PathError`]. An absolute path or a leading `~` is not refused
+/// here — [`resolve_path`] accepts both — because that is a rule about *what a
+/// caller may name*, and `/open` states its own.
+pub fn absolute_inside(root: &Path, relative: &str) -> Result<PathBuf, PathError> {
+    let relative = relative.trim();
+    if relative.is_empty() {
+        return Err(PathError::Blank);
+    }
+    let home = user_home().unwrap_or_else(|_| root.to_path_buf());
+    let resolved = resolve_path(root, relative, &home)?;
+    if resolved.relative.is_empty()
+        || resolved.relative == ".."
+        || resolved.relative.starts_with("../")
+    {
+        return Err(PathError::Outside);
+    }
+    Ok(resolved.absolute)
 }
 
 /// Workspace-relative form of `path`, with `/` separators.

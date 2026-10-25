@@ -329,9 +329,11 @@ pub async fn resolve_workspace_path(
     let workspace = state.workspace_service.get_workspace(id).await?;
     let root = PathBuf::from(&workspace.root);
     let relative = query.path;
-    let absolute = crate::agent::blocking::call(move || absolute_inside(&root, &relative))
-        .await
-        .map_err(ServiceError::BadRequest)??;
+    let absolute = crate::agent::blocking::call(move || {
+        crate::agent::workspace::absolute_inside(&root, &relative)
+    })
+    .await
+    .map_err(ServiceError::BadRequest)??;
     Ok(Json(AbsolutePath {
         absolute: absolute.display().to_string(),
     }))
@@ -378,117 +380,12 @@ pub async fn open_workspace_file(
     let root = PathBuf::from(&workspace.root);
     let relative = body.path;
     let line = body.line;
-    crate::agent::blocking::call(move || open_with_command(&root, &relative, line, &template))
-        .await
-        .map_err(ServiceError::BadRequest)??;
+    crate::agent::blocking::call(move || {
+        crate::agent::workspace::open(&root, &relative, line, &template)
+    })
+    .await
+    .map_err(ServiceError::BadRequest)??;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Resolve `relative`, render the template, and start the program off the async runtime.
-fn open_with_command(
-    root: &FsPath,
-    relative: &str,
-    line: Option<u32>,
-    template: &str,
-) -> Result<(), ServiceError> {
-    let absolute = absolute_inside(root, relative)?;
-    let argv = crate::domain::settings::open_command::render_open_command(
-        template,
-        &absolute.display().to_string(),
-        line,
-    )
-    .map_err(ServiceError::BadRequest)?;
-    let program = argv[0].clone();
-    let args = &argv[1..];
-    spawn_opener(&program, args).map_err(ServiceError::BadRequest)
-}
-
-/// Start `program` and wait up to 10 seconds.
-///
-/// A process still running at the deadline is left running. A thread reaps it
-/// later so it does not stay a zombie, and drains stderr so a full pipe cannot
-/// stall the editor. A non-zero exit inside the window is an error.
-fn spawn_opener(program: &str, args: &[String]) -> Result<(), String> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| io_message(&err, program))?;
-    let deadline = Duration::from_secs(crate::domain::settings::open_command::OPEN_TIMEOUT_SECONDS);
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
-                return Err(exit_message(program, status.code(), &stderr));
-            }
-            Ok(None) if started.elapsed() >= deadline => {
-                std::thread::spawn(move || {
-                    if let Some(mut pipe) = child.stderr.take() {
-                        let _ = std::io::copy(&mut pipe, &mut std::io::sink());
-                    }
-                    let _ = child.wait();
-                });
-                return Ok(());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(err) => return Err(io_message(&err, program)),
-        }
-    }
-}
-
-fn io_message(err: &std::io::Error, program: &str) -> String {
-    let text = err.to_string();
-    let text = text.split(" (os error").next().unwrap_or(&text);
-    format!("{text}: {program}")
-}
-
-fn exit_message(program: &str, code: Option<i32>, stderr: &str) -> String {
-    let code = code
-        .map(|code| code.to_string())
-        .unwrap_or_else(|| "signal".into());
-    let stderr = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
-    let stderr: String = stderr.chars().take(400).collect();
-    if stderr.is_empty() {
-        format!("{program} exited {code}")
-    } else {
-        format!("{program} exited {code}: {stderr}")
-    }
-}
-
-/// Canonical absolute path of `relative` under `root`.
-///
-/// A blank path, the workspace root itself, and any path that resolves outside
-/// the root are [`ServiceError::BadRequest`].
-fn absolute_inside(root: &FsPath, relative: &str) -> Result<PathBuf, ServiceError> {
-    let relative = relative.trim();
-    if relative.is_empty() {
-        return Err(ServiceError::BadRequest(
-            "path must name a file in the workspace".into(),
-        ));
-    }
-    let home = crate::agent::workspace::user_home().unwrap_or_else(|_| root.to_path_buf());
-    let resolved = crate::agent::workspace::resolve_path(root, relative, &home)
-        .map_err(|err| ServiceError::BadRequest(err.to_string()))?;
-    if resolved.relative.is_empty()
-        || resolved.relative == ".."
-        || resolved.relative.starts_with("../")
-    {
-        return Err(ServiceError::BadRequest(
-            "path is outside the workspace".into(),
-        ));
-    }
-    Ok(resolved.absolute)
 }
 
 /// UTF-8 text the file viewer can show. Larger files are refused.
@@ -531,7 +428,7 @@ pub async fn read_workspace_file(
 
 /// Read `relative` when it is a UTF-8 file under `root` no larger than [`MAX_VIEW_BYTES`].
 fn read_inside(root: &FsPath, relative: &str) -> Result<String, ServiceError> {
-    let absolute = absolute_inside(root, relative)?;
+    let absolute = crate::agent::workspace::absolute_inside(root, relative)?;
     let meta = std::fs::metadata(&absolute)
         .map_err(|_| ServiceError::NotFound(relative.trim().to_owned()))?;
     if !meta.is_file() {
@@ -601,7 +498,7 @@ pub struct Workspace {
 mod tests {
     use std::fs;
 
-    use super::{absolute_inside, read_inside};
+    use super::read_inside;
 
     fn workspace() -> std::path::PathBuf {
         let root =
@@ -615,26 +512,6 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
         NEXT.fetch_add(1, Ordering::Relaxed)
-    }
-
-    #[test]
-    fn a_relative_path_becomes_absolute() {
-        let root = workspace();
-        let absolute = absolute_inside(&root, "src/main.rs").unwrap();
-        assert_eq!(absolute, root.join("src").join("main.rs"));
-    }
-
-    #[test]
-    fn a_path_outside_the_workspace_is_refused() {
-        let root = workspace();
-        let err = absolute_inside(&root, "../secret").unwrap_err();
-        assert!(err.to_string().contains("outside"));
-    }
-
-    #[test]
-    fn a_blank_path_is_refused() {
-        let root = workspace();
-        assert!(absolute_inside(&root, "  ").is_err());
     }
 
     #[test]

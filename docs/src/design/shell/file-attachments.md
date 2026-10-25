@@ -64,6 +64,38 @@ model reads the block as text, so it can widen the read with
 `read_file(path, offset, limit)` — `offset` is `start_line`, `limit` is
 `end_line - start_line + 1`.
 
+## The terminal's producers
+
+The terminal has no picker, so it has two commands. `/attach <path>` reads one
+file into the composer and `/detach [name]` takes one — or every one — off.
+
+**Every rule above is shared, not restated.** `domain::chat_message::attachment`
+holds the caps, the NUL-and-UTF-8 text rule, the base64 decode, and the
+in-workspace decision; the HTTP handler and the terminal both call it. The
+handler keeps `FileAttachmentInput` as its wire DTO and maps `AttachmentError` to
+its statuses; the terminal calls `text_attachment` with the text it already read.
+
+Two differences, both about where the bytes come from:
+
+- **The terminal reads the path it was given**, so `/attach` resolves a relative
+  path against the workspace root and also accepts `~` and an absolute one. A file
+  outside the workspace attaches with `path: None`, exactly as a browser upload
+  does — the explicit attach is the consent, and there is no server-side read of
+  the stored path to confine.
+- **A path may carry `:start-end`**, and `:40` is one line. The suffix is
+  recognised only when everything after the last `:` is digits or digits-dash-
+  digits, so `a:b.rs` and `C:\src\x.rs` keep their colons. The cap applies to
+  **what is attached** rather than to the file, which is what lets a file larger
+  than 64 KiB in at all; a range past the end clamps and the chip reports the
+  lines actually taken. This is the one piece of the model the GUI does not have —
+  its range producer is the docs viewer, in TypeScript — so it lives in the
+  domain module beside the caps.
+
+An image's bytes wait in the composer until a session exists, because the image
+store is keyed by session and the landing page has none. `ImageAttachment` stays
+an id and a media type: the name and the weight are the composer's chip, and the
+transcript can only say `[image, image/png]`.
+
 ## Transport
 
 `POST /api/v1/chat_sessions/{id}/messages` takes a `files` array. A JSON body
@@ -194,7 +226,7 @@ opened by the server.
 ## Failure modes
 
 - A file over a cap is refused before the message is stored; the composer shows
-  the error.
+  the error. In the terminal that is the footer, and nothing is attached.
 - A file that is not UTF-8, or that contains a NUL, is refused by the client
   before send.
 - A missing `files` field deserializes as an empty list, so an older client and

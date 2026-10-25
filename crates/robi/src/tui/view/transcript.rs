@@ -10,7 +10,9 @@ use ratatui::Frame;
 
 use crate::tui::app::App;
 use crate::tui::state::tool_card;
-use crate::tui::state::transcript::{display_width, wrap_text, Row, RowKind, RAIL_CHAR};
+use crate::tui::state::transcript::{
+    display_width, wrap_text, Row, RowKind, Transcript, RAIL_CHAR,
+};
 use crate::tui::state::Phase;
 use crate::tui::theme;
 
@@ -43,6 +45,63 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     frame.render_widget(Paragraph::new(lines).style(theme::canvas()), area);
+    draw_scrollbar(frame, area, transcript);
+}
+
+/// The track and thumb glyphs of the transcript's scrollbar.
+///
+/// Two weights of the same box-drawing line: the cells line up exactly, so a
+/// thumb moving changes only how much ink one column carries, and the eye reads
+/// it as one bar rather than two.
+pub const SCROLL_TRACK: &str = "\u{2502}";
+pub const SCROLL_THUMB: &str = "\u{2503}";
+
+/// The one-column scrollbar in the right gutter, drawn only when the transcript
+/// overflows.
+///
+/// It sits in the gutter, outside the transcript's own width, so the wrapping,
+/// the bands, and the scroll arithmetic stay exactly what `state::transcript`
+/// computed: the bar is chrome beside the text, not a column of it. Nothing is
+/// drawn when every row fits, so a short transcript has no bar to explain, and
+/// the frame keeps the empty gutter it had before.
+fn draw_scrollbar(frame: &mut Frame, area: Rect, transcript: &Transcript) {
+    let total = transcript.rows().len();
+    let seen = transcript.visible().len();
+    if total <= seen || area.height == 0 {
+        return;
+    }
+    // A frame that ends at the terminal's edge has no gutter to draw in.
+    let column = area.right();
+    if column >= frame.area().right() {
+        return;
+    }
+
+    let height = usize::from(area.height);
+    // Proportional, and never shorter than one cell: a bar of no length says
+    // nothing about where in the transcript the reader is.
+    let thumb = (seen * height / total).clamp(1, height);
+    let travel = height - thumb;
+    // `total > seen` above, so the transcript has somewhere to scroll to.
+    let limit = total - seen;
+    let offset = transcript.offset().min(limit);
+    let progress = offset * travel / limit;
+
+    let lines: Vec<Line<'static>> = (0..height)
+        .map(|row| {
+            let lit = row >= progress && row < progress + thumb;
+            let (glyph, style) = if lit {
+                (SCROLL_THUMB, theme::scroll_thumb())
+            } else {
+                (SCROLL_TRACK, theme::scroll_track())
+            };
+            Line::from(Span::styled(glyph, style))
+        })
+        .collect();
+
+    frame.render_widget(
+        Paragraph::new(lines).style(theme::canvas()),
+        Rect::new(column, area.y, 1, area.height),
+    );
 }
 
 /// One row, painted.
@@ -520,6 +579,102 @@ mod waiting_tests {
                 .all(|row| !row.contains(tool_card::WAITING_LABEL)),
             "{:?}",
             testing::rows(&app, 80, 24)
+        );
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use robi_core::message::Message;
+
+    use crate::tui::app::Msg;
+    use crate::tui::testing;
+
+    use super::*;
+
+    /// The scroll glyph a row carries at its right edge, if any.
+    fn bar(row: &str) -> Option<&'static str> {
+        if row.ends_with(SCROLL_THUMB) {
+            Some(SCROLL_THUMB)
+        } else if row.ends_with(SCROLL_TRACK) {
+            Some(SCROLL_TRACK)
+        } else {
+            None
+        }
+    }
+
+    /// The transcript's rows as drawn, one string per body row.
+    fn body(app: &App) -> Vec<String> {
+        let rows = testing::rows(app, 80, 24);
+        let top = usize::from(testing::body_top());
+        let height = app.transcript().visible().len();
+        rows[top..top + height].to_vec()
+    }
+
+    /// A transcript four screens long, so the thumb is a small part of the bar.
+    fn long_app() -> App {
+        let messages = (0..40)
+            .map(|n| Message::user(format!("message {n}")))
+            .collect();
+        testing::with_messages(80, 24, messages)
+    }
+
+    #[test]
+    fn a_transcript_that_fits_has_no_bar() {
+        // The bar is chrome in the gutter, so a transcript with nothing to point
+        // at leaves the gutter empty rather than drawing a full-height thumb.
+        let app = testing::with_messages(80, 24, vec![Message::user("one line")]);
+        let body = body(&app);
+        assert!(body.len() > 1, "{body:#?}");
+        assert!(
+            body.iter().all(|row| bar(row).is_none()),
+            "a short transcript grows a scrollbar: {body:#?}"
+        );
+    }
+
+    #[test]
+    fn one_column_of_the_gutter_carries_the_bar_when_the_transcript_overflows() {
+        let app = long_app();
+        let body = body(&app);
+        assert!(body.len() > 1, "{body:#?}");
+        // Every body row: a bar is either lit or a track, never a gap, so the
+        // column reads as one measure of the whole transcript.
+        assert!(body.iter().all(|row| bar(row).is_some()), "{body:#?}");
+        // It is the last column before the right gutter's spare cell, not a
+        // column taken out of the text.
+        assert_eq!(
+            app.transcript().visible().len(),
+            body.len(),
+            "the bar must not cost the text a row"
+        );
+    }
+
+    #[test]
+    fn the_thumb_ends_at_the_bottom_while_following_and_starts_at_the_top_at_home() {
+        let mut app = long_app();
+        let rows = body(&app);
+        assert_eq!(
+            bar(rows.last().expect("a bar")),
+            Some(SCROLL_THUMB),
+            "following: the thumb ends on the last row: {rows:#?}"
+        );
+        assert_eq!(
+            bar(&rows[0]),
+            Some(SCROLL_TRACK),
+            "following: the top of the bar is track: {rows:#?}"
+        );
+
+        app.update(Msg::Scroll(-1000));
+        let rows = body(&app);
+        assert_eq!(
+            bar(&rows[0]),
+            Some(SCROLL_THUMB),
+            "at the top: the thumb starts on the first row: {rows:#?}"
+        );
+        assert_eq!(
+            bar(rows.last().expect("a bar")),
+            Some(SCROLL_TRACK),
+            "at the top: the bottom of the bar is track: {rows:#?}"
         );
     }
 }

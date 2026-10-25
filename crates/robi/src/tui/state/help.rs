@@ -142,6 +142,11 @@ pub static SECTIONS: &[Section] = &[
         entries: &[
             entry("Ctrl-T", "ask, plan, then agent", Command::CycleMode),
             entry("Ctrl-L", "summarize older messages", Command::Compact),
+            entry(
+                "Backspace",
+                "empty field: take the last attachment off",
+                Command::DetachLast,
+            ),
             entry("/", "commands", Command::CompleteAccept),
             entry("@", "this workspace's skills", Command::CompleteAccept),
             entry("@id", "load a skill with the message", Command::Submit),
@@ -220,7 +225,8 @@ pub fn section_of(command: Command) -> &'static [&'static str] {
         Command::CycleMode
         | Command::Compact
         | Command::CompleteAccept
-        | Command::CompleteDismiss => &["Composing"],
+        | Command::CompleteDismiss
+        | Command::DetachLast => &["Composing"],
         Command::Quit => &["Leaving"],
     }
 }

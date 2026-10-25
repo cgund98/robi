@@ -31,6 +31,7 @@ use robi_core::message::{Message, ToolCall};
 
 use crate::adapters::model_source::{EffectiveChoice, ModeDefaults};
 use crate::agent::providers::ModelInfo;
+use crate::domain::chat_message::attachment::{MAX_ATTACHMENTS, MAX_TEXT_TOTAL_BYTES};
 use crate::domain::chat_message::runtime::SubmitOutcome;
 use crate::domain::chat_session::model::{
     AgentMode, ChatSession, ChoiceKey, ModeOverride, ModelConfig,
@@ -50,6 +51,7 @@ use crate::tui::state::activity::{Activity, DeltaKind};
 use crate::tui::state::approval::{Approval, Decision};
 use crate::tui::state::audit::AuditLog;
 use crate::tui::state::completion::{Completion, SkillEntry};
+use crate::tui::state::composer::Attachment;
 use crate::tui::state::composer::Composer;
 use crate::tui::state::confirm::{Confirm, Target};
 use crate::tui::state::detail::Detail;
@@ -770,6 +772,7 @@ impl App {
             Some(Command::StopOrQuit) => self.stop_or_quit(),
             Some(Command::Interrupt) => self.interrupt(),
             Some(Command::Submit) => self.submit(),
+            Some(Command::DetachLast) => self.detach_last(&key),
             Some(Command::Newline) => self.composer.insert_newline(),
             Some(Command::FocusNext) | Some(Command::FocusPrev) => {
                 self.focus = self.focus.other();
@@ -1011,7 +1014,8 @@ impl App {
             self.actions.push(Action::StartSession {
                 workspace,
                 text,
-                files: Vec::new(),
+                files: self.composer.pending_files(),
+                images: self.composer.pending_images(),
                 mode: self.draft_mode,
                 model_config: self.draft_config(),
             });
@@ -1038,15 +1042,17 @@ impl App {
         self.actions.push(Action::Submit {
             session,
             text,
-            files: Vec::new(),
+            files: self.composer.pending_files(),
+            images: self.composer.pending_images(),
         });
     }
 
-    /// Run a `/` command, by the same path its keybinding takes.
+    /// Run a `/` command.
     ///
-    /// Every command is a key's twin, so this is a dispatch and not an
-    /// implementation: a command that did something its key could not would be a
-    /// second interface, which is what the table exists to avoid.
+    /// A command that has a key dispatches to the same handler the key reaches, so
+    /// it cannot become a second interface. The three that take a path have no key
+    /// — that is the one difference the table records — and they are the only arms
+    /// that read `run.argument` for anything but a word.
     fn run_command(&mut self, run: crate::tui::command::Run) {
         use crate::tui::command::{Arg, BuiltIn};
         match run.built_in {
@@ -1072,11 +1078,152 @@ impl App {
                     Err(error) => self.notice = Some(Notice::error(error)),
                 },
             },
+            BuiltIn::Attach => self.attach(run.argument),
+            BuiltIn::Detach => self.detach(run.argument),
+            BuiltIn::Open => self.open_file(run.argument),
         }
-        // `Arg::Required` has no command yet (T6's `/open`); the table's rule is
-        // enforced in `command::verdict`, and this is where the compile-time check
-        // that the arm exists lives.
+        // `verdict` enforces `Arg::Required` and rejects a surplus word on
+        // `Arg::None`; the arms above take the argument `None` or `Some`.
         let _ = Arg::Required;
+    }
+
+    /// `/attach <path>`: read a file into the composer.
+    ///
+    /// The three refusals here are the ones that do not need a file: no workspace
+    /// to resolve against, no path at all, and a path split over two lines. The
+    /// rest — a missing file, a binary one, one over the cap — come back from the
+    /// effect as `AttachFailed`, because only it may touch the disk.
+    fn attach(&mut self, argument: Option<String>) {
+        let Some(workspace) = self.view.active_workspace_id else {
+            self.notice = Some(Notice::error("no workspace is open"));
+            return;
+        };
+        let Some(source) = argument else {
+            self.notice = Some(Notice::error("/attach needs an argument"));
+            return;
+        };
+        let source = source.trim().to_owned();
+        if source.is_empty() {
+            self.notice = Some(Notice::error("/attach needs an argument"));
+            return;
+        }
+        // `verdict` takes the argument from the whole message, so a second line
+        // would arrive here as part of the path.
+        if source.contains('\n') {
+            self.notice = Some(Notice::error("/attach takes one path on one line"));
+            return;
+        }
+        if self.composer.is_attached(&source) {
+            self.notice = Some(Notice::info(format!("{source} is already attached")));
+            return;
+        }
+        self.notice = None;
+        self.actions.push(Action::Attach {
+            workspace,
+            source,
+            session: self.view.open_session_id,
+        });
+    }
+
+    /// `/detach`: no argument takes everything off, a name takes one.
+    ///
+    /// Composer state only, so this issues no effect. Every refusal is a sentence
+    /// about what is attached, which the composer knows.
+    fn detach(&mut self, argument: Option<String>) {
+        let Some(name) = argument else {
+            let removed = self.composer.detach_all();
+            self.notice = Some(if removed == 0 {
+                Notice::info("nothing is attached")
+            } else if removed == 1 {
+                Notice::info("1 attachment removed")
+            } else {
+                Notice::info(format!("{removed} attachments removed"))
+            });
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            let removed = self.composer.detach_all();
+            self.notice = Some(Notice::info(format!("{removed} attachments removed")));
+            return;
+        }
+        match self.composer.detach(name) {
+            Ok(attachment) => {
+                self.notice = Some(Notice::info(format!(
+                    "{} detached",
+                    attachment.pending.name()
+                )));
+            }
+            Err(error) => self.notice = Some(Notice::error(error.message())),
+        }
+    }
+
+    /// `/open <path>`: hand a workspace file to the configured program.
+    ///
+    /// Four refusals, all of them about what may be named: a path is *in the
+    /// workspace*, so an absolute one and a `~` one are refused here rather than in
+    /// the opener (which resolves what it is given), and an unset command is the
+    /// effect's refusal because reading the setting is I/O.
+    fn open_file(&mut self, argument: Option<String>) {
+        let Some(workspace) = self.view.active_workspace_id else {
+            self.notice = Some(Notice::error("no workspace is open"));
+            return;
+        };
+        let Some(path) = argument else {
+            self.notice = Some(Notice::error("/open needs an argument"));
+            return;
+        };
+        let path = path.trim().to_owned();
+        if path.is_empty() {
+            self.notice = Some(Notice::error("/open needs an argument"));
+            return;
+        }
+        if path.contains('\n') {
+            self.notice = Some(Notice::error("/open takes one path on one line"));
+            return;
+        }
+        if path.starts_with('~') {
+            self.notice = Some(Notice::error(
+                "/open takes a path inside this workspace, not ~",
+            ));
+            return;
+        }
+        if std::path::Path::new(&path).is_absolute() {
+            self.notice = Some(Notice::error(
+                "/open takes a path inside this workspace, not an absolute one",
+            ));
+            return;
+        }
+        self.notice = None;
+        self.actions.push(Action::OpenFile {
+            workspace,
+            path,
+            line: None,
+        });
+    }
+
+    /// `Backspace` in the composer: take the last attachment off, or delete a
+    /// character.
+    ///
+    /// The key is claimed by the map, so this is where it is handed back. An
+    /// empty field has nothing to delete, which is what makes the attachment the
+    /// thing the keystroke means; with text it belongs to the field, and refusing
+    /// it there would be a key that silently stopped deleting.
+    fn detach_last(&mut self, key: &ratatui::crossterm::event::KeyEvent) {
+        if self.composer.text().is_empty() {
+            match self.composer.detach_last() {
+                Some(attachment) => {
+                    self.notice = Some(Notice::info(format!(
+                        "{} detached",
+                        attachment.pending.name()
+                    )));
+                    return;
+                }
+                None => return,
+            }
+        }
+        self.unclaimed(*key);
+        self.refresh_completion();
     }
 
     /// Rename the open session to `title`, without the prompt.
@@ -3002,6 +3149,47 @@ impl App {
                     self.activity.idle();
                 }
                 self.status.set_error(message);
+            }
+            ActionOutcome::Attached {
+                session,
+                source,
+                pending,
+            } => {
+                // A read issued for one chat must not put a chip under another.
+                if session != self.view.open_session_id {
+                    return;
+                }
+                // The two caps that depend on what is already attached. The
+                // per-file one is the effect's, because it needs the bytes.
+                if self.composer.attachment_count() >= MAX_ATTACHMENTS {
+                    self.notice = Some(Notice::error(format!(
+                        "a message carries at most {MAX_ATTACHMENTS} attachments"
+                    )));
+                    return;
+                }
+                let total = self.composer.text_total() + pending.text_len();
+                if total > MAX_TEXT_TOTAL_BYTES {
+                    self.notice = Some(Notice::error(format!(
+                        "the attached files total more than {MAX_TEXT_TOTAL_BYTES} bytes"
+                    )));
+                    return;
+                }
+                let label = pending.name().to_owned();
+                self.composer.attach(Attachment { source, pending });
+                self.status.clear_error();
+                self.notice = Some(Notice::info(format!("{label} attached")));
+            }
+            ActionOutcome::AttachFailed { message } => {
+                // An answer to the command the reader just ran, so it goes in the
+                // footer rather than on the strip.
+                self.notice = Some(Notice::error(message));
+            }
+            ActionOutcome::Opened { path } => {
+                self.status.clear_error();
+                self.notice = Some(Notice::info(format!("opened {path}")));
+            }
+            ActionOutcome::OpenFailed { message } => {
+                self.notice = Some(Notice::error(message));
             }
             ActionOutcome::Saved => {}
             ActionOutcome::Settings { generation, values } => {

@@ -19,6 +19,7 @@ use robi_core::message::{Message, Role};
 use unicode_width::UnicodeWidthChar;
 
 use crate::domain::chat_session::model::AgentMode;
+use crate::tui::state::composer;
 use crate::tui::state::markdown;
 use crate::tui::state::tool_card::{self, CardLine, CardLineKind};
 use crate::tui::state::Phase;
@@ -232,6 +233,34 @@ fn band_line(text: &str, inner: usize) -> String {
         " ".repeat(PAD_X),
         " ".repeat(PAD_X + pad)
     )
+}
+
+/// What a user message's attachments read as, one per row.
+///
+/// The peer of the composer's chip row and of the GUI's `AttachmentChip`. A text
+/// file shows the same `name (1-10)` chip it wore before it was sent, so the same
+/// file reads the same in both places. An image can only show its media type: the
+/// stored `ImageAttachment` is `{ id, media_type }` — the bytes live in the
+/// session's blob file and the name lived in the composer — so a terminal already
+/// unable to draw the picture also cannot repeat its filename.
+fn attachment_lines(message: &Message, inner: usize) -> Vec<String> {
+    let chips: Vec<String> = message
+        .files
+        .iter()
+        .map(|file| composer::file_chip(&file.name, file.start_line, file.end_line))
+        .chain(
+            message
+                .images
+                .iter()
+                .map(|image| format!("[image, {}]", image.media_type)),
+        )
+        .collect();
+    if chips.is_empty() {
+        return Vec::new();
+    }
+    // Wrapped rather than cut: prose is cut for a table's sake, and a chip has no
+    // columns to keep aligned.
+    wrap_text(&chips.join("  "), inner)
 }
 
 /// One assistant row as a railed line: `▍` and the padding, then the prose.
@@ -891,6 +920,16 @@ pub fn build_rows_with(
                 let mut block = vec![Row::new(RowKind::User, band_line("", inner))
                     .in_block(prose)
                     .in_mode_opt(stamped)];
+                // What the message carries, above what it says — the same order
+                // the composer draws them in, so a sent attachment is where the
+                // reader last saw it.
+                for line in attachment_lines(message, inner) {
+                    block.push(
+                        Row::new(RowKind::User, band_line(&line, inner))
+                            .in_block(prose)
+                            .in_mode_opt(stamped),
+                    );
+                }
                 for line in wrap_text(&message.content, inner) {
                     block.push(
                         Row::new(RowKind::User, band_line(&line, inner))

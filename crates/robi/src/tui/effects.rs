@@ -103,13 +103,21 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
             session,
             text,
             files,
+            images,
         } => {
-            // T1 sends text only: the composer has no attachment surface until
-            // T6, and `submit_instruction` rejects an empty instruction with an
-            // empty attachment set on its own.
+            // The image store is keyed by session, so the bytes the composer held
+            // are written here, once the row exists. A store failure is the
+            // submit's failure: nothing is sent with an image the provider could
+            // not resolve.
+            let images = match store_images(state, session, images).await {
+                Ok(images) => images,
+                Err(message) => {
+                    return ActionOutcome::SubmitFailed { session, message };
+                }
+            };
             match state
                 .chat_message_service
-                .submit_instruction(session, &text, Vec::new(), files)
+                .submit_instruction(session, &text, images, files)
                 .await
             {
                 Ok(outcome) => ActionOutcome::Submitted { session, outcome },
@@ -282,6 +290,7 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
             workspace,
             text,
             files,
+            images,
             mode,
             model_config,
         } => {
@@ -306,9 +315,21 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 Ok(session) => session,
                 Err(error) => return ActionOutcome::failed(error.to_string()),
             };
+            let images = match store_images(state, session.id, images).await {
+                Ok(images) => images,
+                Err(message) => {
+                    // The row exists either way. `error` says why nothing was
+                    // sent; the text and the attachments stay in the composer.
+                    return ActionOutcome::SessionStarted {
+                        session: Box::new(session),
+                        outcome: None,
+                        error: Some(message),
+                    };
+                }
+            };
             match state
                 .chat_message_service
-                .submit_instruction(session.id, &text, Vec::new(), files)
+                .submit_instruction(session.id, &text, images, files)
                 .await
             {
                 Ok(outcome) => ActionOutcome::SessionStarted {
@@ -421,6 +442,63 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 },
             }
         }
+        Action::Attach {
+            workspace,
+            source,
+            session,
+        } => match read_attachment(state, workspace, &source).await {
+            Ok((source, pending)) => ActionOutcome::Attached {
+                session,
+                source,
+                pending,
+            },
+            Err(message) => ActionOutcome::AttachFailed { message },
+        },
+        Action::OpenFile {
+            workspace,
+            path,
+            line,
+        } => match state
+            .settings_service
+            .get(crate::domain::settings::keys::FILE_OPEN_COMMAND)
+            .await
+        {
+            Err(error) => ActionOutcome::OpenFailed {
+                message: error.to_string(),
+            },
+            Ok(setting) => match setting.value.filter(|value| !value.trim().is_empty()) {
+                // No command is a refusal, never a fallback: `$EDITOR` and a
+                // system opener are both what this design rules out.
+                None => ActionOutcome::OpenFailed {
+                    message: "no file open command is set \u{2014} set one in Ctrl-,".to_owned(),
+                },
+                Some(template) => {
+                    let row = match state.workspace_service.get_workspace(workspace).await {
+                        Ok(row) => row,
+                        Err(error) => {
+                            return ActionOutcome::OpenFailed {
+                                message: error.to_string(),
+                            };
+                        }
+                    };
+                    let root = canonical_root(&row.root);
+                    let opened = path.clone();
+                    // The opener waits for an early exit, so it cannot run on the
+                    // runtime.
+                    match blocking::call(move || {
+                        crate::agent::workspace::open(&root, &opened, line, &template)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => ActionOutcome::Opened { path },
+                        Ok(Err(error)) => ActionOutcome::OpenFailed {
+                            message: error.to_string(),
+                        },
+                        Err(message) => ActionOutcome::OpenFailed { message },
+                    }
+                }
+            },
+        },
         Action::LoadMcpConfig { workspace } => {
             let row = match state.workspace_service.get_workspace(workspace).await {
                 Ok(row) => row,
@@ -511,6 +589,146 @@ async fn workspace_marks(
     Ok(mcp
         .status(workspace, &root, row.mcp_project_sha256.as_deref())
         .await)
+}
+
+/// Write the composer's waiting images under `session`, and return the
+/// references the transcript carries.
+///
+/// The store is keyed by session, which is why the bytes waited: on the landing
+/// page there is no session to write under until the create comes back.
+async fn store_images(
+    state: &AppState,
+    session: robi_core::ids::SessionId,
+    images: Vec<crate::tui::state::composer::PendingImage>,
+) -> Result<Vec<robi_core::message::ImageAttachment>, String> {
+    let mut stored = Vec::with_capacity(images.len());
+    for image in images {
+        let id = uuid::Uuid::now_v7().to_string();
+        state
+            .image_source
+            .store(&session.to_string(), &id, &image.media_type, image.bytes)
+            .await
+            .map_err(|error| format!("{} could not be stored: {error}", image.name))?;
+        stored.push(robi_core::message::ImageAttachment {
+            id,
+            media_type: image.media_type,
+        });
+    }
+    Ok(stored)
+}
+
+/// Resolve the workspace, then read the file.
+///
+/// The split exists so the rules below can be tested against a temp directory
+/// without an `AppState`: everything after this point is
+/// [`attachment_from_path`], which takes a root and nothing else.
+async fn read_attachment(
+    state: &AppState,
+    workspace: robi_core::ids::WorkspaceId,
+    source: &str,
+) -> Result<(String, crate::tui::state::composer::Pending), String> {
+    let row = state
+        .workspace_service
+        .get_workspace(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let root = canonical_root(&row.root);
+    let home = user_home().map_err(|error| error.to_string())?;
+    let source = source.to_owned();
+    let read = blocking::call(move || attachment_from_path(&root, &home, &source))
+        .await
+        .map_err(|error| error.to_string())?;
+    read
+}
+
+/// Resolve, read, slice, and classify one file the reader named.
+///
+/// `source` is what they typed: a path, optionally with `:start-end`. The path
+/// resolves against the workspace root, and `~` and an absolute path are accepted
+/// — an explicit attach is the consent, so a file outside the workspace attaches
+/// with its name alone. `/open` is the one that refuses them: it launches a
+/// program rather than reading bytes.
+///
+/// The image check runs on the signature, so a `.png` that is text attaches as
+/// text and a `.txt` that is a png attaches as an image.
+fn attachment_from_path(
+    root: &std::path::Path,
+    home: &std::path::Path,
+    source: &str,
+) -> Result<(String, crate::tui::state::composer::Pending), String> {
+    use crate::domain::chat_message::attachment::{
+        self, LineRange, MAX_IMAGE_BYTES, MAX_TEXT_FILE_BYTES,
+    };
+    use crate::tui::state::composer::{Pending, PendingImage};
+
+    let (path, range) = attachment::split_range(source);
+    if path.trim().is_empty() {
+        return Err(format!("{source} names a line range and no file"));
+    }
+    let resolved = resolve_path(root, &path, home).map_err(|error| error.to_string())?;
+    let metadata = std::fs::metadata(&resolved.absolute)
+        .map_err(|error| format!("{path} could not be read: {}", io_reason(&error)))?;
+    if !metadata.is_file() {
+        return Err(format!("{path} is not a file"));
+    }
+    // One read bound covers both kinds: an image is capped at 10 MiB and a text
+    // file at 64 KiB, and neither is read past the larger of the two.
+    if metadata.len() > MAX_IMAGE_BYTES as u64 {
+        return Err(format!("{path} is over the {MAX_IMAGE_BYTES} byte limit"));
+    }
+    let bytes = std::fs::read(&resolved.absolute)
+        .map_err(|error| format!("{path} could not be read: {}", io_reason(&error)))?;
+
+    let name = resolved
+        .absolute
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.clone());
+
+    if let Some(media_type) = attachment::detect_media_type(&bytes) {
+        if range.is_some() {
+            return Err(format!(
+                "{name} is an image \u{2014} a line range needs a text file"
+            ));
+        }
+        return Ok((
+            source.to_owned(),
+            Pending::Image(PendingImage {
+                name,
+                media_type: media_type.to_owned(),
+                bytes,
+            }),
+        ));
+    }
+
+    // Text: the whole file, then the range. The cap applies to what is attached,
+    // so a range is how a file bigger than the cap gets in at all.
+    let text = attachment::decode_text(&name, bytes).map_err(|error| error.to_string())?;
+    let (text, range): (String, Option<LineRange>) = match range {
+        Some(range) => {
+            let (slice, taken) = attachment::slice_lines(&text, range);
+            (slice, Some(taken))
+        }
+        None => {
+            if text.len() > MAX_TEXT_FILE_BYTES {
+                return Err(format!(
+                    "{name} is {} bytes, over the {MAX_TEXT_FILE_BYTES} limit \u{2014} \
+                     attach a range with {name}:40-80",
+                    text.len()
+                ));
+            }
+            (text, None)
+        }
+    };
+    let file = attachment::text_attachment(&name, root, &resolved.absolute, text, range)
+        .map_err(|error| error.to_string())?;
+    Ok((source.to_owned(), Pending::File(file)))
+}
+
+/// The reason out of an I/O error, without the `(os error N)` tail.
+fn io_reason(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    text.split(" (os error").next().unwrap_or(&text).to_owned()
 }
 
 /// A stored root is canonical already; a root that has since moved is used as
@@ -636,5 +854,149 @@ pub async fn save_view(options: &Options, view: &persist::ViewState) {
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::warn!(%error, "could not save the view state on exit"),
         Err(error) => tracing::warn!(%error, "could not save the view state on exit"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A temp workspace with one nested text file and one png.
+    fn workspace() -> (std::path::PathBuf, std::path::PathBuf) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("robi-attach-{unique}"));
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        std::fs::write(
+            root.join("src").join("app.rs"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .expect("write");
+        let png = [
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        std::fs::write(root.join("shot.png"), png).expect("write");
+        // A home **outside** the root, so a `~/` attach is an outside one.
+        let home = std::env::temp_dir().join(format!("robi-home-{unique}"));
+        std::fs::create_dir_all(&home).expect("mkdir");
+        (root.canonicalize().expect("root"), home)
+    }
+
+    #[test]
+    fn a_relative_text_path_attaches_with_its_workspace_path() {
+        let (root, home) = workspace();
+        let (source, pending) =
+            attachment_from_path(&root, &home, "src/app.rs").expect("a text file");
+        assert_eq!(source, "src/app.rs");
+        match pending {
+            crate::tui::state::composer::Pending::File(file) => {
+                assert_eq!(file.name, "app.rs");
+                assert_eq!(file.path.as_deref(), Some("src/app.rs"));
+                assert_eq!(file.start_line, None, "no range means the whole file");
+                assert!(file.text.starts_with("one"));
+            }
+            other => panic!("expected a text attachment, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_range_slices_the_file_and_reports_the_lines_it_took() {
+        let (root, home) = workspace();
+        let (_, pending) = attachment_from_path(&root, &home, "src/app.rs:2-3").expect("a slice");
+        match pending {
+            crate::tui::state::composer::Pending::File(file) => {
+                assert_eq!(file.text, "two\nthree");
+                assert_eq!((file.start_line, file.end_line), (Some(2), Some(3)));
+            }
+            other => panic!("expected a text attachment, got {other:?}"),
+        }
+
+        // A tail past the end clamps rather than failing, and says what it took.
+        let (_, pending) =
+            attachment_from_path(&root, &home, "src/app.rs:4-99").expect("a clamped slice");
+        match pending {
+            crate::tui::state::composer::Pending::File(file) => {
+                assert_eq!((file.start_line, file.end_line), (Some(4), Some(5)));
+                assert_eq!(file.text, "four\nfive");
+            }
+            other => panic!("expected a text attachment, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_image_is_decided_by_its_bytes_not_its_name() {
+        let (root, home) = workspace();
+        let (source, pending) = attachment_from_path(&root, &home, "shot.png").expect("an image");
+        assert_eq!(source, "shot.png");
+        match pending {
+            crate::tui::state::composer::Pending::Image(image) => {
+                assert_eq!(image.media_type, "image/png");
+                assert_eq!(image.name, "shot.png");
+                assert_eq!(image.bytes.len(), 16);
+            }
+            other => panic!("expected an image, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_range_on_an_image_is_refused() {
+        let (root, home) = workspace();
+        let error = attachment_from_path(&root, &home, "shot.png:1-2").unwrap_err();
+        assert!(error.contains("a line range needs a text file"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_directory_a_missing_file_and_a_bare_range_are_each_named() {
+        let (root, home) = workspace();
+        let error = attachment_from_path(&root, &home, "src").unwrap_err();
+        assert!(error.contains("is not a file"), "{error}");
+
+        let error = attachment_from_path(&root, &home, "src/nope.rs").unwrap_err();
+        assert!(error.contains("could not be read"), "{error}");
+
+        let error = attachment_from_path(&root, &home, ":10-20").unwrap_err();
+        assert!(error.contains("names a line range and no file"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_home_relative_path_attaches_as_outside_the_workspace() {
+        let (root, home) = workspace();
+        std::fs::write(home.join("notes.md"), "hi").expect("write");
+        let (source, pending) =
+            attachment_from_path(&root, &home, "~/notes.md").expect("a file in home");
+        assert_eq!(source, "~/notes.md", "the chip quotes what was typed");
+        match pending {
+            crate::tui::state::composer::Pending::File(file) => {
+                assert_eq!(file.name, "notes.md");
+                assert_eq!(file.path, None, "outside the workspace, so no path");
+            }
+            other => panic!("expected a text attachment, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_text_file_over_the_cap_is_refused_with_the_range_suggestion() {
+        let (root, home) = workspace();
+        let big = "x".repeat(crate::domain::chat_message::attachment::MAX_TEXT_FILE_BYTES + 1);
+        std::fs::write(root.join("big.txt"), big).expect("write");
+        let error = attachment_from_path(&root, &home, "big.txt").unwrap_err();
+        assert!(error.contains("over the"), "{error}");
+        assert!(error.contains("big.txt:40-80"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

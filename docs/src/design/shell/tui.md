@@ -264,7 +264,7 @@ touches `AppState`, and it is the only place a `.await` exists:
 
 | `Action` | Call |
 |---|---|
-| `Submit` | `chat_message_service.submit_instruction` |
+| `Submit` | `chat_message_service.submit_instruction`, after `image_source.store` for each pending image |
 | `Decide` | `chat_message_service.decide_tool_call` |
 | `Stop` / `Compact` | `chat_message_service.stop` / `.compact` |
 | `Reload` | `chat_message_service.list_messages` |
@@ -278,6 +278,7 @@ touches `AppState`, and it is the only place a `.await` exists:
 | `LoadSettings` | `settings_service.get_many`, with each secret reduced to `configured` |
 | `SaveSetting` | `settings_service.set` / `.remove`; the secret flag is re-read from `known_setting`, never carried on the action |
 | `LoadMcpConfig` | `workspace_service.get_workspace`, then `McpHub::config_files` on `blocking::call`; the file text is dropped |
+| `Attach` | resolve, read, sniff, slice, and classify one file the reader named |
 | `OpenFile` | the lifted file opener: configured `file_open_command` only |
 
 `SubmitOutcome::AwaitingApproval` is unreachable from the real runtime — nothing
@@ -345,9 +346,9 @@ the index itself, so nothing in the frame carries an index line.
 | Sandbox settings | settings surface, six fields and two choices | T5 | **Done** |
 | MCP settings | settings surface: servers, the two config paths, trust, logs | T5 | **Done** |
 | Audit log | settings surface: a paged service-call table, `Enter` expands a body | T5 | **Done** |
-| `Composer` attachments | path attachments; images by path | T6 |
-| `MermaidDiagram` | source fence | T6 |
-| `OpenedFile`, `openWorkspaceFile` | `/open <file>`, configured program only | T6 |
+| `Composer` attachments | `/attach` and `/detach`; images by path | T6 | **Done** |
+| `MermaidDiagram` | source fence | T6 | **Done** |
+| `OpenedFile`, `openWorkspaceFile` | `/open <file>`, configured program only | T6 | **Done** |
 
 ## Phases
 
@@ -370,6 +371,7 @@ the index itself, so nothing in the frame carries an index line.
 - Every message and every tool call is a **band**: a raised surface with a
   one-cell rail on its left edge, one cell of horizontal padding, and one row of
   padding above and below. The rail is the only vertical rule in the transcript
+  itself; the scrollbar, when there is one, sits in the gutter beside it.
   — there is no drawn border, so the band contrast plus the rail is the whole
   affordance. The rail's colour is what identifies the block. The rail cell
   itself is `\u{258d}` (left three-eighths block) rather than the hairline `│`:
@@ -712,25 +714,49 @@ own sentence under the table.
 ### T6 — Attachments and the graphical remainder
 
 **Goal** — close the parity gap on the chat surface, and name what is
-permanently out.
+permanently out. **Done.**
 
-- Attachments by path: an `@` completion in the composer over `find`, plus
-  `list_dir` for browsing. `MAX_ATTACHMENTS`, `MAX_TEXT_FILE_BYTES`, and
-  `MAX_TEXT_TOTAL_BYTES` stay identical to the GUI's.
-- Images by path: no thumbnail, a `[image name, 1.2 MB]` row. The bytes still
-  travel to the model.
-- Mermaid fences render as source with a marker, never as a diagram.
+- **Attachments are two commands, not a menu.** `/attach <path>` reads one file
+  into the composer; `/detach` takes every one off and `/detach <name>` takes
+  one. An `@` file picker was the plan and was dropped: a command takes the path
+  the reader meant without a per-workspace file index, a relaxed `@` token rule,
+  or an `ignore` walk behind the menu — and the line they typed is its own record
+  of what was attached. `@` stays skills-only.
+- **A path may be relative, `~`, or absolute.** Relative resolves against the
+  workspace root; an attach outside it lands as `path: None`, name only, because
+  an explicit attach is the consent and the GUI's picker does the same.
+- **Text or image is decided by the bytes.** An image signature is an image
+  (10 MiB) with its bytes still bound for the model; otherwise the NUL-and-UTF-8
+  rule makes it text (64 KiB). `MAX_ATTACHMENTS`, `MAX_TEXT_FILE_BYTES` and
+  `MAX_TEXT_TOTAL_BYTES` are the GUI's numbers, now shared through
+  `domain::chat_message::attachment` rather than restated.
+- **A path may carry `:start-end`.** `/attach src/app.rs:40-80` attaches those
+  lines, which is how a file over the text cap gets in at all; the chip says
+  `(40-80)` and the model's block says `lines="40-80"`. A clamped tail reports
+  the lines it actually took.
+- Images by path: no thumbnail, a `[image name, 1.2 MB]` chip in the composer.
+  The bytes still travel to the model, and the transcript shows
+  `[image, image/png]` — the stored attachment is an id and a media type, so the
+  name and weight are the composer's.
+- **`Backspace` on an empty field takes the last attachment off**, the peer of the
+  GUI chip's `×`; `/detach` is the spelling that names one.
+- Mermaid fences render as source with the language on the fence line, never as a
+  diagram.
 - **Opening a file is `/open <path>` and nothing else.** The command resolves the
-  path inside the workspace and hands it to the configured `file_open_command`.
-  It never falls back to `$EDITOR`, never suspends the terminal, and never opens
+  path inside the workspace and hands it to the configured `file_open_command`. It
+  never falls back to `$EDITOR`, never suspends the terminal, and never opens
   anything in-process: when no command is configured it says so and stops, which
   is the same refusal `POST /workspaces/{id}/open` returns. A terminal user sees
   the file in the editor they already chose for the GUI.
+- **Both lifted, in the same change**, with the `web_api` callers switched over —
+  see *Gaps to lift out of `web_api`*.
 
-**Exit** — attach a text file by path, send it, see it in the user message and in
-the model's context; render an assistant message containing a mermaid fence
-without panicking; `/open` a path from an edit card and land in the configured
-program, and get a clear message rather than a fallback when none is set.
+**Exit** — `/attach src/error.rs`, send it, see it in the user message and in the
+model's context; `/attach shot.png` and see `[shot.png, 1.2 MB]` with the bytes
+reaching the provider; `/detach src/error.rs` leave the image and `/detach` leave
+nothing; render an assistant message containing a mermaid fence without
+panicking; `/open src/error.rs` land in the configured program and get a clear
+message rather than a fallback when none is set.
 
 ### Deliberately not planned
 
@@ -740,8 +766,9 @@ program, and get a clear message rather than a fallback when none is set.
 | **Docs surface** — tree, viewer, find, search, editor | Off in the GUI as S5. Not replaced. The agent still reads and edits docs through the existing tools; a human reads them in their editor |
 | **In-app file peek** (`OpenedFile` dialog) | The GUI needs a second destination so a path can render inside the app. `/open` has one destination — the configured program — so there is no dialog and no `fileOpenPatterns` split to reproduce |
 | In-terminal markdown editor | Roadmap non-goal: "not a code editor" |
-| Clipboard image paste, drag-and-drop | No terminal protocol worth the complexity. Paths only |
-| Image and diagram rendering | No portable cell-accurate graphics; the source is shown |
+| Clipboard image paste, drag-and-drop | No terminal protocol worth the complexity. Paths only, through `/attach` |
+| Image and diagram rendering | No portable cell-accurate graphics; the source is shown, and an image is a `[name, 1.2 MB]` chip |
+| An `@` file picker over the workspace | Dropped for `/attach`: a menu over a per-workspace index needs an `ignore` walk, a relaxed `@` token rule and a Cargo feature edge, and a path typed after a command is the same gesture with none of that |
 | OS notifications | Tauri-only. Bell and title change instead |
 | UI scale, pointer resize | Terminal-owned layout |
 | A second `EventSource`-style reconnect | The subscription is in-process and does not disconnect |
@@ -915,11 +942,25 @@ terminal does the same: the band's last row carries them, on the band's own surf
 with the rail unbroken beside.
 
 ```text
+  ┃ src/app.rs (40-80)  [shot.png, 1.2 MB]
   ┃ Message robi…
   ┃
   ┃ Agent · GLM-5.3 · OpenCode Go · High            214k / 1.0M · 21%
   ┃
 ```
+
+**The attachments row is the band's first content row, and only when there is
+something on it.** A chip is what the message *carries* and the text is what it
+says, so the chips sit above it — the same order the transcript's user band uses,
+so a sent attachment stays where the reader last saw it. `name (1-10)` for a text
+file, `[name, 1.2 MB]` for an image: the weight is there because a terminal cannot
+show the picture, so the number is the only evidence the bytes are real. The row
+is cut with an ellipsis rather than wrapped, because a second row would move the
+text being typed, and it costs `Composer::height` exactly one row.
+
+`Backspace` on an empty field takes the last attachment off, which is the peer of
+the GUI chip's `×`; `/detach <name>` is the spelling that takes one you name, and
+`/detach` alone takes them all.
 
 **The facts row is boxed in by a blank row on each side.** The facts say what the
 next send will carry; the text is what is being typed, so a gap above stops the mode
@@ -1011,10 +1052,13 @@ It takes no layout row: `App::prompt_rows` counts the one-line prompt only.
 | `/` | built-in command | `tui/command.rs`, a fixed table | the terminal acts, and the field clears |
 | `@` | skill mention | `list_skills` for this workspace | sent as text, unchanged |
 
-- **`/` lists commands and nothing else**, and each one is a keybinding's twin — see
-  *Composer commands*. A `/` token that names a skill is refused with the sigil to
-  use instead: `"/create-skill is a skill — type @create-skill"`. Two prefixes only
-  stay distinct if each one holds its side.
+- **`/` lists commands and nothing else.** Each one is a keybinding's twin, or —
+  for `/attach`, `/detach` and `/open` — a command whose whole value is a path no
+  keystroke could carry; those print no key and the menu omits the separator
+  rather than leaving one dangling. See *Composer commands*. A `/` token that
+  names a skill is refused with the sigil to use instead:
+  `"/create-skill is a skill — type @create-skill"`. Two prefixes only stay
+  distinct if each one holds its side.
 - **`@` lists this workspace's user-invocable skills**, marked `· manual` when the
   model may not invoke them and with their scope. Accepting rewrites the token in place
   and adds a space; the message is then sent as typed, and the runtime loads the skill
@@ -1037,7 +1081,9 @@ function of `(Mode, Focus, KeyEvent)` and cannot see whether a menu is up: `↑`
 move, `Enter`/`Tab` accept, `Esc` closes the menu alone (so it never becomes the
 interrupt, and a running turn is not stopped by dismissing a menu), and every other
 printable key goes to the field, after which the query is recomputed and the menu
-closes itself when nothing matches. A picked command takes one more `Enter` to run.
+closes itself when nothing matches. A picked command takes one more `Enter` to run,
+which is why a reader typing `/detach` and pressing `Enter` twice is the documented
+gesture and not a quirk: the first `Enter` accepts the row.
 
 ### The status strip
 
@@ -1098,6 +1144,29 @@ gets one. The row is not a block: the arrow keys step over it. One blank row
 separates it from the turn — the same gap the transcript keeps between blocks —
 so it reads as the turn's footnote rather than its last sentence.
 
+### The scrollbar
+
+When the transcript is taller than its viewport, the first column of the right
+gutter carries a scrollbar: a full-height track in `--rule` and a proportional
+thumb in `--ink-faint`, both `│` (`\u{2502}`) and `┃` (`\u{2503}`) — two weights
+of the same box-drawing line, so the cells line up and a moving thumb changes
+only how much ink one column carries. The thumb is at least one cell long, so a
+transcript a hundred screens long still shows where it is; its position is
+`offset / max_offset` of the travel, so the bottom row of the frame is the last
+row of the transcript while following.
+
+It is **chrome in the gutter, not a column of the text**. The transcript is
+wrapped to `content_width`, so the bar costs no wrap width and no row, and the
+scroll arithmetic stays exactly what `state::transcript` computed. Nothing is
+drawn when every row fits: a bar is a statement that there is more, and a
+full-height thumb on a short conversation is a lie. Nothing is drawn either when
+the frame runs to the terminal's edge, because there is no gutter to draw in.
+
+It never brightens with focus or scroll, unlike the desktop shell's webview
+scrollbar: the transcript already spends its one piece of state on the user's
+blue rail, and a second thing that lights up would be a second answer to the
+same question.
+
 ### Assistant markdown
 
 Assistant prose is rendered as markdown, not as its source characters. The
@@ -1122,7 +1191,9 @@ the transcript's own rows.
   `--code-ink` on `--code-bg` with its language tag intact. Turning it on later is
   one manifest line and one `Options` call.
 - Images render as their alt text, and a mermaid fence renders as its source —
-  T6's rule, unchanged.
+  T6's rule, unchanged. There is no portable cell-accurate way to draw a diagram,
+  so the fence keeps its `mermaid` tag and shows the source under it, and a test
+  in `state/markdown.rs` pins that rather than a reader discovering it.
 
 A selected card is answered in place: `a` approve, `r` reject with a reason, `A`
 approve every call still waiting, `Ctrl-C` decline them all, and `Enter` to read
@@ -1146,15 +1217,35 @@ it is answered with a notice rather than a decision.
 | `/mode` | optional `ask`\|`plan`\|`agent` | `Ctrl-T` | cycle, or set that mode |
 | `/compact` | none | `Ctrl-L` | the confirmation, then the compact |
 | `/help` | none | `?` | the help page |
+| `/settings` | none | `Ctrl-,` | the settings surface |
+| `/attach` | `<path>` | — | put a file or an image on this message |
+| `/detach` | optional `name` | — | take that attachment off, or every one |
+| `/open` | `<path>` | — | open a workspace file in the configured program |
 
-**Every command is a keybinding's twin.** They are not a second interface with
-powers of their own; they are the discoverable spelling of keys a reader may not
-know yet, and `state/help.rs` prints the pair. That is also why `/settings` waits
-for T5: a command that opened nothing would be a menu row that lies.
+**Every command is a keybinding's twin, or takes an argument no key could carry.**
+A twin is the discoverable spelling of a key a reader may not know yet, and
+`state/help.rs` prints the pair. The three commands with a `—` in the Key column
+are the second kind: what they need is a path, and a keystroke has nowhere to put
+one. They print no key in the menu, because `· ` with nothing after it reads as a
+column that failed to render.
 
-`Arg` is `None`, `Optional` or `Required` in the table, so T6's `/open <path>` is
-one entry and no new parser. A command given an argument it does not take is
-refused by name rather than ignored.
+`Arg` is `None`, `Optional` or `Required` in the table, so `/open <path>`,
+`/attach <path>` and `/detach [name]` are three entries and no new parser. A
+command given an argument it does not take is refused by name rather than ignored.
+
+**`/attach` reads, `/open` launches**, and that is the whole difference between
+their path rules: `/attach` resolves a relative path against the workspace and
+also accepts `~` and an absolute one, because reading a file the reader named is
+what they asked for and the caps bound what comes back; `/open` refuses both,
+because it hands the path to a program that will show it in the workspace the
+reader is working in, and the route it mirrors refuses the same three.
+
+**`/attach path:40-80` attaches those lines.** The suffix is recognised only when
+everything after the last `:` is digits or digits-dash-digits, so `a:b.rs` and
+`C:\src\x.rs` keep their colons. The cap applies to what is attached rather than
+to the file, which is what makes a range the answer to the 64 KiB limit on a file
+that cannot be attached whole — and a range past the end clamps and reports the
+lines it actually took, so a chip never claims lines the file does not have.
 
 ### The help page
 
@@ -1263,7 +1354,9 @@ worth saying before it can ship.
 **Three calls are skipped**, for the reason the webview skips `/api/v1/health`:
 `Probe` is a heartbeat, `CompletePath` runs once per keystroke, and `SaveView`
 happens while the process is leaving. A table of those would be noise around the
-calls a reader opened the page to see.
+calls a reader opened the page to see. `/attach` and `/open` are **not** skipped:
+one reads a file the reader named and one starts a program, which is exactly what
+a reader opens the table to check.
 
 **The table has no cursor of its own.** The surface already has one row cursor and
 one page size; a second cursor inside one section would be a mode within a mode.
@@ -1280,11 +1373,11 @@ callers switched over.
 
 | Logic | Today | Needed by | Action |
 |---|---|---|---|
-| Attachment ingestion — `build_files`, `classify_path`, `decode_base64`, `decode_text`, `matches_media_type` | `web_api/chat_message.rs` | T6 | Lift to `domain/chat_message` before T6 |
+| Attachment ingestion — `build_files`, `classify_path`, `decode_base64`, `decode_text`, `matches_media_type` | `web_api/chat_message.rs` | T6 | **Done**, as `domain::chat_message::attachment`; the handler maps `AttachmentError` to its statuses and keeps `FileAttachmentInput` as the wire DTO |
 | Provider-enabled model filter — `provider_on` + `tool_capable` | `web_api/models.rs` | T4 | **Done**, as `adapters::model_source::pickable_models`; the route calls it |
 | User-invocable skill list — `scan` + the filter | `web_api/workspace.rs` | T4 | **Done**, as `agent::skills::user_invocable`; the handler also moved its scan onto `spawn_blocking` |
 | Model and effort resolution — override → mode key → fallback → default | `adapters/model_source.rs::provider_settings` | T4 | **Done**, as `effective_choice`; the builder and the facts row both read it |
-| File opener — `spawn_opener`, template rendering, the 10-second wait | `web_api/workspace.rs` | T6 (`/open`) | Lift to `agent/workspace`; both callers keep the same refusal when the command is unset |
+| File opener — `spawn_opener`, template rendering, the 10-second wait | `web_api/workspace.rs` | T6 (`/open`) | **Done**, as `agent::workspace::{argv_for, open}` with `absolute_inside` in `agent::workspace::paths`; both callers keep the same refusal when the command is unset |
 
 The audit log is the one row T5 did **not** lift: the webview's lives in the
 client, over HTTP, and the terminal makes no HTTP. It is a port at a different
@@ -1494,6 +1587,9 @@ collapsed directories, docs-tray width, UI scale.
   - the frame needed one gutter, which also caught the footer padding twice;
   - an assistant heading and table painted their own `##` and `|` characters
     instead of rendering as a document.
+  - the transcript's scrollbar: absent while the rows fit, one track-or-thumb
+    cell on every body row once they do not, and a thumb that ends on the last
+    row while following and starts on the first at the top.
   Frames assert on substrings and on cell colours, never on a golden file, so a
   token change that does not move the layout does not fail.
 - Keymap: `(Mode, Focus, Key)` is a table, and **one** test walks it — `q` quits
@@ -1599,10 +1695,24 @@ collapsed directories, docs-tray width, UI scale.
   lines, past the band's forty-line cap — and `Esc` returns with the selection
   where it was.
 - The `/` command surface: `/open` on a path inside the workspace issues one
-  `OpenFile`; a path outside it, an absolute path, and a blank argument each
-  produce a composer error and no action. A stub opener records what it was
-  asked to start, so the unset-command case asserts the error with **no** call
-  made — the fallback this design rules out is a test failure, not a code review.
+  `OpenFile`; an absolute path, a `~` path, and a blank argument each produce a
+  footer error and no action. An unset command comes back as `OpenFailed` with no
+  program started, so the fallback this design rules out is a test failure, not a
+  code review.
+- Attachments: `/attach src/app.rs:40-80` issues one read carrying the whole
+  argument, because the range is the effect's to split; a blank argument and a
+  two-line one refuse with no read; a file already attached refuses by its source;
+  a read that lands after a session switch is dropped; the count and the text
+  total are enforced against what is already on the message.
+- `/detach`: a unique basename removes one, an unknown name removes none and says
+  so, and no argument removes all and counts them back. `Backspace` in an empty
+  field removes the last; with text it still deletes a character.
+- A message carrying only an attachment is sendable, and a refused send keeps both
+  the text and the chips. The band grows one row for the chips row, and a sent
+  attachment reads as `app.rs (40-80)` in the user band beside
+  `[image, image/png]`.
+- A mermaid fence renders as its own source with the language on the fence line
+  and does not panic.
 - A skill whose id collides with a built-in is listed but not selectable, and
   typing it still resolves to the built-in.
 - Persistence: `tui.json` round-trips; a malformed file starts at defaults; a
@@ -1710,5 +1820,11 @@ collapsed directories, docs-tray width, UI scale.
    the parity map, which had never listed the GUI's Sandbox page, and gave
    `Ctrl-C` the branch the keyboard table had always promised: it closes the
    settings, help, and detail views rather than quitting from them.
-9. Lift the file opener and the attachment ingestion together; `/open`; path
-   attachments; mermaid fallback. T6.
+9. Lift the file opener and the attachment ingestion together; `/attach`,
+   `/detach` and `/open`; the chips row; the mermaid pin. **T6, done.** The phase
+   replaced the planned `@` file picker with two commands — a menu over a
+   per-workspace index needed an `ignore` walk, a relaxed `@` token rule, and a
+   Cargo feature edge, and a path typed after a command is the same gesture with
+   none of that. It also added a `:start-end` suffix, without which a text file
+   over 64 KiB could not be attached at all, and `file_open_command` to the
+   General settings page, so a terminal-only install can configure `/open`.

@@ -6,9 +6,12 @@
 //! is refused with the reason, because the alternative — sending `/nope` to the
 //! model as prose — is the terminal pretending a command it does not have ran.
 //!
-//! Every command is a keybinding's twin. They are not a second interface with
-//! powers of their own; they are the discoverable spelling of keys a reader may
-//! not know yet, and the help view prints the pair.
+//! Every command is a keybinding's twin **or takes an argument no key could
+//! carry**. They are not a second interface with powers of their own: a twin is
+//! the discoverable spelling of a key a reader may not know yet, and the help view
+//! prints the pair. The exception is `/attach`, `/detach` and `/open`, whose whole
+//! value is the path — a binding has nowhere to put one, so `key` is empty and the
+//! menu omits the column rather than printing a separator with nothing after it.
 
 use crate::tui::state::completion::SkillEntry;
 
@@ -24,6 +27,9 @@ pub enum BuiltIn {
     Compact,
     Help,
     Settings,
+    Attach,
+    Detach,
+    Open,
 }
 
 /// How many arguments a command takes.
@@ -33,7 +39,7 @@ pub enum Arg {
     None,
     /// Zero or one. `/rename` opens the prompt, `/rename Ship it` sets it.
     Optional,
-    /// Exactly one. `/open <path>` — T6.
+    /// Exactly one. `/attach <path>`, `/open <path>`.
     Required,
 }
 
@@ -42,7 +48,9 @@ pub enum Arg {
 pub struct CommandSpec {
     pub name: &'static str,
     pub arg: Arg,
-    /// The key that does the same thing, as the help view spells it.
+    /// The key that does the same thing, as the help view spells it. Empty for a
+    /// command that exists only as a command, because what it needs is an
+    /// argument rather than a keystroke.
     pub key: &'static str,
     /// One line, for the completion menu and the help view.
     pub about: &'static str,
@@ -117,6 +125,27 @@ pub const BUILT_INS: &[CommandSpec] = &[
         key: "Ctrl-,",
         about: "every setting the app has",
         built_in: BuiltIn::Settings,
+    },
+    CommandSpec {
+        name: "attach",
+        arg: Arg::Required,
+        key: "",
+        about: "put a file or an image on this message",
+        built_in: BuiltIn::Attach,
+    },
+    CommandSpec {
+        name: "detach",
+        arg: Arg::Optional,
+        key: "",
+        about: "take an attachment off, or all of them",
+        built_in: BuiltIn::Detach,
+    },
+    CommandSpec {
+        name: "open",
+        arg: Arg::Required,
+        key: "",
+        about: "open a workspace file in your editor",
+        built_in: BuiltIn::Open,
     },
 ];
 
@@ -260,13 +289,63 @@ mod tests {
     #[test]
     fn every_command_is_reachable_by_its_name() {
         for spec in BUILT_INS {
-            let line = format!("/{}", spec.name);
+            // A command that requires an argument is written with one, because
+            // the point here is reachability, not the refusal the next test
+            // covers.
+            let (line, expected) = match spec.arg {
+                Arg::Required => (format!("/{} src/main.rs", spec.name), Some("src/main.rs")),
+                Arg::None | Arg::Optional => (format!("/{}", spec.name), None),
+            };
             let parsed = match verdict(&line, &skills()) {
                 Verdict::Run(run) => run,
                 other => panic!("{line} did not run: {other:?}"),
             };
             assert_eq!(parsed.built_in, spec.built_in);
-            assert_eq!(parsed.argument, None);
+            assert_eq!(parsed.argument.as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn a_required_argument_is_demanded_and_then_passed_through() {
+        for name in ["attach", "open"] {
+            assert_eq!(
+                refusal(&format!("/{name}")),
+                format!("/{name} needs an argument")
+            );
+            assert_eq!(
+                run(&format!("/{name} src/app.rs:40-80"))
+                    .argument
+                    .as_deref(),
+                Some("src/app.rs:40-80")
+            );
+        }
+    }
+
+    #[test]
+    fn detach_takes_a_name_or_nothing_at_all() {
+        // `Optional`, so both spellings are the command's: no name means every
+        // attachment, and the empty argument reaches `run_command` as `None`.
+        assert_eq!(run("/detach").argument, None);
+        assert_eq!(run("/detach app.rs").argument.as_deref(), Some("app.rs"));
+        assert_eq!(
+            run("/detach a/mod.rs").argument.as_deref(),
+            Some("a/mod.rs")
+        );
+    }
+
+    #[test]
+    fn a_command_with_no_keybinding_prints_no_separator() {
+        // `/attach`, `/detach` and `/open` exist only as commands: they need a
+        // path, and a keystroke has nowhere to put one.
+        for spec in BUILT_INS {
+            if matches!(
+                spec.built_in,
+                BuiltIn::Attach | BuiltIn::Detach | BuiltIn::Open
+            ) {
+                assert_eq!(spec.key, "", "/{} is not a keybinding's twin", spec.name);
+            } else {
+                assert!(!spec.key.is_empty(), "/{} has no key", spec.name);
+            }
         }
     }
 

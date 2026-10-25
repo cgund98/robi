@@ -518,6 +518,10 @@ static GENERAL: &[Field] = &[
     field(keys::PATH_ALLOW_READ, "Read paths", Kind::Text),
     field(keys::PATH_ALLOW_WRITE, "Write paths", Kind::Text),
     field(keys::PATH_ENTRIES, "PATH entries", Kind::Text),
+    // `/open` needs a program to hand the file to, and a terminal-only install has
+    // no other way to set one. `file_open_patterns` stays out: the terminal has no
+    // viewer to route to, so there is nothing to match a pattern against.
+    field(keys::FILE_OPEN_COMMAND, "Open command", Kind::Text),
 ];
 
 /// Model providers: `ModelProvidersSettings`.

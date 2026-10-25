@@ -200,4 +200,33 @@ mod tests {
             "the heading is not raw default style"
         );
     }
+
+    /// A mermaid fence is **source**, not a diagram.
+    ///
+    /// There is no portable cell-accurate way to draw a graph in a terminal, so
+    /// T6's rule is that the fence renders as its own text with the language on the
+    /// opening line — which is what `tui-markdown` already does by default. This
+    /// test is the pin: a later change that stripped the fence, or that tried to
+    /// draw the diagram, fails here rather than in a rendering a reader sees.
+    #[test]
+    fn a_mermaid_fence_renders_as_its_source_and_does_not_panic() {
+        let markdown = "Before.\n\n```mermaid\ngraph LR\n  A --> B\n```\n\nAfter.\n";
+        let rows = rows(markdown, 40);
+        let lines = texts(&rows);
+
+        assert!(
+            lines.contains(&"```mermaid"),
+            "the fence keeps its language: {lines:?}"
+        );
+        assert!(lines.contains(&"graph LR"), "{lines:?}");
+        assert!(lines.contains(&"  A --> B"), "{lines:?}");
+        assert!(
+            lines.iter().filter(|line| **line == "```").count() >= 1,
+            "the fence is closed: {lines:?}"
+        );
+        // The prose either side survives, so the fence is a block and not a
+        // truncation.
+        assert!(lines.contains(&"Before."), "{lines:?}");
+        assert!(lines.contains(&"After."), "{lines:?}");
+    }
 }

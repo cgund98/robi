@@ -34,6 +34,7 @@ use crate::domain::workspace::model::Workspace;
 use crate::tui::persist::ViewState;
 use crate::tui::state::approval::Decision;
 use crate::tui::state::completion::SkillEntry;
+use crate::tui::state::composer::{Pending, PendingImage};
 use crate::tui::state::models::Pick;
 use crate::tui::state::settings::Loaded;
 
@@ -55,12 +56,14 @@ pub enum Action {
     Reload { session: SessionId, generation: u64 },
     /// Hand one instruction to the session's actor.
     ///
-    /// T1 sends text only; T6 adds `files`, and images arrive with it. The
-    /// vectors are here now so the ask does not change shape when they do.
+    /// `images` are the pending images' bytes: the store is keyed by session, so
+    /// the actor's session has to exist before they can be written. `effects`
+    /// stores them, then submits the references.
     Submit {
         session: SessionId,
         text: String,
         files: Vec<FileAttachment>,
+        images: Vec<PendingImage>,
     },
     /// Approve or refuse one paused call, then let the turn resume.
     ///
@@ -106,6 +109,7 @@ pub enum Action {
         workspace: WorkspaceId,
         text: String,
         files: Vec<FileAttachment>,
+        images: Vec<PendingImage>,
         /// The mode the chat is created in, and its choice.
         mode: AgentMode,
         model_config: ModelConfig,
@@ -158,6 +162,25 @@ pub enum Action {
     /// The user and project MCP config paths, and whether the project file is
     /// trusted. The file text is not read: the terminal never becomes an editor.
     LoadMcpConfig { workspace: WorkspaceId },
+    /// Read one file the reader named, and hand it back as an attachment.
+    ///
+    /// The path is resolved, read, and classified in the effect: `App` does no
+    /// I/O, and the caps belong in one place.
+    Attach {
+        workspace: WorkspaceId,
+        source: String,
+        /// The session the composer is showing when the read is issued. A read
+        /// that lands after a switch is dropped rather than putting a chip under
+        /// another chat — the same generation rule, keyed by session.
+        session: Option<SessionId>,
+    },
+    /// Open one workspace file with the configured `file_open_command`.
+    OpenFile {
+        workspace: WorkspaceId,
+        path: String,
+        /// 1-based line to land on. `/open` has none; a card's path could.
+        line: Option<u32>,
+    },
 }
 
 /// What an effect produced.
@@ -314,6 +337,26 @@ pub enum ActionOutcome {
     },
     /// This workspace's MCP config paths.
     McpConfig(crate::tui::state::settings::McpPaths),
+    /// One file is read and ready to attach. `session` is the composer's session
+    /// at the moment `Attach` was issued, so a read that lands after a switch
+    /// cannot put a chip under another chat.
+    Attached {
+        session: Option<SessionId>,
+        source: String,
+        pending: Pending,
+    },
+    /// The file was not attached, and the composer is unchanged.
+    AttachFailed {
+        message: String,
+    },
+    /// The configured program was started.
+    Opened {
+        path: String,
+    },
+    /// No command is configured, or the program refused.
+    OpenFailed {
+        message: String,
+    },
     /// The view state was written.
     Saved,
     /// An effect failed. `generation` is set by the effect that can go stale.
@@ -356,6 +399,8 @@ impl Action {
             Action::LoadSettings { .. } => "settings",
             Action::SaveSetting { .. } => "save setting",
             Action::LoadMcpConfig { .. } => "mcp config",
+            Action::Attach { .. } => "attach",
+            Action::OpenFile { .. } => "open file",
         }
     }
 
@@ -365,6 +410,9 @@ impl Action {
     /// the probe is a heartbeat the reader did not ask for, path completion runs
     /// once per keystroke, and the view state is written while the process is
     /// leaving. A table of those would be noise around the calls that matter.
+    ///
+    /// `/attach` and `/open` are **not** here: one reads a file the reader named
+    /// and one starts a program, and both are exactly what an audit table is for.
     pub fn skips_audit(&self) -> bool {
         matches!(
             self,
@@ -442,6 +490,14 @@ impl ActionOutcome {
             ActionOutcome::SettingSaved { key, .. } => format!("wrote {key}"),
             ActionOutcome::SettingFailed { key, message } => format!("{key} refused: {message}"),
             ActionOutcome::McpConfig(paths) => paths.project_path.clone(),
+            ActionOutcome::Attached {
+                source, pending, ..
+            } => {
+                format!("{source} ({} byte(s))", pending.text_len())
+            }
+            ActionOutcome::AttachFailed { message } => message.clone(),
+            ActionOutcome::Opened { path } => format!("opened {path}"),
+            ActionOutcome::OpenFailed { message } => message.clone(),
             ActionOutcome::Saved => "written".to_owned(),
             ActionOutcome::Failed { message, .. } => message.clone(),
         }
@@ -459,6 +515,8 @@ impl ActionOutcome {
                 | ActionOutcome::RenameFailed { .. }
                 | ActionOutcome::DeleteFailed { .. }
                 | ActionOutcome::SettingFailed { .. }
+                | ActionOutcome::AttachFailed { .. }
+                | ActionOutcome::OpenFailed { .. }
         )
     }
 
