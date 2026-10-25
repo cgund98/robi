@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui_textarea::CursorMove;
 
@@ -48,6 +48,7 @@ use crate::tui::lifecycle;
 use crate::tui::persist::ViewState;
 use crate::tui::state::activity::{Activity, DeltaKind};
 use crate::tui::state::approval::{Approval, Decision};
+use crate::tui::state::audit::AuditLog;
 use crate::tui::state::completion::{Completion, SkillEntry};
 use crate::tui::state::composer::Composer;
 use crate::tui::state::confirm::{Confirm, Target};
@@ -59,6 +60,7 @@ use crate::tui::state::manage::ManageView;
 use crate::tui::state::models::Picker;
 use crate::tui::state::prompt::{Prompt, PromptKind};
 use crate::tui::state::sessions::{self, Mark, SessionsView};
+use crate::tui::state::settings::{self, Kind, McpPaths, Section, SettingsRow, SettingsView};
 use crate::tui::state::status::Status;
 use crate::tui::state::transcript::{pending_calls, Transcript};
 use crate::tui::state::workspaces::{self, Screen, WorkspacesView, RECENT_LIMIT};
@@ -94,6 +96,9 @@ pub enum Msg {
     Tick,
     /// An effect finished.
     Done(ActionOutcome),
+    /// One call's audit row. Sent before the outcome it belongs to, and dropped
+    /// by the view entirely when nothing is reading the table.
+    Audited(crate::tui::state::audit::Entry),
     /// The mouse wheel turned, in rows: negative is up. It goes through the
     /// same scroll path as `PageUp`/`PageDown`, so the follow lock behaves
     /// identically however the reader scrolled.
@@ -216,6 +221,13 @@ pub struct App {
     completion: Option<Completion>,
     /// The help page's scroll.
     help: HelpView,
+    /// The settings surface: the section, the row, and the values it shows.
+    settings: SettingsView,
+    /// One row per effect, for the settings surface's audit section.
+    audit: AuditLog,
+    settings_generation: u64,
+    /// The MCP config paths, read when the MCP section is first opened.
+    mcp_config: Option<McpPaths>,
 }
 
 impl App {
@@ -279,6 +291,10 @@ impl App {
             picker: None,
             completion: None,
             help: HelpView::default(),
+            settings: SettingsView::new(),
+            audit: AuditLog::new(),
+            settings_generation: 0,
+            mcp_config: None,
         }
     }
 
@@ -579,6 +595,10 @@ impl App {
         self.skills_generation
     }
 
+    pub fn settings_generation(&self) -> u64 {
+        self.settings_generation
+    }
+
     /// The skills the `@` menu offers.
     pub fn skills(&self) -> &[SkillEntry] {
         &self.skills
@@ -706,6 +726,7 @@ impl App {
             Msg::Agent(envelope) => self.on_agent(envelope),
             Msg::Tick => self.on_tick(),
             Msg::Done(outcome) => self.on_done(outcome),
+            Msg::Audited(entry) => self.audit.record(entry),
             Msg::Scroll(rows) => self.transcript.scroll_by(rows),
             Msg::Resize { width, height } => self.resize(width, height),
             Msg::Focus(focused) => self.focused = focused,
@@ -716,6 +737,32 @@ impl App {
 
     fn on_key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
+            return;
+        }
+        // An open editor band owns the keyboard, and `keys::command` cannot see
+        // it: the map is a pure function of `(Mode, Focus, KeyEvent)`. So the one
+        // exception lives here, where the state is. It has to: a path list is
+        // full of `j`s, `k`s, and `h`s, and a map that read them as navigation
+        // would make a path impossible to type.
+        if self.mode() == Mode::Settings && self.settings.editing().is_some() {
+            let control = key.modifiers.contains(KeyModifiers::CONTROL);
+            // `Ctrl-C` keeps its global meaning, so a band cannot trap the one
+            // key that stops a turn.
+            if control && key.code == KeyCode::Char('c') {
+                self.stop_or_quit();
+                return;
+            }
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            match key.code {
+                KeyCode::Esc => self.settings.cancel(),
+                KeyCode::Enter if !alt => self.settings_commit(),
+                // `Alt-Enter`'s fallback, as in the composer: a terminal that
+                // delivers it as `Esc`, `Enter` leaves `Ctrl-J` as the newline.
+                KeyCode::Char('j') if control => self
+                    .settings
+                    .editor_input(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                _ => self.settings.editor_input(&key),
+            }
             return;
         }
         match keys::command(self.mode(), self.focus, &key) {
@@ -769,6 +816,11 @@ impl App {
             Some(Command::CycleMode) => self.cycle_mode(),
             Some(Command::OpenModels) => self.open_models(),
             Some(Command::Compact) => self.open_compact(),
+            Some(Command::OpenSettings) => self.open_settings(),
+            Some(Command::CloseSettings) => self.close_settings(),
+            Some(Command::SettingsApply) => self.settings_apply(),
+            Some(Command::SettingsSectionNext) => self.settings_step_section(1),
+            Some(Command::SettingsSectionPrev) => self.settings_step_section(-1),
             Some(Command::OpenHelp) => self.open_help(),
             Some(Command::CloseHelp) => self.close_help(),
             Some(Command::CompleteAccept) => self.accept_completion(),
@@ -890,6 +942,7 @@ impl App {
                 self.manage.selected = 0;
                 self.reconcile_manage();
             }
+            Mode::Settings => self.settings_input(&key),
             Mode::Chat if self.focus.is_composer() && !self.composer.sending() => {
                 self.composer.input(&key);
                 // Every character that reaches the field can open, narrow, or
@@ -1002,6 +1055,7 @@ impl App {
             BuiltIn::Workspaces => self.open_workspaces(),
             BuiltIn::New => self.new_session(),
             BuiltIn::Help => self.open_help(),
+            BuiltIn::Settings => self.open_settings(),
             BuiltIn::Compact => self.open_compact(),
             BuiltIn::Rename => match run.argument {
                 Some(title) => self.rename_to(title),
@@ -1151,6 +1205,234 @@ impl App {
 
     fn close_help(&mut self) {
         self.leave_mode(Mode::Help);
+    }
+
+    // -- The settings surface ----------------------------------------------
+
+    pub fn settings(&self) -> &SettingsView {
+        &self.settings
+    }
+
+    pub fn audit(&self) -> &AuditLog {
+        &self.audit
+    }
+
+    pub fn mcp_config(&self) -> Option<&McpPaths> {
+        self.mcp_config.as_ref()
+    }
+
+    /// The rows the surface draws for the open section.
+    ///
+    /// Read-only rows are built here rather than in the view because they are
+    /// app state — the workspace's name, the servers' status, the audit table —
+    /// and because `Enter` has to know which rows write and which do not.
+    pub fn settings_rows(&self) -> Vec<SettingsRow> {
+        let section = self.settings.section();
+        let mut rows = Vec::new();
+        if section.leads_with_workspace() {
+            let value = self
+                .active_workspace()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_else(|| "\u{2014}".to_owned());
+            rows.push(SettingsRow::read_only("Workspace", value));
+        }
+        for field in section.fields() {
+            let value = if self.settings.editing() == Some(field.key) {
+                "editing\u{2026}".to_owned()
+            } else {
+                settings::value_text(field, self.settings.value(field.key))
+            };
+            rows.push(SettingsRow {
+                field: Some(field),
+                label: field.label.to_owned(),
+                value,
+            });
+        }
+        match section {
+            Section::Mcp => self.mcp_rows(&mut rows),
+            Section::Audit => self.audit_rows(&mut rows),
+            _ => {}
+        }
+        rows
+    }
+
+    /// The MCP section: one row per server, then the two config files.
+    fn mcp_rows(&self, rows: &mut Vec<SettingsRow>) {
+        for server in self.status.servers() {
+            let title = server.title.clone().unwrap_or_else(|| server.id.clone());
+            rows.push(SettingsRow::read_only(
+                title,
+                format!("{} \u{b7} {} tool(s)", server.status, server.tool_count),
+            ));
+        }
+        match &self.mcp_config {
+            Some(paths) => {
+                rows.push(SettingsRow::read_only(
+                    "Your config",
+                    paths.user_path.clone(),
+                ));
+                // A project file only applies once its hash is trusted, which is
+                // the one fact about it a reader cannot see in the path.
+                let value = if paths.project_enabled {
+                    paths.project_path.clone()
+                } else {
+                    format!("{} \u{b7} not trusted", paths.project_path)
+                };
+                rows.push(SettingsRow::read_only("Project config", value));
+                rows.push(SettingsRow::read_only(
+                    "Logs",
+                    format!("{}/<server>/", paths.log_root),
+                ));
+            }
+            None => rows.push(SettingsRow::read_only("Config files", "reading\u{2026}")),
+        }
+    }
+
+    /// The audit section: one row per call, newest first.
+    fn audit_rows(&self, rows: &mut Vec<SettingsRow>) {
+        if self.audit.is_empty() {
+            rows.push(SettingsRow::read_only(
+                "No calls yet",
+                "this process has asked a service for nothing",
+            ));
+            return;
+        }
+        for entry in self.audit.entries() {
+            rows.push(SettingsRow::read_only(
+                format!("{} \u{b7} {}", entry.at.format("%H:%M:%S"), entry.call),
+                format!(
+                    "{} \u{b7} {} ms",
+                    if entry.ok { "ok" } else { "failed" },
+                    entry.duration_ms
+                ),
+            ));
+        }
+    }
+
+    fn open_settings(&mut self) {
+        self.confirm = None;
+        self.completion = None;
+        self.settings.open();
+        self.request_settings();
+        self.enter(Mode::Settings);
+    }
+
+    /// Leave the surface, or close the editor band first.
+    ///
+    /// `Esc` unwinds one level everywhere, and a batch of typed text is a level:
+    /// `Ctrl-,` therefore takes two presses while a band is open, which is the
+    /// same rule the transcript's selection follows.
+    fn close_settings(&mut self) {
+        if self.settings.editing().is_some() {
+            self.settings.cancel();
+            return;
+        }
+        self.leave_mode(Mode::Settings);
+        self.focus = Focus::Composer;
+    }
+
+    /// Read every key the surface shows, and the MCP paths when they are wanted.
+    fn request_settings(&mut self) {
+        self.settings_generation += 1;
+        self.actions.push(Action::LoadSettings {
+            generation: self.settings_generation,
+        });
+        if self.settings.section() == Section::Mcp && self.mcp_config.is_none() {
+            self.request_mcp_config();
+        }
+    }
+
+    fn request_mcp_config(&mut self) {
+        let Some(workspace) = self.view.active_workspace_id else {
+            return;
+        };
+        self.actions.push(Action::LoadMcpConfig { workspace });
+    }
+
+    fn settings_step_section(&mut self, delta: isize) {
+        self.settings.step_section(delta);
+        if self.settings.section() == Section::Mcp && self.mcp_config.is_none() {
+            self.request_mcp_config();
+        }
+        self.reconcile_settings();
+    }
+
+    /// Keep the row cursor inside the open section.
+    fn reconcile_settings(&mut self) {
+        let rows = self.settings_rows().len();
+        self.settings.reconcile(rows);
+    }
+
+    /// `Enter` on the surface: open a band, flip a switch, or advance a choice.
+    fn settings_apply(&mut self) {
+        if self.settings.editing().is_some() {
+            self.settings_commit();
+            return;
+        }
+        let rows = self.settings_rows();
+        let Some(row) = rows.get(self.settings.selected) else {
+            return;
+        };
+        let Some(field) = row.field else {
+            // A read-only row: only the audit table has anything to open.
+            if self.settings.section() == Section::Audit {
+                let index = self.settings.selected;
+                self.audit.toggle(index);
+            }
+            return;
+        };
+        self.settings.clear_note();
+        match field.kind {
+            // The two kinds a terminal cannot guess at wait for the band.
+            Kind::Text | Kind::Secret => {
+                self.settings.begin(field);
+            }
+            Kind::Toggle => {
+                let next = settings::toggled(self.settings.plain(field.key)).to_owned();
+                self.settings.hold(field, Some(next.clone()));
+                self.actions.push(Action::SaveSetting {
+                    key: field.key,
+                    value: Some(next),
+                });
+            }
+            Kind::Choice(choice) => {
+                let next = choice.next(self.settings.plain(field.key));
+                self.settings.hold(field, next.clone());
+                self.actions.push(Action::SaveSetting {
+                    key: field.key,
+                    value: next,
+                });
+            }
+        }
+    }
+
+    /// `Enter` in the band: send the buffer, or clear the key when it is empty.
+    ///
+    /// An empty buffer on a secret sends nothing. `SettingsService::remove`
+    /// refuses a secret, and the GUI's own `save()` returns early for the same
+    /// reason; the alternative would be a write the store answers with a `400`.
+    fn settings_commit(&mut self) {
+        let Some(field) = self.settings.editing_field() else {
+            return;
+        };
+        let text = self.settings.editor_text();
+        let value = if text.is_empty() { None } else { Some(text) };
+        if field.kind == Kind::Secret && value.is_none() {
+            self.settings.cancel();
+            return;
+        }
+        self.settings.hold(field, value.clone());
+        self.actions.push(Action::SaveSetting {
+            key: field.key,
+            value,
+        });
+    }
+
+    /// The surface's field, for a keystroke no binding claimed.
+    fn settings_input(&mut self, key: &KeyEvent) {
+        if self.settings.editing().is_some() {
+            self.settings.editor_input(key);
+        }
     }
 
     /// The draft's choice as the create command wants it.
@@ -1338,6 +1620,22 @@ impl App {
         // the key means here, so browsing a list can never end the process.
         if self.mode() == Mode::Manage {
             self.close_manage();
+            return;
+        }
+        // The three views that own the frame close the way their own `Esc` does.
+        // Before this branch they fell through to `quit`, which the keyboard
+        // table never promised: `Ctrl-C` closes an overlay, and reading the help
+        // page is not a reason to lose the chat.
+        if self.mode() == Mode::Settings {
+            self.close_settings();
+            return;
+        }
+        if self.mode() == Mode::Help {
+            self.close_help();
+            return;
+        }
+        if self.mode() == Mode::Detail {
+            self.close_detail();
             return;
         }
         if self.sessions_open() || self.workspaces_open() {
@@ -1967,6 +2265,10 @@ impl App {
                 self.manage.select(delta, rows);
             }
             Mode::Models => self.list_move_models(delta),
+            Mode::Settings => {
+                let rows = self.settings_rows().len();
+                self.settings.select(delta, rows);
+            }
             Mode::Complete => {
                 if let Some(open) = self.completion.as_mut() {
                     open.move_by(delta);
@@ -1998,6 +2300,10 @@ impl App {
                 self.manage.select(delta * LIST_PAGE as isize, rows);
             }
             Mode::Models => self.list_move_models(delta * LIST_PAGE as isize),
+            Mode::Settings => {
+                let rows = self.settings_rows().len();
+                self.settings.page(delta, rows, LIST_PAGE);
+            }
             Mode::Complete => {
                 if let Some(open) = self.completion.as_mut() {
                     open.move_by(delta * LIST_PAGE as isize);
@@ -2698,6 +3004,39 @@ impl App {
                 self.status.set_error(message);
             }
             ActionOutcome::Saved => {}
+            ActionOutcome::Settings { generation, values } => {
+                // A read issued before a write landed would show the old value
+                // with the new one's note beside it.
+                if generation != self.settings_generation {
+                    return;
+                }
+                self.settings.set_values(values);
+                self.status.clear_error();
+                self.reconcile_settings();
+            }
+            ActionOutcome::SettingSaved { key, label } => {
+                let _ = key;
+                self.status.clear_error();
+                self.settings.saved(label);
+                // The facts row, the picker, and the surface all read the store,
+                // so a write is followed by a read rather than by a local patch:
+                // one copy, and a default that is stale for its provider shows as
+                // stale exactly as `Ctrl-M`'s row does.
+                self.load_models();
+                self.request_settings();
+            }
+            ActionOutcome::SettingFailed { key, message } => {
+                let _ = key;
+                self.settings.failed(message);
+                // The row goes back to what is stored. The note says why, and
+                // the surface's own line is the only place it can: the strip is
+                // behind this view.
+                self.request_settings();
+            }
+            ActionOutcome::McpConfig(paths) => {
+                self.mcp_config = Some(paths);
+                self.status.clear_error();
+            }
             ActionOutcome::Failed {
                 generation,
                 message,

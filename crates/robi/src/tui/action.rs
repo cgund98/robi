@@ -35,6 +35,7 @@ use crate::tui::persist::ViewState;
 use crate::tui::state::approval::Decision;
 use crate::tui::state::completion::SkillEntry;
 use crate::tui::state::models::Pick;
+use crate::tui::state::settings::Loaded;
 
 /// One effect `update` asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +145,19 @@ pub enum Action {
     CompletePath { text: String, generation: u64 },
     /// Persist the view state: on a change, and before the process exits.
     SaveView { view: ViewState },
+    /// Every setting the surface shows, with each secret reduced to one bit.
+    LoadSettings { generation: u64 },
+    /// Write one setting, or clear it when `value` is `None`.
+    ///
+    /// `key` is `'static` because it comes from the surface's own table: a write
+    /// names a row the reader selected, never a name a field produced.
+    SaveSetting {
+        key: &'static str,
+        value: Option<String>,
+    },
+    /// The user and project MCP config paths, and whether the project file is
+    /// trusted. The file text is not read: the terminal never becomes an editor.
+    LoadMcpConfig { workspace: WorkspaceId },
 }
 
 /// What an effect produced.
@@ -283,6 +297,23 @@ pub enum ActionOutcome {
     DeleteFailed {
         message: String,
     },
+    /// The surface's values. A secret arrives as `configured` and nothing else.
+    Settings {
+        generation: u64,
+        values: std::collections::BTreeMap<&'static str, Loaded>,
+    },
+    /// One setting was written or cleared.
+    SettingSaved {
+        key: &'static str,
+        label: &'static str,
+    },
+    /// The write was refused, so the row goes back to what is stored.
+    SettingFailed {
+        key: &'static str,
+        message: String,
+    },
+    /// This workspace's MCP config paths.
+    McpConfig(crate::tui::state::settings::McpPaths),
     /// The view state was written.
     Saved,
     /// An effect failed. `generation` is set by the effect that can go stale.
@@ -292,7 +323,145 @@ pub enum ActionOutcome {
     },
 }
 
+impl Action {
+    /// What the audit table calls this call.
+    ///
+    /// Exhaustive on purpose: a new action is a new name here before it can
+    /// dispatch, so no call reaches the table as "unknown".
+    pub fn label(&self) -> &'static str {
+        match self {
+            Action::LoadWorkspaces { .. } => "workspaces",
+            Action::LoadSessions { .. } => "sessions",
+            Action::Reload { .. } => "transcript",
+            Action::Submit { .. } => "submit",
+            Action::Decide { .. } => "decide",
+            Action::LoadOriginal { .. } => "original",
+            Action::Stop { .. } => "stop",
+            Action::LoadMessage { .. } => "message",
+            Action::CreateWorkspace { .. } => "create workspace",
+            Action::DeleteWorkspace { .. } => "delete workspace",
+            Action::StartSession { .. } => "start session",
+            Action::RenameSession { .. } => "rename session",
+            Action::LoadModels { .. } => "models",
+            Action::LoadSkills { .. } => "skills",
+            Action::SetSessionMode { .. } => "session mode",
+            Action::SetSessionChoice { .. } => "session choice",
+            Action::Compact { .. } => "compact",
+            Action::DeleteSession { .. } => "delete session",
+            Action::LoadMcp { .. } => "mcp",
+            Action::FocusMcp { .. } => "mcp focus",
+            Action::Probe => "probe",
+            Action::CompletePath { .. } => "complete path",
+            Action::SaveView { .. } => "view state",
+            Action::LoadSettings { .. } => "settings",
+            Action::SaveSetting { .. } => "save setting",
+            Action::LoadMcpConfig { .. } => "mcp config",
+        }
+    }
+
+    /// The calls the audit table leaves out.
+    ///
+    /// The webview's middleware skips the health check, and these are its peer:
+    /// the probe is a heartbeat the reader did not ask for, path completion runs
+    /// once per keystroke, and the view state is written while the process is
+    /// leaving. A table of those would be noise around the calls that matter.
+    pub fn skips_audit(&self) -> bool {
+        matches!(
+            self,
+            Action::Probe | Action::CompletePath { .. } | Action::SaveView { .. }
+        )
+    }
+}
+
 impl ActionOutcome {
+    /// One line for the audit table's expanded body.
+    ///
+    /// Exhaustive for the same reason [`Action::label`] is: a new outcome states
+    /// what it is worth saying about itself.
+    pub fn summary(&self) -> String {
+        match self {
+            ActionOutcome::Workspaces { workspaces, .. } => {
+                format!("{} workspace(s)", workspaces.len())
+            }
+            ActionOutcome::Sessions {
+                sessions, running, ..
+            } => {
+                format!("{} session(s), {} running", sessions.len(), running.len())
+            }
+            ActionOutcome::Transcript { messages, .. } => {
+                format!("{} message(s)", messages.len())
+            }
+            ActionOutcome::Submitted { outcome, .. } => format!("{outcome:?}"),
+            ActionOutcome::SubmitFailed { message, .. } => message.clone(),
+            ActionOutcome::Stopped { .. } => "stopped".to_owned(),
+            ActionOutcome::Decided { call, .. } => format!("decided {call}"),
+            ActionOutcome::DecideFailed { call, message, .. } => {
+                format!("{call} refused: {message}")
+            }
+            ActionOutcome::Models { models, .. } => format!("{} model(s)", models.len()),
+            ActionOutcome::Skills { skills, .. } => format!("{} skill(s)", skills.len()),
+            ActionOutcome::SessionUpdated(session) => {
+                format!(
+                    "{} \u{b7} {:?}",
+                    session.title.as_deref().unwrap_or("untitled"),
+                    session.mode
+                )
+            }
+            ActionOutcome::Compacted { .. } => "accepted".to_owned(),
+            ActionOutcome::Original { text, .. } => format!("{} byte(s)", text.len()),
+            ActionOutcome::OriginalFailed { message, .. } => message.clone(),
+            ActionOutcome::Message { message, .. } => format!("{} row", message.id),
+            ActionOutcome::WorkspaceOpened { workspace, created } => {
+                format!(
+                    "{} ({})",
+                    workspace.root,
+                    if *created { "created" } else { "opened" }
+                )
+            }
+            ActionOutcome::WorkspaceDeleted { workspace } => format!("removed {workspace}"),
+            ActionOutcome::SessionStarted { error, .. } => error
+                .clone()
+                .unwrap_or_else(|| "session started".to_owned()),
+            ActionOutcome::SessionRenamed(session) => {
+                format!(
+                    "renamed to {}",
+                    session.title.as_deref().unwrap_or("untitled")
+                )
+            }
+            ActionOutcome::SessionDeleted { session } => format!("removed {session}"),
+            ActionOutcome::Mcp { servers, .. } => format!("{} server(s)", servers.len()),
+            ActionOutcome::McpFocused { .. } => "focusing".to_owned(),
+            ActionOutcome::Probed { error } => {
+                error.clone().unwrap_or_else(|| "answered".to_owned())
+            }
+            ActionOutcome::Paths { candidates, .. } => format!("{} candidate(s)", candidates.len()),
+            ActionOutcome::CreateWorkspaceFailed { message } => message.clone(),
+            ActionOutcome::RenameFailed { message } => message.clone(),
+            ActionOutcome::DeleteFailed { message } => message.clone(),
+            ActionOutcome::Settings { values, .. } => format!("{} setting(s)", values.len()),
+            ActionOutcome::SettingSaved { key, .. } => format!("wrote {key}"),
+            ActionOutcome::SettingFailed { key, message } => format!("{key} refused: {message}"),
+            ActionOutcome::McpConfig(paths) => paths.project_path.clone(),
+            ActionOutcome::Saved => "written".to_owned(),
+            ActionOutcome::Failed { message, .. } => message.clone(),
+        }
+    }
+
+    /// Whether this outcome is a refusal the reader has to be told about.
+    pub fn is_failure(&self) -> bool {
+        matches!(
+            self,
+            ActionOutcome::Failed { .. }
+                | ActionOutcome::SubmitFailed { .. }
+                | ActionOutcome::DecideFailed { .. }
+                | ActionOutcome::OriginalFailed { .. }
+                | ActionOutcome::CreateWorkspaceFailed { .. }
+                | ActionOutcome::RenameFailed { .. }
+                | ActionOutcome::DeleteFailed { .. }
+                | ActionOutcome::SettingFailed { .. }
+        )
+    }
+
     /// A failure that no reload can make stale.
     pub fn failed(message: impl Into<String>) -> Self {
         Self::Failed {

@@ -53,7 +53,12 @@ deepseek_api_key = "sk-..."
 brave_search_api_key = "..."
 ```
 
-The same keys are readable and writable over HTTP at `/api/v1/settings/{key}`.
+The same keys are readable and writable over HTTP at `/api/v1/settings/{key}`,
+and from the terminal app's settings surface (`Ctrl-,` or `/settings`). The terminal
+shows the GUI's six pages — General, Model providers, Permissions, Sandbox, MCP,
+Audit log — and writes one key per `Enter`. A secret is never read back: the
+surface shows `••••••••` once one is stored, and an empty field leaves it alone.
+An empty field on any other key removes it, so the default takes over again.
 `GET /api/v1/settings?key=` reads several keys in one request; repeat `key`
 for each one. Secret values are never returned by either route.
 

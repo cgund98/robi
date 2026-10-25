@@ -245,7 +245,9 @@ pub enum Action {
     Rename { session: SessionId, title: String },
     Delete(SessionId),
     Create,
-    SaveSetting { key: &'static str, value: Option<String> },
+    LoadSettings { generation: u64 },
+    SaveSetting { key: &'static str, value: Option<String> },  // from the surface's table
+    LoadMcpConfig { workspace: WorkspaceId },
     OpenFile { path: String, line: Option<u32> },
 }
 
@@ -273,7 +275,9 @@ touches `AppState`, and it is the only place a `.await` exists:
 | `LoadMcp` / `FocusMcp` | `mcp.status` / `mcp.focus`, the peer of `GET`/`POST /workspaces/{id}/mcp` |
 | `Probe` | `list_workspaces` inside a three-second timeout: the strip's health mark |
 | `CompletePath` | the tools' resolver, then one `read_dir`, directories only |
-| `SaveSetting` | `settings_service.*` |
+| `LoadSettings` | `settings_service.get_many`, with each secret reduced to `configured` |
+| `SaveSetting` | `settings_service.set` / `.remove`; the secret flag is re-read from `known_setting`, never carried on the action |
+| `LoadMcpConfig` | `workspace_service.get_workspace`, then `McpHub::config_files` on `blocking::call`; the file text is dropped |
 | `OpenFile` | the lifted file opener: configured `file_open_command` only |
 
 `SubmitOutcome::AwaitingApproval` is unreachable from the real runtime — nothing
@@ -335,9 +339,12 @@ the index itself, so nothing in the frame carries an index line.
 | Compact | `Ctrl-L` or `/compact`, behind a confirmation; divider row on `transcript_compacted` | T4 |
 | Composer command surface | `/models`, `/sessions`, `/workspaces`, `/new`, `/rename`, `/mode`, `/compact`, `/help` — each a keybinding's twin | T4 |
 | Nothing (the design promised `?`) | `?` from the transcript, or `/help`: a page of every key and command | T4 |
-| General settings | settings surface, section list | T5 |
-| Model provider settings | settings surface, secrets masked | T5 |
-| Permissions, MCP, audit log | settings surface, audit paged | T5 |
+| General settings | settings surface, section rail | T4, T5 | **Done** |
+| Model provider settings | settings surface, secrets masked | T5 | **Done** |
+| Permissions settings | settings surface, two toggles | T5 | **Done** |
+| Sandbox settings | settings surface, six fields and two choices | T5 | **Done** |
+| MCP settings | settings surface: servers, the two config paths, trust, logs | T5 | **Done** |
+| Audit log | settings surface: a paged service-call table, `Enter` expands a body | T5 | **Done** |
 | `Composer` attachments | path attachments; images by path | T6 |
 | `MermaidDiagram` | source fence | T6 |
 | `OpenedFile`, `openWorkspaceFile` | `/open <file>`, configured program only | T6 |
@@ -677,23 +684,30 @@ the text still in the field.
 
 ### T5 — Settings
 
-**Goal** — configure the app without leaving the terminal.
+**Goal** — configure the app without leaving the terminal. **Done.**
 
-One settings surface with the GUI's five sections: General, Model providers,
-Permissions, MCP, Audit log. Field list and order follow
-`GeneralSettings` / `ModelProvidersSettings` / `PermissionsSettings` /
-`McpSettings` / `AuditLogSettings`.
+- **One surface, six sections**, in the GUI's row order: General, Model
+  providers, Permissions, Sandbox, MCP, Audit log. The rail is the nav; `h`/`l`
+  (or `←`/`→`) move it and `j`/`k` move the row. See *The settings surface*.
+- **A field is explicit, because a terminal has no blur.** `Enter` opens an
+  editor band, `Enter` applies, `Esc` reverts. A toggle flips and a choice
+  advances on `Enter` at once, since there is nothing to type. An empty buffer
+  clears the key — except on a secret, where the service refuses to remove one, so
+  an empty buffer leaves the stored credential alone.
+- **A secret is one bit.** `effects` reduces a credential read to
+  `configured: bool` before the outcome exists, so the plaintext never enters
+  `App`; the row draws `••••••••`, and the editor band starts empty.
+- **The audit log is the TUI's own**, not a lift: the webview records HTTP with an
+  `openapi-fetch` middleware, and the terminal records service calls in
+  `effects::dispatch`. See *The audit log*.
+- **A write is followed by a read.** `saved · Model` appears over the surface, and
+  both `LoadSettings` and `LoadModels` are re-issued; a refusal reverts the row and
+  shows the service's own sentence.
 
-The GUI saves text fields **on blur**. A terminal has no blur, so each field is
-explicit: `Enter` applies, `Esc` reverts, an empty value deletes the setting, and
-a failed write reverts the buffer and shows the error. Secrets are re-sent only
-when non-empty and are never echoed — the field renders `••••••••` once one is
-stored, exactly as the GUI does.
-
-The audit log is the one view that wants vim keys: a paged request table, `Enter`
-to expand a body, `j` / `k` within a page.
-
-**Exit** — set an API key from the TUI, press `Ctrl-C`, start a turn that uses it.
+**Exit** — set an API key from the TUI, press `Ctrl-C` twice (`Esc` out of the
+surface first, or let the second press leave the process), start a turn that uses
+it. Then set `max_iterations` to `abc` and watch the row revert with the service's
+own sentence under the table.
 
 ### T6 — Attachments and the graphical remainder
 
@@ -1168,6 +1182,95 @@ stale *key string*. `keys` is prose, so rebinding `Ctrl-T` and leaving the row a
 would pass every test. Documenting every binding is enforced; keeping every string
 true is a review duty.
 
+### The settings surface
+
+`Ctrl-,`, or `/settings`: a dedicated view like `manage` and `help`, because six
+sections and thirty-six rows do not fit a panel over a chat and a reader who is
+changing a credential stays a while.
+
+**The rail is the GUI's nav.** General, Model providers, Permissions, Sandbox,
+MCP, Audit log — in the order `src/features/settings/` lists them, so the two
+front ends configure the same things in the same order. Below 60 columns the rail
+is not drawn and the section rides on the title row (`settings · Sandbox`); `h`/`l`
+still move it, so no key changes with the width. At `MIN_WIDTH` (40) an eighteen
+column rail would leave the pane nothing to show.
+
+**Four kinds, and each answers a question the terminal cannot ask.**
+
+| Kind | Keys | `Enter` sends |
+|---|---|---|
+| `Text` | models, numbers, URLs, the three path lists, the container's image and runtime | the buffer, or `remove(key)` when it is empty |
+| `Secret` | the four credentials | the buffer, and **nothing** when it is empty |
+| `Toggle` | the five `on`/`off` keys plus `sandbox_project_files` | the flipped word |
+| `Choice` | the four effort keys (optional), `sandbox_mechanism`, `sandbox_network` (fixed) | the next value, wrapping |
+
+`Choice` exists because a stored value is not always a word a reader recognises —
+`sandbox_network` is `on` and means `Sandboxed` — and because it makes a mistake
+unrepresentable: `reasoning_effort` is stored unvalidated and `parse_effort` then
+fails the *turn*. Its optional flavour starts by leaving `inherit` and wraps back
+to it last, which is where the delete lives. `Toggle` does the same job for the six
+keys the service would otherwise answer with a `400`.
+
+**An empty value deletes, and the default returns.** `SettingsService::set`
+refuses an empty string, so "clear this" is `remove(key)`; the read that follows
+writes the key's default back through the store. For the container's five fields
+that is `robi/agent:0.1.0`, `runsc`, `4096`, `2`, `512`. The GUI cannot do this:
+its `onBlur` cannot tell "cleared" from "unchanged", so it reverts. A terminal has
+an explicit `Enter`, which can.
+
+**Sandbox is one section, not four.** `SandboxSettings.tsx` has four headings; a
+rail already says which page you are on, and four dividers would cost rows a
+24-row terminal does not have. Its ranges are **not** copied here — 256–65536 MiB,
+64–8192 processes, and `sandbox_cpus`'s ceiling is `available_parallelism()` on the
+machine the terminal is running on. A copy would drift and would be wrong on the
+host that matters, so the fields are `Text` and the service's own sentence is what
+a refused write shows.
+
+**A secret is one bit.** The read returns its value over HTTP unless the controller
+omits it; the terminal omits it one step earlier, in `effects`, so `App` never
+holds a credential and no `Debug` of one can appear in a log. The row draws eight
+bullets, the band starts empty, and re-sending a value is the only way to change
+one.
+
+**A write is followed by a read.** `SettingSaved` shows `saved · <label>`, then
+re-issues `LoadSettings` and `LoadModels`: the surface, the facts row, and the
+picker all read one store, so there is no second copy to drift. A `SettingFailed`
+puts the service's message in the surface's own footer row — the status strip is
+behind this view — and the re-read is what reverts the row.
+
+**The MCP section is read-only.** One row per server (title, status, tool count,
+from the status already loaded for the header), the two config paths, `not trusted`
+on the project file when its hash does not match, and where each server's log
+lands. The file *text* is not read into the app: the terminal never becomes an
+editor, and a config file is one `cat` away.
+
+**Two surfaces are deliberately absent.** *Display* is a webview UI scale with no
+terminal meaning; `file_open_patterns` and `file_open_command` configure `/open`,
+which is T6. A row whose feature has not shipped is a row that lies.
+
+### The audit log
+
+The webview's audit log is client state: `src/state/requestLog.ts`, fed by the
+`auditRequests.ts` middleware over `openapi-fetch`, 250 entries, memory only. The
+terminal makes no HTTP at all, so its peer boundary is `effects::dispatch` — one
+row per service call, with the call's name, whether it failed, its duration, and
+the outcome's own one-line summary as the body.
+
+**The names are exhaustive.** `Action::label` and `ActionOutcome::summary` are
+`match`es with no `_` arm, so a new effect states what it is called and what it is
+worth saying before it can ship.
+
+**Three calls are skipped**, for the reason the webview skips `/api/v1/health`:
+`Probe` is a heartbeat, `CompletePath` runs once per keystroke, and `SaveView`
+happens while the process is leaving. A table of those would be noise around the
+calls a reader opened the page to see.
+
+**The table has no cursor of its own.** The surface already has one row cursor and
+one page size; a second cursor inside one section would be a mode within a mode.
+`Enter` expands the row under the cursor, and an expansion is keyed by the row's
+sequence number, so a call arriving at the front moves the expansion down with the
+row it belongs to rather than onto its neighbour.
+
 ## Gaps to lift out of `web_api`
 
 Four pieces of logic a controller owned and the TUI also needs. Each one is
@@ -1182,6 +1285,11 @@ callers switched over.
 | User-invocable skill list — `scan` + the filter | `web_api/workspace.rs` | T4 | **Done**, as `agent::skills::user_invocable`; the handler also moved its scan onto `spawn_blocking` |
 | Model and effort resolution — override → mode key → fallback → default | `adapters/model_source.rs::provider_settings` | T4 | **Done**, as `effective_choice`; the builder and the facts row both read it |
 | File opener — `spawn_opener`, template rendering, the 10-second wait | `web_api/workspace.rs` | T6 (`/open`) | Lift to `agent/workspace`; both callers keep the same refusal when the command is unset |
+
+The audit log is the one row T5 did **not** lift: the webview's lives in the
+client, over HTTP, and the terminal makes no HTTP. It is a port at a different
+boundary — see *The audit log* — and there is no shared implementation to want,
+because the thing being recorded is different.
 
 The docs merge (`merge3`, `version_hash`, `docs_edits`, the `409` path) and the
 review reader stay where they are: with no docs or review surface, the TUI never
@@ -1544,6 +1652,26 @@ collapsed directories, docs-tray width, UI scale.
   its rows. The picker's groups put effort first, and the test walks to the first
   model by *kind* rather than by counting rows, so a reorder fails only where it is
   wrong.
+- T5, the table: four tests hold it against the store — every key is one
+  `known_setting` returns, a `Secret` field is exactly a secret key, every `Choice`
+  option is a value the service accepts, and no key appears twice. A fifth pins the
+  six section titles to `SettingsLayout.tsx`'s pages.
+- T5, the surface: `Ctrl-,` and `/settings` land on General with the rail's six
+  titles; the Sandbox page shows the defaults the first read wrote (`OS`,
+  `robi/agent:0.1.0`, `4096`, `Sandboxed`, `off`); a 50-column frame folds the rail
+  and names the section in the title. A stored credential draws bullets and
+  `plain(key)` is `None`, which is the reduction asserted rather than assumed.
+- T5, the writes: the second `Enter` sends exactly one `SaveSetting` with the
+  buffer appended to the stored value; an empty buffer on a secret sends **nothing**
+  and on a plain key sends `None`; a toggle sends the other word and the row follows
+  the keystroke before the store answers; a `Choice` advances `on` → `off`; a
+  `SettingFailed` puts the service's sentence in the footer and issues one
+  `LoadSettings`; a `SettingSaved` names the field and re-reads models **and**
+  settings. `Esc` closes the band, and the second `Esc` leaves.
+- T5, the keys: `j`/`k` move the row, `PageDown` moves a page, `q` does nothing,
+  and the audit table's `Enter` expands the selected row, draws its body, and folds
+  it again. `Ctrl-C` closes the settings, help, and detail views instead of
+  quitting, which it had done from all three.
 
 ## Implementation order
 
@@ -1576,6 +1704,11 @@ collapsed directories, docs-tray width, UI scale.
    its colour, took `--attention` to cyan now that a plan-mode turn is orange
    throughout, and implemented `?` — the one key the global bindings table had
    promised since T0 and nothing had mapped.
-8. Settings surface. T5.
+8. Settings surface. **T5, done.** Six sections in the GUI's order, four field
+   kinds, and the audit table ported from the webview's client-side request log onto
+   `effects::dispatch`, since the terminal makes no HTTP. The phase also corrected
+   the parity map, which had never listed the GUI's Sandbox page, and gave
+   `Ctrl-C` the branch the keyboard table had always promised: it closes the
+   settings, help, and detail views rather than quitting from them.
 9. Lift the file opener and the attachment ingestion together; `/open`; path
    attachments; mermaid fallback. T6.

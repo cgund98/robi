@@ -112,8 +112,7 @@ fn draw_new(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .areas(area);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("path", theme::muted())))
-            .style(theme::canvas()),
+        Paragraph::new(Line::from(Span::styled("path", theme::muted()))).style(theme::canvas()),
         label_area,
     );
     frame.render_widget(view.path_field(), field_area);

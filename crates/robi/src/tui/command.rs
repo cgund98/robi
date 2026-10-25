@@ -23,6 +23,7 @@ pub enum BuiltIn {
     Mode,
     Compact,
     Help,
+    Settings,
 }
 
 /// How many arguments a command takes.
@@ -50,8 +51,9 @@ pub struct CommandSpec {
 
 /// Every command, in the order the menu lists them.
 ///
-/// `/settings` waits for T5, when its surface exists: a command that opened
-/// nothing would be a menu entry that lies.
+/// A command exists because its surface does: `/settings` was withheld until T5
+/// built the page, and adding it before that would have been a menu entry that
+/// lies.
 pub const BUILT_INS: &[CommandSpec] = &[
     CommandSpec {
         name: "models",
@@ -108,6 +110,13 @@ pub const BUILT_INS: &[CommandSpec] = &[
         key: "?",
         about: "every key and command",
         built_in: BuiltIn::Help,
+    },
+    CommandSpec {
+        name: "settings",
+        arg: Arg::None,
+        key: "Ctrl-,",
+        about: "every setting the app has",
+        built_in: BuiltIn::Settings,
     },
 ];
 

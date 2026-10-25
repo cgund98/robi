@@ -14,6 +14,8 @@ use crate::domain::chat_session::model::{CreateChatSessionCommand, UpdateChatSes
 use crate::tui::action::{Action, ActionOutcome};
 use crate::tui::app::Msg;
 use crate::tui::persist;
+use crate::tui::state::audit;
+use crate::tui::state::settings::{self, Loaded, McpPaths};
 use crate::tui::state::workspaces::{candidate, split_path, CANDIDATE_LIMIT};
 use crate::tui::Options;
 use crate::web_api::state::AppState;
@@ -30,7 +32,25 @@ pub fn dispatch(state: &AppState, options: &Options, action: Action, results: &m
     let options = options.clone();
     let results = results.clone();
     tokio::spawn(async move {
+        // The audit row is built here because this is the one place every call
+        // passes, and because the duration has to be measured around `run`.
+        let audited = !action.skips_audit();
+        let call = action.label();
+        let started = std::time::Instant::now();
         let outcome = run(&state, &options, action).await;
+        if audited {
+            let entry = audit::Entry {
+                seq: 0,
+                call,
+                ok: !outcome.is_failure(),
+                duration_ms: started.elapsed().as_millis(),
+                body: outcome.summary(),
+                at: chrono::Utc::now(),
+            };
+            // Before `Done`, so a test that waits for the outcome and then reads
+            // the table sees the row it just caused.
+            let _ = results.send(Msg::Audited(entry)).await;
+        }
         let _ = results.send(Msg::Done(outcome)).await;
     });
 }
@@ -355,6 +375,78 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
         Action::FocusMcp { workspace } => {
             focus_mcp(state, workspace).await;
             ActionOutcome::McpFocused { workspace }
+        }
+        Action::LoadSettings { generation } => {
+            let fields: Vec<&'static settings::Field> = settings::all_fields().collect();
+            let keys: Vec<String> = fields.iter().map(|field| field.key.to_owned()).collect();
+            match state.settings_service.get_many(&keys).await {
+                Ok(read) => {
+                    let mut values = std::collections::BTreeMap::new();
+                    for (field, setting) in fields.iter().zip(read) {
+                        let loaded = if field.kind == settings::Kind::Secret {
+                            // The reduction that keeps a credential out of `App`:
+                            // the read's plaintext stops here and never travels as
+                            // an outcome.
+                            Loaded::credential(setting.value.is_some())
+                        } else {
+                            Loaded::text(setting.value)
+                        };
+                        values.insert(field.key, loaded);
+                    }
+                    ActionOutcome::Settings { generation, values }
+                }
+                Err(error) => ActionOutcome::failed(error.to_string()),
+            }
+        }
+        Action::SaveSetting { key, value } => {
+            // The secret flag is the store's, not the surface's: a wrong one is a
+            // plaintext credential in `config.toml`, so it is re-read here rather
+            // than carried on the action.
+            let secret =
+                crate::domain::settings::keys::known_setting(key).is_some_and(|known| known.secret);
+            let result = match value {
+                Some(value) => state.settings_service.set(key, value, secret).await,
+                // `remove` refuses a secret key, which is why an empty buffer on
+                // one is `None` and never reaches here.
+                None => state.settings_service.remove(key).await,
+            };
+            match result {
+                Ok(()) => ActionOutcome::SettingSaved {
+                    key,
+                    label: settings::label_of(key).unwrap_or(key),
+                },
+                Err(error) => ActionOutcome::SettingFailed {
+                    key,
+                    message: error.to_string(),
+                },
+            }
+        }
+        Action::LoadMcpConfig { workspace } => {
+            let row = match state.workspace_service.get_workspace(workspace).await {
+                Ok(row) => row,
+                Err(error) => return ActionOutcome::failed(error.to_string()),
+            };
+            let Some(mcp) = &state.mcp else {
+                return ActionOutcome::McpConfig(McpPaths::default());
+            };
+            let mcp = mcp.clone();
+            let root = canonical_root(&row.root);
+            let hash = row.mcp_project_sha256.clone();
+            match blocking::call(move || mcp.config_files(&root, hash.as_deref())).await {
+                Ok(files) => ActionOutcome::McpConfig(McpPaths {
+                    user_path: files.user_path,
+                    project_path: files.project_path,
+                    project_enabled: files.project_enabled,
+                    // Where each server's own log lands, as `logs.rs` writes it.
+                    // Read here rather than in the view: `App` does no I/O, and a
+                    // per-frame `HOME` lookup is I/O however cheap.
+                    log_root: crate::adapters::settings::home_dir()
+                        .map(|home| home.join("logs").join("mcp"))
+                        .map(|dir| dir.display().to_string())
+                        .unwrap_or_default(),
+                }),
+                Err(error) => ActionOutcome::failed(error),
+            }
         }
         Action::Probe => {
             let probe =

@@ -107,6 +107,32 @@ pub static SECTIONS: &[Section] = &[
                 Command::DeleteSelected,
             ),
             entry("Ctrl-M", "model and effort", Command::OpenModels),
+            entry("Ctrl-,", "settings", Command::OpenSettings),
+            // The settings surface's own keys. They are here rather than in a
+            // section of their own because a reader finds them by pressing the
+            // key that opens it, and the page's table is where they look next.
+            entry(
+                "Enter",
+                "settings: open a field, or advance a choice",
+                Command::SettingsApply,
+            ),
+            entry(
+                "h  l",
+                "settings: the section",
+                Command::SettingsSectionNext,
+            ),
+            entry(
+                "←",
+                "settings: the section on the left",
+                Command::SettingsSectionPrev,
+            ),
+            entry("j  k", "settings: the row", Command::ListNext),
+            entry("↑  ↓", "settings: the row above", Command::ListPrev),
+            entry(
+                "Esc  Ctrl-,",
+                "settings: leave, or close the band",
+                Command::CloseSettings,
+            ),
             entry("?", "this page", Command::OpenHelp),
             entry("Esc", "close, or step back", Command::CloseOverlay),
         ],
@@ -185,7 +211,12 @@ pub fn section_of(command: Command) -> &'static [&'static str] {
         | Command::ListPageDown
         | Command::ListPageUp
         | Command::OverlayOpen
-        | Command::AcceptCandidate => &["Overlays and views"],
+        | Command::AcceptCandidate
+        | Command::OpenSettings
+        | Command::CloseSettings
+        | Command::SettingsApply
+        | Command::SettingsSectionNext
+        | Command::SettingsSectionPrev => &["Overlays and views"],
         Command::CycleMode
         | Command::Compact
         | Command::CompleteAccept
@@ -338,12 +369,15 @@ mod tests {
                 assert!(!entry.what.is_empty());
             }
         }
-        // The sharp end: these are the T4 additions, and each one is on the page.
+        // The sharp end: the T4 and T5 additions, each one on the page.
         for command in [
             Command::CycleMode,
             Command::OpenModels,
             Command::Compact,
             Command::OpenHelp,
+            Command::OpenSettings,
+            Command::CloseSettings,
+            Command::SettingsApply,
         ] {
             assert!(
                 !entries_for(command).is_empty(),

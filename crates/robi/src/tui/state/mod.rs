@@ -6,10 +6,11 @@
 //! the per-session drafts, and `state::activity` the open turn's phase,
 //! elapsed time, and catch-up counter. T3 adds the two overlays
 //! (`sessions`, `workspaces`), their confirmation (`confirm`), and the status
-//! bar's facts (`status`).
+//! bar's facts (`status`). T5 adds the settings table (`settings`).
 
 pub mod activity;
 pub mod approval;
+pub mod audit;
 pub mod completion;
 pub mod composer;
 pub mod confirm;
@@ -23,6 +24,7 @@ pub mod markdown;
 pub mod models;
 pub mod prompt;
 pub mod sessions;
+pub mod settings;
 pub mod status;
 pub mod tool_card;
 pub mod transcript;
@@ -35,9 +37,9 @@ pub mod workspaces;
 /// overlays and the confirmation that sits above one of them. T4 adds the picker,
 /// the help page, and the completion menu: each owns the keyboard for what it is,
 /// because `keys::command` is a pure function of `(Mode, Focus, KeyEvent)` and
-/// cannot see whether a menu is up. `Settings` is declared because T5 fills it in,
-/// and a keymap that grows a variant at a time is how a mode ends up
-/// half-registered.
+/// cannot see whether a menu is up. T5 fills in `Settings`, which was declared
+/// ahead of its surface on purpose: a keymap that grows a variant at a time is how
+/// a mode ends up half-registered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
     /// The base mode: the transcript, the composer, and the global bindings.
@@ -60,7 +62,11 @@ pub enum Mode {
     WorkspaceMissing,
     /// The model and effort picker.
     Models,
-    /// The settings surface.
+    /// The settings surface: the section rail, the rows, and the editor band.
+    ///
+    /// The one dedicated view with its own text field, which is why `app::on_key`
+    /// checks for it before the map: an open band takes every letter, and `j`
+    /// belongs in a path list as much as it means "next row".
     Settings,
     /// One tool call, read in full: its own scroll, `Esc` back.
     Detail,

@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn row_zero_is_the_new_session_action_and_the_sessions_follow_it() {
         let workspace = WorkspaceId::new();
-        let sessions = vec![
+        let sessions = [
             session(workspace, Some("alpha")),
             session(workspace, Some("beta")),
             session(workspace, Some("gamma")),

@@ -5,8 +5,8 @@
 //! wrapped in `state::transcript` and this module only styles them.
 
 pub mod completion;
-pub mod confirm;
 pub mod composer;
+pub mod confirm;
 pub mod detail;
 pub mod facts;
 pub mod header;
@@ -19,6 +19,7 @@ pub mod notice;
 pub mod prompt;
 pub mod rows;
 pub mod sessions;
+pub mod settings;
 pub mod strip;
 pub mod transcript;
 pub mod workspaces;
@@ -96,6 +97,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         crate::tui::state::Mode::Help => {
             help::draw(frame, area, app);
+            return;
+        }
+        crate::tui::state::Mode::Settings => {
+            settings::draw(frame, area, app);
             return;
         }
         _ => {}

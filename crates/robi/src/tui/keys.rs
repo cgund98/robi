@@ -123,6 +123,17 @@ pub enum Command {
     OpenModels,
     /// `Ctrl-L`: summarize older messages, behind a confirmation.
     Compact,
+    /// `Ctrl-,`: the settings surface.
+    OpenSettings,
+    /// `Esc` or `Ctrl-,` on the settings surface: leave, or close the editor
+    /// band first.
+    CloseSettings,
+    /// `Enter` on the surface: open the band, flip a toggle, advance a choice.
+    SettingsApply,
+    /// `l` or `→`: the next section.
+    SettingsSectionNext,
+    /// `h` or `←`: the previous section.
+    SettingsSectionPrev,
     /// `?`, from the transcript: every key and command.
     OpenHelp,
     /// `Esc` in the help view.
@@ -150,11 +161,12 @@ pub fn command(mode: Mode, focus: Focus, key: &KeyEvent) -> Option<Command> {
         Mode::WorkspaceMissing => missing(key),
         Mode::Confirm => confirm(key),
         Mode::Models => models(key),
+        Mode::Settings => settings(key),
         Mode::Help => help(key),
         Mode::Complete => complete(focus, key),
-        // A mode that owns its keys from the phase that adds it: an unmapped key
-        // does nothing rather than falling through to a stale binding.
-        _ => None,
+        // No `_` arm: every mode owns its keys from the phase that adds it, so a
+        // mode with no map here fails the build rather than falling through to a
+        // stale binding.
     }
 }
 
@@ -252,6 +264,7 @@ fn manage(key: &KeyEvent) -> Option<Command> {
             KeyCode::Char('n') => Some(Command::NewWorkspace),
             KeyCode::Char('d') => Some(Command::DeleteSelected),
             KeyCode::Char('m') => Some(Command::OpenModels),
+            KeyCode::Char(',') => Some(Command::OpenSettings),
             _ => None,
         };
     }
@@ -329,6 +342,43 @@ fn models(key: &KeyEvent) -> Option<Command> {
         KeyCode::PageUp => Some(Command::ListPageUp),
         KeyCode::PageDown => Some(Command::ListPageDown),
         KeyCode::Char('m') if control => Some(Command::OpenModels),
+        _ => None,
+    }
+}
+
+/// The settings surface.
+///
+/// A dedicated view, so the chat's bindings do not apply: `q` is not here, and
+/// neither are the letters. `j`/`k` and `h`/`l` are free because there is no
+/// text field on the frame — when the editor band opens, `app::on_key` hands it
+/// the keyboard before this map is consulted, since a path is made of `j`s and
+/// `h`s.
+fn settings(key: &KeyEvent) -> Option<Command> {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if control {
+        // Only the key that opened it. The chat's other overlay keys are not
+        // bound here: this view owns the frame and `view::draw` returns before the
+        // overlays are drawn, so `Ctrl-S` would push a mode nothing paints. Leave
+        // with `Esc` first — one overlay at a time is the design's own rule.
+        return match key.code {
+            KeyCode::Char(',') => Some(Command::CloseSettings),
+            _ => None,
+        };
+    }
+    match key.code {
+        KeyCode::Esc if !alt => Some(Command::CloseSettings),
+        KeyCode::Enter if !alt => Some(Command::SettingsApply),
+        KeyCode::Char('j') if !alt => Some(Command::ListNext),
+        KeyCode::Char('k') if !alt => Some(Command::ListPrev),
+        KeyCode::Down if !alt => Some(Command::ListNext),
+        KeyCode::Up if !alt => Some(Command::ListPrev),
+        KeyCode::PageDown => Some(Command::ListPageDown),
+        KeyCode::PageUp => Some(Command::ListPageUp),
+        KeyCode::Char('l') if !alt => Some(Command::SettingsSectionNext),
+        KeyCode::Char('h') if !alt => Some(Command::SettingsSectionPrev),
+        KeyCode::Right if !alt => Some(Command::SettingsSectionNext),
+        KeyCode::Left if !alt => Some(Command::SettingsSectionPrev),
         _ => None,
     }
 }
@@ -416,6 +466,7 @@ fn chat(focus: Focus, key: &KeyEvent) -> Option<Command> {
             KeyCode::Char('t') => return Some(Command::CycleMode),
             KeyCode::Char('m') => return Some(Command::OpenModels),
             KeyCode::Char('l') => return Some(Command::Compact),
+            KeyCode::Char(',') => return Some(Command::OpenSettings),
             _ => {}
         }
     }
@@ -899,6 +950,58 @@ mod tests {
                 command(mode, Focus::Composer, &control(KeyCode::Char('m'))),
                 Some(Command::OpenModels),
                 "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_settings_map_navigates_and_leaves_the_overlays_alone() {
+        // The surface owns the frame — `view::draw` returns before the panels —
+        // so the chat's overlay keys must not push a mode nothing paints.
+        for key in [
+            control(KeyCode::Char('s')),
+            control(KeyCode::Char('w')),
+            control(KeyCode::Char('m')),
+        ] {
+            assert_eq!(command(Mode::Settings, Focus::Composer, &key), None);
+        }
+        assert_eq!(
+            command(
+                Mode::Settings,
+                Focus::Composer,
+                &control(KeyCode::Char(','))
+            ),
+            Some(Command::CloseSettings)
+        );
+        assert_eq!(
+            command(Mode::Settings, Focus::Composer, &press(KeyCode::Char('j'))),
+            Some(Command::ListNext)
+        );
+        assert_eq!(
+            command(Mode::Settings, Focus::Composer, &press(KeyCode::Char('h'))),
+            Some(Command::SettingsSectionPrev)
+        );
+        assert_eq!(
+            command(Mode::Settings, Focus::Composer, &press(KeyCode::Enter)),
+            Some(Command::SettingsApply)
+        );
+        // `q` is a chat binding: reading a settings page must not leave the app.
+        assert_eq!(
+            command(
+                Mode::Settings,
+                Focus::Transcript,
+                &press(KeyCode::Char('q'))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_comma_opens_the_surface_from_the_chat_and_from_manage() {
+        for mode in [Mode::Chat, Mode::Manage] {
+            assert_eq!(
+                command(mode, Focus::Composer, &control(KeyCode::Char(','))),
+                Some(Command::OpenSettings)
             );
         }
     }

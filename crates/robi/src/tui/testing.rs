@@ -4086,3 +4086,445 @@ fn the_effort_group_is_the_first_thing_in_the_picker() {
     let model = body.find("Model").expect("a model group");
     assert!(effort < model, "effort comes first: {body}");
 }
+
+// T5: the settings surface and the audit table
+
+/// The key that opens the surface, from the chat or from `manage`.
+fn typing_ctrl_comma() -> Msg {
+    Msg::Key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::CONTROL))
+}
+
+/// Land the settings read the surface issued, with the values a test wants it to
+/// show. The generation is read first, so a read from an earlier test frame is
+/// not mistaken for this one.
+fn land_settings(app: &mut App, values: Vec<(&'static str, crate::tui::state::settings::Loaded)>) {
+    let generation = app.settings_generation();
+    app.update(Msg::Done(ActionOutcome::Settings {
+        generation,
+        values: values.into_iter().collect(),
+    }));
+}
+
+/// The values a fresh store would answer with: the three defaults the surface
+/// shows on its first page, and an API key already stored.
+fn stored() -> Vec<(&'static str, crate::tui::state::settings::Loaded)> {
+    use crate::domain::settings::keys;
+    use crate::tui::state::settings::Loaded;
+    vec![
+        (
+            keys::MODEL,
+            Loaded::text(Some(keys::DEFAULT_MODEL.to_owned())),
+        ),
+        (keys::MAX_ITERATIONS, Loaded::text(Some("50".to_owned()))),
+        (keys::OPENCODE_GO_API_KEY, Loaded::credential(true)),
+        (
+            keys::PROVIDER_OPENCODE_GO,
+            Loaded::text(Some(keys::PROVIDER_ON.to_owned())),
+        ),
+        (
+            keys::WEB_SEARCH_APPROVAL,
+            Loaded::text(Some(keys::APPROVAL_ON.to_owned())),
+        ),
+        (
+            keys::SANDBOX_MECHANISM,
+            Loaded::text(Some(keys::DEFAULT_SANDBOX_MECHANISM.to_owned())),
+        ),
+        (
+            keys::SANDBOX_IMAGE,
+            Loaded::text(Some(keys::DEFAULT_SANDBOX_IMAGE.to_owned())),
+        ),
+        (
+            keys::SANDBOX_NETWORK,
+            Loaded::text(Some(keys::NETWORK_ON.to_owned())),
+        ),
+        (
+            keys::SANDBOX_MEMORY_MB,
+            Loaded::text(Some(keys::DEFAULT_SANDBOX_MEMORY_MB.to_owned())),
+        ),
+        (
+            keys::SANDBOX_PROJECT_FILES,
+            Loaded::text(Some(keys::DEFAULT_SANDBOX_PROJECT_FILES.to_owned())),
+        ),
+    ]
+}
+
+/// An app with the surface open on General and the fixture's values landed.
+fn settings_panel(width: u16, height: u16) -> App {
+    let mut app = with_messages(width, height, vec![Message::user("hi")]);
+    app.update(typing_ctrl_comma());
+    land_settings(&mut app, stored());
+    app
+}
+
+#[test]
+fn ctrl_comma_opens_the_surface_on_general_and_the_rail_lists_the_six_pages() {
+    let app = settings_panel(80, 24);
+    assert_eq!(app.mode(), Surface::Settings);
+    let screen = rows(&app, 80, 24).join("\n");
+    for title in [
+        "General",
+        "Model providers",
+        "Permissions",
+        "Sandbox",
+        "MCP",
+        "Audit log",
+    ] {
+        assert!(screen.contains(title), "{title} is missing: {screen}");
+    }
+    // The first page: the workspace it happened to open, then the model defaults.
+    assert!(screen.contains("Workspace"), "{screen}");
+    assert!(screen.contains("robi"), "the workspace's name: {screen}");
+    assert!(screen.contains("Model"), "{screen}");
+    assert!(screen.contains("Max iterations"), "{screen}");
+    // It owns the frame: the composer is not underneath it.
+    assert!(
+        !screen.contains("Message robi"),
+        "the chat is behind it: {screen}"
+    );
+}
+
+#[test]
+fn a_narrow_frame_folds_the_rail_and_names_the_section_in_the_title() {
+    // `MIN_WIDTH` is 40, where a rail would leave the pane nothing.
+    let mut app = settings_panel(50, 24);
+    app.update(typing(KeyCode::Char('l')));
+    assert_eq!(
+        app.settings().section(),
+        crate::tui::state::settings::Section::Providers
+    );
+    let screen = rows(&app, 50, 24).join("\n");
+    assert!(
+        screen.contains("settings \u{b7} Model providers"),
+        "the section rides on the title row: {screen}"
+    );
+    assert!(
+        !screen.contains("\u{25cf} General"),
+        "no rail at this width: {screen}"
+    );
+}
+
+#[test]
+fn the_sandbox_section_shows_the_defaults_the_first_read_wrote() {
+    let mut app = settings_panel(80, 30);
+    for _ in 0..3 {
+        app.update(typing(KeyCode::Char('l')));
+    }
+    assert_eq!(
+        app.settings().section(),
+        crate::tui::state::settings::Section::Sandbox
+    );
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("Mechanism"), "{screen}");
+    assert!(
+        screen.contains("OS"),
+        "the mechanism is a word, not `os`: {screen}"
+    );
+    assert!(screen.contains("robi/agent:0.1.0"), "{screen}");
+    assert!(screen.contains("Memory (MiB)"), "{screen}");
+    assert!(screen.contains("4096"), "{screen}");
+    assert!(
+        screen.contains("Sandboxed"),
+        "the network posture: {screen}"
+    );
+    assert!(
+        screen.contains("off"),
+        "project files default to off: {screen}"
+    );
+}
+
+#[test]
+fn a_stored_secret_reads_as_bullets_and_its_text_is_never_held() {
+    let mut app = settings_panel(80, 30);
+    app.update(typing(KeyCode::Char('l')));
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("OpenCode Go key"), "{screen}");
+    assert!(
+        screen.contains("\u{2022}\u{2022}\u{2022}\u{2022}"),
+        "a stored secret is masked: {screen}"
+    );
+    // The load reduces a credential to one bit, so there is no text to leak and
+    // no `Debug` of a value to find in a log.
+    assert!(app
+        .settings()
+        .plain(crate::domain::settings::keys::OPENCODE_GO_API_KEY)
+        .is_none());
+}
+
+#[test]
+fn enter_opens_the_band_and_the_second_enter_writes_the_buffer() {
+    let mut app = settings_panel(80, 24);
+    // The first row is the workspace; the model is the first field under it.
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(
+        app.settings().editing(),
+        Some(crate::domain::settings::keys::MODEL),
+        "the band opened on the row under the cursor"
+    );
+    // The buffer starts at the stored value: an edit appends rather than replaces.
+    for ch in "-next".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Enter));
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SaveSetting { .. })
+    });
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    match &sent[0] {
+        Action::SaveSetting { key, value } => {
+            assert_eq!(*key, crate::domain::settings::keys::MODEL);
+            assert_eq!(value.as_deref(), Some("ocg_glm-5.3-next"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_empty_buffer_clears_a_plain_key_and_leaves_a_secret_alone() {
+    // A key with no stored value: the band opens empty and `Enter` clears it.
+    let mut app = settings_panel(80, 24);
+    app.update(typing(KeyCode::Char('l'))); // Model providers
+    app.update(typing(KeyCode::Char('j'))); // past the OpenCode Go toggle
+    assert_eq!(
+        app.settings_rows()[1].label,
+        "OpenCode Go key",
+        "the row under the cursor"
+    );
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(
+        app.settings().editing(),
+        Some(crate::domain::settings::keys::OPENCODE_GO_API_KEY)
+    );
+    app.update(typing(KeyCode::Enter));
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SaveSetting { .. })
+    });
+    assert!(
+        sent.is_empty(),
+        "an empty secret sends nothing, because the service refuses to remove one: {sent:?}"
+    );
+
+    // A plain key with nothing stored does the same thing the other way round.
+    let mut app = settings_panel(80, 24);
+    app.update(typing(KeyCode::Char('l')));
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Char('j'))); // Base URL, which has no default
+    assert_eq!(app.settings_rows()[2].label, "Base URL");
+    app.update(typing(KeyCode::Enter));
+    app.update(typing(KeyCode::Enter));
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SaveSetting { .. })
+    });
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(matches!(&sent[0], Action::SaveSetting { value: None, .. }));
+}
+
+#[test]
+fn a_toggle_flips_on_enter_and_sends_the_new_word() {
+    let mut app = settings_panel(80, 24);
+    app.update(typing(KeyCode::Char('l')));
+    app.update(typing(KeyCode::Char('l'))); // Permissions
+    app.update(typing(KeyCode::Enter)); // web_search_approval, stored `on`
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SaveSetting { .. })
+    });
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    match &sent[0] {
+        Action::SaveSetting { key, value } => {
+            assert_eq!(*key, crate::domain::settings::keys::WEB_SEARCH_APPROVAL);
+            assert_eq!(
+                value.as_deref(),
+                Some(crate::domain::settings::keys::APPROVAL_OFF)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // The row follows the keystroke at once, before the store answers.
+    let screen = rows(&app, 80, 24).join("\n");
+    assert!(screen.contains("off"), "{screen}");
+}
+
+#[test]
+fn a_choice_advances_and_a_refused_write_says_why_and_reverts() {
+    let mut app = settings_panel(80, 30);
+    for _ in 0..3 {
+        app.update(typing(KeyCode::Char('l'))); // Sandbox
+    }
+    for _ in 0..6 {
+        app.update(typing(KeyCode::Char('j'))); // Network, after six fields
+    }
+    assert_eq!(app.settings().selected, 6, "the network row");
+    app.update(typing(KeyCode::Enter));
+    let sent = actions_matching(&mut app, |action| {
+        matches!(action, Action::SaveSetting { .. })
+    });
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    match &sent[0] {
+        Action::SaveSetting { key, value } => {
+            assert_eq!(*key, crate::domain::settings::keys::SANDBOX_NETWORK);
+            assert_eq!(
+                value.as_deref(),
+                Some(crate::domain::settings::keys::NETWORK_OFF)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // The service's own sentence is the one the surface shows, and the row goes
+    // back to the store's copy.
+    app.update(Msg::Done(ActionOutcome::SettingFailed {
+        key: crate::domain::settings::keys::SANDBOX_NETWORK,
+        message: "sandbox_memory_mb must be 256 to 65536".to_owned(),
+    }));
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(
+        screen.contains("sandbox_memory_mb must be 256 to 65536"),
+        "{screen}"
+    );
+    let rereads = actions_matching(&mut app, |action| {
+        matches!(action, Action::LoadSettings { .. })
+    });
+    assert_eq!(
+        rereads.len(),
+        1,
+        "the write is followed by a read: {rereads:?}"
+    );
+}
+
+#[test]
+fn a_saved_write_names_the_field_and_reads_both_copies() {
+    let mut app = settings_panel(80, 24);
+    app.update(Msg::Done(ActionOutcome::SettingSaved {
+        key: crate::domain::settings::keys::MODEL,
+        label: "Model",
+    }));
+    let screen = rows(&app, 80, 24).join("\n");
+    assert!(screen.contains("saved \u{b7} Model"), "{screen}");
+    // The facts row and the picker read the same store, so both are re-read.
+    let mut actions = app.take_actions();
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, Action::LoadModels { .. })),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, Action::LoadSettings { .. })),
+        "{actions:?}"
+    );
+    actions.clear();
+}
+
+#[test]
+fn esc_closes_the_band_before_it_leaves_the_surface() {
+    let mut app = settings_panel(80, 24);
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Enter));
+    assert!(app.settings().editing().is_some());
+
+    app.update(typing(KeyCode::Esc));
+    assert_eq!(
+        app.mode(),
+        Surface::Settings,
+        "the band closed, not the view"
+    );
+    assert!(app.settings().editing().is_none());
+
+    app.update(typing(KeyCode::Esc));
+    assert_eq!(app.mode(), Surface::Chat);
+}
+
+#[test]
+fn slash_settings_opens_the_same_surface_ctrl_comma_does() {
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    for ch in "/settings".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Enter));
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Surface::Settings);
+    assert!(app.composer().is_blank(), "a command clears the field");
+}
+
+#[test]
+fn the_audit_section_pages_its_rows_and_enter_expands_one() {
+    use crate::tui::state::audit;
+    let mut app = settings_panel(80, 30);
+    for (call, ok) in [
+        ("workspaces", true),
+        ("sessions", true),
+        ("save setting", false),
+    ] {
+        app.update(Msg::Audited(audit::Entry {
+            seq: 0,
+            call,
+            ok,
+            duration_ms: 7,
+            body: format!("{call} answered"),
+            at: chrono::Utc::now(),
+        }));
+    }
+    assert_eq!(app.audit().len(), 3);
+    for _ in 0..5 {
+        app.update(typing(KeyCode::Char('l'))); // Audit log
+    }
+    assert_eq!(
+        app.settings().section(),
+        crate::tui::state::settings::Section::Audit
+    );
+    // The newest call is the first row, and the table is the surface's rows.
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("save setting"), "{screen}");
+    assert!(screen.contains("failed"), "{screen}");
+
+    app.update(typing(KeyCode::Enter));
+    assert!(app.audit().is_expanded(0), "the selected row opened");
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("save setting answered"), "{screen}");
+    app.update(typing(KeyCode::Enter));
+    assert!(!app.audit().is_expanded(0), "and folded again");
+}
+
+#[test]
+fn ctrl_c_closes_settings_help_and_detail_instead_of_quitting() {
+    // The keyboard table says `Ctrl-C` closes an overlay, and reading a page is
+    // not a reason to lose the chat. It quit from all three before T5.
+    let mut app = settings_panel(80, 24);
+    app.update(typing_ctrl('c'));
+    assert_eq!(app.mode(), Surface::Chat);
+    assert!(!app.should_quit(), "it closed the view, not the process");
+
+    let mut app = with_messages(80, 24, vec![Message::user("hi")]);
+    for ch in "/help".chars() {
+        app.update(typing(KeyCode::Char(ch)));
+    }
+    app.update(typing(KeyCode::Enter));
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Surface::Help);
+    app.update(typing_ctrl('c'));
+    assert_eq!(app.mode(), Surface::Chat);
+    assert!(!app.should_quit());
+
+    let mut app = settings_panel(80, 24);
+    app.update(typing(KeyCode::Esc));
+    assert_eq!(app.mode(), Surface::Chat);
+    assert!(!app.should_quit(), "and from the chat it still leaves");
+}
+
+#[test]
+fn the_surfaces_keys_do_not_type_into_it_and_j_k_move_the_row() {
+    let mut app = settings_panel(80, 30);
+    let before = app.settings().selected;
+    app.update(typing(KeyCode::Char('j')));
+    assert_eq!(app.settings().selected, before + 1, "j moves the row");
+    app.update(typing(KeyCode::Char('k')));
+    assert_eq!(app.settings().selected, before);
+    // `q` is a chat binding, so it does nothing here.
+    app.update(typing(KeyCode::Char('q')));
+    assert!(!app.should_quit());
+    // A page moves by the list's page size, not by one.
+    app.update(typing(KeyCode::PageDown));
+    assert!(app.settings().selected > before, "a page is several rows");
+}

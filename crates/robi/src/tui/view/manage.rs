@@ -33,7 +33,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let rows_now = app.manage_rows();
     let title = format!(
         "workspaces \u{b7} {} of {}",
-        if rows_now.is_empty() { 0 } else { app.manage().selected + 1 },
+        if rows_now.is_empty() {
+            0
+        } else {
+            app.manage().selected + 1
+        },
         rows_now.len()
     );
     frame.render_widget(
@@ -60,7 +64,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             .enumerate()
             .map(|(index, workspace)| {
                 let (glyph, glyph_style) = if Some(workspace.id) == active {
-                    ('\u{25cf}', ratatui::style::Style::default().fg(theme::ACCENT))
+                    (
+                        '\u{25cf}',
+                        ratatui::style::Style::default().fg(theme::ACCENT),
+                    )
                 } else {
                     (' ', ratatui::style::Style::default())
                 };

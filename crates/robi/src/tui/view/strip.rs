@@ -133,7 +133,11 @@ fn content(app: &App) -> Option<Line<'static>> {
     let summary = app.activity().summary()?;
     // The dots sit in a fixed three-cell field so the text before them never
     // moves as the count changes, the same rule the waiting card follows.
-    let dots = format!("{:<width$}", ".".repeat(app.activity().dots()), width = DOTS_WIDTH);
+    let dots = format!(
+        "{:<width$}",
+        ".".repeat(app.activity().dots()),
+        width = DOTS_WIDTH
+    );
     Some(Line::from(vec![
         Span::styled(format!("{summary} "), theme::activity()),
         Span::styled(dots, theme::activity()),
@@ -164,7 +168,11 @@ mod tests {
             message: "the store is locked".to_owned(),
         }));
         let line = content(&app).expect("a strip");
-        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert_eq!(text, "! the store is locked");
         assert_eq!(app.status_rows(), 1);
     }
@@ -174,7 +182,11 @@ mod tests {
         let (mut app, _, session) = testing::booted(80, 24);
         app.update(Msg::Agent(testing::turn_started(session)));
         let line = content(&app).expect("a strip");
-        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert_eq!(
             text.trim_end(),
             "Thinking .",

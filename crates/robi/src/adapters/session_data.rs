@@ -18,8 +18,7 @@ use async_trait::async_trait;
 use robi_core::ids::SessionId;
 
 use crate::{
-    adapters::session_blobs::SessionBlobs,
-    agent::sandbox::container,
+    adapters::session_blobs::SessionBlobs, agent::sandbox::container,
     domain::chat_session::data::SessionDataCleaner,
 };
 
@@ -54,9 +53,11 @@ impl SessionDataCleaner for SessionCleanup {
         // First, and independently of the blobs: the container is the larger
         // leak, and a blob failure must not strand it. A session with no
         // container is a no-op, which is every session on the `os` mechanism.
-        let released =
-            tokio::time::timeout(RELEASE_TIMEOUT, container::Registry::global().release(session))
-                .await;
+        let released = tokio::time::timeout(
+            RELEASE_TIMEOUT,
+            container::Registry::global().release(session),
+        )
+        .await;
         if released.is_err() {
             tracing::warn!(
                 %session,
