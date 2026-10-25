@@ -168,10 +168,17 @@ impl Activity {
         ((self.ticks / DOTS_EVERY) % DOTS_COUNT + 1) as usize
     }
 
-    /// The header's activity text, or nothing when idle.
+    /// The status strip's activity text, or nothing when idle.
+    ///
+    /// `Thinking for 4s`: the webview's activity line, words and order, so the
+    /// two front ends say the same thing about the same turn. The dots are the
+    /// view's, because they animate on the tick rather than on the text.
     pub fn summary(&self) -> Option<String> {
         let label = self.label()?;
-        Some(format!("{label} \u{b7} {}", format_elapsed(self.elapsed())))
+        if self.elapsed() == 0 {
+            return Some(label.to_owned());
+        }
+        Some(format!("{label} for {}", format_elapsed(self.elapsed())))
     }
 
     /// Which cell of the footer's progress widget is lit, or nothing when idle.
@@ -220,7 +227,7 @@ mod tests {
         }
         assert!(activity.tick(), "the eighth quiet tick is the boundary");
         assert_eq!(activity.elapsed(), 2, "eight ticks is two seconds");
-        assert_eq!(activity.summary().as_deref(), Some("Thinking \u{b7} 2s"));
+        assert_eq!(activity.summary().as_deref(), Some("Thinking for 2s"));
 
         // A frame resets the quiet stretch; elapsed time keeps running.
         activity.frame();

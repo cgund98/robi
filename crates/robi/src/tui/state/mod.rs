@@ -4,49 +4,63 @@
 //! pre-wrapped into rows so both the follow lock and the view are pure
 //! functions of state and a width. `state::composer` owns the text field and
 //! the per-session drafts, and `state::activity` the open turn's phase,
-//! elapsed time, and catch-up counter.
+//! elapsed time, and catch-up counter. T3 adds the two overlays
+//! (`sessions`, `workspaces`), their confirmation (`confirm`), and the status
+//! bar's facts (`status`).
 
 pub mod activity;
 pub mod approval;
 pub mod composer;
+pub mod confirm;
 pub mod detail;
+pub mod landing;
+pub mod manage;
 pub mod markdown;
 pub mod prompt;
+pub mod sessions;
+pub mod status;
 pub mod tool_card;
 pub mod transcript;
+pub mod workspaces;
 
 /// Which surface owns the keyboard. Exactly one at a time.
 ///
 /// T2 made this a real stack: a pause no longer adds a mode — approvals are
-/// answered on the selected card — but the detail view does. The rest are
-/// declared here because the mode stack is the shape the later phases fill in,
-/// and a keymap that grows a variant at a time is how a mode ends up
-/// half-registered.
+/// answered on the selected card — but the detail view does. T3 adds the two
+/// overlays and the confirmation that sits above one of them. `Models` and
+/// `Settings` are declared here because the later phases fill them in, and a
+/// keymap that grows a variant at a time is how a mode ends up half-registered;
+/// a variant no phase reaches yet is not declared at all.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
     /// The base mode: the transcript, the composer, and the global bindings.
+    ///
+    /// It is also the landing page's mode: a workspace with no session open draws
+    /// the greeting and the composer in place of a transcript, and there is
+    /// nothing to own the keyboard that `chat` does not already.
     #[default]
     Chat,
     /// The sessions overlay.
     Sessions,
-    /// The workspace overlay.
+    /// The workspace switcher overlay: the eight most recent, and the create
+    /// screen.
     Workspaces,
+    /// Every workspace, filtered, with remove. A dedicated view, not a screen of
+    /// the switcher: managing is a place the reader stays.
+    Manage,
+    /// The path the process was started on has no workspace, and neither answer
+    /// has been given yet.
+    WorkspaceMissing,
     /// The model and effort picker.
     Models,
-    /// The plan surface.
-    Plan,
-    /// The review surface.
-    Review,
-    /// The docs surface.
-    Docs,
     /// The settings surface.
     Settings,
     /// One tool call, read in full: its own scroll, `Esc` back.
     Detail,
-    /// A one-line prompt: rename, delete, reject reason.
+    /// A one-line prompt: rename, reject reason.
     Prompt,
-    /// A suspended terminal running `$EDITOR`.
-    Editor,
+    /// The confirmation above an overlay: `y` accepts, `n` or `Esc` cancels.
+    Confirm,
 }
 
 /// Which region of the chat frame takes the keystrokes.
@@ -95,11 +109,17 @@ pub enum Phase {
 }
 
 /// What a notice says about itself.
+///
+/// A notice is an **answer to a keystroke** — `nothing to send`, `a title is
+/// required`, `stopped` — and it is drawn in the footer, next to the hint. A
+/// failure the app observed rather than one the user typed into — a failed read,
+/// a refused decision, a turn that ended `Failed` — is not a notice: it goes on
+/// the strip above the composer and stays until something succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
-    /// A fact worth showing: a startup message, a save failure that is not now.
+    /// A fact worth showing about what the reader just did.
     Info,
-    /// Something failed, or a call was refused.
+    /// The keystroke was refused, and this is why.
     Error,
 }
 

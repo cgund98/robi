@@ -87,6 +87,12 @@ pub const FIND_HIT: Color = rgb(0x6b5416);
 pub const FIND_HIT_CURRENT: Color = rgb(0xe39a3c);
 
 /// The frame background. Every cell the view paints sits on this.
+/// The landing page's greeting. `--mode-ask`, the tokens' one green, so a new
+/// chat opens in the same colour the desktop shell gives it.
+pub fn landing_greeting() -> Style {
+    Style::default().bg(BG_CANVAS).fg(MODE_ASK)
+}
+
 pub fn canvas() -> Style {
     Style::default().bg(BG_CANVAS).fg(INK)
 }

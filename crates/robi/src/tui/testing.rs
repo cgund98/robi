@@ -3,6 +3,8 @@
 //! A snapshot here asserts on rendered strings, not on a golden file: a token
 //! change that does not move the layout must not fail a test.
 
+use std::path::PathBuf;
+
 use chrono::Utc;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -42,6 +44,20 @@ pub fn rows(app: &App, width: u16, height: u16) -> Vec<String> {
                 .to_owned()
         })
         .collect()
+}
+
+/// The first row of the transcript: the frame's top pad, the header, and the
+/// rule under it all sit above it.
+pub fn body_top() -> u16 {
+    crate::tui::view::FRAME_PAD + 2
+}
+
+/// The y of the first row holding `needle`, for a test that anchors on text
+/// rather than on a row number.
+pub fn y_of(rows: &[String], needle: &str) -> u16 {
+    rows.iter()
+        .position(|row| row.contains(needle))
+        .unwrap_or_else(|| panic!("no row holds {needle:?}: {rows:#?}")) as u16
 }
 
 /// The whole frame as one string, for a substring assertion.
@@ -118,19 +134,59 @@ fn land_transcript(app: &mut App, session: SessionId, messages: Vec<Message>) {
     }));
 }
 
+/// A workspace row with a known id, for a list read that must keep it.
+fn workspace_row(id: WorkspaceId, name: &str) -> Workspace {
+    let mut workspace = workspace(name);
+    workspace.id = id;
+    workspace
+}
+
+/// `base` with a title, keeping its id. For a list read that shows a rename.
+fn titled(mut base: ChatSession, title: &str) -> ChatSession {
+    base.title = Some(title.to_owned());
+    base
+}
+
+/// The greeting the fixtures show. Fixed, so a frame test is not a clock test.
+pub fn morning() -> crate::tui::state::landing::Greeting {
+    crate::tui::state::landing::Greeting::Morning
+}
+
+/// The path the fixtures' workspace lives at.
+///
+/// `booted` builds a workspace with this root, so the startup pick finds it and
+/// no test falls into the missing-workspace prompt by accident.
+pub fn test_workspace_path() -> PathBuf {
+    PathBuf::from("/workspace/robi")
+}
+
 /// An app with one workspace, one session, and no messages yet.
 pub fn booted(width: u16, height: u16) -> (App, WorkspaceId, SessionId) {
-    let mut app = App::new(ViewState::default(), "sqlite://test.db");
+    let mut app = App::new(
+        ViewState::default(),
+        "sqlite://test.db",
+        test_workspace_path(),
+        morning(),
+    );
     app.resize(width, height);
     let workspace = workspace("robi");
     let workspace_id = workspace.id;
     let session = session(workspace_id, Some("a session"));
     let session_id = session.id;
 
-    app.update(Msg::Done(ActionOutcome::Workspaces(vec![workspace])));
+    // The generations are the app's own: a read issued before them would be
+    // dropped as stale, which is what the counters are for.
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace],
+    }));
+    let generation = app.sessions_generation();
     app.update(Msg::Done(ActionOutcome::Sessions {
         workspace: workspace_id,
+        generation,
         sessions: vec![session],
+        running: Vec::new(),
     }));
     // The actions are left pending: the first one is the reload whose
     // generation the transcript lands at.
@@ -155,6 +211,11 @@ pub fn pending_call(name: &str, args: serde_json::Value) -> ToolCall {
     call.approval_status = ApprovalStatus::Pending;
     call.execution_status = ExecutionStatus::NotStarted;
     call
+}
+
+/// The frame the loop emits when a turn starts, which makes the app busy.
+pub fn turn_started(session: SessionId) -> EventEnvelope {
+    envelope(session, crate::domain::events::TURN_STARTED)
 }
 
 /// The frame the loop emits when a turn pauses on one call.
@@ -243,7 +304,12 @@ fn two_message_transcript() -> Vec<Message> {
 
 #[test]
 fn the_empty_state_names_the_missing_workspace() {
-    let mut app = App::new(ViewState::default(), "sqlite://test.db");
+    let mut app = App::new(
+        ViewState::default(),
+        "sqlite://test.db",
+        test_workspace_path(),
+        morning(),
+    );
     app.resize(80, 24);
     let frame = screen(&app, 80, 24);
     assert!(
@@ -258,6 +324,34 @@ fn a_terminal_below_the_minimum_draws_one_line() {
     let frame = screen(&app, 30, 8);
     assert!(frame.contains("terminal too small"), "{frame}");
     assert!(!frame.contains("read the config"), "{frame}");
+}
+
+#[test]
+fn a_rule_closes_the_header_and_stops_where_its_text_does() {
+    let gutter = usize::from(crate::tui::view::GUTTER);
+    let width = usize::from(crate::tui::view::content_width(60));
+    let frame = rows(&with_messages(60, 20, two_message_transcript()), 60, 20);
+    let header = y_of(&frame, "robi");
+    assert_eq!(
+        header,
+        crate::tui::view::FRAME_PAD,
+        "the bar keeps one blank row above it"
+    );
+    let rule = frame[usize::from(header) + 1].trim_end();
+    assert!(
+        rule.trim().chars().all(|cell| cell == '\u{2500}'),
+        "the second row is one unbroken rule: {rule:?}"
+    );
+    assert_eq!(
+        rule.chars().count() - rule.trim_start().chars().count(),
+        gutter,
+        "it starts at the gutter"
+    );
+    assert_eq!(
+        rule.trim_start().chars().count(),
+        width,
+        "and runs to the header's right edge, not the terminal's"
+    );
 }
 
 fn generations(app: &mut App) -> Vec<u64> {
@@ -414,13 +508,13 @@ fn a_user_message_and_a_tool_call_have_rails_of_different_colours() {
 
     let app = with_messages(
         60,
-        20,
+        24,
         vec![
             Message::user("add a new field for signups"),
             Message::assistant_with_tool_calls("", vec![call]),
         ],
     );
-    let frame = rows(&app, 60, 20);
+    let frame = rows(&app, 60, 24);
 
     // Find each band by its text, then read the colour of its rail cell.
     let row_of = |needle: &str| {
@@ -441,12 +535,12 @@ fn a_user_message_and_a_tool_call_have_rails_of_different_colours() {
         );
     }
     assert_eq!(
-        foreground(&app, 60, 20, rail, user_row),
+        foreground(&app, 60, 24, rail, user_row),
         crate::tui::theme::ACCENT,
         "the user rail is blue"
     );
     assert_eq!(
-        foreground(&app, 60, 20, rail, card_row),
+        foreground(&app, 60, 24, rail, card_row),
         crate::tui::theme::INK_FAINT,
         "the tool card rail is gray"
     );
@@ -464,7 +558,7 @@ fn a_user_message_and_a_tool_call_have_rails_of_different_colours() {
         (user_row, crate::tui::theme::BG_USER),
         (card_row, crate::tui::theme::CODE_BG),
     ] {
-        let backend = TestBackend::new(60, 20);
+        let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend).expect("a test terminal");
         terminal.draw(|frame| app.view(frame)).expect("a frame");
         assert_eq!(
@@ -512,9 +606,20 @@ fn everything_on_screen_is_inset_by_the_gutter() {
         "widest row is {widest} cells in a 60-column frame: {drawn:#?}"
     );
 
-    // At a normal width the whole footer hint fits inside the gutter.
+    // At a normal width the whole footer hint fits inside the gutter. The
+    // footer is the last row: the status strip is above the composer, not below
+    // it.
     let wide = rows(&with_messages(100, 20, two_message_transcript()), 100, 20);
-    let footer = wide.last().expect("a footer").clone();
+    let footer = wide
+        .iter()
+        .rev()
+        .find(|row| !row.trim().is_empty())
+        .expect("a footer")
+        .clone();
+    assert!(
+        wide.last().is_some_and(|row| row.trim().is_empty()),
+        "and one blank row under it"
+    );
     assert!(
         footer.contains("select"),
         "the hint is not clipped at 100 columns: {footer:?}"
@@ -631,7 +736,11 @@ fn a_send_records_one_submit_and_every_refusal_says_why() {
         "again",
         "a failed send restores the buffer"
     );
-    assert!(app.notice().is_some_and(|notice| notice.is_error()));
+    assert_eq!(
+        app.status().error(),
+        Some("the provider refused"),
+        "the failure is on the strip"
+    );
     assert!(!app.is_busy(), "and it unlocks the field");
 }
 
@@ -801,7 +910,7 @@ fn the_empty_composer_shows_its_placeholder_behind_an_accent_rail() {
 #[test]
 fn a_streaming_turn_shows_the_activity_line_and_a_caret() {
     use crate::tui::state::activity::PROGRESS_CELLS;
-    use crate::tui::view::notice::PROGRESS_CELL;
+    use crate::tui::view::strip::PROGRESS_CELL;
 
     let (mut app, _, session_id) = booted(70, 20);
     app.take_actions();
@@ -832,13 +941,17 @@ fn a_streaming_turn_shows_the_activity_line_and_a_caret() {
         PROGRESS_CELLS,
         "the footer carries the running turn's progress widget: {frame}"
     );
-    // It sits at the right edge, under the composer.
-    let footer = frame.lines().last().expect("a footer");
+    // It sits at the right edge of the strip, above the composer, so it is on
+    // the row with the activity line rather than below the band.
+    let strip = frame
+        .lines()
+        .find(|row| row.contains("Responding"))
+        .expect("the activity line");
     assert!(
-        footer
+        strip
             .trim_end()
             .ends_with(&PROGRESS_CELL.to_string().repeat(PROGRESS_CELLS)),
-        "the widget is the last thing on the footer row: {footer:?}"
+        "the widget is the last thing on the strip: {strip:?}"
     );
 }
 
@@ -1429,9 +1542,12 @@ fn switching_session_drops_the_previous_sessions_pause() {
     let workspace = app.active_workspace_id().expect("a workspace");
     let second = session(workspace, Some("b"));
     let second_id = second.id;
+    let generation = app.sessions_generation();
     app.update(Msg::Done(ActionOutcome::Sessions {
         workspace,
+        generation,
         sessions: vec![second],
+        running: Vec::new(),
     }));
 
     assert_eq!(app.open_session_id(), Some(second_id));
@@ -1449,9 +1565,12 @@ fn the_selected_block_is_lighter_than_everything_else() {
         Message::assistant("It sets the port to 1431."),
     ];
     let mut app = with_messages(60, 18, messages);
+    let frame = rows(&app, 60, 18);
+    let user = y_of(&frame, "read the config");
+    let prose = y_of(&frame, "It sets the port");
     // Nothing selected: the user band and the prose are on their own tones.
-    let unselected_user = background(&app, 60, 18, 5, 2);
-    let unselected_prose = background(&app, 60, 18, 5, 5);
+    let unselected_user = background(&app, 60, 18, 5, user);
+    let unselected_prose = background(&app, 60, 18, 5, prose);
     assert_ne!(unselected_user, crate::tui::theme::BG_SELECTED);
 
     // Select the user message: every row of it steps up.
@@ -1462,7 +1581,7 @@ fn the_selected_block_is_lighter_than_everything_else() {
         None,
         "a prose block is selected"
     );
-    let selected_user = background(&app, 60, 18, 5, 2);
+    let selected_user = background(&app, 60, 18, 5, user);
     assert_eq!(
         selected_user,
         crate::tui::theme::BG_SELECTED,
@@ -1472,7 +1591,7 @@ fn the_selected_block_is_lighter_than_everything_else() {
 
     // The prose underneath did not move: only the selected block is lifted.
     assert_eq!(
-        background(&app, 60, 18, 5, 5),
+        background(&app, 60, 18, 5, prose),
         unselected_prose,
         "the unselected block keeps its own tone"
     );
@@ -1480,7 +1599,7 @@ fn the_selected_block_is_lighter_than_everything_else() {
     // The last content column, inside the gutter: a band already fills its row,
     // so the whole line highlights, not just the words on it.
     assert_eq!(
-        background(&app, 60, 18, 57, 2),
+        background(&app, 60, 18, 57, user),
         crate::tui::theme::BG_SELECTED,
         "the fill reaches the end of the row"
     );
@@ -1490,8 +1609,9 @@ fn the_selected_block_is_lighter_than_everything_else() {
 fn selecting_a_paragraph_lifts_it_off_the_canvas() {
     // Prose had no marker at all, so a selected paragraph was invisible.
     let mut app = with_messages(60, 18, vec![Message::assistant("plain prose")]);
+    let y = body_top();
     assert_eq!(
-        background(&app, 60, 18, 5, 1),
+        background(&app, 60, 18, 5, y),
         crate::tui::theme::BG_CANVAS,
         "prose sits on the canvas"
     );
@@ -1499,14 +1619,14 @@ fn selecting_a_paragraph_lifts_it_off_the_canvas() {
     press(&mut app, key(KeyCode::Tab));
     press(&mut app, key(KeyCode::Down));
     assert_eq!(
-        background(&app, 60, 18, 5, 1),
+        background(&app, 60, 18, 5, y),
         crate::tui::theme::BG_SELECTED,
         "a selected paragraph has a background of its own"
     );
     // Prose has no band to fill, so the view pads it: without that the highlight
     // would stop at the last glyph and read as an underline.
     assert_eq!(
-        background(&app, 60, 18, 50, 1),
+        background(&app, 60, 18, 50, y),
         crate::tui::theme::BG_SELECTED,
         "the paragraph is filled to the row's width"
     );
@@ -1515,18 +1635,20 @@ fn selecting_a_paragraph_lifts_it_off_the_canvas() {
 #[test]
 fn a_selected_card_lifts_its_whole_band_and_keeps_its_ink() {
     let (mut app, _, _) = paused(80, 24);
-    // The selected card's heading, subject, and padding rows all step up...
-    for y in 1..8 {
-        assert_eq!(
-            background(&app, 80, 24, 4, y),
-            crate::tui::theme::BG_SELECTED,
-            "row {y} of the selected card"
-        );
+    let lifted = |y: u16| background(&app, 80, 24, 4, y) == crate::tui::theme::BG_SELECTED;
+    // The selected card's heading, subject, and padding rows all step up, as one
+    // unbroken run from the first row of the card.
+    let top = body_top();
+    assert!(lifted(top), "the card starts at the top of the transcript");
+    let mut rows_of_card = 0;
+    while lifted(top + rows_of_card) {
+        rows_of_card += 1;
     }
+    assert_eq!(rows_of_card, 7, "the whole seven-row card is lifted");
     // ... while the foreground stays the row's own, so a heading keeps its muted
     // tone and a diff keeps its colours. Only the background moved.
     assert_eq!(
-        foreground(&app, 80, 24, 6, 2),
+        foreground(&app, 80, 24, 6, top + 1),
         crate::tui::theme::INK_MUTED,
         "the heading is still muted"
     );
@@ -1534,7 +1656,7 @@ fn a_selected_card_lifts_its_whole_band_and_keeps_its_ink() {
     // Deselect: the band falls back to its own tone.
     press(&mut app, key(KeyCode::Esc));
     assert_eq!(
-        background(&app, 80, 24, 4, 1),
+        background(&app, 80, 24, 4, top),
         crate::tui::theme::CODE_BG,
         "an unselected card is the card band again"
     );
@@ -1621,7 +1743,7 @@ fn a_pause_does_not_interrupt_an_open_detail_view() {
 fn a_waiting_card_has_an_attention_rail() {
     /// The left edge of a single-card transcript's heading row.
     fn rail(app: &App) -> ratatui::style::Color {
-        foreground(app, 80, 24, 2, 2)
+        foreground(app, 80, 24, 2, body_top() + 1)
     }
 
     fn with_call(call: ToolCall) -> App {
@@ -1709,3 +1831,1519 @@ fn esc_clearing_a_selection_mid_turn_still_returns_to_the_composer() {
         "the first Esc cleared the selection; it did not stop the turn"
     );
 }
+
+// -- T3: sessions, workspaces, and the status strip -----------------------
+
+use crate::tui::state::sessions::Mark;
+use crate::tui::state::tool_card;
+use crate::tui::state::workspaces::Screen;
+
+fn ctrl(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
+fn renames(app: &mut App) -> Vec<(SessionId, String)> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::RenameSession { session, title } => Some((session, title)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn deletes(app: &mut App) -> Vec<SessionId> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::DeleteSession { session } => Some(session),
+            _ => None,
+        })
+        .collect()
+}
+
+fn created_sessions(app: &mut App) -> Vec<WorkspaceId> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::StartSession { workspace, .. } => Some(workspace),
+            _ => None,
+        })
+        .collect()
+}
+
+fn workspace_opens(app: &mut App) -> Vec<String> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::CreateWorkspace { root } => Some(root),
+            _ => None,
+        })
+        .collect()
+}
+
+fn reloads(app: &mut App) -> Vec<SessionId> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::Reload { session, .. } => Some(session),
+            _ => None,
+        })
+        .collect()
+}
+
+fn mcp_loads(app: &mut App) -> Vec<WorkspaceId> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::LoadMcp { workspace, .. } => Some(workspace),
+            _ => None,
+        })
+        .collect()
+}
+
+fn probes(app: &mut App) -> usize {
+    app.take_actions()
+        .into_iter()
+        .filter(|action| matches!(action, Action::Probe))
+        .count()
+}
+
+fn completions(app: &mut App) -> Vec<(String, u64)> {
+    app.take_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::CompletePath { text, generation } => Some((text, generation)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn ctrl_n_opens_the_landing_page_and_creates_nothing() {
+    // The bug this replaces: a row per abandoned new chat. `Ctrl-N` is a page,
+    // and the session is created by the first message.
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    assert!(app.landing(), "a workspace is open and no session is");
+    assert_eq!(app.open_session_id(), None);
+    assert!(
+        created_sessions(&mut app).is_empty(),
+        "nothing is created until there is a message to put in it"
+    );
+    assert_eq!(app.focus(), Focus::Composer);
+
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("Good morning"), "{frame}");
+}
+
+#[test]
+fn the_landing_page_creates_the_session_when_the_first_message_is_sent() {
+    let (mut app, workspace, _) = booted(80, 24);
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    app.take_actions();
+
+    type_text(&mut app, "read the config");
+    press(&mut app, key(KeyCode::Enter));
+    let actions = app.take_actions();
+    let start = actions
+        .into_iter()
+        .find_map(|action| match action {
+            Action::StartSession {
+                workspace: target,
+                text,
+                ..
+            } => Some((target, text)),
+            _ => None,
+        })
+        .expect("one StartSession, not a create and a submit");
+    assert_eq!(start, (workspace, "read the config".to_owned()));
+    assert_eq!(
+        app.composer().text(),
+        "read the config",
+        "the text stays until the actor takes it"
+    );
+
+    let created = session(workspace, None);
+    let id = created.id;
+    app.update(Msg::Done(ActionOutcome::SessionStarted {
+        session: Box::new(created),
+        outcome: Some(SubmitOutcome::Accepted),
+        error: None,
+    }));
+    assert_eq!(app.open_session_id(), Some(id));
+    assert!(!app.landing());
+    assert!(app.composer().is_blank(), "a taken send clears the field");
+    assert!(app.is_busy());
+    assert_eq!(
+        app.selected_session().map(|session| session.id),
+        Some(id),
+        "the overlay's cursor follows the new row"
+    );
+    assert_eq!(app.sessions().len(), 2, "the old session and the new one");
+}
+
+#[test]
+fn a_failed_first_send_keeps_the_session_and_the_text() {
+    let (mut app, workspace, _) = booted(80, 24);
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    type_text(&mut app, "read the config");
+    press(&mut app, key(KeyCode::Enter));
+    app.take_actions();
+
+    let created = session(workspace, None);
+    let id = created.id;
+    app.update(Msg::Done(ActionOutcome::SessionStarted {
+        session: Box::new(created),
+        outcome: None,
+        error: Some("the provider refused".to_owned()),
+    }));
+    assert_eq!(app.open_session_id(), Some(id), "the row exists either way");
+    assert_eq!(app.composer().text(), "read the config", "so does the text");
+    assert_eq!(app.status().error(), Some("the provider refused"));
+    assert!(!app.is_busy());
+}
+
+#[test]
+fn a_session_frame_refreshes_the_list_without_rereading_the_transcript() {
+    let (mut app, _, session) = booted(80, 24);
+    app.take_actions();
+
+    app.update(Msg::Agent(EventEnvelope::session_updated(session)));
+    // The rename in another window is a list fact, not a transcript fact.
+    let actions = app.take_actions();
+    assert!(
+        !actions.iter().any(|action| matches!(action, Action::Reload { .. })),
+        "no transcript read follows a session frame"
+    );
+    let workspace = app.active_workspace_id().expect("a workspace");
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::LoadSessions { workspace: read, .. } if *read == workspace
+    )));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+}
+
+#[test]
+fn a_session_list_refresh_that_keeps_the_open_session_does_not_reload_it() {
+    let (mut app, workspace, session) = booted(80, 24);
+    app.take_actions();
+
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![titled(app.open_session().expect("a session").clone(), "renamed")],
+        running: Vec::new(),
+    }));
+    assert_eq!(app.open_session_id(), Some(session));
+    assert!(
+        reloads(&mut app).is_empty(),
+        "a rename must not reread the messages under the reader"
+    );
+    assert_eq!(app.session_title(), "renamed");
+}
+
+#[test]
+fn a_session_list_that_loses_the_open_session_selects_another() {
+    let (mut app, workspace, first) = booted(80, 24);
+    app.take_actions();
+
+    let second = session(workspace, Some("second"));
+    let second_id = second.id;
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![second],
+        running: Vec::new(),
+    }));
+    assert_eq!(app.open_session_id(), Some(second_id));
+    assert_ne!(second_id, first);
+}
+
+#[test]
+fn a_rename_prompt_is_prefilled_and_names_the_title_it_sends() {
+    let (mut app, _, session) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('r')));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Prompt);
+    assert_eq!(app.prompt().expect("a prompt").label, "rename");
+    assert_eq!(app.prompt().expect("a prompt").text(), "a session");
+
+    // Type over it: the field is the keyboard's, so `Enter` submits.
+    for _ in 0.."a session".len() {
+        press(&mut app, key(KeyCode::Backspace));
+    }
+    type_text(&mut app, "renamed");
+    press(&mut app, key(KeyCode::Enter));
+
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert_eq!(renames(&mut app), vec![(session, "renamed".to_owned())]);
+}
+
+#[test]
+fn an_empty_rename_is_refused_and_the_field_stays_open() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('r')));
+    for _ in 0.."a session".len() {
+        press(&mut app, key(KeyCode::Backspace));
+    }
+    press(&mut app, key(KeyCode::Enter));
+
+    assert_eq!(app.mode(), crate::tui::state::Mode::Prompt);
+    assert!(renames(&mut app).is_empty());
+    assert!(
+        app.notice().is_some_and(|notice| notice.is_error()),
+        "the refusal says why"
+    );
+}
+
+#[test]
+fn ctrl_d_asks_before_deleting_and_n_keeps_the_row() {
+    let (mut app, _, session) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    press(&mut app, ctrl(KeyCode::Char('d')));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Confirm);
+    assert!(app.confirm().is_some());
+
+    press(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Sessions);
+    assert!(deletes(&mut app).is_empty());
+    assert_eq!(app.selected_session().map(|row| row.id), Some(session));
+
+    press(&mut app, ctrl(KeyCode::Char('d')));
+    press(&mut app, key(KeyCode::Char('y')));
+    assert_eq!(deletes(&mut app), vec![session]);
+    assert_eq!(app.mode(), crate::tui::state::Mode::Sessions);
+}
+
+#[test]
+fn deleting_the_open_session_opens_the_next_one_and_the_last_leaves_none() {
+    let (mut app, workspace, first) = booted(80, 24);
+    let second = session(workspace, Some("second"));
+    let second_id = second.id;
+    let open = app.open_session().expect("a session").clone();
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![open, second],
+        running: Vec::new(),
+    }));
+    app.take_actions();
+
+    app.update(Msg::Done(ActionOutcome::SessionDeleted { session: first }));
+    assert_eq!(app.open_session_id(), Some(second_id));
+
+    app.take_actions();
+    app.update(Msg::Done(ActionOutcome::SessionDeleted {
+        session: second_id,
+    }));
+    assert_eq!(app.open_session_id(), None, "an empty workspace opens none");
+    assert!(app.sessions().is_empty());
+}
+
+#[test]
+fn the_sessions_overlay_filters_as_you_type_and_opens_the_selection() {
+    let (mut app, workspace, first) = booted(80, 24);
+    let second = session(workspace, Some("other chat"));
+    let second_id = second.id;
+    let open = app.open_session().expect("a session").clone();
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![open, second],
+        running: Vec::new(),
+    }));
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Sessions);
+    assert_eq!(app.selected_session().map(|row| row.id), Some(first));
+
+    type_text(&mut app, "other");
+    assert_eq!(app.session_rows().len(), 1);
+    assert_eq!(app.selected_session().map(|row| row.id), Some(second_id));
+
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert_eq!(app.open_session_id(), Some(second_id));
+}
+
+#[test]
+fn a_failure_reaches_the_strip_and_a_reload_clears_it() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    app.update(Msg::Done(ActionOutcome::Failed {
+        generation: None,
+        message: "the store is locked".to_owned(),
+    }));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("! the store is locked"), "{frame}");
+    // The strip is above the composer, and the `!` starts its first item.
+    let gutter = crate::tui::view::GUTTER;
+    let y = rows(&app, 80, 24)
+        .iter()
+        .position(|row| row.contains("! the store is locked"))
+        .expect("the strip's row") as u16;
+    assert!(y > 1, "the strip is below the header: {frame}");
+    assert_eq!(
+        foreground(&app, 80, 24, gutter, y),
+        crate::tui::theme::DANGER,
+        "an error is drawn in the danger colour"
+    );
+
+    let generation = app.transcript().generation();
+    app.update(Msg::Done(ActionOutcome::Transcript {
+        session: app.open_session_id().expect("a session"),
+        generation,
+        messages: Vec::new(),
+    }));
+    assert!(
+        !screen(&app, 80, 24).contains("! the store is locked"),
+        "a read that answered says the failure is over"
+    );
+}
+
+#[test]
+fn a_failed_probe_is_the_health_mark_and_never_clears_an_app_error() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    app.update(Msg::Done(ActionOutcome::Failed {
+        generation: None,
+        message: "a turn failed".to_owned(),
+    }));
+    app.update(Msg::Done(ActionOutcome::Probed {
+        error: Some("the store is locked".to_owned()),
+    }));
+    // One row, so the error that outlives a turn wins over the probe's mark.
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("! a turn failed"), "{frame}");
+    assert!(!frame.contains("health:"), "one status per row: {frame}");
+
+    // With the app error gone, the probe's answer is what is left to say. A read
+    // that succeeds is what clears the error; a probe answering never does.
+    let session = app.open_session_id().expect("a session");
+    app.update(Msg::Done(ActionOutcome::Transcript {
+        session,
+        generation: app.transcript().generation(),
+        messages: Vec::new(),
+    }));
+    assert!(
+        screen(&app, 80, 24).contains("! health: the store is locked"),
+        "the probe's mark is now the row's"
+    );
+
+    app.update(Msg::Done(ActionOutcome::Probed { error: None }));
+    assert!(!screen(&app, 80, 24).contains("health:"));
+}
+
+#[test]
+fn the_probe_is_asked_for_once_every_twenty_ticks() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    for _ in 0..crate::tui::state::status::PROBE_TICKS - 1 {
+        app.update(Msg::Tick);
+    }
+    assert_eq!(probes(&mut app), 0, "nineteen ticks are not a probe");
+    app.update(Msg::Tick);
+    assert_eq!(probes(&mut app), 1, "the twentieth tick is");
+
+    // In flight, so the next interval asks for nothing until it answers.
+    for _ in 0..crate::tui::state::status::PROBE_TICKS * 2 {
+        app.update(Msg::Tick);
+    }
+    assert_eq!(probes(&mut app), 0, "one probe at a time");
+    app.update(Msg::Done(ActionOutcome::Probed { error: None }));
+    for _ in 0..crate::tui::state::status::PROBE_TICKS {
+        app.update(Msg::Tick);
+    }
+    assert_eq!(probes(&mut app), 1, "and the cadence resumes");
+}
+
+#[test]
+fn the_strip_sits_above_the_composer_and_the_prompt_above_the_footer() {
+    let (mut app, _, session) = booted(80, 24);
+    app.take_actions();
+    // Idle and nothing to report: the row is not there, and the transcript has it.
+    assert_eq!(app.status_rows(), 0);
+    let idle = app.body_height();
+    assert!(
+        !screen(&app, 80, 24).contains("Thinking"),
+        "an idle frame has no activity line"
+    );
+
+    // A running turn puts its activity line above the composer, with a blank row
+    // on either side of it.
+    app.update(Msg::Agent(turn_started(session)));
+    assert_eq!(app.status_rows(), 1);
+    assert_eq!(
+        app.strip_gap(),
+        crate::tui::view::STRIP_GAP,
+        "the strip asks for its own breathing room"
+    );
+    assert_eq!(
+        app.body_height(),
+        idle - 2,
+        "the transcript gives up the strip and the gap under it"
+    );
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("Thinking"), "{frame}");
+    let band = frame
+        .lines()
+        .position(|row| row.contains('\u{2502}'))
+        .expect("the composer's rail");
+    let activity = frame
+        .lines()
+        .position(|row| row.contains("Thinking"))
+        .expect("the activity line");
+    assert_eq!(
+        activity + 2,
+        band,
+        "a blank row separates the activity line from the band: {frame}"
+    );
+    assert!(
+        frame
+            .lines()
+            .nth(band - 1)
+            .is_some_and(|row| row.trim().is_empty()),
+        "the padding below the activity line: {frame}"
+    );
+    assert!(
+        frame
+            .lines()
+            .nth(activity - 1)
+            .is_some_and(|row| row.trim().is_empty()),
+        "one blank row between the last message and the progress line: {frame}"
+    );
+
+    // A prompt takes a row too, between the composer and the footer.
+    press(&mut app, ctrl(KeyCode::Char('r')));
+    assert_eq!(app.prompt_rows(), 1);
+    let frame = screen(&app, 80, 24);
+    let prompt = frame
+        .lines()
+        .position(|row| row.contains("rename"))
+        .expect("the prompt");
+    let hint = frame
+        .lines()
+        .position(|row| row.contains("Enter"))
+        .expect("the hint row");
+    assert_eq!(
+        prompt + 2,
+        hint,
+        "one blank row between the prompt and the hint: {frame}"
+    );
+    // The frame's last row itself: `str::lines` would drop it, since the screen
+    // string ends with a newline.
+    assert!(
+        rows(&app, 80, 24).last().is_some_and(|row| row.is_empty()),
+        "and one under the hint: {frame}"
+    );
+}
+
+#[test]
+fn a_second_overlay_replaces_the_first_rather_than_stacking() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    assert!(app.sessions_open());
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    assert!(app.workspaces_open());
+    assert!(!app.sessions_open(), "one overlay at a time");
+    assert_eq!(app.mode(), crate::tui::state::Mode::Workspaces);
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    assert!(app.sessions_open());
+    assert!(!app.workspaces_open());
+}
+
+#[test]
+fn esc_closes_an_overlay_and_ctrl_c_does_too_instead_of_quitting() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    press(&mut app, ctrl(KeyCode::Char('c')));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert!(!app.should_quit(), "closing a list is not leaving");
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    press(&mut app, key(KeyCode::Esc));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert!(!app.should_quit());
+}
+
+#[test]
+fn a_typed_path_is_opened_and_a_refusal_keeps_the_text() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    assert_eq!(app.workspaces_view().screen, Screen::New);
+
+    type_text(&mut app, "~/code");
+    app.take_actions();
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(workspace_opens(&mut app), vec!["~/code".to_owned()]);
+
+    app.update(Msg::Done(ActionOutcome::CreateWorkspaceFailed {
+        message: "root does not exist: ~/code".to_owned(),
+    }));
+    assert_eq!(app.workspaces_view().path(), "~/code", "the typo stays");
+    assert!(
+        app.status().error().is_some(),
+        "the refusal is on the strip, above the composer"
+    );
+    assert_eq!(app.workspaces_view().screen, Screen::New);
+}
+
+#[test]
+fn a_completion_answer_for_text_that_moved_is_dropped() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    type_text(&mut app, "a");
+    let completions = completions(&mut app);
+    let (text, generation) = completions.last().expect("a completion read").clone();
+    assert_eq!(text, "a");
+
+    app.update(Msg::Done(ActionOutcome::Paths {
+        generation,
+        text: text.clone(),
+        candidates: vec!["ab".to_owned()],
+    }));
+    assert_eq!(app.workspaces_view().candidates(), ["ab".to_owned()]);
+
+    type_text(&mut app, "c");
+    app.take_actions();
+    // The generation is now one ahead, so the old answer cannot apply.
+    app.update(Msg::Done(ActionOutcome::Paths {
+        generation,
+        text: "ac".to_owned(),
+        candidates: vec!["ac/d".to_owned()],
+    }));
+    assert_eq!(
+        app.workspaces_view().candidates(),
+        ["ab".to_owned()],
+        "a stale read never rewrites the list"
+    );
+}
+
+#[test]
+fn opening_a_workspace_switches_promotes_and_loads_its_list_and_marks() {
+    let (mut app, active, _) = booted(80, 24);
+    let second = workspace("pocket");
+    let second_id = second.id;
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace_row(active, "robi"), second],
+    }));
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+
+    assert_eq!(app.active_workspace_id(), Some(second_id));
+    assert_eq!(
+        app.snapshot().recent_workspace_ids.first(),
+        Some(&second_id),
+        "the opened workspace is the most recent"
+    );
+    let actions = app.take_actions();
+    assert!(actions.iter().any(
+        |action| matches!(action, Action::LoadSessions { workspace, .. } if *workspace == second_id)
+    ));
+    assert!(actions.iter().any(
+        |action| matches!(action, Action::LoadMcp { workspace, .. } if *workspace == second_id)
+    ));
+    assert!(actions.iter().any(
+        |action| matches!(action, Action::FocusMcp { workspace } if *workspace == second_id)
+    ));
+    assert_eq!(app.workspace_rows().first().map(|w| w.id), Some(second_id));
+    assert_eq!(app.open_session_id(), None, "the old transcript is gone");
+}
+
+#[test]
+fn an_mcp_frame_refreshes_only_the_active_workspaces_marks() {
+    let (mut app, workspace, _) = booted(80, 24);
+    app.take_actions();
+
+    app.update(Msg::Agent(EventEnvelope::mcp_status(&workspace.to_string())));
+    assert_eq!(mcp_loads(&mut app), vec![workspace]);
+
+    app.update(Msg::Agent(EventEnvelope::mcp_status(
+        &WorkspaceId::new().to_string(),
+    )));
+    assert!(mcp_loads(&mut app).is_empty(), "another workspace's servers");
+}
+
+#[test]
+fn the_overlay_marks_a_running_and_a_waiting_session() {
+    let (mut app, workspace, first) = booted(80, 24);
+    let live = session(workspace, Some("live"));
+    let live_id = live.id;
+    let mut waiting = session(workspace, Some("waiting"));
+    waiting.turn_display = crate::domain::chat_session::model::TurnDisplay::AwaitingApproval;
+    let waiting_id = waiting.id;
+    let open = app.open_session().expect("a session").clone();
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![open, live.clone(), waiting.clone()],
+        running: vec![live_id],
+    }));
+    app.take_actions();
+
+    assert_eq!(app.mark_of(&live), Mark::Running);
+    assert_eq!(app.mark_of(&waiting), Mark::Awaiting);
+    assert_eq!(
+        app.mark_of(&app.sessions()[0]),
+        Mark::Idle,
+        "the first session is not running"
+    );
+
+    // The open session's own turn is taken from the phase, so the mark does not
+    // wait for the list read that a frame would trigger.
+    let open = app.sessions()[0].clone();
+    app.update(Msg::Agent(EventEnvelope::from_core_event(
+        robi_core::event::Event::TurnStarted {
+            session: open.id,
+        },
+    )));
+    assert_eq!(app.mark_of(&open), Mark::Running);
+    assert_eq!(app.open_session_id(), Some(open.id));
+    assert!(waiting_id != first && live_id != first);
+}
+
+#[test]
+fn the_sessions_overlay_draws_a_panel_over_the_transcript() {
+    let mut app = with_messages(80, 24, vec![Message::user("read the config")]);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("sessions"), "the panel names itself: {frame}");
+    assert!(
+        frame.contains("a session"),
+        "the row is drawn: {frame}"
+    );
+    assert!(
+        frame
+            .lines()
+            .nth(usize::from(crate::tui::view::FRAME_PAD))
+            .is_some_and(|row| row.contains("robi")),
+        "the header still names the workspace: {frame}"
+    );
+
+    press(&mut app, key(KeyCode::Esc));
+    assert!(
+        !screen(&app, 80, 24).contains("sessions"),
+        "Esc takes the panel away"
+    );
+}
+
+#[test]
+fn the_create_screen_shows_the_typed_path_and_its_candidates() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    type_text(&mut app, "~/co");
+    let completions = completions(&mut app);
+    let (text, generation) = completions.last().expect("a completion read").clone();
+    app.update(Msg::Done(ActionOutcome::Paths {
+        generation,
+        text,
+        candidates: vec!["~/code".to_owned()],
+    }));
+
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("path"), "{frame}");
+    assert!(frame.contains("~/co"), "{frame}");
+    assert!(frame.contains("~/code"), "the candidate is listed: {frame}");
+}
+
+#[test]
+fn the_header_summarises_the_mcp_servers_in_one_word() {
+    use crate::agent::mcp::McpServerStatus;
+
+    fn server(status: &str) -> McpServerStatus {
+        McpServerStatus {
+            id: "sentry".to_owned(),
+            status: status.to_owned(),
+            title: None,
+            icon: None,
+            tool_count: 0,
+        }
+    }
+
+    let (mut app, workspace, _) = booted(80, 24);
+    app.take_actions();
+    let header = screen(&app, 80, 24)
+        .lines()
+        .nth(usize::from(crate::tui::view::FRAME_PAD))
+        .expect("a header")
+        .to_owned();
+    assert!(
+        !header.contains("MCP"),
+        "no servers configured, nothing to say: {header:?}"
+    );
+
+    let generation = app.mcp_generation();
+    app.update(Msg::Done(ActionOutcome::Mcp {
+        workspace,
+        generation,
+        servers: vec![server("connected")],
+    }));
+    let frame = screen(&app, 80, 24);
+    let bar = usize::from(crate::tui::view::FRAME_PAD);
+    let header = frame.lines().nth(bar).expect("a header");
+    assert!(header.trim_end().ends_with("MCP Online"), "{header:?}");
+    let column = 80 - crate::tui::view::GUTTER - "MCP Online".len() as u16;
+    assert_eq!(
+        foreground(&app, 80, 24, column, bar as u16),
+        crate::tui::theme::SUCCESS,
+        "a healthy workspace reads green"
+    );
+
+    let generation = app.mcp_generation();
+    app.update(Msg::Done(ActionOutcome::Mcp {
+        workspace,
+        generation,
+        servers: vec![server("connected"), server("failed")],
+    }));
+    let frame = screen(&app, 80, 24);
+    let bar = usize::from(crate::tui::view::FRAME_PAD);
+    let header = frame.lines().nth(bar).expect("a header");
+    assert!(header.trim_end().ends_with("MCP Failed"), "{header:?}");
+    let column = 80 - crate::tui::view::GUTTER - "MCP Failed".len() as u16;
+    assert_eq!(
+        foreground(&app, 80, 24, column, bar as u16),
+        crate::tui::theme::DANGER,
+        "one dead server is not online"
+    );
+}
+
+#[test]
+fn a_finished_turn_ends_with_its_worked_for_line() {
+    let app = with_messages(
+        80,
+        24,
+        vec![Message::user("read the config"), Message::assistant("done")],
+    );
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("Worked for"), "{frame}");
+    // Gray, like the webview's: it is a footnote, not another block.
+    let y = rows(&app, 80, 24)
+        .iter()
+        .position(|row| row.contains("Worked for"))
+        .expect("the footer's row") as u16;
+    assert_eq!(
+        foreground(&app, 80, 24, crate::tui::view::GUTTER, y),
+        crate::tui::theme::INK_MUTED
+    );
+}
+
+#[test]
+fn an_open_turn_shows_its_activity_line_and_no_footer() {
+    let (mut app, _, session) = booted(80, 24);
+    app.update(Msg::Done(ActionOutcome::Transcript {
+        session,
+        generation: app.transcript().generation(),
+        messages: vec![Message::user("read the config"), Message::assistant("working")],
+    }));
+    app.update(Msg::Agent(turn_started(session)));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("Thinking"), "{frame}");
+    assert!(
+        !frame.contains("Worked for"),
+        "a running turn has no duration yet: {frame}"
+    );
+
+    app.update(Msg::Agent(finished(session)));
+    let frame = screen(&app, 80, 24);
+    assert!(!frame.contains("Thinking"), "{frame}");
+    assert!(frame.contains("Worked for"), "{frame}");
+}
+
+
+#[test]
+fn the_switcher_paints_the_row_the_keys_act_on_as_a_full_width_band() {
+    let (mut app, active, _) = booted(70, 22);
+    let second = workspace("pocket");
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace_row(active, "robi"), second],
+    }));
+    app.take_actions();
+    press(&mut app, ctrl(KeyCode::Char('w')));
+
+    let band = crate::tui::view::rows::SELECTED_BG;
+    // `robi`, `pocket`, then the two action rows: the arrows reach every one of
+    // them, and each is highlighted from its first cell to the panel's inner
+    // edge. A theme helper carrying the canvas background used to cancel the
+    // highlight, and on the two action rows that was the only thing to see.
+    let labels = ["robi", "pocket", "Manage workspaces", "New workspace"];
+    for (index, label) in labels.iter().enumerate() {
+        let frame_rows = rows(&app, 70, 22);
+        // Below the panel's title, so the header's `robi` is not the row found.
+        let panel = frame_rows
+            .iter()
+            .position(|row| row.contains("workspaces"))
+            .expect("the panel's title");
+        let y = frame_rows
+            .iter()
+            .skip(panel)
+            .position(|row| row.contains(label))
+            .unwrap_or_else(|| panic!("{label} is drawn: {frame_rows:#?}")) as u16
+            + panel as u16;
+        let line = &frame_rows[y as usize];
+        let start = line.find(label).expect("the label") as u16;
+        // The last cell inside the border, so the band is a row and not a word.
+        let inner_right = u16::try_from(line.trim_end().chars().count()).unwrap_or(0) - 2;
+        assert_eq!(
+            background(&app, 70, 22, start, y),
+            band,
+            "the first character of {label:?} is highlighted: {line:?}"
+        );
+        assert_eq!(
+            background(&app, 70, 22, inner_right, y),
+            band,
+            "the band reaches the panel's edge on {label:?}: {line:?}"
+        );
+        if index + 1 < labels.len() {
+            press(&mut app, key(KeyCode::Down));
+        }
+    }
+}
+
+#[test]
+fn the_switcher_erases_what_the_transcript_drew_under_it() {
+    // The empty state's sentence is centred in the transcript, which is where the
+    // panel lands: without a clear, it read through the panel's background.
+    let (mut app, _, _) = booted(70, 22);
+    app.take_actions();
+    assert!(
+        screen(&app, 70, 22).contains("No messages yet."),
+        "the empty state is on screen before the panel is"
+    );
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    let frame = screen(&app, 70, 22);
+    assert!(frame.contains("workspaces"), "{frame}");
+    assert!(
+        !frame.contains("No messages yet."),
+        "nothing shows through the panel: {frame}"
+    );
+
+    // The create screen lands in the same place and must erase it too.
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    let frame = screen(&app, 70, 22);
+    assert!(frame.contains("path"), "{frame}");
+    assert!(!frame.contains("No messages yet."), "{frame}");
+}
+
+#[test]
+fn the_manage_view_and_the_startup_prompt_take_the_whole_frame() {
+    let (mut app, active, _) = booted(80, 24);
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace_row(active, "robi")],
+    }));
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    let frame = screen(&app, 80, 24);
+    assert_eq!(app.mode(), crate::tui::state::Mode::Manage);
+    assert!(frame.contains("workspaces \u{b7} 1 of 1"), "{frame}");
+    assert!(
+        !frame.contains("Message robi"),
+        "the composer is not drawn under a dedicated view: {frame}"
+    );
+    assert!(frame.contains("Ctrl-D remove"), "{frame}");
+}
+
+/// An app on the startup question: the path has no workspace, and one other
+/// workspace exists in the database.
+fn missing_page() -> (App, WorkspaceId) {
+    let mut app = App::new(
+        ViewState::default(),
+        "sqlite://test.db",
+        PathBuf::from("/elsewhere/pocket"),
+        morning(),
+    );
+    app.resize(80, 24);
+    let other = workspace("robi");
+    let other_id = other.id;
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![other],
+    }));
+    (app, other_id)
+}
+
+/// An app whose remembered session is already the open one, as a restart leaves
+/// it: `tui.json` names a session that is still in the list.
+fn restored(width: u16, height: u16) -> (App, WorkspaceId, SessionId) {
+    let (mut app, workspace, session) = booted(width, height);
+    app.take_actions();
+    let generation = app.sessions_generation();
+    let open = app.open_session().expect("a session").clone();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![open],
+        running: Vec::new(),
+    }));
+    (app, workspace, session)
+}
+
+#[test]
+fn the_first_session_listing_reads_the_restored_open_session() {
+    // The bug: `tui.json` names a session that is still listed, so nothing looked
+    // like a selection change and no read was issued. The frame stayed empty
+    // until another session had been opened and come back from.
+    let workspace = workspace("robi");
+    let session = session(workspace.id, Some("a session"));
+    let session_id = session.id;
+    let workspace_id = workspace.id;
+    let view = ViewState {
+        active_workspace_id: Some(workspace_id),
+        open_session_id: Some(session_id),
+        ..ViewState::default()
+    };
+    let mut app = App::new(view, "sqlite://test.db", test_workspace_path(), morning());
+    app.resize(80, 24);
+    app.take_actions();
+
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace],
+    }));
+    app.take_actions();
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace: workspace_id,
+        generation,
+        sessions: vec![session],
+        running: Vec::new(),
+    }));
+
+    assert_eq!(
+        reloads(&mut app),
+        vec![session_id],
+        "the first listing reads the restored session's transcript"
+    );
+}
+
+#[test]
+fn a_later_listing_that_keeps_the_open_session_still_does_not_reload() {
+    let (mut app, _, session) = restored(80, 24);
+    let generation = app.sessions_generation();
+    let open = app.open_session().expect("a session").clone();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace: app.active_workspace_id().expect("a workspace"),
+        generation,
+        sessions: vec![titled(open, "renamed")],
+        running: Vec::new(),
+    }));
+    assert!(reloads(&mut app).is_empty());
+    assert_eq!(app.open_session_id(), Some(session));
+    assert_eq!(app.session_title(), "renamed");
+}
+
+#[test]
+fn enter_on_the_session_that_is_already_open_reloads_it() {
+    let (mut app, workspace, first) = restored(80, 24);
+    let second = session(workspace, Some("second"));
+    let second_id = second.id;
+    let open = app.open_session().expect("a session").clone();
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![open, second],
+        running: Vec::new(),
+    }));
+    app.take_actions();
+
+    // The cursor lands on the open session, one row under the action row.
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    assert_eq!(app.selected_session().map(|row| row.id), Some(first));
+
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert_eq!(
+        reloads(&mut app),
+        vec![first],
+        "`Enter` on the open session is still a request to read it"
+    );
+
+    // And another row still switches.
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.open_session_id(), Some(second_id));
+}
+
+#[test]
+fn the_sessions_first_row_opens_the_landing_page() {
+    let (mut app, _, _) = restored(80, 24);
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    // Up from the open session's row reaches the action row.
+    press(&mut app, key(KeyCode::Up));
+    assert!(app.session_action_selected());
+    press(&mut app, key(KeyCode::Enter));
+
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert!(app.landing(), "the greeting, with nothing created yet");
+    assert!(
+        created_sessions(&mut app).is_empty(),
+        "the row appears with the first message"
+    );
+    assert!(screen(&app, 80, 24).contains("Good morning"));
+}
+
+#[test]
+fn a_typed_path_with_no_workspace_asks_instead_of_opening_another() {
+    // The path the process was started on is not a workspace here.
+    let mut app = App::new(
+        ViewState::default(),
+        "sqlite://test.db",
+        PathBuf::from("/elsewhere/pocket"),
+        morning(),
+    );
+    app.resize(80, 24);
+    let other = workspace("robi");
+    let other_id = other.id;
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![other],
+    }));
+
+    assert!(app.workspace_missing(), "the frame asks the question");
+    assert_eq!(
+        app.active_workspace_id(),
+        None,
+        "a remembered workspace is not a fallback for a typed path"
+    );
+    assert_ne!(app.active_workspace_id(), Some(other_id));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("No workspace at this path"), "{frame}");
+    assert!(frame.contains("/elsewhere/pocket"), "{frame}");
+
+    // `y` creates it where the reader pointed.
+    press(&mut app, key(KeyCode::Char('y')));
+    let roots = workspace_opens(&mut app);
+    assert_eq!(roots, vec!["/elsewhere/pocket".to_owned()]);
+}
+
+#[test]
+fn declining_the_missing_workspace_prompt_opens_the_switcher_over_it() {
+    let (mut app, _) = missing_page();
+    app.take_actions();
+
+    press(&mut app, key(KeyCode::Char('n')));
+    assert!(app.workspaces_open(), "the switcher opens");
+    assert!(
+        app.missing_workspace_page(),
+        "and the question stays the page underneath it"
+    );
+    assert!(
+        !app.workspace_missing(),
+        "the switcher owns the keyboard while it is up"
+    );
+    assert!(workspace_opens(&mut app).is_empty(), "nothing was created");
+
+    // Closing the overlay goes back to the question, not to a chat frame with
+    // no workspace in it.
+    press(&mut app, key(KeyCode::Esc));
+    assert!(!app.workspaces_open());
+    assert!(app.workspace_missing(), "the question is asked again");
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("No workspace at this path"), "{frame}");
+    assert!(frame.contains("/elsewhere/pocket"), "{frame}");
+
+    // And `n` opens it again: the two answers are both still there.
+    press(&mut app, key(KeyCode::Char('n')));
+    assert!(app.workspaces_open());
+}
+
+#[test]
+fn choosing_a_workspace_from_the_question_leaves_the_question() {
+    let (mut app, first) = missing_page();
+    app.take_actions();
+
+    press(&mut app, key(KeyCode::Char('n')));
+    press(&mut app, key(KeyCode::Enter));
+
+    assert_eq!(app.active_workspace_id(), Some(first));
+    assert!(!app.missing_workspace_page(), "the question is answered");
+    assert!(!app.workspaces_open());
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+    assert!(!screen(&app, 80, 24).contains("No workspace at this path"));
+}
+
+#[test]
+fn creating_the_paths_workspace_from_the_question_also_answers_it() {
+    let (mut app, _) = missing_page();
+    app.take_actions();
+
+    press(&mut app, key(KeyCode::Char('n')));
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    assert_eq!(app.workspaces_view().screen, Screen::New);
+    type_text(&mut app, "/elsewhere/pocket");
+    app.take_actions();
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(
+        workspace_opens(&mut app),
+        vec!["/elsewhere/pocket".to_owned()]
+    );
+
+    let opened = workspace("pocket");
+    let id = opened.id;
+    app.update(Msg::Done(ActionOutcome::WorkspaceOpened {
+        workspace: Box::new(opened),
+        created: true,
+    }));
+    assert_eq!(app.active_workspace_id(), Some(id));
+    assert!(!app.missing_workspace_page());
+}
+
+#[test]
+fn the_path_of_the_process_picks_its_workspace() {
+    let target = workspace("pocket");
+    let mut app = App::new(
+        ViewState::default(),
+        "sqlite://test.db",
+        PathBuf::from(format!("{}/", target.root)),
+        morning(),
+    );
+    app.resize(80, 24);
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace("robi"), target.clone()],
+    }));
+
+    assert!(!app.workspace_missing());
+    assert_eq!(app.active_workspace_id(), Some(target.id));
+    assert_eq!(app.snapshot().recent_workspace_ids.first(), Some(&target.id));
+}
+
+#[test]
+fn the_switcher_manage_row_opens_the_manage_view_and_enter_opens_a_workspace() {
+    let (mut app, active, _) = booted(80, 24);
+    let second = workspace("pocket");
+    let second_id = second.id;
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace_row(active, "robi"), second],
+    }));
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    // The two action rows follow the recent list.
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Manage);
+    assert!(
+        !app.workspaces_open(),
+        "the manage view replaces the switcher, it does not stack on it"
+    );
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("workspaces"), "{frame}");
+
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.active_workspace_id(), Some(second_id));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+}
+
+#[test]
+fn the_manage_view_filters_and_removes_behind_a_confirmation() {
+    let (mut app, active, _) = booted(80, 24);
+    let second = workspace("pocket");
+    let second_id = second.id;
+    let generation = app.workspaces_generation();
+    app.update(Msg::Done(ActionOutcome::Workspaces {
+        generation,
+        workspaces: vec![workspace_row(active, "robi"), second],
+    }));
+    app.take_actions();
+
+    press(&mut app, ctrl(KeyCode::Char('w')));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Manage);
+
+    type_text(&mut app, "pocket");
+    assert_eq!(app.manage_rows().len(), 1);
+    assert_eq!(app.manage_selected().map(|row| row.id), Some(second_id));
+
+    press(&mut app, ctrl(KeyCode::Char('d')));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Confirm);
+    press(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(
+        app.mode(),
+        crate::tui::state::Mode::Manage,
+        "cancelling goes back to the list"
+    );
+
+    press(&mut app, ctrl(KeyCode::Char('d')));
+    press(&mut app, key(KeyCode::Char('y')));
+    let actions = app.take_actions();
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::DeleteWorkspace { workspace } if *workspace == second_id
+    )));
+
+    press(&mut app, key(KeyCode::Esc));
+    assert_eq!(app.mode(), crate::tui::state::Mode::Chat);
+}
+
+#[test]
+fn the_sessions_panel_puts_the_action_row_above_the_sessions() {
+    let (mut app, _, _) = restored(80, 24);
+    app.take_actions();
+    press(&mut app, ctrl(KeyCode::Char('s')));
+
+    let frame_rows = rows(&app, 80, 24);
+    // Below the panel's title: the header names the session too.
+    let panel = frame_rows
+        .iter()
+        .position(|row| row.contains("sessions"))
+        .expect("the panel's title");
+    let action = frame_rows
+        .iter()
+        .skip(panel)
+        .position(|row| row.contains("New session"))
+        .expect("the action row");
+    let session = frame_rows
+        .iter()
+        .skip(panel)
+        .position(|row| row.contains("a session"))
+        .expect("the session row");
+    assert!(
+        action < session,
+        "the way to a fresh chat is the first row: {frame_rows:#?}"
+    );
+
+    // The action row is highlighted like any other when the cursor is on it.
+    press(&mut app, key(KeyCode::Up));
+    let band = crate::tui::view::rows::SELECTED_BG;
+    let y = (panel + action) as u16;
+    let left = frame_rows[y as usize].find('+').expect("the marker") as u16;
+    assert_eq!(background(&app, 80, 24, left, y), band);
+}
+
+
+
+
+#[test]
+fn the_landing_page_draws_a_green_greeting_over_the_composer() {
+    let (mut app, _, _) = booted(80, 24);
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    let frame_rows = rows(&app, 80, 24);
+    let greeting = frame_rows
+        .iter()
+        .position(|row| row.contains("Good morning"))
+        .expect("the greeting");
+    let band = frame_rows
+        .iter()
+        .position(|row| row.contains('│'))
+        .expect("the composer's rail");
+    assert!(
+        greeting < band,
+        "the composer sits under the greeting: {frame_rows:#?}"
+    );
+    assert!(
+        greeting > 3,
+        "and both are centred, not pinned to the top: {frame_rows:#?}"
+    );
+    // The greeting is green, and the header names the chat the way the web shell
+    // does for a chat with no row yet.
+    let line = &frame_rows[greeting];
+    let x = line.find("Good morning").expect("the label") as u16;
+    assert_eq!(
+        foreground(&app, 80, 24, x, greeting as u16),
+        crate::tui::theme::MODE_ASK
+    );
+    let header = usize::from(crate::tui::view::FRAME_PAD);
+    assert!(
+        frame_rows[header].contains("New chat"),
+        "{:?}",
+        frame_rows[header]
+    );
+    assert!(
+        !screen(&app, 80, 24).contains("No messages yet."),
+        "the landing page is not an empty transcript"
+    );
+}
+
+#[test]
+fn a_fresh_workspace_with_no_sessions_shows_the_landing_page() {
+    // No session is open and the listing is empty: the greeting, not "No sessions
+    // in this workspace yet." with a dead composer under it.
+    let (mut app, workspace, _) = booted(80, 24);
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: Vec::new(),
+        running: Vec::new(),
+    }));
+    assert!(app.landing());
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("Good morning"), "{frame}");
+    assert!(!frame.contains("No sessions"), "{frame}");
+
+    // And a message sent from it creates the row.
+    type_text(&mut app, "hello");
+    press(&mut app, key(KeyCode::Enter));
+    let created = created_sessions(&mut app);
+    assert_eq!(created, vec![workspace]);
+}
+
+#[test]
+fn deleting_the_last_session_lands_on_the_greeting_rather_than_a_dead_composer() {
+    let (mut app, _, session) = restored(80, 24);
+    app.take_actions();
+
+    app.update(Msg::Done(ActionOutcome::SessionDeleted { session }));
+    assert_eq!(app.open_session_id(), None);
+    assert!(app.landing());
+    assert!(screen(&app, 80, 24).contains("Good morning"));
+}
+
+#[test]
+fn the_greeting_follows_the_clock_the_process_started_with() {
+    use crate::tui::state::landing::Greeting;
+
+    for (greeting, label) in [
+        (Greeting::Morning, "Good morning"),
+        (Greeting::Afternoon, "Good afternoon"),
+        (Greeting::Evening, "Good evening"),
+    ] {
+        let mut app = App::new(
+            ViewState::default(),
+            "sqlite://test.db",
+            test_workspace_path(),
+            greeting,
+        );
+        app.resize(80, 24);
+        let workspace = workspace("robi");
+        let workspace_id = workspace.id;
+        let generation = app.workspaces_generation();
+        app.update(Msg::Done(ActionOutcome::Workspaces {
+            generation,
+            workspaces: vec![workspace],
+        }));
+        let generation = app.sessions_generation();
+        app.update(Msg::Done(ActionOutcome::Sessions {
+            workspace: workspace_id,
+            generation,
+            sessions: Vec::new(),
+            running: Vec::new(),
+        }));
+        assert!(app.landing());
+        assert!(screen(&app, 80, 24).contains(label), "{label}");
+    }
+}
+
+#[test]
+fn a_tool_call_next_in_line_is_not_a_waiting_card() {
+    // The bug: between the model's response and the call's execution, every call
+    // is `pending` + `not_started`. The transcript drew a shell command that runs
+    // without asking as one waiting for an approval, with the attention rail.
+    let (mut app, _, session) = booted(80, 24);
+    let call = pending_call("shell", serde_json::json!({ "command": "ls" }));
+    let id = call.id;
+    app.update(Msg::Agent(turn_started(session)));
+    land(
+        &mut app,
+        session,
+        vec![Message::assistant_with_tool_calls("", vec![call])],
+    );
+
+    let frame = screen(&app, 80, 24);
+    assert!(
+        !frame.contains(tool_card::WAITING_LABEL),
+        "a running turn does not ask: {frame}"
+    );
+    assert!(frame.contains(tool_card::RUNNING_LABEL), "{frame}");
+    assert!(
+        app.approval().is_none(),
+        "and no approval is open for it"
+    );
+    assert!(
+        app.transcript()
+            .rows()
+            .iter()
+            .all(|row| !row.attention),
+        "no card wears the attention rail"
+    );
+    let _ = id;
+}
+
+#[test]
+fn the_same_call_becomes_a_waiting_card_when_the_turn_pauses() {
+    let (app, session, id) = paused(80, 24);
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains(tool_card::WAITING_LABEL), "{frame}");
+    assert!(
+        app.transcript().rows().iter().any(|row| row.attention),
+        "the paused card wears the attention rail"
+    );
+    let pending = app
+        .transcript()
+        .messages()
+        .iter()
+        .flat_map(|message| message.tool_calls.iter())
+        .find(|call| call.id == id)
+        .expect("the call");
+    assert!(tool_card::needs_decision(pending, crate::tui::state::Phase::Idle));
+    let _ = session;
+}
+
+
+#[test]
+fn zz_dump_paused() {
+    let (app, _, _) = paused(80, 24);
+    println!("{}", screen(&app, 80, 24));
+}
+

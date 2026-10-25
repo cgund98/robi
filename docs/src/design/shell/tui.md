@@ -95,9 +95,9 @@ crates/robi/
     theme.rs         # Style constants; the peer of visual-style.md
     persist.rs       # ~/.robi/tui.json
     state/           # transcript, sessions, workspaces, composer,
-                     # approval, detail, settings, notices
-    view/            # header, transcript, detail, composer, plan,
-                     # sessions, workspaces, settings
+                     # approval, prompt, confirm, status, detail
+    view/            # header, transcript, detail, composer, prompt,
+                     # strip, sessions, workspaces
   src/bin/robi-tui.rs
 ```
 
@@ -148,6 +148,39 @@ that happened too early" anti-signal.
 
 In-process, no listener, no port. `robi-tui` shares `ROBI_DATABASE_URL` with
 `robi-api` and `src-tauri`, so all three see the same sessions.
+
+### The workspace argument
+
+```
+robi-tui [PATH]
+```
+
+`PATH` is the workspace the process opens, and it is **the** answer to which
+sessions the reader starts with: the remembered workspace from `tui.json` is not
+a fallback. Without an argument the path is the working directory, so
+`cd ~/code/pocket && robi-tui` and `robi-tui ~/code/pocket` are the same session
+list. The argument is canonicalised before it is compared, because the store keeps
+a canonical root and one directory has many spellings.
+
+A path with no workspace row behind it is a **prompt**, not a silent fallback to
+some other workspace: `No workspace at this path.` with the path under it, and two
+answers — `y` creates the workspace there (`open_workspace`, the same call the
+`POST /workspaces` route makes), `n` opens the switcher so an existing workspace
+can be chosen. Opening anything else on the reader's behalf would show them a
+session list that is not the one they asked about.
+
+**The switcher opens over the question, not instead of it.** `n` pushes the
+workspaces overlay on the mode stack above `workspace-missing`, so the question
+stays the page: the panel draws over it, dimmed, without its `y`/`n` line because
+the panel owns the keyboard. `Esc` closes the panel and returns to the question;
+choosing a row — or creating one from the panel's create screen — pops both. The
+first cut left the question first and opened the overlay in the chat, so
+`Esc`-ing the overlay landed the reader in a chat frame with no workspace, no
+session, and no way to answer.
+
+One path argument, not a flag set: a second argument is a mistake worth naming on
+stderr before the alternate screen, because a terminal that ignores an argument
+opens the wrong chat. It is checked before the terminal is taken raw.
 
 `SerializedChatRuntime` is per-process and in memory: `running_session_ids` is
 not persisted, and an actor belongs to the process that started it. Two front
@@ -203,6 +236,7 @@ pub enum Msg {
 
 pub enum Action {
     Submit { session: SessionId, text: String, files: Vec<FileAttachment> },
+    StartSession { workspace: WorkspaceId, text: String, files: Vec<FileAttachment> },
     Decide { session: SessionId, call: ToolCallId, decision: Decision },
     Stop(SessionId),
     Compact(SessionId),
@@ -233,7 +267,12 @@ touches `AppState`, and it is the only place a `.await` exists:
 | `Stop` / `Compact` | `chat_message_service.stop` / `.compact` |
 | `Reload` | `chat_message_service.list_messages` |
 | `LoadMessage` | `chat_message_service.get_message` |
-| `Rename` / `Delete` / `Create` | `chat_session_service.*` |
+| `RenameSession` / `DeleteSession` / `StartSession` | `chat_session_service.*`; `StartSession` creates the row and submits the first message in one effect, and a delete stops the turn first, as the route does |
+| `LoadWorkspaces` / `CreateWorkspace` / `DeleteWorkspace` | `workspace_service.*`; a delete closes that workspace's MCP connections |
+| `LoadSessions` | `list_chat_sessions` plus `running_session_ids` |
+| `LoadMcp` / `FocusMcp` | `mcp.status` / `mcp.focus`, the peer of `GET`/`POST /workspaces/{id}/mcp` |
+| `Probe` | `list_workspaces` inside a three-second timeout: the strip's health mark |
+| `CompletePath` | the tools' resolver, then one `read_dir`, directories only |
 | `SaveSetting` | `settings_service.*` |
 | `OpenFile` | the lifted file opener: configured `file_open_command` only |
 
@@ -270,24 +309,29 @@ Every GUI surface that is on today, its TUI form, and the phase that lands it.
 The two surfaces the GUI has switched off — `reviewScreen` and `docsViewer` in
 `src/app/surfaces.ts` — are out of scope here as well, so a TUI flag is not
 needed for them; see *Deliberately not planned*. The index status is gone with
-the index itself, so the status bar carries no index line.
+the index itself, so nothing in the frame carries an index line.
 
 | GUI surface | TUI form | Phase |
 |---|---|---|
 | `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans; user turns as a blue-railed band | T1 |
 | `Composer` textarea, drafts per session | text area, draft kept per session in `App`, in memory | T1 |
 | Send / Stop button | `Enter` / `Esc` (`Ctrl-C` also stops) | T1, T2 |
-| `ActivityLine`, streaming | header line: Thinking / Responding, elapsed | T1 |
+| `ActivityLine`, streaming | status strip above the composer: `Thinking for 4s` and animated dots, at the end of the transcript | T1 |
+| Turn footer `Worked for …` | one gray row under each closed turn, from the turn's first and last message ids | T3 |
 | `ToolCallCard` and its six variants | one background band per call, no border, muted heading and `$`; the per-variant bodies, and `Enter` on the selected card opens the whole body in a scrollable detail view | T2 |
 | Approval buttons on a card | **in-transcript**: `a` / `r` / `A` act on the selected card, with the reason as a one-line prompt | T2 |
-| `RecentsMenu` (filter, rename, delete) | sessions overlay | T3 |
-| `WorkspaceSwitcher`, `WorkspacesPage` | workspace overlay, path entry | T3 |
-| `ErrorNotices`, `ApiStatus`, MCP marks | status bar, one line, `!` separated | T3 |
-| New chat | `Ctrl-N` | T3 |
+| `RecentsMenu` (filter, rename, delete) | sessions overlay: filter-as-you-type, running spinner, waiting dot, `Ctrl-R` rename, `Ctrl-D` delete behind a confirm; `New session…` is the first row | T3 |
+| `WorkspaceSwitcher` | workspace overlay: the eight most recent, then `Manage workspaces…` and `New workspace…` | T3 |
+| `WorkspacesPage` | `manage` view: every workspace with its own filter and remove, `Ctrl-N` to create; the create screen's typed path with directory completion | T3 |
+| `robi-tui` workspace argument | `robi-tui [PATH]`, the working directory by default; a path with no workspace is a prompt, not a fallback | T3 |
+| `ErrorNotices`, `ApiStatus` | status strip above the composer: `! <error>`, `! health: …`, `sending…`, `stopping…` | T3 |
+| MCP marks in the tray | one word at the header's right edge: `MCP Online` / `MCP Failed` (per-server detail later) | T3 |
+| New chat | `Ctrl-N`: the landing page, and no session until the first message | T3 |
+| `EmptyGreeting` + welcome composer | the landing page: the greeting centred in green, the composer under it | T3 |
 | Mode `ChoiceMenu` | mode cycle in the header | T4 |
 | `ModelEffortMenu` | model picker overlay | T4 |
-| `SkillMenu` (`/` at the caret) | `/` completion over the composer | T4 |
-| `ContextMeter` | token count in the status bar, compact from a menu | T4 |
+| `SkillMenu` (`@` at the caret) | `@` completion over the composer | T4 |
+| `ContextMeter` | token count in the status strip, compact from a menu | T4 |
 | Compact | `Ctrl-L`, divider row on `transcript_compacted` | T4 |
 | General settings | settings surface, section list | T5 |
 | Model provider settings | settings surface, secrets masked | T5 |
@@ -377,15 +421,19 @@ renders a two-message transcript.
   then idle. Deltas never write text.
 - `Ctrl-C` sends `Stop` (T2 adds `Esc` as the same interrupt); a cancelled turn
   leaves a resolvable transcript, so the view reloads rather than truncating.
-- Phase, elapsed, and a caret at the end of streaming text.
+- Phase, elapsed, and a caret at the end of streaming text. The phase is the
+  status strip above the composer — `Thinking for 4s` with the webview's
+  `ThinkingDots` — not a header segment; T3 moved it there with every other
+  status.
 - Assistant prose rendered as markdown — headings, lists, tables, fenced code,
   links, quotes, GFM alerts — through `tui-markdown`, styled from `theme.rs`.
 - Scrolling: `↑`/`↓` (when the composer is empty or the transcript has focus),
   `PageUp`/`PageDown`, `Ctrl-U`/`Ctrl-D`, `Home`/`End`, and the mouse wheel. The
   wheel is enabled next to raw mode and turned off before the alternate screen
   goes.
-- The footer's progress widget: eight cells with one moving head, right-aligned
-  under the composer, shown only while a turn runs or a stop is in flight.
+- The status strip's progress widget: eight cells with one moving head, at the
+  right edge of the strip above the composer, shown only while a turn runs or a
+  stop is in flight. T3 moved it there with the rest of the status.
 - The 2-second catch-up: while a turn is busy and no frame for the open session
   has arrived, reload. Elapsed time and the quiet stretch are counted in 250 ms
   ticks, not wall clock, so `update` stays a pure function.
@@ -413,13 +461,22 @@ provider.
   interrupted, and a second call in the same batch follows the same rule.
 - **A waiting card wears an orange rail and moving dots.** The rail column every
   card row shares is `--attention` (`#e39a3c`, the same value as `--mode-plan`,
-  under its own name) while the call is `pending` and `not_started`, and the quiet
-  `--ink-faint` otherwise. The label row reads **waiting for approval** followed by
-  one, two, or three dots, advancing **once a second** — four 250 ms ticks a step,
-  so a full cycle is three seconds. A quarter-second flicker reads as machinery
-  waiting on itself; a slow, even beat reads as a prompt. That is what makes a pause
-  visible when it is *not* the selected card: the selection only ever marks one
-  block, and a pause can be anywhere in the transcript.
+  under its own name) while the call is `pending`, `not_started`, **and the turn
+  is idle**, and the quiet `--ink-faint` otherwise. The idle half is the peer of
+  `needsDecision` in `toolCallView.ts`, and without it the rail was wrong for
+  every call between the model's response and its own execution: that is exactly
+  the `pending` + `not_started` state, because that is how a model's request
+  arrives. A shell command that runs without asking wore the rail and the label
+  of a question for the whole of that window.
+  The label row reads **waiting for approval** followed by one, two, or three
+  dots, advancing **once a second** — four 250 ms ticks a step, so a full cycle is
+  three seconds. A quarter-second flicker reads as machinery waiting on itself; a
+  slow, even beat reads as a prompt. That is what makes a pause visible when it is
+  *not* the selected card: the selection only ever marks one block, and a pause can
+  be anywhere in the transcript.
+  A card in the running window says **running…** instead, and its heading reads
+  `shell · running` rather than `shell · not started`: the turn is what the reader
+  is watching, and a call that is next in line is not a call that has stalled.
 - **The dots are painted, not stored.** A row whose text changed every second would
   rebuild and rewrap the transcript once a second, and the scroll offset would
   twitch. The dots play into the band's own padding instead: the view rebuilds the
@@ -431,6 +488,12 @@ provider.
   long, and the band's fill saturated to nothing. The clock is a tick
   counter on `App`, never the wall clock, so `update` stays a pure function of the
   messages it has seen and `view` a pure function of the state.
+- **The activity line's dots sit in the same fixed field.** `Thinking for 4s .`
+  keeps its column as the marker advances, for the same reason as the waiting
+  card's: a fixed three-cell field after the text, never appended dots. The line
+  used to be a right-aligned header segment; T3 moved it to the strip above the
+  composer, where the webview puts it, and the header's right edge now carries the
+  one-word MCP summary instead.
 - **A selected block is lighter than the rest.** Every row of it is painted on
   `--surface-hover` and filled to the frame's content width, so a message, a
   paragraph, and a card all read the same way. This replaced a `▸` on a card's
@@ -499,16 +562,65 @@ rejection. That is `Event::AwaitingApproval` →
 
 ### T3 — Sessions and workspaces
 
-**Goal** — you can get to any session without the mouse.
+**Goal** — you can get to any session without the mouse. **Done.**
 
-- Sessions overlay: filter-as-you-type, running spinner, awaiting mark, rename,
-  delete with confirmation.
-- Workspace overlay: the 8 most recent, then manage. Create from a typed path —
-  the GUI's folder dialog has no terminal equivalent, so it is a path input with
-  completion over `list_dir`.
-- Status bar: active workspace, API health from `GET /api/v1/health` replaced by a
-  direct service probe, MCP server marks, `robi.app.v1.error` notices.
-- `robi.session.v1.*` frames update the list without a refetch of the transcript.
+- Sessions overlay on `Ctrl-S`: a filter field with the keyboard, arrows over the
+  rows, `Enter` to open, `Ctrl-R` to rename, `Ctrl-D` or `Del` to delete behind a
+  one-line confirmation. Each row carries one cell of state: a braille spinner
+  while the actor runs, an `--accent` dot while the turn waits on approval.
+  **`New session…` is the first row**, so a fresh chat is the first thing under
+  the cursor when nothing is open, and `Enter` on it creates one. `Enter` on the
+  session that is already open still issues a read: "open" always means "show me
+  this transcript".
+- Workspace overlay on `Ctrl-W`: the eight most recently **selected** workspaces
+  followed by `Manage workspaces…` and `New workspace…`. The create screen is a
+  typed path with directory completion on `Tab`. The GUI's folder dialog has no
+  terminal equivalent, so the path is resolved with the tools' own resolver
+  (`~`, relative, absolute) and handed to `open_workspace`, which still refuses a
+  path that is not a directory.
+- **Managing workspaces is a view** (`mode` `manage`), not a screen of the
+  switcher: every workspace, filtered, with remove behind the confirmation, and
+  `Ctrl-N` to create. A menu is a thing you leave in one keystroke; reading paths
+  and deleting rows is a place you stay.
+- **Panels erase what is under them.** A `Block` paints a background colour but
+  leaves the characters, so an empty transcript's centred sentence read through
+  the switcher. Every panel clears its rectangle first, and every list row is
+  painted with its background applied *after* the text style, so a selected row
+  is one unbroken band — including the two action rows, which the theme helpers
+  were silently cancelling to canvas.
+- `robi-tui [PATH]` — the process opens the workspace at `PATH`, or the working
+  directory. A path with no workspace is a prompt (`y` create, `n` switcher over
+  the question), not a fallback to whichever workspace an earlier run left open;
+  see *The workspace argument*.
+- **`Ctrl-N` opens the landing page and creates nothing.** A workspace with no
+  session open shows the webview's welcome: the time-of-day greeting
+  (`Good morning` / `afternoon` / `evening`, in `--mode-ask` green) centred above
+  the composer. The session row is created when the first message is sent —
+  `Action::StartSession` creates and submits in one step — so opening a workspace,
+  reading the list, and leaving never leaves an empty chat behind. A failed first
+  send keeps the row and puts the text back in the field.
+- `Ctrl-R` renames the open one.
+- A status strip above the composer: `! <app error>`, `! health: <reason>` from a
+  `list_workspaces` probe every five seconds, and the turn's own activity. The
+  HTTP health route is not called: the terminal does not speak HTTP, and a store
+  that answers is the fact the route is standing in for.
+- The frame keeps one blank row above the header and one below the hint
+  (`view::FRAME_PAD`), and one between the composer's underside and the hint.
+  Chrome that touches the terminal's edge reads as cut off rather than placed;
+  the transcript pays for those rows out of `body_height`.
+- One faint row of `\u{2500}` under the header, exactly the content width: the
+  frame draws no other border, so a single line is enough to say the bar above is
+  chrome and the page below is the conversation.
+- A one-word MCP summary at the header's right edge — `MCP Online`, `MCP Failed`,
+  `MCP Starting`, `MCP Offline` — because a terminal tray would cost cells and
+  say less; a status surface can carry the per-server detail later.
+- A gray `Worked for 2m 5s` under every closed turn, the webview's turn footer,
+  computed from the turn's first and last message ids.
+- `robi.session.v1.*` frames refetch the list and never the transcript;
+  `robi.mcp.v1.status` refetches the marks for the active workspace.
+- Choosing a workspace also focuses its MCP servers once, the peer of
+  `focusOpenWorkspace` in `workspaceStore.ts`, so the marks have something to
+  report without waiting for a turn.
 
 **Exit** — create a workspace by path from inside the TUI, create and rename a
 session, delete one, and see a second one marked running while a turn is in
@@ -596,11 +708,28 @@ owns the keyboard; `chat` is the base.
 
 | Mode | Enter from | Leave with |
 |---|---|---|
-| `chat` | startup | `Ctrl-C` when idle, or `q` when idle |
-| `sessions`, `workspaces`, `models` | `Ctrl-S`, `Ctrl-W`, `Ctrl-M` | `Esc` |
+| `chat` | startup; also the landing page when no session is open | `Ctrl-C` when idle, or `q` when idle |
+| `workspace-missing` | the first listing, when the path has no workspace | `y` creates it; `n` or `Esc` opens the switcher *above it*, and closing that returns here |
+| `sessions` | `Ctrl-S` | `Esc`; `Ctrl-W` replaces it |
+| `workspaces` | `Ctrl-W` | `Esc`, which steps back a screen before closing; `Ctrl-S` replaces it |
+| `manage` | the switcher's `Manage workspaces…` row | `Esc`, back to the chat; `Ctrl-S` and `Ctrl-W` replace it |
+| `models` | `Ctrl-M` | `Esc` |
 | `settings` | `Ctrl-,` | `Esc` |
 | `detail` | `Enter` on a card | `Esc`, back to the transcript |
-| `prompt` (reject reason; later rename and delete) | `r` on a pending card | `Enter`, or `Esc` which keeps the text |
+| `prompt` (reject reason, rename) | `r` on a pending card, `Ctrl-R` | `Enter`, or `Esc` which keeps the text where that matters |
+| `confirm` (delete a session or workspace) | `Ctrl-D` / `Del` in a list | `y` accepts; `n` or `Esc` cancels back to the list |
+
+The confirmation is its own mode rather than a flag on the list because the list's
+field owns printable keys: `y` would otherwise be a character in a filter and an
+answer to a question at once. One overlay at a time, also by design: `Ctrl-S` and
+`Ctrl-W` replace rather than stack, so one `Esc` always closes what is on top.
+
+**Managing workspaces is a view, not a screen of the switcher.** The switcher is a
+menu — eight rows, two actions, gone in one keystroke — and a full list stacked on
+it read as the same thing twice, with the menu's frame still visible around it.
+`manage` owns the frame the way `detail` does: a title with its position, a filter,
+the list, and its own hint row. `Enter` opens, `Ctrl-N` creates, `Ctrl-D` removes
+behind the confirmation, `Esc` returns to the chat.
 
 There is no `approval` mode. A pause is state, answered on whichever card is
 selected, so it does not need the keyboard to itself — the design's own
@@ -611,16 +740,16 @@ Global bindings, checked before the mode's own map:
 
 | Key | Does |
 |---|---|
-| `Ctrl-C` | Decline a paused batch. Otherwise: stop the running turn. Idle: quit |
+| `Ctrl-C` | Decline a paused batch. Otherwise: cancel a confirmation, stop the running turn, close an overlay. Idle: quit |
 | `Esc` | Unwind one level: the reason prompt, then the detail view, then the selection (handing the keyboard back to the composer), then stop the turn. Never quits |
 | `q` | Quit, idle only **and transcript focus only** |
-| `Ctrl-N` | New chat |
-| `Ctrl-R` | Rename the open session |
+| `Ctrl-N` | New chat: the landing page, with no session created until the first message. A new workspace from inside the workspace overlay |
+| `Ctrl-R` | Rename: the open session from `chat`, the selected one from the sessions overlay |
 | `Ctrl-S` / `Ctrl-W` / `Ctrl-M` | Sessions / workspaces / model + effort |
 | `Ctrl-,` | Settings |
 | `Ctrl-L` | Compact |
 | `Tab` / `Shift-Tab` | Move focus between the transcript and the composer |
-| `↑` / `↓`, `j` / `k` | Move the selection block to block. The selected block is painted on `--surface-hover`, every row of it; a card waiting on a decision has an `--attention` rail and animated dots after **waiting for approval** |
+| `↑` / `↓`, `j` / `k` | Move the selection block to block. The selected block is painted on `--surface-hover`, every row of it; a card waiting on a decision — idle turn, `pending`, `not_started` — has an `--attention` rail and animated dots after **waiting for approval** |
 | Mouse wheel | Scroll the transcript (three rows a notch) |
 | `PageUp` / `PageDown` | Scroll by a screen, and release the follow lock |
 | `Ctrl-U` / `Ctrl-D` | Half a screen |
@@ -659,6 +788,18 @@ is gone, and what is left is the wheel, `PageUp`/`PageDown`, `Ctrl-U`/`Ctrl-D`
 and `Home`/`End`. `↑` on an **empty** composer hands the keyboard to the
 transcript and selects the last block, so the gesture still works from the field
 people start in.
+
+An overlay's field owns printable keys, exactly as the composer does, so its
+actions are control keys and `j`/`k` are text:
+
+| Mode | Keys |
+|---|---|
+| `sessions` | typing filters; `↑`/`↓` and `PageUp`/`PageDown` select, starting on the open session with `New session…` one `Up` above it; `Enter` opens, or goes to the landing page on the action row; `Ctrl-N` does the same; `Ctrl-R` renames; `Ctrl-D` or `Del` deletes; `Esc` closes |
+| `workspaces` (recent) | `↑`/`↓` select; `Enter` opens the row, or the screen the action row names; `Ctrl-N` opens the create screen; `Esc` closes |
+| `workspaces` (new) | typing is the path; `Tab` accepts the highlighted directory; `↑`/`↓` pick a candidate; `Enter` opens the path as typed; `Esc` goes back |
+| `manage` | typing filters; `↑`/`↓` select; `Enter` opens; `Ctrl-N` creates; `Ctrl-D` or `Del` removes; `Esc` closes |
+| `workspace-missing` | `y` creates the path's workspace; `n` or `Esc` opens the switcher |
+| `confirm` | `y` accepts; `n` or `Esc` cancels |
 | `Esc` | Drop the selection |
 
 **The arrows scroll, and the field keeps them while it holds text.** `↑`/`↓` map
@@ -682,17 +823,98 @@ TUI for its whole life: an external program is started and left to its own
 window, so there is nothing to suspend for. Opening a file is `/open`, a
 composer command, which is why it does not appear in this table.
 
+### The landing page
+
+A workspace with no session open — `Ctrl-N`, a fresh workspace, or the moment after
+the last session is deleted — is the terminal's peer of the webview's welcome: one
+centred group, the greeting and the composer together, with the header above and
+the hint below.
+
+```
+  robi · workspace · New chat
+
+                     Good morning
+
+  │
+  │   Message robi…
+  │
+  Enter send · Esc stop · Ctrl-J newline · Tab focus · ↑↓ select
+```
+
+- The greeting is `greeting.ts`'s three words, in `--mode-ask` green. The clock is
+  **read once at startup** and carried on `App`, so `update` and `view` stay pure
+  functions of state and a frame test is not a clock test.
+- The header names the chat `New chat`, which is what `sessionDisplayTitle` returns
+  for a chat with no row. `no session` stays for the frame with no workspace at all.
+- **No session exists yet.** `Ctrl-N` used to create the row immediately, which
+  meant a workspace opened, skimmed, and left collected an untitled session every
+  time. Now `Action::StartSession` creates the row *and* submits the first message
+  in one effect, and the outcome carries both: the session is selected and the
+  transcript shown as soon as it exists. A create that succeeds and a send that is
+  refused still leaves the row — the text goes back into the field and one `Enter`
+  retries it.
+- The composer keeps its per-session draft, so text typed on the landing page is
+  parked under the draft key the GUI's `composerDrafts.ts` uses for a chat with no
+  row yet.
+
+### The status strip
+
+One row between the transcript and the composer, and it is the only place a
+status is shown: T3 moved `sending…`, `stopping…`, and the activity line here
+from under the band, because a reader looks in one place or the terminal makes
+them hunt. A blank row sits between it and the band's top edge
+(`view::STRIP_GAP`), so the activity line reads as a caption over the field
+rather than as its first row; the row is not kept when the strip is idle, and
+`App::body_height` adds it only while there is something to say. One thing is said at a time, in this order — the first true one wins:
+
+| Row says | When |
+|---|---|
+| `! <message>` in `--danger` | a `robi.app.v1.error` frame, or a read that failed |
+| `! health: <reason>` in `--danger` | the five-second store probe did not answer |
+| `stopping…` | a stop is in flight |
+| `sending…` | the submit itself has not come back yet |
+| `Thinking for 4s` / `Responding for 4s` + dots | a turn is running |
+| nothing — the row is not drawn | idle, nothing failed |
+
+The activity line is the webview's `ActivityLine`: its words (`Thinking for 4s`),
+its dots, and its place at the end of the transcript — which in a terminal is the
+row directly above the composer. The dots sit in a fixed three-cell field, so the
+text before them never shifts. An error outlives a turn and outranks it, so the
+error is what stays on the row.
+
+**A notice is not a status.** The footer under the band keeps the hint and the
+answer to the last keystroke — `nothing to send`, `a title is required`,
+`stopped`, `one call decided — the next one is waiting` — because those answer
+something the reader just did and belong next to what they did it in. A failure
+the app *observed* — a failed read, a refused decision, a turn that ended
+`Failed`, a rename the service refused — is not an answer to a keystroke: it goes
+on this strip and stays there until a read succeeds.
+
 ### The progress widget
 
-Under the composer, at the right edge of the footer, a row of eight `▪` cells:
-the track in `--ink-faint`, one head in `--ink` — the same leading-edge rule
-`visual-style.md` gives the desktop shell's running spinner. The head advances
-one cell every two ticks, so a pass takes four seconds.
+At the right edge of the same strip, a row of eight `▪` cells: the track in
+`--ink-faint`, one head in `--ink` — the same leading-edge rule `visual-style.md`
+gives the desktop shell's running spinner. The head advances one cell every two
+ticks, so a pass takes four seconds.
 
 It is an **indeterminate** marquee, not a bar: a model turn reports no
 percentage, and a widget that filled would claim to know how much is left. It
 shows while a turn runs or a stop is in flight, and disappears when idle. The
-footer's notice is clipped to make room for it, never the other way round.
+status is clipped to make room for it, never the other way round.
+
+### The turn footer
+
+A closed turn ends with one gray row, `Worked for 2m 5s`, in `--ink-muted` — the
+webview's `turnDuration.ts` label, from the same two facts: the turn's first
+message id and its last. Both are UUIDv7s, so the timestamp leads the bytes and
+the gap is the turn's duration without the store keeping one.
+
+A turn is open while the phase is busy or a call is still waiting on a decision,
+and an open turn has no footer; it gets one when it closes. A single-message turn
+has no gap to report, and a compaction divider is not a turn's work, so neither
+gets one. The row is not a block: the arrow keys step over it. One blank row
+separates it from the turn — the same gap the transcript keeps between blocks —
+so it reads as the turn's footnote rather than its last sentence.
 
 ### Assistant markdown
 
@@ -796,7 +1018,12 @@ configuration, this is view state, and a scroll offset does not belong in a
 settings screen.
 
 Keys mirror the GUI's client state so the two can be compared: active workspace,
-open session, and tool-card expansion. Expansion is **one key per call id**, not
+open session, tool-card expansion, and the workspace recents (the GUI keeps
+`robi.recentWorkspaceIds` in local storage for the same reason — the switcher
+lists the eight most recently *selected*, and the service only knows creation
+order). Recents are unbounded, like the GUI's list; an id whose workspace has gone
+is skipped when the list is read. Version 3 added them; an older file loads with
+an empty list. Expansion is **one key per call id**, not
 the GUI's `id`, `id:diff`, `id:answer`: a terminal card is one band, so there is
 nothing for the extra keys to address. Scroll position and the last mode are not
 written — a rewrap invalidates a row offset, and a mode is where the reader is
@@ -899,8 +1126,50 @@ collapsed directories, docs-tray width, UI scale.
 - **The selection and the follow lock.** A turn streaming while the reader has
   selected an older block must not yank the view to the bottom. `reveal` runs on
   selection only; growth still follows the end while nothing is selected.
-- **The open session is deleted.** Reset to a new draft and reload the list. A
-  `robi.session.v1.deleted` frame does the same.
+- **The open session is deleted.** The next session in the list is opened, and an
+  empty list lands on the greeting rather than on a dead composer: the landing page
+  is what "no session" looks like, and its composer creates the next row when a
+  message is sent. A `robi.session.v1.deleted` frame takes the same path.
+- **A list refresh that keeps the open session.** A rename in another window
+  refetches the rows and **not** the transcript: a refresh is not a selection
+  change, or the reader's scroll position would be thrown away by someone else's
+  edit.
+- **A failed probe while the store is wedged.** The mark says so after three
+  seconds; the query keeps its connection until it returns, so the timeout bounds
+  the report and not the query. The frame stays live throughout.
+- **A workspace removed out from under a running session.** Its rows cascade away
+  and the actor keeps running against them: the HTTP handler has the same hole,
+  and closing it is a domain change, not a surface one.
+- **A path completion on a huge directory.** One `read_dir` per keystroke, cut to
+  eight candidates. The read is on `spawn_blocking`, so it cannot stall the pump.
+- **A stale completion or list answer.** Each carries the generation it was
+  issued at; a lower one is dropped. Two keystrokes can be in flight together.
+- **A remembered session that is still listed.** `tui.json` names the open
+  session, so the first session listing is not a "selection change" and used to
+  skip the read: the frame stayed empty and `Enter` on that row seemed to do
+  nothing until another session had been opened and come back from. The first
+  listing now always opens a session **and reads it**, and `Enter` on the open
+  session issues a read of its own.
+- **An abandoned new chat.** `Ctrl-N` creates nothing, so a reader who opens a
+  workspace, opens a new chat, and leaves without typing has left no row behind.
+  The session appears with the first message, in the same effect that sends it.
+- **A first send that fails.** The row exists by then, so it is kept: the session
+  opens with its empty transcript, the text is back in the field, and the failure
+  is on the status strip.
+- **A path with no workspace.** The startup prompt, not a fallback. Starting the
+  terminal in a directory nobody opened before is the ordinary case: opening some
+  other workspace would show a session list the reader did not ask about, and
+  silently creating one would leave a row they did not want. `y` and `n` are the
+  two answers, and the prompt returns on the next start because the path is still
+  the path.
+- **Declining the prompt and then closing the switcher.** The question is still
+  the page underneath, so `Esc` comes back to it rather than to a chat frame with
+  nothing open. Only a chosen workspace — or a created one — answers it; `Ctrl-C`
+  still leaves.
+- **A panel over an empty transcript.** The empty state is centred exactly where
+  a panel lands, so a `Block` that only tints its background left the sentence
+  legible behind the list. The panel clears its rectangle first; the same call is
+  the reason a list row's highlight is a band and not just font colour.
 - **Terminal too small.** Below 40×12 render one centered message instead of a
   broken layout.
 - **No TTY** (`robi-tui` in a pipe or CI). Refuse to start with a line on stderr,
@@ -937,6 +1206,60 @@ collapsed directories, docs-tray width, UI scale.
   only with transcript focus, `Enter` sends where `Ctrl-J` and `Alt-Enter` insert
   a newline, no key means two things in one mode, and `Esc` from each mode
   returns to `chat`. Not one test per binding.
+- The lists: one test each for the filter (case-insensitive on the title the row
+  shows), the marks (`awaiting` over `running` over idle), the recent order (a
+  stale id skipped, a duplicate not listed twice), `split_path` on `~`, an
+  absolute path, a trailing separator and a bare name, and the selection clamp.
+- The sessions rows: row zero is the action and names no session; the gaps around
+  it bound the selection; a session that vanishes takes its row with it; an empty
+  list still has the action row.
+- The landing page: `Ctrl-N` creates nothing and shows the greeting focused on the
+  composer; `Enter` issues exactly one `StartSession` carrying the typed text and
+  keeps it until the actor takes it; the outcome opens the session, clears the
+  field and goes busy; a refused send keeps the row, restores the text and puts the
+  error on the strip; a fresh workspace with no sessions and the delete-the-last
+  case both land here; the greeting's three bands each draw their own word, from a
+  fixed greeting rather than the wall clock; the greeting is `MODE_ASK` and sits
+  above the composer, centred.
+- The startup path: a typed path with no workspace shows the prompt (`y` issues one
+  `CreateWorkspace` for that exact path, `n` opens the switcher and creates
+  nothing); a path that *is* a workspace becomes active and leads the recents; a
+  refresh after startup does not re-prompt. `n` then `Esc` returns to the question
+  with its key line, `n` opens it again, and choosing a row or creating one from
+  the panel answers the question for good. A remembered session is read on the
+  first listing, `Enter` on the open session still reads it, and a later refresh
+  still does not.
+- Panels and bands: the switcher's `Manage workspaces…` and `New workspace…` rows
+  are highlighted from their first cell to the panel's inner edge (asserted on cell
+  backgrounds, not glyphs); the panel leaves no transcript text behind it; the
+  manage view draws its own title, list and hint with no composer; the sessions
+  panel puts `New session…` above the sessions and highlights it the same way.
+- The overlays: a session frame issues exactly one `LoadSessions` and **no**
+  `Reload`; a refresh that keeps the open
+  session selects nothing and a refresh that loses it opens the next; `Ctrl-D`
+  then `n` issues nothing and keeps the selection, then `y` issues one delete; a
+  rename prompt is pre-filled and sends one `RenameSession`, and an empty title
+  stays in the field with a reason; the create screen issues one `CreateWorkspace`
+  with the typed path and keeps it on a refusal; a completion answer for text the
+  field no longer holds is dropped by its generation.
+- The strip: a failure sets `! <message>` in `DANGER`, a successful reload clears
+  it while a successful probe does not, the probe fires once per twenty ticks and
+  never while one is in flight, `sending…`/`stopping…` outrank the activity line,
+  and an error outranks both. A frame test asserts the strip is two rows above
+  the composer band with a blank row between, that an idle app has no strip row at
+  all and no gap for it, and that the prompt takes a row off the transcript. A
+  blank row above the header and one under the hint are asserted too.
+- The header: one word on the right, absent with no servers, and `MCP Failed`
+  when any server has failed; frame tests assert the label and the cell colour. A
+  frame test asserts the row under it is one unbroken rule that starts at the
+  gutter and ends at the header's right edge.
+- The turn footer: `Worked for 12m 42s` from two ids 12m 42s apart, none while a
+  turn is open, one per closed turn when the last is still going, none for a
+  single-message turn or a compaction divider, and a rebuild only when the last
+  turn opens or closes — a `Thinking` → `Responding` delta leaves the rows
+  untouched. A test pins the one blank row between a closed turn and its footer,
+  and another pins the blank row between the last message and the strip's
+  activity line.
 - The composer and the pump, one test each: a send records one `Submit` and keeps
   its text until the actor takes it; the two refusals (blank, no session) each say
   why inside that same test; `Esc` stops a running turn and `Ctrl-C` stops or
@@ -971,6 +1294,10 @@ collapsed directories, docs-tray width, UI scale.
   gains decline-the-batch while paused.
 - A send while a turn runs, and a send while a turn is paused, are both taken and
   recorded as one `Submit`: the runtime decides what they mean.
+- A tool call's two states: a `pending` + `not_started` call in a **running** turn
+  is `running…` with no attention rail, no approval list and no overlay; the same
+  call in an **idle** turn is `waiting for approval` with the rail, and the two are
+  asserted on the same fixture so a predicate that loses the phase fails both.
 - The detail view renders the whole body — a two-hundred-line shell result is 203
   lines, past the band's forty-line cap — and `Esc` returns with the selection
   where it was.
@@ -987,6 +1314,10 @@ collapsed directories, docs-tray width, UI scale.
   initializer installs no stderr layer.
 - `cargo test -p robi --features tui` joins `make test`, and clippy runs
   `--all-features` so the feature-gated module is still linted.
+- The overlay panels and the status row are checked by frames for position and
+  colour, not by a golden file: the MCP summary sits at the header's right edge,
+  a `!` is `DANGER`, `MCP Online` is `SUCCESS`, and a `Worked for` row is
+  `INK_MUTED`.
 
 ## Implementation order
 
@@ -1001,7 +1332,16 @@ collapsed directories, docs-tray width, UI scale.
    **T2, done.** The modal shipped first and was replaced: covering the frame was
    the wrong answer to "a terminal has no disabled composer", and selecting a card
    answers it without taking the keyboard away.
-6. Sessions and workspaces overlays, then the status bar. T3.
+6. Sessions and workspaces overlays, then the status surface. **T3, done.** The
+   confirmation and the visible prompt came with it: the reject reason had keys
+   but no view from T2, and one shared one-row prompt fixes both. The status
+   surface is a strip above the composer rather than a bar below it, plus the
+   header's MCP word and the per-turn `Worked for` footer. The phase's last pass
+   took the startup path (`robi-tui [PATH]` and the missing-workspace prompt),
+   lifted managing workspaces out of the switcher into its own view, put
+   `New session…` first in the sessions overlay, and fixed two things only the
+   screen showed: a highlighted action row that was not, and an empty state
+   reading through a panel.
 7. Lift the model-filter helper; modes, model, effort, skills, and the `/`
    command surface. T4.
 8. Settings surface. T5.

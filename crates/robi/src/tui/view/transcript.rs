@@ -173,6 +173,9 @@ fn plain_line(row: &Row, width: u16, paint: Paint) -> Line<'static> {
         RowKind::ToolCard => band_line(row, width, band, rail),
         RowKind::DiffAdd | RowKind::DiffDel => band_line(row, width, band, rail),
         RowKind::Assistant => spans_line(row, theme::prose()),
+        // The closed turn's duration. Gray and unmarked, like the webview's:
+        // it is a footnote to the turn, not another block in it.
+        RowKind::TurnFooter => Line::from(Span::styled(row.text.clone(), theme::muted())),
         RowKind::Divider => Line::from(Span::styled(
             format!("\u{2014} {} \u{2014}", row.text),
             theme::divider(),
@@ -303,8 +306,6 @@ fn empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 theme::faint(),
             ),
         ]
-    } else if app.open_session().is_none() {
-        vec![("No sessions in this workspace yet.", theme::muted())]
     } else {
         vec![("No messages yet.", theme::muted())]
     };
@@ -326,7 +327,12 @@ mod tests {
 
     #[test]
     fn the_empty_state_names_the_database_it_opened() {
-        let mut app = App::new(ViewState::default(), "sqlite:///tmp/other.db");
+        let mut app = App::new(
+            ViewState::default(),
+            "sqlite:///tmp/other.db",
+            std::path::PathBuf::from("/tmp"),
+            crate::tui::state::landing::Greeting::Morning,
+        );
         app.resize(80, 24);
         let frame = testing::screen(&app, 80, 24);
         assert!(frame.contains("No workspaces in this database"), "{frame}");

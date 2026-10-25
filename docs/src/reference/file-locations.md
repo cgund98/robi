@@ -33,8 +33,11 @@ gitignored.
 `robi-tui` opens the desktop app's dev database —
 `~/Library/Application Support/com.github.cgund98.robi/dev/robi.db` on macOS —
 rather than a file relative to the working directory, so it shows the same
-workspaces `pnpm tauri dev` shows. See
-[the terminal shell](../design/shell/tui.md#process-model).
+workspaces `pnpm tauri dev` shows. It also opens the workspace named by its first
+argument, or the working directory when there is none, and asks before creating a
+workspace at a path that has none. See
+[the terminal shell](../design/shell/tui.md#process-model) and
+[the workspace argument](../design/shell/tui.md#the-workspace-argument).
 
 Point it at a fixed location if you want the database independent of the shell's
 working directory:

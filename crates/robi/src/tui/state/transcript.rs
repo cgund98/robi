@@ -41,6 +41,8 @@ pub enum RowKind {
     DiffDel,
     /// A full-width divider, such as **Context compacted**.
     Divider,
+    /// The gray `Worked for 2m 5s` line under a closed turn.
+    TurnFooter,
     /// A blank line between turns.
     Spacer,
 }
@@ -262,6 +264,11 @@ pub struct Transcript {
     ///
     /// Not persisted: a selection is a gesture, not a fact about the session.
     selection: Option<BlockRef>,
+    /// Whether the last turn was open when the rows were built.
+    ///
+    /// The turn footer depends on it, so a phase change that does not flip it
+    /// — Thinking to Responding — must not rebuild the rows.
+    open_turn: bool,
 }
 
 impl Transcript {
@@ -301,7 +308,26 @@ impl Transcript {
     }
 
     pub fn set_phase(&mut self, phase: Phase) {
+        if self.phase == phase {
+            return;
+        }
+        let was_open = self.open_turn;
         self.phase = phase;
+        // Only the footer cares, and only when the last turn opens or closes:
+        // a delta that moves Thinking to Responding leaves the rows untouched.
+        if was_open != self.last_turn_open() {
+            self.rebuild();
+        }
+    }
+
+    /// Whether the last turn is still going: a busy phase, or a pause with a
+    /// call waiting on a decision.
+    ///
+    /// The same predicate the webview uses for `turnStillOpen`: a closed turn
+    /// gets its `Worked for …` footer, an open one gets the activity line and
+    /// gets it when it closes.
+    pub fn last_turn_open(&self) -> bool {
+        self.phase != Phase::Idle || !pending_calls(&self.messages).is_empty()
     }
 
     /// Replace the messages and rebuild. Keeps the follow lock.
@@ -358,7 +384,13 @@ impl Transcript {
     }
 
     fn rebuild(&mut self) {
-        self.rows = build_rows_with(&self.messages, self.width, &self.render);
+        self.open_turn = self.last_turn_open();
+        self.rows = build_rows_with_turns(
+            &self.messages,
+            self.width,
+            &self.render,
+            self.phase,
+        );
         // A block that vanished cannot stay selected.
         if let Some(selected) = self.selection {
             if !self.rows.iter().any(|row| row.block == Some(selected)) {
@@ -624,11 +656,174 @@ pub fn pinned_after_scroll(
 /// spacing even: a block never supplies its own leading or trailing blank, so
 /// two tool calls cannot end up two rows apart while a message pair is one.
 pub fn build_rows(messages: &[Message], width: u16) -> Vec<Row> {
-    build_rows_with(messages, width, &Render::default())
+    build_rows_with(messages, width, &Render::default(), Phase::Idle)
+}
+
+/// [`build_rows_with`] plus the gray footer under each closed turn.
+///
+/// A separate entry point rather than a flag on the one above, so the block
+/// renderer stays a pure function of the messages and the card state: the footer
+/// is about a *turn*, and only the transcript assembled from rows knows whether
+/// the last one is still going.
+///
+/// `phase` is the open turn's phase, and it decides two things a call's card
+/// cannot know from the message alone: whether a `pending` call is a question
+/// (`needs_decision`) or work in progress, and whether the last turn is open.
+pub fn build_rows_with_turns(
+    messages: &[Message],
+    width: u16,
+    render: &Render,
+    phase: Phase,
+) -> Vec<Row> {
+    let rows = build_rows_with(messages, width, render, phase);
+    // A pause is an idle phase with calls still waiting, so the last turn is
+    // open in either case.
+    let open_last = phase != Phase::Idle || !pending_calls(messages).is_empty();
+    with_turn_footers(rows, messages, open_last)
+}
+
+/// Insert one `Worked for …` row at the end of every closed turn.
+///
+/// The duration is the gap between the turn's first and last message ids, which
+/// are UUIDv7s: the webview computes the same thing from the same two ids, so the
+/// two front ends agree without the store keeping a duration it does not have.
+/// A turn with one message has no gap to report, and a compaction divider is not
+/// a turn.
+fn with_turn_footers(rows: Vec<Row>, messages: &[Message], open_last: bool) -> Vec<Row> {
+    let turns = turns(messages);
+    if turns.is_empty() {
+        return rows;
+    }
+    let turn_of: std::collections::HashMap<MessageId, usize> = turns
+        .iter()
+        .flat_map(|turn| turn.messages.iter().map(move |id| (*id, turn.index)))
+        .collect();
+
+    // The last row of each turn, which is where its footer goes.
+    let mut ends: Vec<Option<usize>> = vec![None; turns.len()];
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(block) = row.block {
+            if let Some(turn) = turn_of.get(&block.message) {
+                ends[*turn] = Some(index);
+            }
+        }
+    }
+
+    let mut out = rows;
+    // Backwards, so an insertion never moves a position still to be used.
+    for turn in turns.iter().rev() {
+        let Some(end) = ends[turn.index] else {
+            continue;
+        };
+        if turn.divider {
+            continue;
+        }
+        if turn.index + 1 == turns.len() && open_last {
+            continue;
+        }
+        let Some(label) = worked_label(turn.start, turn.end) else {
+            continue;
+        };
+        // One blank row first, the same one the transcript keeps between blocks:
+        // the footer is a footnote to the turn, not its last sentence.
+        out.insert(end + 1, Row::spacer());
+        out.insert(end + 2, Row::new(RowKind::TurnFooter, label));
+    }
+    out
+}
+
+/// One turn: the messages from a user message to the row before the next one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Turn {
+    index: usize,
+    messages: Vec<MessageId>,
+    start: MessageId,
+    end: MessageId,
+    /// The turn is a compaction divider, which has no duration to report.
+    divider: bool,
+}
+
+fn turns(messages: &[Message]) -> Vec<Turn> {
+    let mut turns: Vec<Turn> = Vec::new();
+    for message in messages {
+        let starts = message.role == Role::User;
+        if starts || turns.is_empty() {
+            turns.push(Turn {
+                index: turns.len(),
+                messages: Vec::new(),
+                start: message.id,
+                end: message.id,
+                divider: starts && message.compaction,
+            });
+        }
+        let turn = turns.last_mut().expect("a turn was just ensured");
+        if starts {
+            // The first message of the turn is its start, whatever the id order.
+            turn.start = message.id;
+        }
+        turn.end = message.id;
+        turn.messages.push(message.id);
+    }
+    turns
+}
+
+/// `Worked for 2m 5s`, or `None` when the two ids are not UUIDv7s or do not
+/// bracket a positive span.
+///
+/// One message is not a turn's work: a caller that passes the same id twice gets
+/// `None` rather than `Worked for 1s`.
+pub fn worked_label(start: MessageId, end: MessageId) -> Option<String> {
+    if start == end {
+        return None;
+    }
+    let start = id_millis(start)?;
+    let end = id_millis(end)?;
+    if end < start {
+        return None;
+    }
+    let millis = end - start;
+    let seconds = std::cmp::max(1, (millis + 500) / 1000);
+    Some(format!(
+        "Worked for {}",
+        crate::tui::state::activity::format_elapsed(seconds)
+    ))
+}
+
+/// The millisecond timestamp a UUIDv7 leads with.
+fn id_millis(id: MessageId) -> Option<u64> {
+    let (seconds, nanos) = id.as_uuid().get_timestamp()?.to_unix();
+    Some(seconds * 1000 + u64::from(nanos / 1_000_000))
+}
+
+/// Every call a transcript is waiting on, in row order.
+///
+/// The calls a loaded transcript is still waiting on: pending approval and not
+/// yet started.
+///
+/// This is the **pause** predicate — what makes a turn stopped rather than
+/// running — and it is deliberately phase-free: a transcript loaded by a fresh
+/// process has no phase yet, and a pause restored from the database has to be
+/// found from the rows alone. What a card *says* is a different question, and it
+/// needs the phase: see [`tool_card::needs_decision`].
+pub fn pending_calls(messages: &[Message]) -> Vec<ToolCallId> {
+    messages
+        .iter()
+        .flat_map(|message| message.tool_calls.iter())
+        .filter(|call| {
+            call.approval_status == robi_core::message::ApprovalStatus::Pending
+                && call.execution_status == ExecutionStatus::NotStarted
+        })
+        .map(|call| call.id)
+        .collect()
 }
 
 /// [`build_rows`] with the expansion set and the fetched originals.
-pub fn build_rows_with(messages: &[Message], width: u16, render: &Render) -> Vec<Row> {
+pub fn build_rows_with(
+    messages: &[Message],
+    width: u16,
+    render: &Render,
+    phase: Phase,
+) -> Vec<Row> {
     let width = usize::from(width).max(1);
     // Every block is tagged with what it is, because the arrows move over blocks
     // and a key acts on the selected one. A compaction divider is not a block: it
@@ -671,6 +866,7 @@ pub fn build_rows_with(messages: &[Message], width: u16, render: &Render) -> Vec
                         call,
                         width,
                         render,
+                        phase,
                         BlockRef::call(message.id, call.id),
                     ));
                 }
@@ -712,17 +908,18 @@ fn tool_card_rows(
     call: &robi_core::message::ToolCall,
     width: usize,
     render: &Render,
+    phase: Phase,
     block: BlockRef,
 ) -> Vec<Row> {
     let width = width.max(8);
     let inner = inner_width(width);
     let id = call.id;
     let expanded = render.is_expanded(id);
-    let card = tool_card::card(call, expanded);
-    // A call the loop is waiting on. The same predicate the modal, the pending
-    // list, and `pending_calls` use.
-    let attention = call.approval_status == robi_core::message::ApprovalStatus::Pending
-        && call.execution_status == ExecutionStatus::NotStarted;
+    let card = tool_card::card(call, phase, expanded);
+    // A call the loop is waiting on for an answer — not one that is merely next
+    // in line. `needs_decision` adds the phase, which is the difference between a
+    // question and a shell command that will run the moment it is its turn.
+    let attention = tool_card::needs_decision(call, phase);
     let mut rows = Vec::new();
 
     // One row of padding at the top, inside the band.
@@ -988,6 +1185,7 @@ mod tests {
                 RowKind::DiffAdd => '+',
                 RowKind::DiffDel => '-',
                 RowKind::Divider => 'd',
+                RowKind::TurnFooter => 'f',
                 RowKind::Spacer => ' ',
             })
             .collect()
@@ -1178,6 +1376,7 @@ mod tests {
                     RowKind::User => "user",
                     RowKind::Assistant => "assistant",
                     RowKind::Divider => "divider",
+                    RowKind::TurnFooter => "worked",
                 };
                 format!("{kind}:{:?}", content(row))
             })
@@ -1502,9 +1701,13 @@ mod tests {
         assert!(transcript.pinned());
         let max = transcript.rows().len() - 5;
         assert_eq!(transcript.offset(), max);
-        assert_eq!(
-            transcript.visible().last().map(|row| row.text.as_str()),
-            Some("assistant 19")
+        // The last turn is closed, so its duration is the row the view ends on.
+        assert!(
+            transcript
+                .visible()
+                .last()
+                .is_some_and(|row| row.kind == RowKind::TurnFooter),
+            "the end of a finished transcript is the last turn's footer"
         );
     }
 
@@ -1533,8 +1736,18 @@ mod tests {
         transcript.set_messages(messages);
 
         assert!(transcript.offset() >= before);
+        // The id just above the footer is the row that grew.
+        let visible = transcript.visible();
+        assert!(
+            visible.last().is_some_and(|row| row.kind == RowKind::TurnFooter),
+            "the footer closes the turn"
+        );
         assert_eq!(
-            transcript.visible().last().map(|row| row.text.as_str()),
+            visible
+                .iter()
+                .rev()
+                .find(|row| row.kind == RowKind::Assistant)
+                .map(|row| row.text.as_str()),
             Some("three")
         );
     }
@@ -1751,5 +1964,123 @@ mod tests {
         assert_eq!(transcript.selected_call(), Some(first));
         transcript.set_messages(vec![Message::user("just prose")]);
         assert_eq!(transcript.selection(), None);
+    }
+}
+
+#[cfg(test)]
+mod turn_footer_tests {
+    use robi_core::ids::MessageId;
+    use robi_core::message::Message;
+
+    use super::*;
+
+    /// A UUIDv7 whose leading timestamp is `millis`, so a duration is exact.
+    fn id_at(millis: u64) -> MessageId {
+        let mut bytes = [0u8; 16];
+        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..8]);
+        bytes[6] = 0x70;
+        bytes[8] = 0x80;
+        MessageId::from_uuid(uuid::Uuid::from_bytes(bytes))
+    }
+
+    fn turn(start_millis: u64, end_millis: u64) -> Vec<Message> {
+        let mut user = Message::user("go");
+        user.id = id_at(start_millis);
+        let mut assistant = Message::assistant("done");
+        assistant.id = id_at(end_millis);
+        vec![user, assistant]
+    }
+
+    fn footers(rows: &[Row]) -> Vec<&str> {
+        rows.iter()
+            .filter(|row| row.kind == RowKind::TurnFooter)
+            .map(|row| row.text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_closed_turn_ends_with_its_worked_for_footer() {
+        let messages = turn(1_700_000_000_000, 1_700_000_762_000);
+        let rows = build_rows_with_turns(&messages, 40, &Render::default(), Phase::Idle);
+        assert_eq!(footers(&rows), vec!["Worked for 12m 42s"]);
+        // One blank row under the turn, then its footnote: the same gap the
+        // transcript keeps between blocks, so the footer is not read as another
+        // sentence of the turn.
+        let last = rows.len() - 1;
+        assert_eq!(rows[last].kind, RowKind::TurnFooter);
+        assert_eq!(rows[last - 1].kind, RowKind::Spacer, "a blank row above it");
+        assert!(rows[last - 2].kind != RowKind::Spacer, "and only one");
+    }
+
+    #[test]
+    fn an_open_turn_has_no_footer_until_it_closes() {
+        let messages = turn(1_700_000_000_000, 1_700_000_005_000);
+        assert!(
+            footers(&build_rows_with_turns(
+                &messages,
+                40,
+                &Render::default(),
+                Phase::Thinking
+            ))
+            .is_empty(),
+            "a running turn is not a finished one"
+        );
+        assert_eq!(
+            footers(&build_rows_with_turns(
+                &messages,
+                40,
+                &Render::default(),
+                Phase::Idle
+            )),
+            vec!["Worked for 5s"]
+        );
+    }
+
+    #[test]
+    fn every_closed_turn_gets_one_and_the_open_last_one_does_not() {
+        let mut messages = turn(1_700_000_000_000, 1_700_000_030_000);
+        messages.extend(turn(1_700_000_100_000, 1_700_000_101_500));
+        let rows = build_rows_with_turns(&messages, 40, &Render::default(), Phase::Thinking);
+        assert_eq!(footers(&rows), vec!["Worked for 30s"]);
+    }
+
+    #[test]
+    fn a_single_message_turn_and_a_compaction_divider_report_nothing() {
+        let mut alone = Message::user("only");
+        alone.id = id_at(1_700_000_000_000);
+        let rows = build_rows_with_turns(&[alone], 40, &Render::default(), Phase::Idle);
+        assert!(footers(&rows).is_empty(), "no gap, no duration");
+
+        let mut compaction = Message::user("summary");
+        compaction.compaction = true;
+        compaction.id = id_at(1_700_000_000_000);
+        let mut after = Message::assistant("ok");
+        after.id = id_at(1_700_000_060_000);
+        let rows = build_rows_with_turns(&[compaction, after], 40, &Render::default(), Phase::Idle);
+        assert!(
+            footers(&rows).is_empty(),
+            "a compaction divider is not a turn's work"
+        );
+    }
+
+    #[test]
+    fn the_transcript_rebuilds_only_when_the_last_turn_opens_or_closes() {
+        let mut transcript = Transcript::new();
+        transcript.set_width(40);
+        transcript.set_messages(turn(1_700_000_000_000, 1_700_000_005_000));
+        assert_eq!(footers(transcript.rows()), vec!["Worked for 5s"]);
+
+        // Thinking opens the turn, and the footer goes with it.
+        transcript.set_phase(Phase::Thinking);
+        assert!(footers(transcript.rows()).is_empty());
+        let rows = transcript.rows().len();
+        // A delta moves the phase without rebuilding the rows.
+        transcript.set_phase(Phase::Responding);
+        assert_eq!(transcript.rows().len(), rows);
+        assert!(footers(transcript.rows()).is_empty());
+
+        // Idle closes it, and the footer comes back.
+        transcript.set_phase(Phase::Idle);
+        assert_eq!(footers(transcript.rows()), vec!["Worked for 5s"]);
     }
 }

@@ -20,9 +20,10 @@ pub const FILE: &str = "tui.json";
 
 /// The schema version this build writes.
 ///
-/// 2 added `expanded`. A version 1 file still loads: every field is
-/// `serde(default)`, so the missing set starts empty.
-pub const VERSION: u32 = 2;
+/// 2 added `expanded`; 3 added `recent_workspace_ids`. An older file still
+/// loads: every field is `serde(default)`, so a missing set or list starts
+/// empty.
+pub const VERSION: u32 = 3;
 
 /// What the terminal remembers between runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +46,14 @@ pub struct ViewState {
     /// longer in a transcript is kept: reopening the session restores it.
     #[serde(default)]
     pub expanded: BTreeSet<String>,
+    /// Workspaces, most recently selected first.
+    ///
+    /// The GUI keeps `robi.recentWorkspaceIds` in local storage for the same
+    /// reason: the switcher lists the eight most recent, and the service only
+    /// knows creation order. Unbounded, like the GUI's list; a stale id is
+    /// ignored by the ordering and dropped the next time the file is written.
+    #[serde(default)]
+    pub recent_workspace_ids: Vec<WorkspaceId>,
 }
 
 fn version() -> u32 {
@@ -58,6 +67,7 @@ impl Default for ViewState {
             active_workspace_id: None,
             open_session_id: None,
             expanded: BTreeSet::new(),
+            recent_workspace_ids: Vec::new(),
         }
     }
 }
@@ -119,6 +129,7 @@ mod tests {
             expanded: ["one call".to_owned(), "another call".to_owned()]
                 .into_iter()
                 .collect(),
+            recent_workspace_ids: vec![WorkspaceId::new(), WorkspaceId::new()],
         };
         save(&dir, &view).expect("a write");
         assert_eq!(load(&dir), view);
@@ -158,6 +169,39 @@ mod tests {
         let view = load(&dir);
         assert_eq!(view.open_session_id, Some(session));
         assert!(view.expanded.is_empty(), "T1 opened no cards");
+        assert!(view.recent_workspace_ids.is_empty(), "T1 had no recents");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_two_file_loads_with_no_recents() {
+        // What T2 wrote: the expansion set, no recents.
+        let dir = state_dir();
+        let session = SessionId::new();
+        std::fs::write(
+            path(&dir),
+            format!(
+                "{{ \"version\": 2, \"open_session_id\": \"{session}\", \"expanded\": [\"a\"] }}"
+            ),
+        )
+        .expect("a write");
+        let view = load(&dir);
+        assert_eq!(view.open_session_id, Some(session));
+        assert_eq!(view.expanded.len(), 1);
+        assert!(view.recent_workspace_ids.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_recent_workspace_is_kept_and_simply_ignored() {
+        let dir = state_dir();
+        let gone = WorkspaceId::new();
+        let view = ViewState {
+            recent_workspace_ids: vec![gone],
+            ..ViewState::default()
+        };
+        save(&dir, &view).expect("a write");
+        assert_eq!(load(&dir).recent_workspace_ids, vec![gone]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

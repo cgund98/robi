@@ -6,7 +6,7 @@
 //!
 //! # Generations
 //!
-//! Two refetches of one session can be in flight together, so the ones that can
+//! Two refetches of one thing can be in flight together, so the ones that can
 //! land out of order carry the generation they were issued at:
 //!
 //! - [`Action::Reload`] reads the whole transcript. It bumps the generation and
@@ -16,12 +16,16 @@
 //!   current when it was issued and applies only while it still matches, so a
 //!   full reload supersedes it. Two per-row reads of the same id are harmless
 //!   either way: applying a message is an upsert by id.
+//! - The three list reads (workspaces, sessions, MCP marks) and the path
+//!   completion carry their own counter, so a renamed session or a typed path
+//!   cannot be answered by a read issued before it.
 //!
 //! A `Done` with a stale generation is dropped, never merged.
 
 use robi_core::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use robi_core::message::{FileAttachment, Message};
 
+use crate::agent::mcp::McpServerStatus;
 use crate::domain::chat_message::runtime::SubmitOutcome;
 use crate::domain::chat_session::model::ChatSession;
 use crate::domain::workspace::model::Workspace;
@@ -32,15 +36,21 @@ use crate::tui::state::approval::Decision;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// List workspaces, to pick the active one.
-    LoadWorkspaces,
-    /// List this workspace's sessions, newest first.
-    LoadSessions { workspace: WorkspaceId },
+    LoadWorkspaces { generation: u64 },
+    /// List this workspace's sessions, newest first, with the live actors.
+    LoadSessions {
+        workspace: WorkspaceId,
+        generation: u64,
+    },
     /// Refetch the transcript of the open session.
     ///
     /// `generation` is the value the transcript held when the action was
     /// issued. Two reloads of one session can be in flight together, and the
     /// older one landing last must not win.
-    Reload { session: SessionId, generation: u64 },
+    Reload {
+        session: SessionId,
+        generation: u64,
+    },
     /// Hand one instruction to the session's actor.
     ///
     /// T1 sends text only; T6 adds `files`, and images arrive with it. The
@@ -76,6 +86,41 @@ pub enum Action {
         message: MessageId,
         generation: u64,
     },
+    /// Open (or reuse) the workspace at `root`.
+    ///
+    /// `root` is what was typed; the effect expands `~` and relative paths
+    /// against the working directory before the service sees it, so the typed
+    /// text and the stored root are different things.
+    CreateWorkspace { root: String },
+    /// Remove a workspace and everything under it.
+    DeleteWorkspace { workspace: WorkspaceId },
+    /// Create a session in this workspace **and send the first message to it**.
+    ///
+    /// One action, because the two are one gesture: `Ctrl-N` creates nothing, so
+    /// the row exists only once there is a message to put in it. A create that
+    /// succeeded and a send that failed still leaves a session, which is why the
+    /// outcome carries both.
+    StartSession {
+        workspace: WorkspaceId,
+        text: String,
+        files: Vec<FileAttachment>,
+    },
+    /// Rename a session.
+    RenameSession { session: SessionId, title: String },
+    /// Stop the session's turn if one is running, then remove the row.
+    DeleteSession { session: SessionId },
+    /// This workspace's MCP servers, with connection status.
+    LoadMcp {
+        workspace: WorkspaceId,
+        generation: u64,
+    },
+    /// Open this workspace's MCP servers and close the others, as selecting a
+    /// workspace does in the GUI.
+    FocusMcp { workspace: WorkspaceId },
+    /// Ask the store whether it answers. The status strip's health mark.
+    Probe,
+    /// List the directories a typed path could complete to.
+    CompletePath { text: String, generation: u64 },
     /// Persist the view state: on a change, and before the process exits.
     SaveView { view: ViewState },
 }
@@ -83,10 +128,17 @@ pub enum Action {
 /// What an effect produced.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActionOutcome {
-    Workspaces(Vec<Workspace>),
+    Workspaces {
+        generation: u64,
+        workspaces: Vec<Workspace>,
+    },
     Sessions {
         workspace: WorkspaceId,
+        generation: u64,
         sessions: Vec<ChatSession>,
+        /// Sessions with a live actor. Not persisted, so it comes from the
+        /// service rather than from the rows.
+        running: Vec<SessionId>,
     },
     Transcript {
         session: SessionId,
@@ -98,6 +150,11 @@ pub enum ActionOutcome {
     Submitted {
         session: SessionId,
         outcome: SubmitOutcome,
+    },
+    /// The instruction was refused before the actor took it.
+    SubmitFailed {
+        session: SessionId,
+        message: String,
     },
     /// The turn was cancelled, and the actor has exited.
     Stopped {
@@ -130,24 +187,53 @@ pub enum ActionOutcome {
         call: ToolCallId,
         message: String,
     },
-    /// One row, for an upsert into the transcript.
-    ///
-    /// Boxed: a `Message` carries a whole body and its tool calls, and every
-    /// other variant here is a handful of ids.
+    /// One stored row, refetched after a frame said it changed.
     Message {
         session: SessionId,
         generation: u64,
         message: Box<Message>,
     },
-    /// The submit itself failed, so the composer keeps its text.
-    ///
-    /// Separate from [`Self::Failed`] because the composer's lock clears here
-    /// and nowhere else: a reload that fails must not unlock a send that is
-    /// still in flight.
-    SubmitFailed {
-        session: SessionId,
-        message: String,
+    WorkspaceOpened {
+        workspace: Box<Workspace>,
+        created: bool,
     },
+    WorkspaceDeleted {
+        workspace: WorkspaceId,
+    },
+    /// The landing page's first message: the session exists, and this says
+    /// whether the instruction was taken into it.
+    ///
+    /// `outcome` is `None` when the send failed; the row is still there, the text
+    /// is still in the composer, and `error` is what to say about it.
+    SessionStarted {
+        session: Box<ChatSession>,
+        outcome: Option<SubmitOutcome>,
+        error: Option<String>,
+    },
+    SessionRenamed(Box<ChatSession>),
+    SessionDeleted {
+        session: SessionId,
+    },
+    Mcp {
+        workspace: WorkspaceId,
+        generation: u64,
+        servers: Vec<McpServerStatus>,
+    },
+    /// The servers were told to start. Nothing to draw: a status frame follows.
+    McpFocused { workspace: WorkspaceId },
+    /// The health probe finished. `error` is `None` when the store answered.
+    Probed { error: Option<String> },
+    /// Path completion for `text`. A later keystroke has issued its own read.
+    Paths {
+        generation: u64,
+        text: String,
+        candidates: Vec<String>,
+    },
+    /// The path could not be opened, so the typed text stays where it is.
+    CreateWorkspaceFailed { message: String },
+    /// The rename was refused, so the field stays open with the typed title.
+    RenameFailed { message: String },
+    DeleteFailed { message: String },
     /// The view state was written.
     Saved,
     /// An effect failed. `generation` is set by the effect that can go stale.

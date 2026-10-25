@@ -20,9 +20,11 @@
 //! rendered from deltas would silently lose tokens.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
 use ratatui::Frame;
+use ratatui_textarea::CursorMove;
 
 use robi_core::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use robi_core::message::{Message, ToolCall};
@@ -30,8 +32,9 @@ use robi_core::message::{Message, ToolCall};
 use crate::domain::chat_message::runtime::SubmitOutcome;
 use crate::domain::chat_session::model::ChatSession;
 use crate::domain::events::{
-    EventEnvelope, APP_ERROR, AWAITING_APPROVAL, MESSAGE_ADDED, MESSAGE_DELTA, MESSAGE_UPDATED,
-    TOOL_CALL_UPDATED, TRANSCRIPT_COMPACTED, TURN_FINISHED, TURN_STARTED,
+    EventEnvelope, APP_ERROR, AWAITING_APPROVAL, MCP_STATUS, MESSAGE_ADDED, MESSAGE_DELTA,
+    MESSAGE_UPDATED, SESSION_CREATED, SESSION_DELETED, SESSION_UPDATED, TOOL_CALL_UPDATED,
+    TRANSCRIPT_COMPACTED, TURN_FINISHED, TURN_STARTED,
 };
 use crate::domain::workspace::model::Workspace;
 use crate::tui::action::{Action, ActionOutcome};
@@ -41,11 +44,20 @@ use crate::tui::persist::ViewState;
 use crate::tui::state::activity::{Activity, DeltaKind};
 use crate::tui::state::approval::{Approval, Decision};
 use crate::tui::state::composer::Composer;
+use crate::tui::state::confirm::{Confirm, Target};
+use crate::tui::state::manage::ManageView;
 use crate::tui::state::detail::Detail;
+use crate::tui::state::landing::Greeting;
 use crate::tui::state::prompt::{Prompt, PromptKind};
-use crate::tui::state::transcript::Transcript;
+use crate::tui::state::sessions::{self, Mark, SessionsView};
+use crate::tui::state::status::Status;
+use crate::tui::state::transcript::{pending_calls, Transcript};
+use crate::tui::state::workspaces::{self, Screen, WorkspacesView, RECENT_LIMIT};
 use crate::tui::state::{Focus, Mode, Notice, Phase};
 use crate::tui::view;
+
+/// Rows one `PageUp`/`PageDown` moves an overlay's selection by.
+const LIST_PAGE: usize = 10;
 
 /// Pump ticks per animation step: one dot change a second, on a 250 ms tick.
 ///
@@ -120,6 +132,49 @@ pub struct App {
     bell: bool,
     /// Originals already asked for, so a second `Enter` does not refetch.
     loading_originals: BTreeSet<ToolCallId>,
+    /// The sessions overlay's filter and selection.
+    sessions_view: SessionsView,
+    /// The workspace switcher's screen, field, and selection.
+    workspaces_view: WorkspacesView,
+    /// The manage view's filter and selection.
+    manage: ManageView,
+    /// The path the process was started on, canonicalised.
+    ///
+    /// The CLI's argument, or the working directory. It picks the workspace at
+    /// startup and it is what the missing-workspace view offers to create.
+    target_workspace: PathBuf,
+    /// Whether the target path's workspace has already been looked for.
+    ///
+    /// Set after the first workspace list lands: one prompt per process, not one
+    /// per list refresh.
+    target_checked: bool,
+    /// The greeting the landing page shows, read once at startup.
+    ///
+    /// Carried as state rather than read in `update` or `view`, so a frame is a
+    /// pure function of the state and a test gets the same word every run.
+    greeting: Greeting,
+    /// Whether the first session listing has landed.
+    ///
+    /// The first one always opens a session and reads its transcript. Later ones
+    /// are refreshes, and a refresh must not reread the transcript under the
+    /// reader.
+    sessions_loaded: bool,
+    /// The confirmation under `Mode::Confirm`, when one is up.
+    confirm: Option<Confirm>,
+    /// The app-level error, the health probe, and the MCP marks.
+    status: Status,
+    /// Sessions with a live actor, as the last list read reported them.
+    running: BTreeSet<SessionId>,
+    /// A rename the service has not answered yet, so a refusal can reopen the
+    /// field with the title that was typed.
+    pending_rename: Option<(SessionId, String)>,
+    /// Counters for the reads that can land out of order.
+    workspaces_generation: u64,
+    sessions_generation: u64,
+    mcp_generation: u64,
+    paths_generation: u64,
+    /// The workspace whose servers were last told to start.
+    focused_mcp: Option<WorkspaceId>,
     height: u16,
     /// A stop was issued and has not come back yet.
     stopping: bool,
@@ -128,7 +183,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(view: ViewState, database_url: impl Into<String>) -> Self {
+    pub fn new(
+        view: ViewState,
+        database_url: impl Into<String>,
+        target_workspace: PathBuf,
+        greeting: Greeting,
+    ) -> Self {
         let mut transcript = Transcript::new();
         // The persisted expansion set is the transcript's, and the transcript's is
         // the persisted one: one set, mirrored on every change.
@@ -151,6 +211,22 @@ impl App {
             ticks: 0,
             bell: false,
             loading_originals: BTreeSet::new(),
+            sessions_view: SessionsView::new(),
+            workspaces_view: WorkspacesView::new(),
+            manage: ManageView::new(),
+            target_workspace,
+            greeting,
+            target_checked: false,
+            sessions_loaded: false,
+            confirm: None,
+            status: Status::new(),
+            running: BTreeSet::new(),
+            pending_rename: None,
+            workspaces_generation: 0,
+            sessions_generation: 0,
+            mcp_generation: 0,
+            paths_generation: 0,
+            focused_mcp: None,
             height: 0,
             stopping: false,
             quit: false,
@@ -162,7 +238,7 @@ impl App {
     ///
     /// Everything after this chains through [`Msg::Done`].
     pub fn boot(&mut self) -> Vec<Action> {
-        self.actions.push(Action::LoadWorkspaces);
+        self.load_workspaces();
         self.take_actions()
     }
 
@@ -235,6 +311,143 @@ impl App {
         self.detail.as_ref()
     }
 
+    /// The confirmation under `Mode::Confirm`, if one is up.
+    pub fn confirm(&self) -> Option<&Confirm> {
+        self.confirm.as_ref()
+    }
+
+    /// The process facts the frame shows: the error, the probe, and the marks.
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
+
+    pub fn sessions_view(&self) -> &SessionsView {
+        &self.sessions_view
+    }
+
+    pub fn workspaces_view(&self) -> &WorkspacesView {
+        &self.workspaces_view
+    }
+
+    /// Whether the sessions overlay is on the stack.
+    ///
+    /// A prompt or a confirmation sits above it and draws over the same frame,
+    /// so the overlay is asked of the stack rather than of the top mode.
+    pub fn sessions_open(&self) -> bool {
+        self.modes.contains(&Mode::Sessions)
+    }
+
+    pub fn workspaces_open(&self) -> bool {
+        self.modes.contains(&Mode::Workspaces)
+    }
+
+    /// The sessions the overlay lists, with their marks.
+    pub fn session_rows(&self) -> Vec<(&ChatSession, Mark)> {
+        sessions::visible(&self.sessions, &self.sessions_view.query())
+            .into_iter()
+            .map(|session| (session, self.mark_of(session)))
+            .collect()
+    }
+
+    /// A row's mark, with the open session's own turn taken from the phase
+    /// rather than from the last list read: the mark must not wait a query.
+    pub fn mark_of(&self, session: &ChatSession) -> Mark {
+        let mark = sessions::mark(session, &self.running);
+        if mark == Mark::Idle
+            && Some(session.id) == self.view.open_session_id
+            && self.is_busy()
+        {
+            return Mark::Running;
+        }
+        mark
+    }
+
+    /// The workspaces the switcher lists: the eight most recent, in recent order.
+    ///
+    /// The view adds the two action rows after them, which is why the selection
+    /// is an index rather than an id.
+    pub fn workspace_rows(&self) -> Vec<&Workspace> {
+        workspaces::order_recent(&self.workspaces, &self.view.recent_workspace_ids)
+            .into_iter()
+            .take(RECENT_LIMIT)
+            .collect()
+    }
+
+    /// Every workspace, filtered by the manage view's query.
+    pub fn manage_rows(&self) -> Vec<&Workspace> {
+        workspaces::filtered(&self.workspaces, &self.manage.query())
+    }
+
+    pub fn manage(&self) -> &ManageView {
+        &self.manage
+    }
+
+    /// The workspace the manage view would open, or remove.
+    pub fn manage_selected(&self) -> Option<&Workspace> {
+        self.manage_rows().get(self.manage.selected).copied()
+    }
+
+    /// The path the process was started on, as the reader typed it.
+    ///
+    /// The missing-workspace view names it: "no workspace at this path" is only
+    /// useful with the path in it.
+    pub fn target_workspace(&self) -> std::borrow::Cow<'_, str> {
+        self.target_workspace.to_string_lossy()
+    }
+
+    /// The startup question owns the keyboard: `y` and `n` are its answers.
+    pub fn workspace_missing(&self) -> bool {
+        self.mode() == Mode::WorkspaceMissing
+    }
+
+    /// The landing page: a workspace is open and no session is.
+    ///
+    /// This is what `Ctrl-N` shows, and what a workspace with no sessions shows.
+    /// No session row exists until the first message is sent, so opening a
+    /// workspace and leaving never leaves an empty chat behind.
+    pub fn landing(&self) -> bool {
+        self.view.active_workspace_id.is_some() && self.view.open_session_id.is_none()
+    }
+
+    pub fn greeting(&self) -> Greeting {
+        self.greeting
+    }
+
+    /// The startup question is the page, whether or not an overlay is over it.
+    ///
+    /// The view asks this rather than [`Self::workspace_missing`]: a switcher
+    /// opened from the question draws *over the question*, and closing it has to
+    /// come back here instead of to a chat frame with nothing open behind it.
+    pub fn missing_workspace_page(&self) -> bool {
+        self.modes.contains(&Mode::WorkspaceMissing)
+    }
+
+    /// The session the sessions overlay's cursor is on.
+    ///
+    /// Row zero is the new-session action, so it names no session at all.
+    pub fn selected_session(&self) -> Option<&ChatSession> {
+        let rows = self.session_ids();
+        let id = sessions::session_at(&rows, self.sessions_view.selected())?;
+        self.sessions.iter().find(|session| session.id == id)
+    }
+
+    /// Whether the cursor is on the overlay's action row.
+    pub fn session_action_selected(&self) -> bool {
+        self.sessions_view.selected() == 0
+    }
+
+    pub fn selected_workspace(&self) -> Option<&Workspace> {
+        let index = self.workspaces_view.selected;
+        self.workspace_rows().get(index).copied()
+    }
+
+    /// Whether this session's actor is live, including a turn this process just
+    /// started and no list read has reported yet.
+    fn is_running(&self, id: SessionId) -> bool {
+        self.running.contains(&id)
+            || (Some(id) == self.view.open_session_id && self.is_busy())
+    }
+
     /// One call from the open transcript, for the modal's detail.
     pub fn call(&self, id: ToolCallId) -> Option<&ToolCall> {
         self.transcript
@@ -276,6 +489,28 @@ impl App {
         self.notice.as_ref()
     }
 
+    /// How many ticks have arrived. The only clock the view has, so spinners and
+    /// the waiting marker move without keeping a timer of their own.
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// The generation the next workspace list read belongs to.
+    ///
+    /// Public so the tests can land an outcome the app will accept; the app
+    /// itself is the only caller.
+    pub fn workspaces_generation(&self) -> u64 {
+        self.workspaces_generation
+    }
+
+    pub fn sessions_generation(&self) -> u64 {
+        self.sessions_generation
+    }
+
+    pub fn mcp_generation(&self) -> u64 {
+        self.mcp_generation
+    }
+
     pub fn active_workspace_id(&self) -> Option<WorkspaceId> {
         self.view.active_workspace_id
     }
@@ -295,21 +530,67 @@ impl App {
     }
 
     /// The header's session title.
+    ///
+    /// The landing page reads `New chat`, the web shell's name for a chat with no
+    /// row yet (`sessionDisplayTitle(undefined)`); `no session` is left for the
+    /// frame with no workspace open at all, where there is nothing to name.
     pub fn session_title(&self) -> &str {
+        if self.landing() {
+            return "New chat";
+        }
         match self.open_session() {
-            Some(session) => session.title.as_deref().unwrap_or("Untitled session"),
+            Some(session) => session.title.as_deref().unwrap_or(sessions::UNTITLED),
             None => "no session",
         }
     }
 
-    /// How many rows the transcript area has: the frame minus the header, the
-    /// gap above the composer, the composer band, and the footer.
+    /// How many rows the transcript area has: the frame minus the blank row above
+    /// the header, the header and the rule under it, the gap above the composer,
+    /// the composer band, and the blank row, hint, and blank row beneath it.
     pub fn body_height(&self) -> usize {
-        let used = 1u16
+        // Three rows above the transcript: the frame's top pad, the header, and
+        // the rule under it. Three below the composer: the gap above the hint, the
+        // hint, and the frame's bottom pad.
+        let used = (3 + 3_u16)
             .saturating_add(view::COMPOSER_GAP)
+            .saturating_add(self.status_rows())
+            .saturating_add(self.strip_gap())
             .saturating_add(self.composer.height())
-            .saturating_add(1);
+            .saturating_add(self.prompt_rows());
         usize::from(self.height.saturating_sub(used)).max(1)
+    }
+
+    /// Rows the status strip takes above the composer: one when there is
+    /// something to say, none when there is not.
+    ///
+    /// The view's `strip::content` decides what it says; the two agree because
+    /// both ask these five questions, in this order.
+    pub fn status_rows(&self) -> u16 {
+        let anything = self.status.error().is_some()
+            || self.status.health().is_some()
+            || self.is_stopping()
+            || self.composer.sending()
+            || self.activity.label().is_some();
+        u16::from(anything)
+    }
+
+    /// Rows of canvas between the strip and the composer band: one while the
+    /// strip is drawn, none while it is not.
+    ///
+    /// The view's layout asks this too, so the activity line never sits flush
+    /// against the band's top row and the transcript's height stays right.
+    pub fn strip_gap(&self) -> u16 {
+        if self.status_rows() > 0 {
+            view::STRIP_GAP
+        } else {
+            0
+        }
+    }
+
+    /// Rows the one-line prompt or the confirmation takes between the composer
+    /// and the footer. Zero when neither is up, so the transcript keeps the row.
+    pub fn prompt_rows(&self) -> u16 {
+        u16::from(self.prompt.is_some() || self.confirm.is_some())
     }
 
     pub fn should_quit(&self) -> bool {
@@ -382,12 +663,37 @@ impl App {
             Some(Command::Approve) => self.approve(),
             Some(Command::ApproveAll) => self.approve_all(),
             Some(Command::OpenReason) => self.open_reason(),
-            Some(Command::RejectWithReason) => self.reject_with_reason(),
+            Some(Command::PromptSubmit) => self.submit_prompt(),
+            Some(Command::CancelPrompt) => self.cancel_prompt(),
+            // The startup prompt asks its two answers with the same keys a
+            // destructive confirmation does, and only `update` knows which
+            // question is on screen.
+            Some(Command::ConfirmYes) if self.workspace_missing() => {
+                self.create_target_workspace()
+            }
+            Some(Command::ConfirmNo) if self.workspace_missing() => {
+                self.choose_another_workspace()
+            }
+            Some(Command::ConfirmYes) => self.confirm_yes(),
+            Some(Command::ConfirmNo) | Some(Command::CancelConfirm) => self.cancel_confirm(),
             Some(Command::SelectNext) => self.select(1),
             Some(Command::SelectPrev) => self.select(-1),
             Some(Command::OpenDetail) => self.open_detail(),
             Some(Command::CloseDetail) => self.close_detail(),
-            Some(Command::ClosePrompt) => self.close_reason(),
+            Some(Command::OpenSessions) => self.open_sessions(),
+            Some(Command::OpenWorkspaces) => self.open_workspaces(),
+            Some(Command::NewSession) => self.new_session(),
+            Some(Command::NewWorkspace) => self.new_workspace(),
+            Some(Command::RenameSession) => self.open_rename(),
+            Some(Command::DeleteSelected) => self.delete_selected(),
+            Some(Command::ListNext) => self.list_move(1),
+            Some(Command::ListPrev) => self.list_move(-1),
+            Some(Command::ListPageDown) => self.list_page(1),
+            Some(Command::ListPageUp) => self.list_page(-1),
+            Some(Command::OverlayOpen) => self.overlay_open(),
+            Some(Command::CloseOverlay) => self.close_overlay(),
+            Some(Command::CloseManage) => self.close_manage(),
+            Some(Command::AcceptCandidate) => self.accept_candidate(),
             None => self.unclaimed(key),
         }
     }
@@ -454,6 +760,25 @@ impl App {
                     prompt.input(&key);
                 }
             }
+            Mode::Sessions => {
+                self.sessions_view.input(&key);
+                self.reconcile_sessions_view();
+            }
+            Mode::Workspaces => match self.workspaces_view.screen {
+                Screen::New => {
+                    self.workspaces_view.input_path(&key);
+                    // One read per keystroke, at the generation this keystroke
+                    // is; an answer for the previous text is dropped.
+                    self.request_candidates();
+                }
+                Screen::Recent => {}
+            },
+            Mode::Manage => {
+                self.manage.input(&key);
+                // A filter that changed can shrink the list under the selection.
+                self.manage.selected = 0;
+                self.reconcile_manage();
+            }
             Mode::Chat if self.focus.is_composer() && !self.composer.sending() => {
                 self.composer.input(&key);
             }
@@ -477,6 +802,25 @@ impl App {
     fn submit(&mut self) {
         if self.composer.is_blank() {
             self.notice = Some(Notice::info("nothing to send"));
+            return;
+        }
+        // The landing page: the session does not exist until this message does.
+        // One action creates the row and sends into it, which is what keeps an
+        // abandoned new chat from leaving an empty session behind.
+        if self.landing() {
+            let Some(workspace) = self.view.active_workspace_id else {
+                self.notice = Some(Notice::error("no workspace is open"));
+                return;
+            };
+            let text = self.composer.text();
+            self.composer.set_sending(true);
+            self.notice = None;
+            self.close_approval();
+            self.actions.push(Action::StartSession {
+                workspace,
+                text,
+                files: Vec::new(),
+            });
             return;
         }
         let Some(session) = self.view.open_session_id else {
@@ -526,15 +870,32 @@ impl App {
     /// running actor, so `Stop` would be a no-op there, and refusing the calls is
     /// the only thing that resolves the pause.
     fn stop_or_quit(&mut self) {
+        // Paused, it still declines the batch; running, it still stops the turn.
         if self.approval.is_some() {
             self.decline_all();
             return;
         }
-        if !self.is_busy() {
-            self.quit = true;
+        // A confirmation is one thing to get out of, and not worth a stopped
+        // turn: `n` and `Esc` are the answers, this is the third way out.
+        if self.confirm.is_some() {
+            self.cancel_confirm();
             return;
         }
-        self.stop_turn();
+        if self.is_busy() || self.stopping {
+            self.stop_turn();
+            return;
+        }
+        // An overlay or a list view is idle configuration: closing it is what
+        // the key means here, so browsing a list can never end the process.
+        if self.mode() == Mode::Manage {
+            self.close_manage();
+            return;
+        }
+        if self.sessions_open() || self.workspaces_open() {
+            self.close_overlay();
+            return;
+        }
+        self.quit = true;
     }
 
     /// `Esc`: stop the running turn, and otherwise do nothing permanent.
@@ -598,9 +959,9 @@ impl App {
             // cannot be read cannot be answered, and saying nothing would leave
             // the screen looking merely stale.
             tracing::error!(data = %envelope.data, "approval frame without a call id");
-            self.notice = Some(Notice::error(
+            self.status.set_error(
                 "a tool call is waiting for approval but the request could not be read",
-            ));
+            );
             return;
         };
         self.activity.idle();
@@ -842,7 +1203,8 @@ impl App {
             return;
         };
         let original = self.transcript.original(call_id).map(str::to_owned);
-        self.detail = Some(Detail::new(&call, original.as_deref()));
+        let phase = self.transcript.phase();
+        self.detail = Some(Detail::new(&call, phase, original.as_deref()));
         self.enter(Mode::Detail);
         // A compressed result keeps the uncapped body elsewhere; opening the view
         // is the one moment it is worth asking for.
@@ -863,6 +1225,393 @@ impl App {
     fn close_detail(&mut self) {
         self.detail = None;
         self.leave_mode(Mode::Detail);
+    }
+
+    // -- The overlays ------------------------------------------------------
+
+    /// `Ctrl-S`: the sessions overlay, on the open session.
+    fn open_sessions(&mut self) {
+        self.confirm = None;
+        if !self.sessions_open() {
+            let rows = self.session_ids();
+            self.sessions_view.open();
+            // Start on the session that is on screen, so `Enter` keeps the
+            // reader where they were; the action row is one `Up` away.
+            self.sessions_view.set_selected(self.view.open_session_id, &rows);
+            // One surface at a time: `Esc` must close this one, not step back to
+            // whichever list was opened before it.
+            self.leave_mode(Mode::Workspaces);
+            self.leave_mode(Mode::Manage);
+            self.enter(Mode::Sessions);
+        }
+        self.reconcile_sessions_view();
+    }
+
+    /// `Ctrl-W`: the workspace overlay, on the recent screen.
+    fn open_workspaces(&mut self) {
+        self.confirm = None;
+        if !self.workspaces_open() {
+            let recent: Vec<&Workspace> = workspaces::order_recent(
+                &self.workspaces,
+                &self.view.recent_workspace_ids,
+            )
+            .into_iter()
+            .take(RECENT_LIMIT)
+            .collect();
+            self.workspaces_view
+                .open(self.view.active_workspace_id, &recent);
+            self.leave_mode(Mode::Sessions);
+            self.leave_mode(Mode::Manage);
+            self.enter(Mode::Workspaces);
+        }
+    }
+
+    /// `Ctrl-N` from `chat`: the landing page, and **no session yet**.
+    ///
+    /// Creating the row here is what left an empty chat behind whenever a reader
+    /// opened a workspace, looked around, and left. The row appears when the first
+    /// message is sent (`Action::StartSession`), so an abandoned new chat costs
+    /// nothing.
+    fn new_session(&mut self) {
+        let Some(_workspace) = self.view.active_workspace_id else {
+            self.notice = Some(Notice::info("open a workspace before starting a chat"));
+            return;
+        };
+        // The overlay's action row and `Ctrl-N` mean the same thing: both land on
+        // the greeting with the composer focused.
+        self.leave_mode(Mode::Sessions);
+        self.select_session(None);
+        self.focus = Focus::Composer;
+    }
+
+    /// `Ctrl-N` in the workspace overlay, or in the manage view: the create
+    /// screen, empty.
+    fn new_workspace(&mut self) {
+        if self.mode() == Mode::Manage {
+            self.leave_mode(Mode::Manage);
+            self.enter(Mode::Workspaces);
+        }
+        self.workspaces_view.screen = Screen::New;
+        self.workspaces_view.selected = 0;
+        self.workspaces_view.reset_path();
+        self.request_candidates();
+    }
+
+    /// Ask the effect for the directories the path field could complete to.
+    fn request_candidates(&mut self) {
+        self.paths_generation += 1;
+        self.actions.push(Action::CompletePath {
+            text: self.workspaces_view.path(),
+            generation: self.paths_generation,
+        });
+    }
+
+    fn accept_candidate(&mut self) {
+        if self.mode() != Mode::Workspaces || self.workspaces_view.screen != Screen::New {
+            return;
+        }
+        if self.workspaces_view.accept_candidate() {
+            self.request_candidates();
+        }
+    }
+
+    /// `Ctrl-R`: rename the selected session, or the open one from `chat`.
+    fn open_rename(&mut self) {
+        let session = match self.mode() {
+            Mode::Sessions => self.selected_session().cloned(),
+            _ => self.open_session().cloned(),
+        };
+        let Some(session) = session else {
+            self.notice = Some(Notice::info("no session to rename"));
+            return;
+        };
+        let title = sessions::display_title(&session).to_owned();
+        self.open_rename_prompt(session.id, &title);
+    }
+
+    /// Open the one-line field on a title, pre-filled and at its end.
+    fn open_rename_prompt(&mut self, session: SessionId, title: &str) {
+        let mut prompt = Prompt::new(PromptKind::RenameSession(session));
+        prompt.label = "rename".to_owned();
+        prompt.field.insert_str(title);
+        prompt.field.move_cursor(CursorMove::End);
+        self.prompt = Some(prompt);
+        self.enter(Mode::Prompt);
+    }
+
+    /// `Ctrl-D` or `Del`: ask before removing the selected row.
+    fn delete_selected(&mut self) {
+        match self.mode() {
+            Mode::Sessions => {
+                let Some(session) = self.selected_session() else {
+                    return;
+                };
+                let title = sessions::display_title(session).to_owned();
+                let id = session.id;
+                let running = self.is_running(id);
+                self.confirm = Some(Confirm::delete_session(id, &title, running));
+                self.enter(Mode::Confirm);
+            }
+            Mode::Manage => {
+                let Some(workspace) = self.manage_selected() else {
+                    return;
+                };
+                let id = workspace.id;
+                let name = workspace.name.clone();
+                self.confirm = Some(Confirm::delete_workspace(id, &name));
+                self.enter(Mode::Confirm);
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm_yes(&mut self) {
+        let Some(confirm) = self.confirm.take() else {
+            return;
+        };
+        self.leave_mode(Mode::Confirm);
+        match confirm.target {
+            Target::DeleteSession(session) => {
+                self.actions.push(Action::DeleteSession { session });
+            }
+            Target::DeleteWorkspace(workspace) => {
+                self.actions.push(Action::DeleteWorkspace { workspace });
+            }
+        }
+    }
+
+    fn cancel_confirm(&mut self) {
+        self.confirm = None;
+        self.leave_mode(Mode::Confirm);
+    }
+
+    /// `Enter` on the row or the screen under the cursor.
+    fn overlay_open(&mut self) {
+        match self.mode() {
+            Mode::Sessions => {
+                let rows = self.session_ids();
+                let Some(id) = sessions::session_at(&rows, self.sessions_view.selected()) else {
+                    // The action row: a fresh chat in the workspace that is
+                    // already active, so the overlay closes on the field.
+                    self.leave_mode(Mode::Sessions);
+                    self.new_session();
+                    return;
+                };
+                self.leave_mode(Mode::Sessions);
+                self.open_from_list(id);
+                self.focus = Focus::Composer;
+            }
+            Mode::Workspaces => match self.workspaces_view.screen {
+                Screen::New => self.commit_workspace(),
+                Screen::Recent => {
+                    // The two action rows follow the recent list.
+                    let len = self.workspace_rows().len();
+                    let selected = self.workspaces_view.selected;
+                    if selected == len {
+                        self.open_manage();
+                    } else if selected > len {
+                        self.new_workspace();
+                    } else {
+                        let id = self.workspace_rows().get(selected).map(|w| w.id);
+                        if let Some(id) = id {
+                            self.leave_mode(Mode::Workspaces);
+                            self.select_workspace(Some(id));
+                            self.focus = Focus::Composer;
+                        }
+                    }
+                }
+            },
+            Mode::Manage => {
+                let id = self.manage_rows().get(self.manage.selected).map(|w| w.id);
+                if let Some(id) = id {
+                    self.leave_mode(Mode::Manage);
+                    self.select_workspace(Some(id));
+                    self.focus = Focus::Composer;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the dedicated manage view on the active workspace.
+    ///
+    /// It replaces the switcher rather than stacking on it: managing is what the
+    /// reader is doing now, and one `Esc` should take them back to the chat, not
+    /// to a menu they have finished with.
+    fn open_manage(&mut self) {
+        let active_index = self.view.active_workspace_id.and_then(|id| {
+            let rows = workspaces::filtered(&self.workspaces, "");
+            rows.iter().position(|workspace| workspace.id == id)
+        });
+        self.manage.open(active_index);
+        self.leave_mode(Mode::Workspaces);
+        self.enter(Mode::Manage);
+    }
+
+    fn close_manage(&mut self) {
+        self.confirm = None;
+        self.leave_mode(Mode::Manage);
+        self.focus = Focus::Composer;
+    }
+
+    /// Keep the manage view's selection inside the filtered list.
+    fn reconcile_manage(&mut self) {
+        let rows = self.manage_rows().len();
+        self.manage.reconcile(rows);
+    }
+
+    /// `Esc` in an overlay: step back a screen, then close.
+    fn close_overlay(&mut self) {
+        match self.mode() {
+            Mode::Workspaces if self.workspaces_view.screen != Screen::Recent => {
+                self.workspaces_view.screen = Screen::Recent;
+                let active = self.view.active_workspace_id;
+                let position = self
+                    .workspace_rows()
+                    .iter()
+                    .position(|workspace| Some(workspace.id) == active);
+                self.workspaces_view.selected = position.unwrap_or(0);
+            }
+            Mode::Sessions => self.leave_mode(Mode::Sessions),
+            Mode::Workspaces => self.leave_mode(Mode::Workspaces),
+            _ => {}
+        }
+        self.confirm = None;
+    }
+
+    /// `Enter` on the create screen: open (or reuse) the typed path.
+    fn commit_workspace(&mut self) {
+        let root = self.workspaces_view.path();
+        if root.trim().is_empty() {
+            self.notice = Some(Notice::error("a path is required"));
+            return;
+        }
+        self.actions.push(Action::CreateWorkspace { root });
+    }
+
+    fn list_move(&mut self, delta: isize) {
+        match self.mode() {
+            Mode::Sessions => {
+                let rows = self.session_ids();
+                self.sessions_view.select(delta, &rows);
+            }
+            Mode::Workspaces => match self.workspaces_view.screen {
+                Screen::New => self.workspaces_view.select_candidate(delta),
+                // The recent screen has the two action rows after its list.
+                Screen::Recent => {
+                    let rows = self.workspace_rows().len() + 2;
+                    self.workspaces_view.select(delta, rows);
+                }
+            },
+            Mode::Manage => {
+                let rows = self.manage_rows().len();
+                self.manage.select(delta, rows);
+            }
+            _ => {}
+        }
+    }
+
+    fn list_page(&mut self, delta: isize) {
+        match self.mode() {
+            Mode::Sessions => {
+                let rows = self.session_ids();
+                self.sessions_view.page(delta, &rows, LIST_PAGE);
+            }
+            // A page of candidates is the whole list; a page of workspaces is
+            // `LIST_PAGE` rows.
+            Mode::Workspaces if self.workspaces_view.screen == Screen::New => {
+                self.workspaces_view.select_candidate(delta);
+            }
+            Mode::Workspaces => {
+                let extra = usize::from(self.workspaces_view.screen == Screen::Recent) * 2;
+                let rows = self.workspace_rows().len() + extra;
+                let delta = delta * LIST_PAGE as isize;
+                self.workspaces_view.select(delta, rows);
+            }
+            Mode::Manage => {
+                let rows = self.manage_rows().len();
+                self.manage.select(delta * LIST_PAGE as isize, rows);
+            }
+            _ => {}
+        }
+    }
+
+    /// Keep the sessions overlay's selection on a row that still exists.
+    fn reconcile_sessions_view(&mut self) {
+        let rows = self.session_ids();
+        self.sessions_view.reconcile(&rows);
+    }
+
+    /// Open `id` from the list, whether or not it is the session already open.
+    ///
+    /// "Open" always means "show me this transcript", so a row that is already
+    /// the open one still issues a read. The earlier version did nothing in that
+    /// case, which left an empty frame whenever the open session had never been
+    /// read — the first row after a restart, and the reason `Enter` on it looked
+    /// broken until another session had been opened and come back from.
+    fn open_from_list(&mut self, id: SessionId) {
+        if Some(id) == self.view.open_session_id {
+            self.reload(id);
+            return;
+        }
+        self.select_session(Some(id));
+    }
+
+    fn session_ids(&self) -> Vec<SessionId> {
+        self.session_rows()
+            .into_iter()
+            .map(|(session, _)| session.id)
+            .collect()
+    }
+
+    /// `Enter` in a one-line prompt: the action its kind names.
+    fn submit_prompt(&mut self) {
+        let Some(kind) = self.prompt.as_ref().map(|prompt| prompt.kind) else {
+            return;
+        };
+        match kind {
+            PromptKind::RejectReason => self.reject_with_reason(),
+            PromptKind::RenameSession(session) => self.commit_rename(session),
+        }
+    }
+
+    /// `Esc` in a prompt: the reason keeps its text, a rename is dropped.
+    fn cancel_prompt(&mut self) {
+        match self.prompt.as_ref().map(|prompt| prompt.kind) {
+            Some(PromptKind::RejectReason) => self.close_reason(),
+            _ => {
+                self.prompt = None;
+                self.leave_mode(Mode::Prompt);
+            }
+        }
+    }
+
+    /// `Enter` in the rename field.
+    ///
+    /// An empty title is refused here rather than by the service, which would
+    /// return a `BadRequest` for a keystroke the field can answer itself. The
+    /// field stays open so the title can be typed.
+    fn commit_rename(&mut self, session: SessionId) {
+        let Some(title) = self.prompt.as_ref().map(|prompt| prompt.text().trim().to_owned()) else {
+            return;
+        };
+        if title.is_empty() {
+            self.notice = Some(Notice::error("a title is required"));
+            return;
+        }
+        let unchanged = self
+            .sessions
+            .iter()
+            .find(|held| held.id == session)
+            .is_some_and(|held| held.title.as_deref() == Some(title.as_str()));
+        self.prompt = None;
+        self.leave_mode(Mode::Prompt);
+        if unchanged {
+            return;
+        }
+        self.pending_rename = Some((session, title.clone()));
+        self.notice = None;
+        self.actions.push(Action::RenameSession { session, title });
     }
 
     /// How many dots to draw after a waiting card's label: 1, 2, 3, 1, …
@@ -916,6 +1665,9 @@ impl App {
         // The view's only clock. Counted before anything can return early, so the
         // dots advance whether or not a turn is running.
         self.ticks = self.ticks.wrapping_add(1);
+        if self.status.due() {
+            self.actions.push(Action::Probe);
+        }
         let quiet = self.activity.tick();
         self.transcript.set_phase(self.activity.phase());
         if !quiet {
@@ -929,20 +1681,48 @@ impl App {
 
     /// One frame from the bus.
     fn on_agent(&mut self, envelope: EventEnvelope) {
+        // The list, the header title, and the marks come from the session rows,
+        // so any front end's change refetches them. The transcript is untouched:
+        // a rename in another window is not a reason to reread the messages.
+        match envelope.event_type.as_str() {
+            SESSION_CREATED | SESSION_UPDATED | SESSION_DELETED => {
+                self.load_sessions();
+                return;
+            }
+            MCP_STATUS => {
+                if envelope.subject == self.active_workspace_key() {
+                    self.load_mcp();
+                }
+                return;
+            }
+            _ => {}
+        }
         if envelope.event_type == APP_ERROR {
+            // An app-level failure is a fact about the process, so it belongs in
+            // the status strip rather than in the footer's last-answer slot.
             let text = envelope
                 .data
                 .get("message")
                 .and_then(|value| value.as_str())
                 .unwrap_or("an error was reported")
                 .to_owned();
-            self.notice = Some(Notice::error(text));
+            self.status.set_error(text);
             return;
         }
 
         let Some(open) = self.view.open_session_id else {
             return;
         };
+        // A turn that starts or ends in another session is what makes an
+        // overlay's mark live; while the overlay is up, one read follows it.
+        if self.mode() == Mode::Sessions
+            && matches!(
+                envelope.event_type.as_str(),
+                TURN_STARTED | TURN_FINISHED | AWAITING_APPROVAL
+            )
+        {
+            self.load_sessions();
+        }
         if envelope.subject != open.to_string() {
             // Another session's turn. T3 owns the list, but a pause it cannot
             // answer is the one frame worth reporting from here: the turn is
@@ -957,6 +1737,8 @@ impl App {
         match envelope.event_type.as_str() {
             TURN_STARTED => {
                 self.activity.start(Phase::Thinking);
+                // The overlay's mark must not wait for a list read.
+                self.running.insert(open);
             }
             MESSAGE_DELTA => {
                 let kind = envelope
@@ -978,6 +1760,7 @@ impl App {
                 self.activity.idle();
                 self.composer.set_sending(false);
                 self.stopping = false;
+                self.running.remove(&open);
                 if turn_paused(&envelope) {
                     // The actor exited on purpose: the turn is waiting for a
                     // decision, not over. Closing the modal here is what made a
@@ -988,7 +1771,7 @@ impl App {
                 } else {
                     self.close_approval();
                     if let Some(message) = failed_turn(&envelope) {
-                        self.notice = Some(Notice::error(message));
+                        self.status.set_error(message);
                     }
                     self.reload(open);
                 }
@@ -1023,25 +1806,81 @@ impl App {
 
     fn on_done(&mut self, outcome: ActionOutcome) {
         match outcome {
-            ActionOutcome::Workspaces(workspaces) => {
+            ActionOutcome::Workspaces {
+                generation,
+                workspaces,
+            } => {
+                if generation != self.workspaces_generation {
+                    return;
+                }
                 self.workspaces = workspaces;
-                let picked =
-                    lifecycle::pick_workspace(&self.workspaces, self.view.active_workspace_id);
-                self.select_workspace(picked);
+                self.status.clear_error();
+                if !self.target_checked {
+                    // The first listing decides the workspace, from the path the
+                    // process was started on and nothing else.
+                    self.target_checked = true;
+                    match self.pick_startup_workspace() {
+                        Some(id) => {
+                            self.leave_mode(Mode::WorkspaceMissing);
+                            self.select_workspace(Some(id));
+                        }
+                        None => {
+                            // The path has no workspace. Nothing else is opened:
+                            // a different workspace on screen would answer a
+                            // question the reader did not ask.
+                            self.select_workspace(None);
+                            self.enter(Mode::WorkspaceMissing);
+                        }
+                    }
+                } else if let Some(active) = self.view.active_workspace_id {
+                    // A refresh keeps the reader where they are unless the row
+                    // they are on has gone.
+                    if !self.workspaces.iter().any(|workspace| workspace.id == active) {
+                        let next = self.workspaces.first().map(|workspace| workspace.id);
+                        self.select_workspace(next);
+                    }
+                }
+                // The row selection indexes a list that just changed.
+                if self.workspaces_view.selected >= self.workspace_rows().len() + 2 {
+                    self.workspaces_view.selected = 0;
+                }
+                self.reconcile_manage();
             }
             ActionOutcome::Sessions {
                 workspace,
+                generation,
                 sessions,
+                running,
             } => {
                 if Some(workspace) != self.view.active_workspace_id {
                     // A listing for a workspace that is no longer active.
                     return;
                 }
+                if generation != self.sessions_generation {
+                    return;
+                }
                 self.sessions = sessions;
-                let picked =
-                    lifecycle::pick_session(&self.sessions, workspace, self.view.open_session_id);
-                self.select_session(picked);
-                self.notice = None;
+                self.running = running.into_iter().collect();
+                self.status.clear_error();
+                // The first listing opens a session and **reads it**. A
+                // remembered `open_session_id` is already in the list, so the
+                // "does the open session still exist" check below would skip the
+                // reload — and the process starts with an empty transcript it
+                // never asked for. One read per process is the fix; the rows are
+                // what tell us this is the first.
+                let first = !self.sessions_loaded;
+                self.sessions_loaded = true;
+                let open = self.view.open_session_id;
+                let listed = open.is_some_and(|id| self.sessions.iter().any(|s| s.id == id));
+                if first || !listed {
+                    let picked = lifecycle::pick_session(&self.sessions, workspace, open);
+                    if picked.is_some() || open.is_some() {
+                        self.select_session(picked);
+                        self.notice = None;
+                    }
+                }
+                let rows = self.session_ids();
+                self.sessions_view.reconcile(&rows);
             }
             ActionOutcome::Transcript {
                 session,
@@ -1057,11 +1896,12 @@ impl App {
                 }
                 // A paused turn is answerable from a transcript that was just
                 // loaded, not only from a frame that arrived live: reopening a
-                // session paused by an earlier run has to reach the modal the
+                // session paused by an earlier run has to reach the card the
                 // same way, or the pause is on screen with no way to answer it.
                 let pending = pending_calls(&messages);
                 self.transcript.set_messages(messages);
                 self.notice = None;
+                self.status.clear_error();
                 self.open_approval_for(pending);
                 // The pause labels its field before the reload lands, so the
                 // call it names may only have arrived now.
@@ -1078,7 +1918,11 @@ impl App {
                         // refused one has to leave it exactly as it was.
                         self.composer.take_sent();
                         self.activity.start(Phase::Thinking);
+                        self.running.insert(session);
                         self.notice = None;
+                        // The loop rejects a paused turn's waiting calls when a
+                        // new instruction arrives, so the pause is over here too.
+                        self.close_approval();
                     }
                     SubmitOutcome::AwaitingApproval => {
                         self.activity.idle();
@@ -1095,24 +1939,11 @@ impl App {
                 self.stopping = false;
                 self.activity.idle();
                 self.composer.set_sending(false);
+                self.running.remove(&session);
                 self.notice = Some(Notice::info("stopped"));
                 // A cancelled turn still has to render as it ended, even when
                 // the `turn_finished` frame was dropped.
                 self.reload(session);
-            }
-            ActionOutcome::Message {
-                session,
-                generation,
-                message,
-            } => {
-                if Some(session) != self.view.open_session_id {
-                    return;
-                }
-                if generation != self.transcript.generation() {
-                    // A full reload supersedes a per-row read.
-                    return;
-                }
-                self.transcript.upsert(*message);
             }
             ActionOutcome::Decided { session, call } => {
                 if Some(session) != self.view.open_session_id {
@@ -1126,6 +1957,7 @@ impl App {
                 // next frame says otherwise.
                 self.activity.start(Phase::Thinking);
                 self.transcript.set_phase(Phase::Thinking);
+                self.running.insert(session);
                 self.notice = if self
                     .approval
                     .as_ref()
@@ -1155,7 +1987,7 @@ impl App {
                     // lists it again is already on its way.
                     approval.push(call);
                 }
-                self.notice = Some(Notice::error(message));
+                self.status.set_error(message);
             }
             ActionOutcome::Original {
                 session,
@@ -1177,15 +2009,169 @@ impl App {
                 // rather than showing the compressed body forever.
                 self.loading_originals.remove(&call);
                 if Some(session) == self.view.open_session_id {
-                    self.notice = Some(Notice::error(message));
+                    self.status.set_error(message);
                 }
+            }
+            ActionOutcome::Message {
+                session,
+                generation,
+                message,
+            } => {
+                if Some(session) != self.view.open_session_id {
+                    return;
+                }
+                if generation != self.transcript.generation() {
+                    // A full reload supersedes a per-row read.
+                    return;
+                }
+                self.transcript.upsert(*message);
+            }
+            ActionOutcome::WorkspaceOpened { workspace, created } => {
+                let workspace = *workspace;
+                let id = workspace.id;
+                let name = workspace.name.clone();
+                self.status.clear_error();
+                self.workspaces.retain(|held| held.id != id);
+                self.workspaces.insert(0, workspace);
+                self.notice = Some(Notice::info(if created {
+                    format!("opened workspace {name}")
+                } else {
+                    format!("workspace {name} was already open")
+                }));
+                // The create screen and the missing-workspace prompt both go
+                // away, and the new workspace is on screen.
+                self.workspaces_view.screen = Screen::Recent;
+                self.leave_mode(Mode::Workspaces);
+                self.select_workspace(Some(id));
+                self.focus = Focus::Composer;
+                // The list is ordered by creation, so the service's order wins.
+                self.load_workspaces();
+            }
+            ActionOutcome::WorkspaceDeleted { workspace } => {
+                self.status.clear_error();
+                self.workspaces.retain(|held| held.id != workspace);
+                if self.view.active_workspace_id == Some(workspace) {
+                    let next = self.workspaces.first().map(|held| held.id);
+                    self.select_workspace(next);
+                }
+                if self.workspaces_view.selected >= self.workspace_rows().len().max(1) {
+                    self.workspaces_view.selected = 0;
+                }
+                self.reconcile_manage();
+                self.load_workspaces();
+            }
+            ActionOutcome::SessionStarted {
+                session,
+                outcome,
+                error,
+            } => {
+                let session = *session;
+                self.status.clear_error();
+                // The row exists now, so it goes in the list and on screen whether
+                // or not the send was taken: a failed send is retried from the
+                // session it was made in.
+                self.sessions.retain(|held| held.id != session.id);
+                self.sessions.insert(0, session.clone());
+                let rows = self.session_ids();
+                self.sessions_view.set_selected(Some(session.id), &rows);
+                let id = session.id;
+                self.select_session(Some(id));
+                self.focus = Focus::Composer;
+                self.composer.set_sending(false);
+                match outcome {
+                    Some(SubmitOutcome::Accepted) => {
+                        self.composer.take_sent();
+                        self.activity.start(Phase::Thinking);
+                        self.running.insert(id);
+                        self.notice = None;
+                    }
+                    Some(SubmitOutcome::AwaitingApproval) => {
+                        self.activity.idle();
+                        self.notice = Some(Notice::info(
+                            "nothing was sent \u{2014} the turn is waiting for approval",
+                        ));
+                    }
+                    None => {
+                        self.activity.idle();
+                        // The send was refused, so the text goes back into the
+                        // field: it is parked under the landing page's draft key,
+                        // and the session's own draft is empty. Swapping brings
+                        // the typed message back, ready for one more `Enter`.
+                        self.composer.switch_to(Some(id), None);
+                        if let Some(message) = error {
+                            self.status.set_error(message);
+                        }
+                    }
+                }
+            }
+            ActionOutcome::SessionRenamed(session) => {
+                let session = *session;
+                self.pending_rename = None;
+                self.status.clear_error();
+                if let Some(slot) = self.sessions.iter_mut().find(|held| held.id == session.id) {
+                    *slot = session;
+                }
+                self.notice = None;
+            }
+            ActionOutcome::SessionDeleted { session } => {
+                self.status.clear_error();
+                self.sessions.retain(|held| held.id != session);
+                if self.view.open_session_id == Some(session) {
+                    let next = self.sessions.first().map(|held| held.id);
+                    self.select_session(next);
+                }
+                self.reconcile_sessions_view();
+            }
+            ActionOutcome::Mcp {
+                workspace,
+                generation,
+                servers,
+            } => {
+                if Some(workspace) != self.view.active_workspace_id {
+                    return;
+                }
+                if generation != self.mcp_generation {
+                    return;
+                }
+                self.status.set_servers(workspace, servers);
+            }
+            ActionOutcome::McpFocused { workspace } => {
+                if Some(workspace) == self.view.active_workspace_id {
+                    self.focused_mcp = Some(workspace);
+                }
+            }
+            ActionOutcome::Probed { error } => self.status.probed(error),
+            ActionOutcome::Paths {
+                generation,
+                text,
+                candidates,
+            } => {
+                if generation != self.paths_generation {
+                    return;
+                }
+                self.workspaces_view.set_candidates(&text, candidates);
+            }
+            ActionOutcome::CreateWorkspaceFailed { message } => {
+                // The typed path stays: the failure is usually a typo in it.
+                self.status.set_error(message);
+            }
+            ActionOutcome::RenameFailed { message } => {
+                if let Some((session, title)) = self.pending_rename.take() {
+                    // Reopen the field with what was typed, so the title can be
+                    // fixed rather than retyped.
+                    self.open_rename_prompt(session, &title);
+                }
+                self.status.set_error(message);
+            }
+            ActionOutcome::DeleteFailed { message } => {
+                self.status.set_error(message);
             }
             ActionOutcome::SubmitFailed { session, message } => {
                 if Some(session) == self.view.open_session_id {
                     self.composer.set_sending(false);
                     self.activity.idle();
                 }
-                self.notice = Some(Notice::error(message));
+                self.status.set_error(message);
             }
             ActionOutcome::Saved => {}
             ActionOutcome::Failed {
@@ -1195,26 +2181,85 @@ impl App {
                 if generation.is_some_and(|stale| stale != self.transcript.generation()) {
                     return;
                 }
-                self.notice = Some(Notice::error(message));
+                self.status.set_error(message);
             }
         }
     }
 
-    /// Make `id` the active workspace, saving only on a change.
+    /// The workspace to open at startup.
+    ///
+    /// The path the process was started on wins over the remembered workspace:
+    /// `robi-tui ~/code/pocket` means that directory or a prompt, never some
+    /// other workspace an earlier run happened to leave open. The two are
+    /// compared canonically, because one directory has many spellings; the store
+    /// keeps the canonical root.
+    fn pick_startup_workspace(&self) -> Option<WorkspaceId> {
+        let target = canonical(&self.target_workspace);
+        self.workspaces
+            .iter()
+            .find(|workspace| canonical(std::path::Path::new(&workspace.root)) == target)
+            .map(|workspace| workspace.id)
+    }
+
+    /// Accept the missing-workspace prompt: open the typed path as a workspace.
+    fn create_target_workspace(&mut self) {
+        let root = self.target_workspace.to_string_lossy().into_owned();
+        self.actions.push(Action::CreateWorkspace { root });
+    }
+
+    /// Decline it: open the switcher **over the question**, not instead of it.
+    ///
+    /// The question stays on the stack, so closing the overlay without choosing
+    /// anything returns to it. Leaving it first put the reader back in a chat
+    /// frame with no workspace and no way to answer — the state this replaces.
+    fn choose_another_workspace(&mut self) {
+        self.open_workspaces();
+    }
+
+    /// Make `id` the active workspace, saving on a change.
     ///
     /// The session listing is issued on every load, including the first,
     /// because the remembered workspace is already active at startup and a
     /// "no change" check would never list its sessions.
     fn select_workspace(&mut self, id: Option<WorkspaceId>) {
-        if self.view.active_workspace_id != id {
+        let changed = self.view.active_workspace_id != id;
+        if changed {
+            let previous_session = self.view.open_session_id;
             self.view.active_workspace_id = id;
+            // Everything below belonged to the other workspace: its list, its
+            // marks, its session, and the transcript that session had.
             self.sessions.clear();
+            self.running.clear();
+            self.sessions_view.set_selected(None, &[]);
+            self.status.clear_servers();
+            self.focused_mcp = None;
+            self.view.open_session_id = None;
+            self.transcript.clear();
+            self.close_approval();
+            self.composer.switch_to(previous_session, None);
+            self.composer.set_sending(false);
+            self.activity.idle();
+            // The new workspace's own first listing opens its most recent
+            // session, exactly as the process's first listing did.
+            self.sessions_loaded = false;
+        }
+        // A workspace answers the startup question, so the page goes with it —
+        // and so does a switcher opened over that page.
+        if id.is_some() {
+            self.leave_mode(Mode::WorkspaceMissing);
+        }
+        let promoted = id.is_some_and(|workspace| self.promote_workspace(workspace));
+        if changed || promoted {
             self.actions.push(Action::SaveView {
                 view: self.snapshot(),
             });
         }
         if let Some(workspace) = id {
-            self.actions.push(Action::LoadSessions { workspace });
+            self.load_sessions();
+            self.load_mcp();
+            if self.focused_mcp != Some(workspace) {
+                self.actions.push(Action::FocusMcp { workspace });
+            }
         }
     }
 
@@ -1229,7 +2274,7 @@ impl App {
                 view: self.snapshot(),
             });
         }
-        // The modal belongs to the session that was paused, not to the one on
+        // The pause belongs to the session that was paused, not to the one on
         // screen now. The new session's own pause arrives with its transcript.
         self.close_approval();
         // The composer keeps one draft per session, so a switch parks the text
@@ -1239,9 +2284,65 @@ impl App {
         self.activity.idle();
         self.stopping = false;
         self.transcript.set_phase(Phase::Idle);
+        let rows = self.session_ids();
+        self.sessions_view.set_selected(id, &rows);
         if let Some(session) = id {
             self.reload(session);
         }
+    }
+
+    /// Put `workspace` at the front of the persisted recents.
+    ///
+    /// Returns whether the order changed, so a selection of the same workspace
+    /// does not write the file again. Unbounded, like the GUI's list: the recent
+    /// screen takes the first eight and a stale id is skipped when it is read.
+    fn promote_workspace(&mut self, workspace: WorkspaceId) -> bool {
+        if self.view.recent_workspace_ids.first() == Some(&workspace) {
+            return false;
+        }
+        self.view.recent_workspace_ids.retain(|held| *held != workspace);
+        self.view.recent_workspace_ids.insert(0, workspace);
+        true
+    }
+
+    /// Issue a workspace list read and record its generation.
+    fn load_workspaces(&mut self) {
+        self.workspaces_generation += 1;
+        self.actions.push(Action::LoadWorkspaces {
+            generation: self.workspaces_generation,
+        });
+    }
+
+    /// Issue a session list read for the active workspace.
+    fn load_sessions(&mut self) {
+        let Some(workspace) = self.view.active_workspace_id else {
+            return;
+        };
+        self.sessions_generation += 1;
+        self.actions.push(Action::LoadSessions {
+            workspace,
+            generation: self.sessions_generation,
+        });
+    }
+
+    /// Issue an MCP status read for the active workspace.
+    fn load_mcp(&mut self) {
+        let Some(workspace) = self.view.active_workspace_id else {
+            return;
+        };
+        self.mcp_generation += 1;
+        self.actions.push(Action::LoadMcp {
+            workspace,
+            generation: self.mcp_generation,
+        });
+    }
+
+    /// The active workspace's id as a frame's `subject` spells it.
+    fn active_workspace_key(&self) -> String {
+        self.view
+            .active_workspace_id
+            .map(|id| id.to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -1295,24 +2396,17 @@ impl App {
     }
 }
 
-/// Every call a transcript is waiting on, in row order.
+/// The `tool_call_id` an `awaiting_approval` frame names.
+/// The path a comparison should use: resolved when it exists, unchanged when it
+/// does not.
 ///
-/// The same predicate the loop uses to decide a turn is paused: pending approval
-/// and not yet started. A call that ran without asking is `pending` with
-/// `succeeded` execution, which is a result row and not a prompt.
-fn pending_calls(messages: &[Message]) -> Vec<ToolCallId> {
-    messages
-        .iter()
-        .flat_map(|message| message.tool_calls.iter())
-        .filter(|call| {
-            call.approval_status == robi_core::message::ApprovalStatus::Pending
-                && call.execution_status == robi_core::message::ExecutionStatus::NotStarted
-        })
-        .map(|call| call.id)
-        .collect()
+/// Two spellings of one directory are one workspace. A path that does not exist
+/// yet cannot be canonicalised, and the service refuses it with its own message
+/// rather than this helper guessing.
+pub fn canonical(path: &std::path::Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// The `tool_call_id` an `awaiting_approval` frame names.
 fn tool_call_id(envelope: &EventEnvelope) -> Option<ToolCallId> {
     let raw = envelope.data.get("tool_call_id")?.as_str()?;
     uuid::Uuid::parse_str(raw).ok().map(ToolCallId::from_uuid)

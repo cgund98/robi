@@ -9,12 +9,15 @@
 
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
+use robi_core::ids::SessionId;
 
 /// What the prompt is asking for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     /// Why the selected call is being refused.
     RejectReason,
+    /// The new title for a session.
+    RenameSession(SessionId),
 }
 
 impl PromptKind {
@@ -24,6 +27,7 @@ impl PromptKind {
             Self::RejectReason => {
                 "Enter reject \u{b7} Esc back \u{b7} empty sends the default reason"
             }
+            Self::RenameSession(_) => "Enter save \u{b7} Esc cancel \u{b7} empty is refused",
         }
     }
 }

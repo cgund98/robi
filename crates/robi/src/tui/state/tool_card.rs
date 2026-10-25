@@ -14,6 +14,8 @@ use robi_core::message::{
 };
 use serde_json::Value;
 
+use crate::tui::state::Phase;
+
 /// Diff lines an edit card shows before the rest is counted.
 pub const EDIT_VISIBLE_LINES: usize = 4;
 
@@ -28,6 +30,36 @@ pub const MAX_TOOL_OUTPUT_LINES: usize = 6;
 /// A constant because the view animates the dots that follow it, and both sides
 /// have to agree on the phrase.
 pub const WAITING_LABEL: &str = "waiting for approval";
+
+/// What a body says while the turn is working and the call has not started, or
+/// is running. The peer of `statusOf` in `ToolCallCard.tsx`.
+pub const RUNNING_LABEL: &str = "running\u{2026}";
+
+/// A paused call the user still has to accept or refuse.
+///
+/// The peer of `toolCallView.ts::needsDecision`: **idle**, pending approval, and
+/// not started. The idle half is what separates a question from work. Between the
+/// model's response and the call's execution every call is `pending` and
+/// `not_started` — that is how a model's request arrives — so without the phase a
+/// shell command that runs without asking was drawn as one waiting for an answer
+/// for the whole of that window.
+pub fn needs_decision(call: &ToolCall, phase: Phase) -> bool {
+    phase == Phase::Idle
+        && call.approval_status == ApprovalStatus::Pending
+        && call.execution_status == ExecutionStatus::NotStarted
+}
+
+/// Whether the turn is working on this call: running, or not started yet while
+/// the turn itself is busy.
+///
+/// A call that has finished — succeeded, failed, cancelled, timed out — is never
+/// running, whatever the phase says.
+pub fn is_running(call: &ToolCall, phase: Phase) -> bool {
+    if call.execution_status.is_terminal() {
+        return false;
+    }
+    call.execution_status == ExecutionStatus::Running || phase != Phase::Idle
+}
 
 /// Output lines an opened card shows.
 pub const MAX_EXPANDED_TOOL_LINES: usize = 40;
@@ -188,18 +220,21 @@ pub fn summary(call: &ToolCall) -> Summary {
 }
 
 /// One call's card, in its collapsed or expanded form.
-pub fn card(call: &ToolCall, expanded: bool) -> Card {
+///
+/// `phase` decides whether a `pending` call is a question or work in progress;
+/// see [`needs_decision`].
+pub fn card(call: &ToolCall, phase: Phase, expanded: bool) -> Card {
     let summary = summary(call);
     let marker = if call.name == "shell" { '$' } else { '>' };
     let mut card = Card {
         summary,
-        heading: heading(call),
+        heading: heading(call, phase),
         subject: subject(call),
         marker,
         lines: Vec::new(),
         hidden: 0,
     };
-    card.lines = body(call, Form::card(expanded), &mut card.hidden);
+    card.lines = body(call, Form::card(expanded, phase), &mut card.hidden);
     card
 }
 
@@ -207,9 +242,9 @@ pub fn card(call: &ToolCall, expanded: bool) -> Card {
 ///
 /// What the detail view shows. A card truncates because the transcript has to
 /// stay scrollable; a view of its own does not.
-pub fn full_body(call: &ToolCall) -> Vec<CardLine> {
+pub fn full_body(call: &ToolCall, phase: Phase) -> Vec<CardLine> {
     let mut hidden = 0;
-    body(call, Form::uncapped(true), &mut hidden)
+    body(call, Form::uncapped(true, phase), &mut hidden)
 }
 
 /// Which form a body is cut for. The one thing that decides a body's length.
@@ -219,20 +254,25 @@ struct Form {
     expanded: bool,
     /// No cut at all. The detail view.
     uncapped: bool,
+    /// How far the open turn has got. A status line is a question only while the
+    /// turn is idle; see [`needs_decision`].
+    phase: Phase,
 }
 
 impl Form {
-    fn card(expanded: bool) -> Self {
+    fn card(expanded: bool, phase: Phase) -> Self {
         Self {
             expanded,
             uncapped: false,
+            phase,
         }
     }
 
-    fn uncapped(expanded: bool) -> Self {
+    fn uncapped(expanded: bool, phase: Phase) -> Self {
         Self {
             expanded,
             uncapped: true,
+            phase,
         }
     }
 
@@ -270,7 +310,7 @@ pub fn original_text(body: &Value) -> String {
     join_non_empty(&[stdout, stderr])
 }
 
-fn heading(call: &ToolCall) -> String {
+fn heading(call: &ToolCall, phase: Phase) -> String {
     let description = string_field(record(Some(&call.args)), "description");
     if !description.is_empty() {
         return description;
@@ -278,11 +318,16 @@ fn heading(call: &ToolCall) -> String {
     if call.execution_status == ExecutionStatus::Succeeded {
         return call.name.clone();
     }
-    format!(
-        "{} \u{b7} {}",
-        call.name,
+    // A call that has not started while the turn is busy is next in line, not
+    // stalled: the heading says what the reader is watching, which is the turn.
+    let status = if is_running(call, phase)
+        && call.execution_status == ExecutionStatus::NotStarted
+    {
+        "running"
+    } else {
         status_label(call.execution_status)
-    )
+    };
+    format!("{} \u{b7} {}", call.name, status)
 }
 
 fn subject(call: &ToolCall) -> Option<String> {
@@ -343,13 +388,10 @@ fn body(call: &ToolCall, form: Form, hidden: &mut usize) -> Vec<CardLine> {
             return capped(lines, form, true, hidden);
         }
     }
-    if call.execution_status == ExecutionStatus::Running {
-        return vec![CardLine::body("running\u{2026}")];
+    if is_running(call, form.phase) {
+        return vec![CardLine::body(RUNNING_LABEL)];
     }
-    if call.approval_status == ApprovalStatus::Pending
-        && call.execution_status == ExecutionStatus::NotStarted
-        && call.result.is_none()
-    {
+    if call.result.is_none() && needs_decision(call, form.phase) {
         return vec![CardLine::body(WAITING_LABEL)];
     }
 
@@ -794,7 +836,7 @@ mod tests {
         assert_eq!(summary.verb, "Run");
         assert_eq!(summary.target, "cargo");
 
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         assert_eq!(card.heading, "Run the suite");
         assert_eq!(card.heading_line(), "# Run the suite");
         assert_eq!(card.subject.as_deref(), Some("cargo test"));
@@ -830,7 +872,7 @@ mod tests {
         call.approval_status = ApprovalStatus::Pending;
         call.execution_status = ExecutionStatus::NotStarted;
 
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         assert_eq!(card.summary.verb, "Edit");
         let kinds: Vec<CardLineKind> = card.lines.iter().map(|line| line.kind).collect();
         assert_eq!(
@@ -854,7 +896,7 @@ mod tests {
                 "deletions": 1,
             }),
         );
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         assert_eq!(
             texts(&card.lines),
             vec!["  keep", "- old", "+ new"],
@@ -872,13 +914,13 @@ mod tests {
             Value::Null,
         );
         call.result = None;
-        let collapsed = card(&call, false);
+        let collapsed = card(&call, Phase::Idle, false);
         assert_eq!(collapsed.lines.len(), EDIT_VISIBLE_LINES);
         assert_eq!(collapsed.hidden, 16);
 
         // The whole change is 20 lines, under the opened cap, so nothing is
         // hidden and the count disappears.
-        let expanded = card(&call, true);
+        let expanded = card(&call, Phase::Idle, true);
         assert_eq!(expanded.lines.len(), 20);
         assert_eq!(expanded.hidden, 0);
     }
@@ -891,10 +933,10 @@ mod tests {
             serde_json::json!({ "command": "seq 60" }),
             serde_json::json!({ "stdout": output }),
         );
-        assert_eq!(card(&call, false).lines.len(), MAX_TOOL_OUTPUT_LINES);
-        assert_eq!(card(&call, false).hidden, 54);
-        assert_eq!(card(&call, true).lines.len(), MAX_EXPANDED_TOOL_LINES);
-        assert_eq!(card(&call, true).hidden, 20);
+        assert_eq!(card(&call, Phase::Idle, false).lines.len(), MAX_TOOL_OUTPUT_LINES);
+        assert_eq!(card(&call, Phase::Idle, false).hidden, 54);
+        assert_eq!(card(&call, Phase::Idle, true).lines.len(), MAX_EXPANDED_TOOL_LINES);
+        assert_eq!(card(&call, Phase::Idle, true).hidden, 20);
     }
 
     #[test]
@@ -903,7 +945,7 @@ mod tests {
         call.result = None;
         call.execution_status = ExecutionStatus::Failed;
         call.error = Some("it broke".to_owned());
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         assert_eq!(card.lines.len(), 1);
         assert_eq!(card.lines[0].kind, CardLineKind::Error);
         assert_eq!(card.lines[0].text, "it broke");
@@ -920,7 +962,7 @@ mod tests {
         call.approval_status = ApprovalStatus::Pending;
         call.execution_status = ExecutionStatus::NotStarted;
         call.execution_status = ExecutionStatus::NotStarted;
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         assert_eq!(texts(&card.lines), vec![WAITING_LABEL]);
     }
 
@@ -933,7 +975,7 @@ mod tests {
         );
         assert_eq!(summary(&call).verb, "MCP call");
         assert_eq!(summary(&call).target, "github_search");
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         let joined = texts(&card.lines).join("\n");
         assert!(joined.contains("\"query\": \"x\""), "{joined}");
         assert!(joined.contains("found 2"), "{joined}");
@@ -956,7 +998,7 @@ mod tests {
         assert_eq!(summary.target, "0193a1b2 stdout");
         assert_eq!(summary.range.as_deref(), Some("L10-20"));
         assert_eq!(
-            card(&call, false).subject.as_deref(),
+            card(&call, Phase::Idle, false).subject.as_deref(),
             Some("0193a1b2 stdout")
         );
     }
@@ -986,7 +1028,7 @@ mod tests {
             ],
         });
 
-        let collapsed = card(&call, false);
+        let collapsed = card(&call, Phase::Idle, false);
         assert_eq!(collapsed.heading, "Find the parser");
         assert!(
             !texts(&collapsed.lines)
@@ -999,7 +1041,7 @@ mod tests {
             .iter()
             .any(|text| text.contains("parse.rs")));
 
-        let expanded = card(&call, true);
+        let expanded = card(&call, Phase::Idle, true);
         assert!(
             texts(&expanded.lines)
                 .iter()
@@ -1029,7 +1071,88 @@ mod tests {
         );
         assert_eq!(summary(&call).verb, "mystery");
         assert_eq!(summary(&call).target, "a.rs");
-        let card = card(&call, false);
+        let card = card(&call, Phase::Idle, false);
         assert!(texts(&card.lines).join("").contains("nested"));
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use robi_core::message::{ApprovalStatus, ExecutionStatus};
+
+    use super::*;
+
+    fn pending() -> ToolCall {
+        let mut call = ToolCall::new("shell", serde_json::json!({ "command": "ls" }));
+        call.approval_status = ApprovalStatus::Pending;
+        call.execution_status = ExecutionStatus::NotStarted;
+        call
+    }
+
+    #[test]
+    fn a_pending_call_is_a_question_only_while_the_turn_is_idle() {
+        let call = pending();
+        // A pause: the turn stopped and this call is why.
+        assert!(needs_decision(&call, Phase::Idle));
+        // The turn is working: every call is `pending` + `not_started` until its
+        // own execution starts, which is how a model's request arrives. That is
+        // next in line, not a question, and it is the bug this predicate fixes.
+        assert!(!needs_decision(&call, Phase::Thinking));
+        assert!(!needs_decision(&call, Phase::Responding));
+    }
+
+    #[test]
+    fn a_call_that_ran_without_asking_is_never_a_question() {
+        let mut call = pending();
+        // The loop clears approval only when a sibling needs a decision, so a
+        // call that ran without asking can still read `pending` in the store.
+        call.execution_status = ExecutionStatus::Succeeded;
+        assert!(!needs_decision(&call, Phase::Idle));
+
+        call.approval_status = ApprovalStatus::Rejected;
+        call.execution_status = ExecutionStatus::NotStarted;
+        assert!(!needs_decision(&call, Phase::Idle));
+    }
+
+    #[test]
+    fn the_idle_card_says_waiting_and_the_busy_one_says_running() {
+        let call = pending();
+        let waiting = card(&call, Phase::Idle, false);
+        assert_eq!(texts(&waiting.lines), vec![WAITING_LABEL]);
+        assert_eq!(waiting.heading, "shell \u{b7} not started");
+
+        let running = card(&call, Phase::Thinking, false);
+        assert_eq!(texts(&running.lines), vec![RUNNING_LABEL]);
+        assert_eq!(
+            running.heading, "shell \u{b7} running",
+            "next in line reads as work, not as a stall"
+        );
+    }
+
+    #[test]
+    fn a_running_call_reads_running_even_in_an_idle_frame() {
+        // The frame and the row can disagree for one tick; execution wins.
+        let mut call = pending();
+        call.execution_status = ExecutionStatus::Running;
+        assert!(is_running(&call, Phase::Idle));
+        assert_eq!(texts(&card(&call, Phase::Idle, false).lines), vec![RUNNING_LABEL]);
+    }
+
+    #[test]
+    fn a_finished_call_is_not_running_whatever_the_phase_says() {
+        let mut call = pending();
+        for status in [
+            ExecutionStatus::Succeeded,
+            ExecutionStatus::Failed,
+            ExecutionStatus::Cancelled,
+            ExecutionStatus::TimedOut,
+        ] {
+            call.execution_status = status;
+            assert!(!is_running(&call, Phase::Thinking), "{status:?}");
+        }
+    }
+
+    fn texts(lines: &[CardLine]) -> Vec<&str> {
+        lines.iter().map(|line| line.text.as_str()).collect()
     }
 }

@@ -11,6 +11,7 @@
 use robi_core::message::ToolCall;
 
 use crate::tui::state::tool_card::{self, CardLine};
+use crate::tui::state::Phase;
 
 /// How far one `PageUp` or `PageDown` moves, given the viewport.
 ///
@@ -38,8 +39,8 @@ impl Detail {
     /// uncapped: `tool_card` caps at forty lines for the band, and this is the
     /// answer to "the rest of it". A shell or MCP result that was compressed on
     /// the way to the model is replaced by `original` when the fetch has landed.
-    pub fn new(call: &ToolCall, original: Option<&str>) -> Self {
-        let card = tool_card::card(call, true);
+    pub fn new(call: &ToolCall, phase: Phase, original: Option<&str>) -> Self {
+        let card = tool_card::card(call, phase, true);
         // The heading and subject come from the short parse; the body is the
         // uncapped one. `card.lines` is only used when it is all there is.
         let mut lines = Vec::new();
@@ -57,7 +58,7 @@ impl Detail {
         match original {
             Some(text) => lines.extend(text.lines().map(CardLine::body)),
             // Uncapped, which is the whole point: the card stops at forty lines.
-            None => lines.extend(tool_card::full_body(call)),
+            None => lines.extend(tool_card::full_body(call, phase)),
         }
         Self {
             call: call.id,
@@ -67,9 +68,9 @@ impl Detail {
     }
 
     /// Rebuild from a call that changed underneath an open view.
-    pub fn refresh(&mut self, call: &ToolCall, original: Option<&str>) {
+    pub fn refresh(&mut self, call: &ToolCall, phase: Phase, original: Option<&str>) {
         let offset = self.offset;
-        let fresh = Detail::new(call, original);
+        let fresh = Detail::new(call, phase, original);
         self.lines = fresh.lines;
         self.clamp(offset, self.lines.len());
     }
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn the_detail_shows_more_than_the_band_and_opens_at_the_top() {
         let call = many();
-        let detail = Detail::new(&call, None);
+        let detail = Detail::new(&call, Phase::Idle, None);
         // Heading, subject, blank, then the hundred lines.
         assert_eq!(detail.len(), 103);
         assert_eq!(detail.offset, 0);
@@ -167,7 +168,7 @@ mod tests {
     #[test]
     fn scrolling_clamps_at_both_ends() {
         let call = many();
-        let mut detail = Detail::new(&call, None);
+        let mut detail = Detail::new(&call, Phase::Idle, None);
         detail.scroll_by(-10, 10);
         assert_eq!(detail.offset, 0, "the top is the top");
 
@@ -189,7 +190,7 @@ mod tests {
     #[test]
     fn a_fetched_original_replaces_the_compressed_body() {
         let call = call("the compressed view");
-        let detail = Detail::new(&call, Some("all of it"));
+        let detail = Detail::new(&call, Phase::Idle, Some("all of it"));
         let text: Vec<&str> = detail.lines.iter().map(|line| line.text.as_str()).collect();
         assert!(text.contains(&"all of it"), "{text:?}");
         assert!(!text.contains(&"the compressed view"), "{text:?}");
@@ -198,13 +199,13 @@ mod tests {
     #[test]
     fn a_refresh_keeps_the_offset_inside_the_new_body() {
         let long = many();
-        let mut detail = Detail::new(&long, None);
+        let mut detail = Detail::new(&long, Phase::Idle, None);
         detail.bottom(10);
         assert_eq!(detail.offset, 93);
 
         // The call comes back with a short body: the old offset cannot survive.
         let short = call("one line");
-        detail.refresh(&short, None);
+        detail.refresh(&short, Phase::Idle, None);
         assert!(detail.offset < detail.len(), "{detail:?}");
         assert!(!detail.is_empty());
     }

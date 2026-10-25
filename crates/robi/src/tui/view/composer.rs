@@ -6,10 +6,11 @@
 //! column a user message wears, because the composer *is* the user's turn
 //! before it is sent. A tool card's rail is gray; this one is not machinery.
 //!
-//! Inside the band: a padding row, the text, and a metadata row at the bottom
-//! where the mode and model will sit from T4. Until then that row carries the
-//! lock status — a field that silently ignores keys is worse than one that says
-//! why.
+//! Inside the band: a padding row, the text, and a padding row. Nothing else —
+//! the status a locked field used to print here is now on the strip above the
+//! band, with every other transient status, so the terminal has one place to
+//! look rather than two. The mode and model row lands where that strip is from
+//! T4.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -63,19 +64,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         ..inner
     };
 
-    // The last row inside the band is the metadata row, where the mode and
-    // model go from T4 and the lock status goes now.
-    let metadata = Rect {
-        y: area.y.saturating_add(area.height).saturating_sub(1),
-        height: 1,
-        ..content
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(status_span(app))).style(theme::composer_surface()),
-        metadata,
-    );
-
-    // The text: one padding row down, and stopping above the metadata row.
+    // The text: one padding row down, and stopping one row above the band's
+    // bottom edge, so the surface is even on both sides.
     let body = Rect {
         y: area.y.saturating_add(PAD_TOP),
         height: area.height.saturating_sub(PAD_TOP).saturating_sub(1).max(1),
@@ -98,21 +88,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             frame.set_cursor_position((x, y));
         }
     }
-}
-
-/// The metadata row: what a locked field is doing, or nothing.
-///
-/// `sending…` means the submit itself is in flight, not that a turn is running:
-/// the field stays usable while the model works, and a status line that said
-/// "sending" for a whole turn would be wrong for most of it.
-fn status_span(app: &App) -> Span<'static> {
-    if app.is_stopping() {
-        return Span::styled("stopping\u{2026}", theme::composer_status());
-    }
-    if app.composer().sending() {
-        return Span::styled("sending\u{2026}", theme::composer_status());
-    }
-    Span::raw("")
 }
 
 /// The placeholder the empty field shows.

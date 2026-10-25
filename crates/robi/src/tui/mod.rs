@@ -8,8 +8,9 @@
 //! The shape is Elm's: `update` is a pure function of state and a message,
 //! `effects` runs the resulting [`action::Action`]s on the runtime, and the
 //! pump re-renders after every message. The design is in
-//! `docs/src/design/shell/tui.md`; this module is at phase T2: the transcript,
-//! the composer, streaming, and the approval modal over the card variants.
+//! `docs/src/design/shell/tui.md`; this module is at phase T3: the transcript,
+//! the composer, streaming, approvals on the selected card, the sessions and
+//! workspace overlays, the status strip, and the per-turn duration.
 //!
 //! # Terminal lifecycle
 //!
@@ -40,6 +41,7 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
 use crate::domain::events::EventSubscription;
+use crate::tui::state::landing::Greeting;
 use crate::web_api::state::AppState;
 
 /// How often the pump ticks: spinners and elapsed time from T1, and the
@@ -54,6 +56,12 @@ pub struct Options {
     /// Named in the lock file, so a second process can report which database
     /// the holder has open.
     pub database_url: String,
+    /// The workspace to open: the CLI's path argument, or the working directory.
+    ///
+    /// The path decides the session list the reader starts with, and when it has
+    /// no workspace the frame says so and offers to create it. It is canonical,
+    /// so two spellings of one directory are one workspace.
+    pub workspace_path: PathBuf,
 }
 
 /// Run the terminal front end until the user leaves.
@@ -70,7 +78,14 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     let _lock = lifecycle::Lock::acquire(&options.state_dir, &options.database_url)?;
 
     let view = lifecycle::restore(&options.state_dir);
-    let mut app = app::App::new(view, options.database_url.clone());
+    // The greeting is read here, once: `update` and `view` stay pure functions of
+    // the state they are given.
+    let mut app = app::App::new(
+        view,
+        options.database_url.clone(),
+        options.workspace_path.clone(),
+        Greeting::now(),
+    );
 
     let mut terminal = ratatui::init();
     // After raw mode, before the first frame: the wheel has to reach the pump.
