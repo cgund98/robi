@@ -39,6 +39,36 @@ pub fn enable_mouse() -> io::Result<()> {
     ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::event::EnableMouseCapture)
 }
 
+/// Ask the terminal to report whether its window is in front.
+///
+/// DECSET 1004. Optional by nature: a terminal that does not implement it simply
+/// never sends the events, and the app stays "focused", which means a pause rings
+/// no bell. That is the honest degradation — a bell is an alert, not a fact.
+pub fn enable_focus_change() -> io::Result<()> {
+    ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::event::EnableFocusChange)
+}
+
+/// Stop focus reporting, before the alternate screen goes.
+pub fn disable_focus_change() {
+    if let Err(error) =
+        ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::event::DisableFocusChange)
+    {
+        tracing::warn!(%error, "could not turn focus reporting off");
+    }
+}
+
+/// Write the window title.
+///
+/// Best effort on purpose: `SIGTERM` and a restored terminal are more important
+/// than a title, and there is no one left to tell on the way out.
+pub fn set_title(title: &str) {
+    if let Err(error) =
+        ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::terminal::SetTitle(title))
+    {
+        tracing::warn!(%error, "could not set the window title");
+    }
+}
+
 /// Turn mouse reporting off again, before the alternate screen goes.
 ///
 /// Restoring is best effort and logged rather than returned: it runs on the way

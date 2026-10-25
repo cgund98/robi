@@ -10,6 +10,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeSet;
+
 use robi_core::ids::{SessionId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
@@ -17,13 +19,17 @@ use serde::{Deserialize, Serialize};
 pub const FILE: &str = "tui.json";
 
 /// The schema version this build writes.
-pub const VERSION: u32 = 1;
+///
+/// 2 added `expanded`. A version 1 file still loads: every field is
+/// `serde(default)`, so the missing set starts empty.
+pub const VERSION: u32 = 2;
 
 /// What the terminal remembers between runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewState {
-    /// Written for a later migration. A higher version is still read: the two
-    /// ids are the whole payload, and dropping them would lose the session.
+    /// Written for a later migration. A higher version is still read: the ids
+    /// and the expansion set are the whole payload, and dropping them would
+    /// lose the session or the reader's place in it.
     #[serde(default = "version")]
     pub version: u32,
     /// The workspace on screen.
@@ -32,6 +38,13 @@ pub struct ViewState {
     /// The session on screen.
     #[serde(default)]
     pub open_session_id: Option<SessionId>,
+    /// The tool cards the reader opened, by call id.
+    ///
+    /// One key per call — the terminal card is one band, so the GUI's separate
+    /// `:diff` and `:answer` keys have nothing to address. A call id that is no
+    /// longer in a transcript is kept: reopening the session restores it.
+    #[serde(default)]
+    pub expanded: BTreeSet<String>,
 }
 
 fn version() -> u32 {
@@ -44,6 +57,7 @@ impl Default for ViewState {
             version: VERSION,
             active_workspace_id: None,
             open_session_id: None,
+            expanded: BTreeSet::new(),
         }
     }
 }
@@ -102,6 +116,9 @@ mod tests {
             version: VERSION,
             active_workspace_id: Some(WorkspaceId::new()),
             open_session_id: Some(SessionId::new()),
+            expanded: ["one call".to_owned(), "another call".to_owned()]
+                .into_iter()
+                .collect(),
         };
         save(&dir, &view).expect("a write");
         assert_eq!(load(&dir), view);
@@ -125,6 +142,22 @@ mod tests {
         let dir = state_dir();
         std::fs::write(path(&dir), b"{ this is not json").expect("a write");
         assert_eq!(load(&dir), ViewState::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_one_file_loads_with_no_card_open() {
+        // What T1 wrote: the two ids, no expansion set.
+        let dir = state_dir();
+        let session = SessionId::new();
+        std::fs::write(
+            path(&dir),
+            format!("{{ \"version\": 1, \"open_session_id\": \"{session}\" }}"),
+        )
+        .expect("a write");
+        let view = load(&dir);
+        assert_eq!(view.open_session_id, Some(session));
+        assert!(view.expanded.is_empty(), "T1 opened no cards");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -5,6 +5,7 @@
 //! wrapped in `state::transcript` and this module only styles them.
 
 pub mod composer;
+pub mod detail;
 pub mod header;
 pub mod notice;
 pub mod transcript;
@@ -51,6 +52,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         draw_too_small(frame, area);
+        return;
+    }
+
+    // The detail view owns the frame while it is open: it is a place the reader
+    // went on purpose, and the composer underneath it is not where they are.
+    if app.mode() == crate::tui::state::Mode::Detail {
+        detail::draw(frame, area, app);
         return;
     }
 

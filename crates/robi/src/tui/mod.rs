@@ -8,7 +8,8 @@
 //! The shape is Elm's: `update` is a pure function of state and a message,
 //! `effects` runs the resulting [`action::Action`]s on the runtime, and the
 //! pump re-renders after every message. The design is in
-//! `docs/src/design/shell/tui.md`; this module is the phase T0 skeleton.
+//! `docs/src/design/shell/tui.md`; this module is at phase T2: the transcript,
+//! the composer, streaming, and the approval modal over the card variants.
 //!
 //! # Terminal lifecycle
 //!
@@ -31,7 +32,7 @@ mod testing;
 pub mod theme;
 pub mod view;
 
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -78,6 +79,11 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
         ratatui::restore();
         return Err(error);
     }
+    // Focus reporting is optional: a terminal that ignores it never sends the
+    // events, and the most that costs is a bell that is not rung.
+    if let Err(error) = lifecycle::enable_focus_change() {
+        tracing::warn!(%error, "could not turn focus reporting on");
+    }
     let size = terminal.size()?;
     app.resize(size.width, size.height);
 
@@ -100,7 +106,11 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     // Saved before the alternate screen goes, and awaited: a fire-and-forget
     // task would die with the runtime.
     effects::save_view(&options, &app.snapshot()).await;
+    lifecycle::disable_focus_change();
     lifecycle::disable_mouse();
+    // Put the title back before the alternate screen goes, so the shell's own
+    // title is not replaced by ours.
+    lifecycle::set_title("");
     ratatui::restore();
     outcome
 }
@@ -121,6 +131,7 @@ async fn pump(
         effects::dispatch(state, options, action, &results);
     }
     let mut ticker = tokio::time::interval(TICK);
+    let mut window_title = "";
 
     loop {
         tokio::select! {
@@ -131,6 +142,18 @@ async fn pump(
         }
         for action in app.take_actions() {
             effects::dispatch(state, options, action, &results);
+        }
+        // A bell and a title are writes to the terminal, not state, so they
+        // happen here rather than in the pure `update`.
+        if app.take_bell() {
+            let mut stdout = std::io::stdout();
+            let _ = stdout.write_all(b"\x07");
+            let _ = stdout.flush();
+        }
+        let title = app.title();
+        if title != window_title {
+            lifecycle::set_title(title);
+            window_title = title;
         }
         terminal.draw(|frame| app.view(frame))?;
         if app.should_quit() {

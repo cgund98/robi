@@ -72,6 +72,26 @@ export function hasDetail(call: ChatToolCall): boolean {
   return call.error != null || call.result != null
 }
 
+/** Output lines a collapsed shell card shows, from the end of the stream. */
+export const SHELL_PREVIEW_LINES = 4
+
+/**
+ * The last `count` lines of shell output, for the collapsed card.
+ *
+ * The model's copy is compressed head-and-tail, so its tail is the real tail.
+ * Empty trailing lines are dropped so a final newline does not eat a slot.
+ */
+export function shellOutputTail(output: string, count = SHELL_PREVIEW_LINES): string[] {
+  const lines = output.split('\n')
+  while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
+    lines.pop()
+  }
+  if (count <= 0) {
+    return []
+  }
+  return lines.length <= count ? lines : lines.slice(-count)
+}
+
 /** Diff lines an edit card shows before the user opens the rest. */
 export const EDIT_VISIBLE_LINES = 4
 

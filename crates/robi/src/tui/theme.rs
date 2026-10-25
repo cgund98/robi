@@ -263,9 +263,54 @@ pub fn tool_card_heading() -> Style {
     Style::default().bg(CODE_BG).fg(INK_MUTED)
 }
 
+/// The background of a selected block.
+///
+/// Every row of the selection wears it, whatever kind of block it is: a band that
+/// was already raised steps up to the hover tone, and prose on the canvas steps up
+/// from the canvas. One tone for both is what makes "this is selected" read the
+/// same on a message, a paragraph, and a card.
+pub const BG_SELECTED: Color = BG_SURFACE_HOVER;
+
+/// A selected block's background, with the row's own foreground kept.
+pub fn selected(base: Style) -> Style {
+    base.bg(BG_SELECTED)
+}
+
+/// A card waiting on the user: the left rail of a tool call whose approval is
+/// still `pending`.
+///
+/// The same orange as `--mode-plan`, under its own name: the palette gains no new
+/// value, but "this needs you" and "this session is in plan mode" are different
+/// facts and should be able to diverge.
+pub const ATTENTION: Color = rgb(0xe39a3c);
+
+/// The rail on a card that is waiting for a decision.
+pub fn attention_rail() -> Style {
+    Style::default().bg(CODE_BG).fg(ATTENTION)
+}
+
 /// The `$` before a card's command, and the `>` before a non-shell subject.
 pub fn tool_card_marker() -> Style {
     Style::default().bg(CODE_BG).fg(INK_MUTED)
+}
+
+/// A line an edit adds: `--diff-add` on the card's own band.
+///
+/// The ink is the token's; the background stays `CODE_BG` so a diff row is still
+/// part of the card rather than a stripe across it.
+pub fn diff_add() -> Style {
+    Style::default().bg(CODE_BG).fg(DIFF_ADD)
+}
+
+/// A line an edit removes: `--diff-del`.
+pub fn diff_del() -> Style {
+    Style::default().bg(CODE_BG).fg(DIFF_DEL)
+}
+
+/// The cursor marker on a selected tool card's heading: `--accent` on the
+/// card's band, the same tone a focused control wears elsewhere.
+pub fn cursor_marker() -> Style {
+    Style::default().bg(CODE_BG).fg(ACCENT)
 }
 
 /// Inline code and fenced blocks.
@@ -321,6 +366,8 @@ mod tests {
             BG_SURFACE,
             BG_SURFACE_HOVER,
             BG_SURFACE_ACTIVE,
+            BG_SELECTED,
+            ATTENTION,
             BG_ROW,
             BG_USER,
             CODE_BG,

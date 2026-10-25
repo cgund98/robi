@@ -51,29 +51,40 @@ pub fn spawn() -> io::Result<Input> {
 fn read_loop(tx: mpsc::Sender<Msg>) {
     loop {
         let message = match event::read() {
-            Ok(Event::Key(key)) => {
-                // Windows reports a release for every press. Only the press is
-                // a keystroke.
-                if key.kind == KeyEventKind::Release {
-                    continue;
-                }
-                Msg::Key(key)
-            }
-            Ok(Event::Resize(width, height)) => Msg::Resize { width, height },
-            Ok(Event::Mouse(mouse)) => match scroll_rows(mouse.kind) {
-                Some(rows) => Msg::Scroll(rows),
-                // A click, a drag, or a move: the view has no pointer target.
-                None => continue,
-            },
-            // Paste and focus: no binding yet.
-            Ok(_) => continue,
+            Ok(event) => translate(event),
             // The terminal went away, or the process is exiting.
             Err(_) => return,
+        };
+        let Some(message) = message else {
+            continue;
         };
         if tx.blocking_send(message).is_err() {
             // The pump dropped its receiver: the app is closing.
             return;
         }
+    }
+}
+
+/// One terminal event as a message, or `None` when nothing listens.
+///
+/// Pulled out of the read loop so the mapping is a unit test: the loop blocks on
+/// `event::read` and cannot be driven without a terminal.
+pub fn translate(event: Event) -> Option<Msg> {
+    match event {
+        Event::Key(key) => {
+            // Windows reports a release for every press. Only the press is a
+            // keystroke.
+            if key.kind == KeyEventKind::Release {
+                return None;
+            }
+            Some(Msg::Key(key))
+        }
+        Event::Resize(width, height) => Some(Msg::Resize { width, height }),
+        Event::FocusGained => Some(Msg::Focus(true)),
+        Event::FocusLost => Some(Msg::Focus(false)),
+        Event::Mouse(mouse) => scroll_rows(mouse.kind).map(Msg::Scroll),
+        // Paste has no binding yet.
+        _ => None,
     }
 }
 
@@ -116,6 +127,35 @@ mod tests {
     /// The wheel is the newest input source, and its sign convention is the
     /// easiest thing to get backwards: up is negative, like every scroll in the
     /// transcript.
+    #[test]
+    fn focus_and_resize_become_messages_and_a_release_does_not() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        assert_eq!(
+            translate(Event::FocusLost),
+            Some(Msg::Focus(false)),
+            "a lost window is how a pause knows to ring"
+        );
+        assert_eq!(translate(Event::FocusGained), Some(Msg::Focus(true)));
+        assert_eq!(
+            translate(Event::Resize(80, 24)),
+            Some(Msg::Resize {
+                width: 80,
+                height: 24
+            })
+        );
+        let press = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(translate(Event::Key(press)), Some(Msg::Key(press)));
+        assert_eq!(
+            translate(Event::Key(KeyEvent {
+                kind: KeyEventKind::Release,
+                ..press
+            })),
+            None,
+            "a release is not a second keystroke"
+        );
+    }
+
     #[test]
     fn a_wheel_notch_has_a_direction_and_nothing_else_does() {
         assert_eq!(scroll_rows(MouseEventKind::ScrollUp), Some(-WHEEL_ROWS));

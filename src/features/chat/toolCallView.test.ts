@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   EDIT_PREVIEW_LINES,
+  SHELL_PREVIEW_LINES,
   editPreview,
   editSuggestion,
   hasDetail,
   needsDecision,
+  shellOutputTail,
   exploreSummary,
   toolDetail,
   toolSummary,
@@ -318,5 +320,24 @@ describe('toolDetail', () => {
         })
       )
     ).toEqual({ kind: 'code', startLine: 4, lines: ['a', 'b'] })
+  })
+})
+
+describe('shell output tail', () => {
+  it('keeps the last lines, which is where a command fails', () => {
+    const output = ['a', 'b', 'c', 'd', 'e', 'f'].join('\n')
+    expect(shellOutputTail(output)).toEqual(['c', 'd', 'e', 'f'])
+    expect(SHELL_PREVIEW_LINES).toBe(4)
+  })
+
+  it('keeps short output whole and drops a trailing blank line', () => {
+    expect(shellOutputTail('one\ntwo\n')).toEqual(['one', 'two'])
+    expect(shellOutputTail('')).toEqual([])
+    expect(shellOutputTail('   ')).toEqual([])
+  })
+
+  it('honours an explicit count', () => {
+    expect(shellOutputTail('a\nb\nc', 1)).toEqual(['c'])
+    expect(shellOutputTail('a\nb\nc', 0)).toEqual([])
   })
 })

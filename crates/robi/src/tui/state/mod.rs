@@ -7,15 +7,21 @@
 //! elapsed time, and catch-up counter.
 
 pub mod activity;
+pub mod approval;
 pub mod composer;
+pub mod detail;
 pub mod markdown;
+pub mod prompt;
+pub mod tool_card;
 pub mod transcript;
 
 /// Which surface owns the keyboard. Exactly one at a time.
 ///
-/// T0 only ever entered [`Mode::Chat`]. The rest are declared here because the
-/// mode stack is the shape the later phases fill in, and a keymap that grows a
-/// variant at a time is how a mode ends up half-registered.
+/// T2 made this a real stack: a pause no longer adds a mode — approvals are
+/// answered on the selected card — but the detail view does. The rest are
+/// declared here because the mode stack is the shape the later phases fill in,
+/// and a keymap that grows a variant at a time is how a mode ends up
+/// half-registered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
     /// The base mode: the transcript, the composer, and the global bindings.
@@ -35,8 +41,8 @@ pub enum Mode {
     Docs,
     /// The settings surface.
     Settings,
-    /// The approval modal. It owns the keyboard while a turn is paused.
-    Approval,
+    /// One tool call, read in full: its own scroll, `Esc` back.
+    Detail,
     /// A one-line prompt: rename, delete, reject reason.
     Prompt,
     /// A suspended terminal running `$EDITOR`.

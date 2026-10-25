@@ -119,7 +119,14 @@ A turn that is still running, or waiting on approval, does not show it.
 
 Tool rows from later iterations of the same turn sit in that same stack, with
 no extra gap between quiet rows. An edit card has a little space above and
-below it. A shell card has a little space above and below it, so two panels do not touch. It opens itself when its command starts running, and completion leaves it open. Closing it is the user's choice, remembered across transcript refreshes. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
+below it. A shell card has a little space above and below it, so two panels do not touch.
+It opens itself while its command runs, and collapses when the command finishes,
+so a finished call defaults to closed. That auto-open is not a user choice and is
+not remembered. A click is: opening or closing a card sticks across transcript
+refreshes. A closed shell card is still a bordered panel: the row, then the
+command on one truncated line, then the last four lines of output, which is what
+a command's failure is usually about. It does not scroll. An open shell card
+shows the whole command and output in a body that scrolls, eight lines tall. A finished read is a quiet line: an icon, a verb (`Read`, `Grepped`, `Found`,
 `Listed`), and the path or pattern. A `read_file` call that names `offset` and
 `limit` adds the inclusive window after the path, in `--ink-faint`, as `L240-299`.
 `limit` alone is `L1-N`. `offset` alone is `L240`. A call that reads the whole file

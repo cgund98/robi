@@ -95,9 +95,9 @@ crates/robi/
     theme.rs         # Style constants; the peer of visual-style.md
     persist.rs       # ~/.robi/tui.json
     state/           # transcript, sessions, workspaces, composer,
-                     # approvals, settings, notices
-    view/            # header, transcript, tool_call, composer, plan,
-                     # sessions, workspaces, settings, modal
+                     # approval, detail, settings, notices
+    view/            # header, transcript, detail, composer, plan,
+                     # sessions, workspaces, settings
   src/bin/robi-tui.rs
 ```
 
@@ -237,8 +237,10 @@ touches `AppState`, and it is the only place a `.await` exists:
 | `SaveSetting` | `settings_service.*` |
 | `OpenFile` | the lifted file opener: configured `file_open_command` only |
 
-`SubmitOutcome::AwaitingApproval` is an outcome, not an error. The composer stays
-locked and the approval modal opens.
+`SubmitOutcome::AwaitingApproval` is unreachable from the real runtime — nothing
+constructs it outside `web_api`'s mapping, which turns it into a `Conflict` — so
+the terminal keeps the arm as a defensive no-op. A paused turn is answered on the
+selected card, not by a modal.
 
 ### State ownership
 
@@ -274,12 +276,10 @@ the index itself, so the status bar carries no index line.
 |---|---|---|
 | `Transcript` + `AssistantMarkdown` | scrollable buffer, turn-grouped, styled spans; user turns as a blue-railed band | T1 |
 | `Composer` textarea, drafts per session | text area, draft kept per session in `App`, in memory | T1 |
-| Send / Stop button | `Enter` / `Ctrl-C` | T1 |
+| Send / Stop button | `Enter` / `Esc` (`Ctrl-C` also stops) | T1, T2 |
 | `ActivityLine`, streaming | header line: Thinking / Responding, elapsed | T1 |
-| `ToolCallCard` and its six variants | one background band per call, no border, muted heading and `$`, output cut to 6 lines; the per-variant bodies and expansion are T2 | T2 |
-| Approval buttons on a card | **modal**, one turn at a time | T2 |
-| `PlanCard` + `PlanPage` | plan surface, `Esc` returns | T2 |
-| `TodoList`, `FinishedTodos` | list under the transcript | T2 |
+| `ToolCallCard` and its six variants | one background band per call, no border, muted heading and `$`; the per-variant bodies, and `Enter` on the selected card opens the whole body in a scrollable detail view | T2 |
+| Approval buttons on a card | **in-transcript**: `a` / `r` / `A` act on the selected card, with the reason as a one-line prompt | T2 |
 | `RecentsMenu` (filter, rename, delete) | sessions overlay | T3 |
 | `WorkspaceSwitcher`, `WorkspacesPage` | workspace overlay, path entry | T3 |
 | `ErrorNotices`, `ApiStatus`, MCP marks | status bar, one line, `!` separated | T3 |
@@ -367,15 +367,16 @@ renders a two-message transcript.
 
 - Composer: `ratatui-textarea` on a `--bg-surface` band wearing the same blue
   rail as a user message, two cells of horizontal padding inside the field, and
-  one blank row of canvas above the band. `Enter` sends, `Alt-Enter` inserts a
-  newline (`Ctrl-J` for terminals that deliver `Alt-Enter` as `Esc`, `Enter`).
+  one blank row of canvas above the band. `Enter` sends, `Ctrl-J` inserts a
+  newline (`Alt-Enter` too, where a terminal reports it as one key — T2 binds
+  `Esc`, so the `Esc`, `Enter` ambiguity is why `Ctrl-J` is the documented one).
   Draft per session, **in memory**, keyed the way `composerDrafts.ts` keys it. A
   failed send restores the buffer and attachments.
 - `message_delta` → phase; `message_added` / `message_updated` /
   `tool_call_updated` → `LoadMessage` for **that row**; `turn_finished` → reload,
   then idle. Deltas never write text.
-- `Ctrl-C` sends `Stop`; a cancelled turn leaves a resolvable transcript, so the
-  view reloads rather than truncating.
+- `Ctrl-C` sends `Stop` (T2 adds `Esc` as the same interrupt); a cancelled turn
+  leaves a resolvable transcript, so the view reloads rather than truncating.
 - Phase, elapsed, and a caret at the end of streaming text.
 - Assistant prose rendered as markdown — headings, lists, tables, fenced code,
   links, quotes, GFM alerts — through `tui-markdown`, styled from `theme.rs`.
@@ -388,9 +389,11 @@ renders a two-message transcript.
 - The 2-second catch-up: while a turn is busy and no frame for the open session
   has arrived, reload. Elapsed time and the quiet stretch are counted in 250 ms
   ticks, not wall clock, so `update` stays a pure function.
-- A send while a turn is running is **refused** with a notice naming `Ctrl-C`,
-  where the GUI interrupts and queues: in a terminal `Enter` mid-stream more
-  often means "newline", so the interrupt keeps one meaning.
+- A send while a turn is running **interrupts and queues**, as it does in the
+  GUI. T1 refused it, on the theory that `Enter` mid-stream more often means
+  "newline" in a terminal; T2 reversed that, because refusing made the terminal
+  disagree with the product in a way the user had to discover. `ChatRuntime::submit`
+  already replaces a pending instruction, so nothing had to be built.
 
 **Exit** — send a message, watch it stream, stop it, quit, restart, find the
 session intact. The turn ran through `SerializedChatRuntime` and the real
@@ -400,26 +403,99 @@ provider.
 
 **Goal** — the loop's pause invariant, made visible and unmissable.
 
-- **A modal owns the keyboard while a turn is paused.** The GUI disables a
-  composer; a terminal has no such affordance, and a user typing into a composer
-  whose only answer is `AwaitingApproval` is a bug. The modal lists every pending
-  call in the turn, `a` / `r` per call, `A` approve all, `r` opens the reason
-  field.
-- `AWAITING_APPROVAL` in T1: the phase goes idle and the footer says the turn
-  is waiting, and must be answered in the desktop app until T2 lands. T2 replaces
-  that with the modal below.
-- Card variants, matching `ToolCallCard`: edit diff, shell (with
-  `getToolOriginal` for the uncapped output), MCP, retrieve, delegate steps,
-  todos, generic. Expansion flags keyed by call id, persisted per the table above.
-- Plan card and plan surface; **Build** sets agent mode then sends the plan
-  instruction.
-- `awaiting_approval` while the window is unfocused → terminal bell and a title
-  change. No OS notification; that is Tauri-only.
+- **A pause takes the keyboard, off an empty composer.** When a call starts
+  waiting, the card is selected and focus moves to the transcript, so the first
+  `a` answers the question instead of landing in a message. It only does that when
+  the composer is **empty**: a draft is the reader's work in progress, and an
+  arriving pause is no reason to take the caret out of it. With a draft the card is
+  still selected and its rail still says it needs an answer, and the keyboard is
+  one `Tab` away. A detail view or a reason field the reader opened is never
+  interrupted, and a second call in the same batch follows the same rule.
+- **A waiting card wears an orange rail and moving dots.** The rail column every
+  card row shares is `--attention` (`#e39a3c`, the same value as `--mode-plan`,
+  under its own name) while the call is `pending` and `not_started`, and the quiet
+  `--ink-faint` otherwise. The label row reads **waiting for approval** followed by
+  one, two, or three dots, advancing **once a second** — four 250 ms ticks a step,
+  so a full cycle is three seconds. A quarter-second flicker reads as machinery
+  waiting on itself; a slow, even beat reads as a prompt. That is what makes a pause
+  visible when it is *not* the selected card: the selection only ever marks one
+  block, and a pause can be anywhere in the transcript.
+- **The dots are painted, not stored.** A row whose text changed every second would
+  rebuild and rewrap the transcript once a second, and the scroll offset would
+  twitch. The dots play into the band's own padding instead: the view rebuilds the
+  label from `WAITING_LABEL` plus a fixed **three-cell** dot field, and `band_line`
+  pads the result to the content width. Fixed field, not appended dots, for one
+  reason: the first dot has to stay in its column, so growing to two and three
+  extends rightwards instead of shifting what is already on screen. Editing the
+  padded row text in place — the first attempt — made the row `width + dots` cells
+  long, and the band's fill saturated to nothing. The clock is a tick
+  counter on `App`, never the wall clock, so `update` stays a pure function of the
+  messages it has seen and `view` a pure function of the state.
+- **A selected block is lighter than the rest.** Every row of it is painted on
+  `--surface-hover` and filled to the frame's content width, so a message, a
+  paragraph, and a card all read the same way. This replaced a `▸` on a card's
+  heading, which was too quiet and left prose with no mark at all. The foreground
+  is kept — a heading stays muted, a diff stays green and red — because only the
+  background is saying "this is the one the keys act on".
+- **The arrows select; a key acts on the selection.** With the transcript
+  focused, `↑`/`↓` (and `j`/`k`) move a selection over the transcript's blocks. A
+  block is a user message, an assistant prose run, or **one tool call** — so every
+  card, pending or finished, is addressable. The selection is a `BlockRef`
+  (`message`, optional `call`), keyed on the message id rather than a row offset,
+  so it survives a rewrap, a reload, and a row arriving underneath it.
+- **There is no modal.** T2 shipped one because the GUI can disable a composer and
+  a terminal cannot. Selecting in the transcript replaces it: the pause is state
+  (`Approval`), not a mode, and nothing covers the frame. What replaces the
+  modal's *visibility* is that a pause takes the selection to the waiting card —
+  without that, a pause arriving mid-transcript would be invisible.
+- **The footer hint is contextual**, because the actions are: a selected pending
+  card offers `a approve · r reject · A approve all · Enter open · Ctrl-C decline`,
+  a finished card offers `Enter open`, and nothing selected shows the composer's
+  keys. A hint that offered approval on a card that already ran would be a lie the
+  user has to test.
+- **`Enter` opens a card in a detail view**: the whole body, uncapped (the band
+  stops at forty lines and an edit at twenty-four), its own scroll, `Esc` back
+  with the selection where it was. On a prose block it does nothing — a message
+  has no second view.
+- **In-card expansion is dormant.** The detail view replaced it: growing the band
+  in place could push the turn it belonged to off the screen. `Render.expanded`,
+  the `tui.json` key, the expanded branch and the expanded shell/MCP original
+  fetch stay in the code behind `#[allow(dead_code)]`, so re-enabling is deleting
+  a marker. Nothing toggles them, so the set stays empty and no original is
+  fetched for them.
+- **A send interrupts and rejects, like the webview.** There is no busy refusal
+  and there is no pause protection: `ChatRuntime::submit` replaces a queued
+  instruction (`interrupt_if_running`), and `Agent::user_input` rejects a paused
+  turn's waiting calls with "the user sent a new message" before appending. The
+  terminal now inherits both rather than disagreeing with them, and clears its own
+  pause state as soon as the send is taken.
+- Card variants, matching `ToolCallCard`: edit diff, shell, MCP, retrieve,
+  delegate steps, generic. An edit shows the four changed lines it is asking
+  about, or the result's patch once it has run. A shell or MCP card shows six
+  lines; the detail view is what shows the rest, so an opened card no longer
+  fetches anything by itself — opening the view does, through
+  `OriginalStore::lookup`, the same body `getToolOriginal` serves the GUI.
+- `awaiting_approval` while the window is unfocused → terminal bell, and the
+  title becomes **robi — approval needed** either way. No OS notification; that is
+  Tauri-only. Focus reporting is optional (DECSET 1004), so a terminal that does
+  not implement it simply never rings.
+- **A pause is not the end of a turn.** The loop emits `awaiting_approval` and
+  then `turn_finished` with outcome `paused`, because the actor really does exit.
+  That frame must not close the pause: the transcript is parked, not finished.
+- **A pause is entered from the transcript as well as from the frame.** Reopening
+  a session paused by an earlier run — a restart, or a switch back to it — selects
+  the waiting card the same way a live pause does, from the loaded transcript.
+  Without that, a pause on screen had no way in from the keyboard, and the only
+  remaining answer was "send a message to clear it". The list is `pending` approval
+  with `not_started` execution, which is the same predicate the loop uses, so a
+  call that ran without asking is never a prompt. Idle only: after a decision the
+  phase is `Thinking`, so a reload still in flight cannot re-list a settled call.
 
-**Exit** — a turn that needs approval renders a card, the modal approves it, the
-turn resumes; a rejection reaches the model as a structured rejection. Covers the
-three `list_pending_tool_calls` → `approve_tool_call` → `reject_tool_call`
-transitions in [agent-loop.md](../core/agent-loop.md).
+**Exit** — a turn that needs approval selects its waiting card, `a` or `r` on it
+decides, and the turn resumes; a refusal reaches the model as a structured
+rejection. That is `Event::AwaitingApproval` →
+`ChatMessageService::decide_tool_call` → `Event::ToolCallUpdated` in
+[agent-loop.md](../core/agent-loop.md).
 
 ### T3 — Sessions and workspaces
 
@@ -520,17 +596,23 @@ owns the keyboard; `chat` is the base.
 
 | Mode | Enter from | Leave with |
 |---|---|---|
-| `chat` | startup | `Ctrl-C` twice, or `q` when idle |
+| `chat` | startup | `Ctrl-C` when idle, or `q` when idle |
 | `sessions`, `workspaces`, `models` | `Ctrl-S`, `Ctrl-W`, `Ctrl-M` | `Esc` |
-| `plan`, `settings` | a card action, `Ctrl-,` | `Esc` |
-| `approval` | any paused turn, from any mode | a decision for every call |
-| `prompt` (rename, delete, reject-reason) | an action | `Esc`, unless busy |
+| `settings` | `Ctrl-,` | `Esc` |
+| `detail` | `Enter` on a card | `Esc`, back to the transcript |
+| `prompt` (reject reason; later rename and delete) | `r` on a pending card | `Enter`, or `Esc` which keeps the text |
+
+There is no `approval` mode. A pause is state, answered on whichever card is
+selected, so it does not need the keyboard to itself — the design's own
+"a terminal has no disabled composer" problem is solved by the selection instead
+of by covering the frame.
 
 Global bindings, checked before the mode's own map:
 
 | Key | Does |
 |---|---|
-| `Ctrl-C` | Stop the running turn. Idle: quit |
+| `Ctrl-C` | Decline a paused batch. Otherwise: stop the running turn. Idle: quit |
+| `Esc` | Unwind one level: the reason prompt, then the detail view, then the selection (handing the keyboard back to the composer), then stop the turn. Never quits |
 | `q` | Quit, idle only **and transcript focus only** |
 | `Ctrl-N` | New chat |
 | `Ctrl-R` | Rename the open session |
@@ -538,12 +620,12 @@ Global bindings, checked before the mode's own map:
 | `Ctrl-,` | Settings |
 | `Ctrl-L` | Compact |
 | `Tab` / `Shift-Tab` | Move focus between the transcript and the composer |
-| `↑` / `↓`, mouse wheel | Scroll the transcript one row (three for a wheel notch) |
-| `PageUp` / `PageDown` | Scroll the transcript by a screen, and release the follow lock |
+| `↑` / `↓`, `j` / `k` | Move the selection block to block. The selected block is painted on `--surface-hover`, every row of it; a card waiting on a decision has an `--attention` rail and animated dots after **waiting for approval** |
+| Mouse wheel | Scroll the transcript (three rows a notch) |
+| `PageUp` / `PageDown` | Scroll by a screen, and release the follow lock |
 | `Ctrl-U` / `Ctrl-D` | Half a screen |
 | `Home` / `End` | The first row / the last, which re-arms the follow lock |
 | `?` | Keymap help |
-| `Esc` | Unwind one mode |
 
 **Focus is part of the keymap, not a check inside a handler.** From T1 the
 composer is on screen for the whole life of the process, so `q` cannot mean
@@ -554,8 +636,30 @@ because typing is what a chat is for. The composer's own bindings:
 | Key | Does |
 |---|---|
 | `Enter` | Send |
-| `Alt-Enter`, `Ctrl-J` | Newline, without sending |
+| `Ctrl-J` (and `Alt-Enter`) | Newline, without sending |
 | `Tab` / `Shift-Tab` | Give the keyboard to the transcript, and back |
+| `Esc` | Stop the running turn |
+
+`Ctrl-J` is named first for a reason: some terminals deliver `Alt-Enter` as
+`Esc`, `Enter`, and with `Esc` bound as the interrupt that sequence would stop
+the turn and then send the draft. `Alt-Enter` stays bound where a terminal
+reports it as one key.
+
+With the transcript focused, the keys act on the selected block:
+
+| Key | Does |
+|---|---|
+| `↑` / `↓`, `j` / `k` | Select the previous / next block |
+| `Enter` | Open the selected card in the detail view. Nothing on a paragraph |
+| `a` / `r` / `A` | On a selected pending card: approve, reject with a reason, approve all |
+| `Esc` | Clear the selection, and put the keyboard back in the composer |
+
+The arrows select rather than scroll, and that is a real cost: one-row scrolling
+is gone, and what is left is the wheel, `PageUp`/`PageDown`, `Ctrl-U`/`Ctrl-D`
+and `Home`/`End`. `↑` on an **empty** composer hands the keyboard to the
+transcript and selects the last block, so the gesture still works from the field
+people start in.
+| `Esc` | Drop the selection |
 
 **The arrows scroll, and the field keeps them while it holds text.** `↑`/`↓` map
 to a one-row scroll from either focus, and `app::update` hands the key back to
@@ -616,8 +720,12 @@ the transcript's own rows.
 - Images render as their alt text, and a mermaid fence renders as its source —
   T6's rule, unchanged.
 
-In `approval`: `a` approve, `r` reject, `A` approve all, `j` / `k` move,
-`Enter` expand the call's detail.
+A selected card is answered in place: `a` approve, `r` reject with a reason, `A`
+approve every call still waiting, `Ctrl-C` decline them all, and `Enter` to read
+the whole body. Where the reason field is open every printable key is text, so
+`Enter` refuses the selected card with what was typed and `Esc` closes the field
+and keeps the text. A card that already ran takes only `Enter`: an approval key on
+it is answered with a notice rather than a decision.
 
 ## Composer commands
 
@@ -688,8 +796,11 @@ configuration, this is view state, and a scroll offset does not belong in a
 settings screen.
 
 Keys mirror the GUI's client state so the two can be compared: active workspace,
-open session, tool-card expansion keyed by call id (including `:diff` and
-`:answer`), scroll position, and the last mode. **Composer drafts are not here:**
+open session, and tool-card expansion. Expansion is **one key per call id**, not
+the GUI's `id`, `id:diff`, `id:answer`: a terminal card is one band, so there is
+nothing for the extra keys to address. Scroll position and the last mode are not
+written — a rewrap invalidates a row offset, and a mode is where the reader is
+rather than a fact about the session. **Composer drafts are not here:**
 they are held in memory per session, keyed the way `composerDrafts.ts` keys them,
 because typed text can be a secret and the GUI does not persist it either. Never
 a secret otherwise. Nothing in the file is required to start: a missing or
@@ -755,8 +866,39 @@ collapsed directories, docs-tray width, UI scale.
   the render missed, and the phase does not advance past an unstored row.
 - **A stale `Done`.** Two reloads of one session land out of order. Every action
   carries a generation; a lower one is discarded. The GUI's epoch rule.
-- **An approval for a session that is not on screen.** Queued, bell, status-bar
-  mark. The turn is paused either way, so it cannot be missed indefinitely.
+- **An approval for a session that is not on screen.** Bell, and a notice naming
+  it. The turn is paused either way, so it cannot be missed indefinitely; T3's
+  session list is where it is answered.
+- **A decision that lands while the actor is running.** The runtime refuses it
+  with a `Conflict`, so only one decision is ever in flight: `A` and `Ctrl-C` while
+  paused queue the rest, and only an `awaiting_approval` frame releases the next.
+  A refusal keeps the call listed and shows the message.
+- **A pause restored from the database.** The actor belonged to the process that
+  started it, so a pause found by a later process is decided by a new one: the
+  decision settles the call in the store and resumes the turn here. That is the
+  same exposure a submit already has (two front ends, two runtimes), and the
+  per-session lease in [parallel-front-ends.md](parallel-front-ends.md) is what
+  removes it. Until then the selection says nothing about which process is
+  driving.
+- **`turn_finished` closing a live pause.** The worst failure in this phase,
+  because it degrades into the previous one: the pause opens on
+  `awaiting_approval` and a paused `turn_finished` tears it down a frame later, so
+  a live pause is reported as a stale one. `turn_paused` reads the outcome before
+  closing anything, and one test feeds the real pause sequence — built from
+  `Event::AwaitingApproval` and `Event::TurnFinished { Paused }`, not from
+  hand-written JSON — and asserts the pause is still up afterwards.
+- **A pause with nothing selected.** A pause takes the selection to the waiting
+  card, so the keys are on the thing that needs an answer. If the row has not
+  loaded yet the selection waits for the reload, and the bell and the title have
+  already said something is waiting.
+- **A send during a pause or a running turn.** Both are *allowed*, and both do what
+  the webview does: the pending calls are rejected and a running turn is
+  interrupted with its instruction replaced. That is `ChatRuntime::submit`'s
+  behaviour, inherited rather than re-implemented. The one thing the terminal adds
+  is clearing its own pause state as soon as the send is taken.
+- **The selection and the follow lock.** A turn streaming while the reader has
+  selected an older block must not yank the view to the bottom. `reveal` runs on
+  selection only; growth still follows the end while nothing is selected.
 - **The open session is deleted.** Reset to a new draft and reload the list. A
   `robi.session.v1.deleted` frame does the same.
 - **Terminal too small.** Below 40×12 render one centered message instead of a
@@ -792,18 +934,46 @@ collapsed directories, docs-tray width, UI scale.
   Frames assert on substrings and on cell colours, never on a golden file, so a
   token change that does not move the layout does not fail.
 - Keymap: `(Mode, Focus, Key)` is a table, and **one** test walks it — `q` quits
-  only with transcript focus, `Enter` sends where `Alt-Enter` and `Ctrl-J` insert
+  only with transcript focus, `Enter` sends where `Ctrl-J` and `Alt-Enter` insert
   a newline, no key means two things in one mode, and `Esc` from each mode
   returns to `chat`. Not one test per binding.
 - The composer and the pump, one test each: a send records one `Submit` and keeps
-  its text until the actor takes it; the three refusals (blank, no session, a turn
-  already running) each say why inside that same test; `Ctrl-C` stops a running
-  turn and quits when idle; and a real `EventBus` publishing `turn_started` →
-  `message_delta` → `message_added` → `turn_finished` ends idle with exactly one
-  `LoadMessage` for the stored row and one `Reload` at the end.
-- The approval modal: with a fake `ChatRuntime`, a paused turn blocks a submit and
-  `a` issues `Decide`. `SubmitOutcome::AwaitingApproval` keeps the composer
-  locked.
+  its text until the actor takes it; the two refusals (blank, no session) each say
+  why inside that same test; `Esc` stops a running turn and `Ctrl-C` stops or
+  quits; and a real `EventBus` publishing `turn_started` → `message_delta` →
+  `message_added` → `turn_finished` ends idle with exactly one `LoadMessage` for
+  the stored row and one `Reload` at the end.
+- Reopening a paused session: a transcript that loads with a `pending` +
+  `not_started` call selects that call's card, and `a` then issues one `Decide`; a
+  call that ran without asking selects nothing; a session switch drops the
+  previous session's pause.
+- Selection: the arrows walk the prose and then each card; a selection survives an
+  upsert of its own row and is dropped when its block goes; `Enter` opens the
+  detail view on a card and does nothing on a paragraph. Frames assert the
+  *background* of a cell, not a glyph: a selected band, paragraph, and card are all
+  `BG_SELECTED`, the fill reaches the end of the row, and the unselected rows keep
+  their own tone. A waiting card's rail cell is `ATTENTION`, and a settled one goes
+  back to `INK_FAINT`. The dots cycle `1, 2, 3` over six ticks, and the row count
+  and scroll offset are asserted unchanged across them — the marker must not move
+  the layout. Clearing a selection with `Esc` returns focus to the composer: the
+  keys that acted on the block mean nothing once it is gone, and typing is what a
+  chat is for.
+- A pause takes the keyboard off an **empty** composer and leaves it alone when
+  there is a draft: the card is selected either way, and only an empty field hands
+  the focus over.
+- The approval keys: `a` in the composer is a character and `a` on the transcript
+  approves the selected card; an approval key off target says so rather than
+  deciding; one decision in flight at a time; `A` queues the rest and the next
+  `awaiting_approval` releases exactly one; `Ctrl-C` declines the batch and does
+  not `Stop`; and a call from a later iteration is never swept into the queue.
+- `Esc` and `Ctrl-C`: `Esc` unwinds the prompt, then the detail view, then the
+  selection, then stops the turn, and never quits; `Ctrl-C` keeps stop-or-quit and
+  gains decline-the-batch while paused.
+- A send while a turn runs, and a send while a turn is paused, are both taken and
+  recorded as one `Submit`: the runtime decides what they mean.
+- The detail view renders the whole body — a two-hundred-line shell result is 203
+  lines, past the band's forty-line cap — and `Esc` returns with the selection
+  where it was.
 - The `/` command surface: `/open` on a path inside the workspace issues one
   `OpenFile`; a path outside it, an absolute path, and a blank argument each
   produce a composer error and no action. A stub opener records what it was
@@ -827,8 +997,10 @@ collapsed directories, docs-tray width, UI scale.
 3. `state/transcript.rs` and `view/transcript.rs` reading `list_messages`. This is
    T0.
 4. Composer, `Submit`, the event pump, phases and catch-up. **T1, done.**
-5. Approval modal, then the card variants. T2, in that order: the modal is the
-   invariant, the cards are cosmetics.
+5. The card variants, then approvals on the selected card and the detail view.
+   **T2, done.** The modal shipped first and was replaced: covering the frame was
+   the wrong answer to "a terminal has no disabled composer", and selecting a card
+   answers it without taking the keyboard away.
 6. Sessions and workspaces overlays, then the status bar. T3.
 7. Lift the model-filter helper; modes, model, effort, skills, and the `/`
    command surface. T4.

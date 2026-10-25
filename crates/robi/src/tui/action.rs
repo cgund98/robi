@@ -19,13 +19,14 @@
 //!
 //! A `Done` with a stale generation is dropped, never merged.
 
-use robi_core::ids::{MessageId, SessionId, WorkspaceId};
+use robi_core::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use robi_core::message::{FileAttachment, Message};
 
 use crate::domain::chat_message::runtime::SubmitOutcome;
 use crate::domain::chat_session::model::ChatSession;
 use crate::domain::workspace::model::Workspace;
 use crate::tui::persist::ViewState;
+use crate::tui::state::approval::Decision;
 
 /// One effect `update` asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +49,24 @@ pub enum Action {
         session: SessionId,
         text: String,
         files: Vec<FileAttachment>,
+    },
+    /// Approve or refuse one paused call, then let the turn resume.
+    ///
+    /// One call per action, because that is what the runtime settles: the next
+    /// pause arrives as another `awaiting_approval` frame.
+    Decide {
+        session: SessionId,
+        call: ToolCallId,
+        decision: Decision,
+    },
+    /// Fetch the uncapped body behind a compressed result.
+    ///
+    /// Only an opened shell or MCP card asks for this, and only once: the answer
+    /// is kept on the transcript for as long as the process lives.
+    LoadOriginal {
+        session: SessionId,
+        call: ToolCallId,
+        original_id: String,
     },
     /// Cancel the running turn.
     Stop { session: SessionId },
@@ -83,6 +102,33 @@ pub enum ActionOutcome {
     /// The turn was cancelled, and the actor has exited.
     Stopped {
         session: SessionId,
+    },
+    /// One decision was accepted, and the turn is running again.
+    Decided {
+        session: SessionId,
+        call: ToolCallId,
+    },
+    /// The decision was refused, so the call is still pending.
+    ///
+    /// A `Conflict` here is not an error the user caused: it means the runtime
+    /// started the turn before the decision arrived, and the next
+    /// `awaiting_approval` frame will list the call again.
+    DecideFailed {
+        session: SessionId,
+        call: ToolCallId,
+        message: String,
+    },
+    /// The uncapped body behind a compressed result.
+    Original {
+        session: SessionId,
+        call: ToolCallId,
+        text: String,
+    },
+    /// The uncapped body could not be read, so a later attempt may retry.
+    OriginalFailed {
+        session: SessionId,
+        call: ToolCallId,
+        message: String,
     },
     /// One row, for an upsert into the transcript.
     ///

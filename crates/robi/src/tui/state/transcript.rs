@@ -10,11 +10,16 @@
 //! Wrapping here instead makes the offset exact, the follow lock trivial, and
 //! the wrap itself testable.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use ratatui::style::Style;
-use robi_core::message::{ExecutionStatus, Message, Role};
+use robi_core::ids::{MessageId, ToolCallId};
+use robi_core::message::ExecutionStatus;
+use robi_core::message::{Message, Role};
 use unicode_width::UnicodeWidthChar;
 
 use crate::tui::state::markdown;
+use crate::tui::state::tool_card::{self, CardLine, CardLineKind};
 use crate::tui::state::Phase;
 use crate::tui::theme;
 
@@ -29,21 +34,64 @@ pub enum RowKind {
     /// tool's name. Muted, so it does not compete with the assistant's prose.
     ToolHeading,
     /// One body or subject line of a tool call's card.
-    ///
-    /// T2 owns the per-variant cards (a diff for an edit, steps for a
-    /// delegate). This is the one card every call gets: a heading, the command
-    /// or path, and a truncated tail of the output.
     ToolCard,
+    /// A line an edit adds. Tinted so a diff reads as a change, not prose.
+    DiffAdd,
+    /// A line an edit removes.
+    DiffDel,
     /// A full-width divider, such as **Context compacted**.
     Divider,
     /// A blank line between turns.
     Spacer,
 }
 
+/// One selectable unit of the transcript: a message's band, or one of its calls.
+///
+/// A block is what the arrow keys move over, and what a key acts on. It is
+/// addressed by message id rather than by row offset so a selection survives a
+/// rewrap, a reload, or a row arriving underneath it. `call` is `None` for the
+/// message's own prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BlockRef {
+    pub message: MessageId,
+    pub call: Option<ToolCallId>,
+}
+
+impl BlockRef {
+    /// The prose band of a message.
+    pub fn message(message: MessageId) -> Self {
+        Self {
+            message,
+            call: None,
+        }
+    }
+
+    /// One tool call's card inside its message.
+    pub fn call(message: MessageId, call: ToolCallId) -> Self {
+        Self {
+            message,
+            call: Some(call),
+        }
+    }
+}
+
 /// One visual line of the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub kind: RowKind,
+    /// The block this row belongs to, when it belongs to one.
+    ///
+    /// A block is many rows; the selection moves block to block, and `reveal`
+    /// finds one by its id, so the association is kept on the row rather than
+    /// recomputed from the messages.
+    pub block: Option<BlockRef>,
+    /// The call this row belongs to is waiting on the user.
+    ///
+    /// Painted as an orange rail down the card's left edge, so a pause is visible
+    /// without a modal and without being selected. Not derived in the view: the
+    /// decision is a fact about the call, and the row is where the card already
+    /// knows it.
+    pub attention: bool,
     /// The whole line, which is what the width arithmetic counts.
     pub text: String,
     /// Styled byte ranges of `text`, sorted and non-overlapping.
@@ -59,9 +107,23 @@ impl Row {
     fn new(kind: RowKind, text: impl Into<String>) -> Self {
         Self {
             kind,
+            block: None,
+            attention: false,
             text: text.into(),
             spans: Vec::new(),
         }
+    }
+
+    /// Attach the row to the block it belongs to.
+    fn in_block(mut self, block: BlockRef) -> Self {
+        self.block = Some(block);
+        self
+    }
+
+    /// Mark the row as part of a call that is waiting on the user.
+    fn attention(mut self, attention: bool) -> Self {
+        self.attention = attention;
+        self
     }
 
     /// One styled row: the text and the runs of tone inside it.
@@ -70,7 +132,13 @@ impl Row {
         text: String,
         spans: Vec<(std::ops::Range<usize>, Style)>,
     ) -> Self {
-        Self { kind, text, spans }
+        Self {
+            kind,
+            block: None,
+            attention: false,
+            text,
+            spans,
+        }
     }
 
     /// A row with one span drawn in `style`. `start` is a byte offset into
@@ -84,6 +152,8 @@ impl Row {
     ) -> Self {
         Self {
             kind,
+            block: None,
+            attention: false,
             text: text.into(),
             spans: vec![(start..start + len, style)],
         }
@@ -103,12 +173,12 @@ pub const COMPACTION_LABEL: &str = "Context compacted";
 /// cells it is three rows.
 pub const FOLLOW_THRESHOLD: usize = 3;
 
-/// How many output lines a tool card shows before it truncates.
+/// How many output lines a collapsed tool card shows before it truncates.
 ///
 /// The card is a summary, not a reader. Shell output and file bodies run to
 /// thousands of lines, and the transcript has to stay scrollable; `retrieve`
 /// is the way back to the whole thing.
-pub const MAX_TOOL_OUTPUT_LINES: usize = 6;
+pub const MAX_TOOL_OUTPUT_LINES: usize = tool_card::MAX_TOOL_OUTPUT_LINES;
 
 /// Cells of padding at each edge of a card's band.
 const PAD_X: usize = 1;
@@ -135,11 +205,40 @@ fn band_line(text: &str, inner: usize) -> String {
     )
 }
 
-/// The arguments a card shows as its subject, in priority order.
-const TARGET_ARGS: &[&str] = &["command", "path", "pattern", "query", "url", "name"];
+/// What the transcript renders beyond the messages themselves.
+///
+/// The expansion set is the persisted half: `~/.robi/tui.json` holds one key per
+/// opened call. The originals are not persisted — they are fetched when a card
+/// opens, because the expanded shell card shows the uncapped output the model
+/// did not read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Render {
+    /// Opened cards, by call id. Shared with `ViewState`.
+    pub expanded: BTreeSet<String>,
+    /// The uncompressed body of a compressed result, once fetched.
+    pub originals: BTreeMap<ToolCallId, String>,
+}
 
-/// The result fields that hold a readable body, in priority order.
-const BODY_FIELDS: &[&str] = &["output", "stdout", "content", "text", "result", "body"];
+impl Render {
+    pub fn is_expanded(&self, call: ToolCallId) -> bool {
+        self.expanded.contains(&call.to_string())
+    }
+
+    pub fn set_expanded(&mut self, call: ToolCallId, expanded: bool) {
+        let key = call.to_string();
+        if expanded {
+            self.expanded.insert(key);
+        } else {
+            self.expanded.remove(&key);
+        }
+    }
+
+    pub fn toggle(&mut self, call: ToolCallId) -> bool {
+        let expanded = !self.is_expanded(call);
+        self.set_expanded(call, expanded);
+        expanded
+    }
+}
 
 /// The open transcript: messages, their rows, and where the reader is.
 #[derive(Debug, Clone, Default)]
@@ -157,6 +256,12 @@ pub struct Transcript {
     /// The generation the next reload is issued at. A `Transcript` outcome
     /// from an older one is dropped.
     generation: u64,
+    /// Expansion flags and fetched originals.
+    render: Render,
+    /// The block the keyboard has selected, if any.
+    ///
+    /// Not persisted: a selection is a gesture, not a fact about the session.
+    selection: Option<BlockRef>,
 }
 
 impl Transcript {
@@ -253,7 +358,13 @@ impl Transcript {
     }
 
     fn rebuild(&mut self) {
-        self.rows = build_rows(&self.messages, self.width);
+        self.rows = build_rows_with(&self.messages, self.width, &self.render);
+        // A block that vanished cannot stay selected.
+        if let Some(selected) = self.selection {
+            if !self.rows.iter().any(|row| row.block == Some(selected)) {
+                self.selection = None;
+            }
+        }
         self.follow();
     }
 
@@ -327,6 +438,140 @@ impl Transcript {
         self.offset = self.max_offset();
         self.pinned = true;
     }
+
+    // -- Expansion (dormant) ------------------------------------------------
+
+    /// The render state, for the view and for `App` to mirror into `ViewState`.
+    pub fn render(&self) -> &Render {
+        &self.render
+    }
+
+    /// Adopt the persisted expansion set.
+    ///
+    /// **Dormant.** In-card expansion is replaced by the detail view, so nothing
+    /// calls the mutators below; they and `Render.expanded` stay until that is a
+    /// decision rather than a phase. Re-enabling is deleting these markers.
+    #[allow(dead_code)]
+    pub fn set_expanded(&mut self, expanded: BTreeSet<String>) {
+        if self.render.expanded == expanded {
+            return;
+        }
+        self.render.expanded = expanded;
+        self.rebuild();
+    }
+
+    #[allow(dead_code)]
+    pub fn is_expanded(&self, call: ToolCallId) -> bool {
+        self.render.is_expanded(call)
+    }
+
+    /// Toggle one card and say what it became.
+    #[allow(dead_code)]
+    pub fn toggle_expanded(&mut self, call: ToolCallId) -> bool {
+        let expanded = self.render.toggle(call);
+        self.rebuild();
+        expanded
+    }
+
+    /// Keep a fetched original for the detail view.
+    pub fn set_original(&mut self, call: ToolCallId, text: String) {
+        self.render.originals.insert(call, text);
+        self.rebuild();
+    }
+
+    pub fn original(&self, call: ToolCallId) -> Option<&str> {
+        self.render.originals.get(&call).map(String::as_str)
+    }
+
+    // -- Selection -----------------------------------------------------------
+
+    /// The block the keyboard has selected.
+    pub fn selection(&self) -> Option<BlockRef> {
+        self.selection
+    }
+
+    /// The call the selection names, when the selected block is a card.
+    pub fn selected_call(&self) -> Option<ToolCallId> {
+        self.selection.and_then(|block| block.call)
+    }
+
+    /// Every block that has rows, in transcript order.
+    fn blocks(&self) -> Vec<BlockRef> {
+        let mut seen = BTreeSet::new();
+        self.rows
+            .iter()
+            .filter_map(|row| row.block)
+            .filter(|block| seen.insert(*block))
+            .collect()
+    }
+
+    /// Move the selection by `delta` blocks.
+    ///
+    /// From nothing, `+1` selects the first block and `-1` the last: a reader who
+    /// has never selected one reaches for the direction they are reading in. A
+    /// walk stops at the ends rather than wrapping, so holding an arrow key does
+    /// not teleport the reader across the turn.
+    pub fn select(&mut self, delta: isize) {
+        let blocks = self.blocks();
+        if blocks.is_empty() {
+            self.selection = None;
+            return;
+        }
+        let current = self
+            .selection
+            .and_then(|selected| blocks.iter().position(|block| *block == selected));
+        let next = match (current, delta.is_negative()) {
+            (Some(index), false) => (index + delta as usize).min(blocks.len() - 1),
+            (Some(index), true) => index.saturating_sub(delta.unsigned_abs()),
+            (None, false) => 0,
+            (None, true) => blocks.len() - 1,
+        };
+        self.select_block(blocks[next]);
+    }
+
+    /// Select a block by id, if it is still there, and bring it into view.
+    pub fn select_block(&mut self, block: BlockRef) {
+        if !self.rows.iter().any(|row| row.block == Some(block)) {
+            return;
+        }
+        self.selection = Some(block);
+        self.reveal(block);
+    }
+
+    /// Select the last block, which is what `Up` on an empty composer does: the
+    /// reader is reaching for the newest thing without leaving the field.
+    pub fn select_last(&mut self) -> Option<BlockRef> {
+        let last = *self.blocks().last()?;
+        self.select_block(last);
+        Some(last)
+    }
+
+    /// Drop the selection, so the transcript keys are a no-op again.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Scroll the minimum distance that puts `block` in view.
+    ///
+    /// Minimal on purpose: revealing a block that is already visible must not
+    /// jump the reader out of the prose they were reading. Reaching the last row
+    /// re-arms the follow lock, the same rule `End` follows.
+    pub fn reveal(&mut self, block: BlockRef) {
+        let Some(start) = self.rows.iter().position(|row| row.block == Some(block)) else {
+            return;
+        };
+        if start < self.offset {
+            self.offset = start;
+        } else if start >= self.offset + self.viewport {
+            self.offset = (start + 1).saturating_sub(self.viewport);
+        }
+        if self.offset >= self.max_offset() {
+            self.offset = self.max_offset();
+            self.pinned = true;
+        } else {
+            self.pinned = false;
+        }
+    }
 }
 
 /// Rows between the reader and the end of the transcript. Zero means the last
@@ -379,9 +624,18 @@ pub fn pinned_after_scroll(
 /// spacing even: a block never supplies its own leading or trailing blank, so
 /// two tool calls cannot end up two rows apart while a message pair is one.
 pub fn build_rows(messages: &[Message], width: u16) -> Vec<Row> {
+    build_rows_with(messages, width, &Render::default())
+}
+
+/// [`build_rows`] with the expansion set and the fetched originals.
+pub fn build_rows_with(messages: &[Message], width: u16, render: &Render) -> Vec<Row> {
     let width = usize::from(width).max(1);
+    // Every block is tagged with what it is, because the arrows move over blocks
+    // and a key acts on the selected one. A compaction divider is not a block: it
+    // has nothing to act on.
     let mut blocks: Vec<Vec<Row>> = Vec::new();
     for message in messages {
+        let prose = BlockRef::message(message.id);
         match message.role {
             Role::User => {
                 if message.compaction {
@@ -390,11 +644,11 @@ pub fn build_rows(messages: &[Message], width: u16) -> Vec<Row> {
                 }
                 // A band like a tool card's, with a blue rail instead of gray.
                 let inner = inner_width(width);
-                let mut block = vec![Row::new(RowKind::User, band_line("", inner))];
+                let mut block = vec![Row::new(RowKind::User, band_line("", inner)).in_block(prose)];
                 for line in wrap_text(&message.content, inner) {
-                    block.push(Row::new(RowKind::User, band_line(&line, inner)));
+                    block.push(Row::new(RowKind::User, band_line(&line, inner)).in_block(prose));
                 }
-                block.push(Row::new(RowKind::User, band_line("", inner)));
+                block.push(Row::new(RowKind::User, band_line("", inner)).in_block(prose));
                 blocks.push(block);
             }
             Role::Assistant => {
@@ -403,15 +657,25 @@ pub fn build_rows(messages: &[Message], width: u16) -> Vec<Row> {
                     // lists, tables and code, and a terminal that shows the
                     // source characters is showing the author's markup rather
                     // than the document.
-                    blocks.push(markdown::rows(&message.content, width));
+                    blocks.push(
+                        markdown::rows(&message.content, width)
+                            .into_iter()
+                            .map(|row| row.in_block(prose))
+                            .collect(),
+                    );
                 }
-                // One block per call, so each gets its own blank line.
+                // One block per call, so each gets its own blank line and its own
+                // place in the selection.
                 for call in &message.tool_calls {
-                    blocks.push(tool_card_rows(call, width));
+                    blocks.push(tool_card_rows(
+                        call,
+                        width,
+                        render,
+                        BlockRef::call(message.id, call.id),
+                    ));
                 }
             }
-            // The card owns a tool result's output from T2. Until then the
-            // assistant block's card is the whole story.
+            // A tool result's body lives on the card above it.
             Role::Tool => {}
         }
     }
@@ -429,17 +693,6 @@ pub fn build_rows(messages: &[Message], width: u16) -> Vec<Row> {
     rows
 }
 
-fn status_label(status: ExecutionStatus) -> &'static str {
-    match status {
-        ExecutionStatus::NotStarted => "not started",
-        ExecutionStatus::Running => "running",
-        ExecutionStatus::Succeeded => "succeeded",
-        ExecutionStatus::Failed => "failed",
-        ExecutionStatus::Cancelled => "cancelled",
-        ExecutionStatus::TimedOut => "timed out",
-    }
-}
-
 /// One card per tool call: a raised band, no border.
 ///
 /// A block rather than a bare line, because a call is a unit: the reader wants
@@ -451,30 +704,56 @@ fn status_label(status: ExecutionStatus) -> &'static str {
 /// The rows are generated here, in the pre-wrapped set, rather than drawn by
 /// `Block` in the view: a card then still counts as exactly the rows it
 /// occupies, which is what keeps the scroll offset row-exact.
-fn tool_card_rows(call: &robi_core::message::ToolCall, width: usize) -> Vec<Row> {
+///
+/// What the card *says* is `tool_card`'s job. This only wraps it, tints it, and
+/// tags every row with the call's block so the selection and `reveal` can find
+/// it.
+fn tool_card_rows(
+    call: &robi_core::message::ToolCall,
+    width: usize,
+    render: &Render,
+    block: BlockRef,
+) -> Vec<Row> {
     let width = width.max(8);
     let inner = inner_width(width);
+    let id = call.id;
+    let expanded = render.is_expanded(id);
+    let card = tool_card::card(call, expanded);
+    // A call the loop is waiting on. The same predicate the modal, the pending
+    // list, and `pending_calls` use.
+    let attention = call.approval_status == robi_core::message::ApprovalStatus::Pending
+        && call.execution_status == ExecutionStatus::NotStarted;
     let mut rows = Vec::new();
 
     // One row of padding at the top, inside the band.
-    rows.push(Row::new(RowKind::ToolCard, band_line("", inner)));
+    rows.push(
+        Row::new(RowKind::ToolCard, band_line("", inner))
+            .in_block(block)
+            .attention(attention),
+    );
 
     // The heading: `# what ran`. Muted, so it reads as a label.
-    let heading = format!("# {}", call_heading(call));
-    for line in wrap_text(&heading, inner) {
-        rows.push(Row::new(RowKind::ToolHeading, band_line(&line, inner)));
+    for line in wrap_text(&card.heading_line(), inner) {
+        rows.push(
+            Row::new(RowKind::ToolHeading, band_line(&line, inner))
+                .in_block(block)
+                .attention(attention),
+        );
     }
 
-    let subject = call_subject(call);
-    let body = call_body(call);
+    let body = body_lines(call, &card, render, expanded);
 
     // Everything below the heading is the contents, one blank row down.
-    if !subject.is_empty() || !body.is_empty() {
-        rows.push(Row::new(RowKind::ToolCard, band_line("", inner)));
+    if card.subject.is_some() || !body.is_empty() {
+        rows.push(
+            Row::new(RowKind::ToolCard, band_line("", inner))
+                .in_block(block)
+                .attention(attention),
+        );
     }
 
-    if !subject.is_empty() {
-        let marker = if call.name == "shell" { "$" } else { ">" };
+    if let Some(subject) = &card.subject {
+        let marker = card.marker;
         let first = format!("{marker} {subject}");
         for (index, line) in wrap_text(&first, inner).into_iter().enumerate() {
             if index == 0 {
@@ -482,112 +761,98 @@ fn tool_card_rows(call: &robi_core::message::ToolCall, width: usize) -> Vec<Row>
                 // the text starts inside the row's padding.
                 let text = band_line(&line, inner);
                 let start = text.find(&line).unwrap_or(0);
-                rows.push(Row::with_span(
-                    RowKind::ToolCard,
-                    start,
-                    marker.len(),
-                    theme::tool_card_marker(),
-                    text,
-                ));
+                rows.push(
+                    Row::with_span(
+                        RowKind::ToolCard,
+                        start,
+                        marker.len_utf8(),
+                        theme::tool_card_marker(),
+                        text,
+                    )
+                    .in_block(block)
+                    .attention(attention),
+                );
             } else {
                 // Continuation lines line up under the text, not the marker.
-                rows.push(Row::new(
-                    RowKind::ToolCard,
-                    band_line(&format!("  {line}"), inner),
-                ));
+                rows.push(
+                    Row::new(RowKind::ToolCard, band_line(&format!("  {line}"), inner))
+                        .in_block(block)
+                        .attention(attention),
+                );
             }
         }
     }
 
     if !body.is_empty() {
-        if !subject.is_empty() {
-            rows.push(Row::new(RowKind::ToolCard, band_line("", inner)));
+        if card.subject.is_some() {
+            rows.push(
+                Row::new(RowKind::ToolCard, band_line("", inner))
+                    .in_block(block)
+                    .attention(attention),
+            );
         }
-        let total = body.len();
-        let shown = total.min(MAX_TOOL_OUTPUT_LINES);
-        for line in body.iter().take(shown) {
+        for line in &body {
             // No indent: the output starts in the same column as `#` and `$`.
-            for wrapped in wrap_text(line, inner) {
-                rows.push(Row::new(RowKind::ToolCard, band_line(&wrapped, inner)));
+            let kind = match line.kind {
+                CardLineKind::DiffAdd => RowKind::DiffAdd,
+                CardLineKind::DiffDel => RowKind::DiffDel,
+                _ => RowKind::ToolCard,
+            };
+            for wrapped in wrap_text(&line.text, inner) {
+                rows.push(
+                    Row::new(kind, band_line(&wrapped, inner))
+                        .in_block(block)
+                        .attention(attention),
+                );
             }
-        }
-        if total > shown {
-            let more = format!("\u{2026} (+{} more lines)", total - shown);
-            rows.push(Row::new(RowKind::ToolCard, band_line(&more, inner)));
         }
     }
 
     // One row of padding at the bottom, mirroring the top.
-    rows.push(Row::new(RowKind::ToolCard, band_line("", inner)));
+    rows.push(
+        Row::new(RowKind::ToolCard, band_line("", inner))
+            .in_block(block)
+            .attention(attention),
+    );
     rows
 }
 
-/// What the card names as the call's subject.
-fn call_heading(call: &robi_core::message::ToolCall) -> String {
-    // A description beats a tool name when the call carries one.
-    if let Some(description) = call
-        .args
-        .get("description")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-    {
-        return description.to_owned();
-    }
-    if call.execution_status == ExecutionStatus::Succeeded {
-        call.name.clone()
-    } else {
-        format!(
-            "{} \u{b7} {}",
-            call.name,
-            status_label(call.execution_status)
-        )
-    }
-}
-
-/// What the card names as the call's subject.
-fn call_subject(call: &robi_core::message::ToolCall) -> String {
-    for key in TARGET_ARGS {
-        if let Some(value) = call.args.get(*key).and_then(|value| value.as_str()) {
-            if !value.is_empty() {
-                return value.to_owned();
+/// The card's body: the parsed lines, plus the fetched original when the card is
+/// opened over a compressed result.
+///
+/// A shell or MCP result may have been compressed before it was stored, so the
+/// transcript holds a summary the model read and the original is elsewhere. Only
+/// an opened card pays for it, and the fetch itself belongs to `App`.
+fn body_lines(
+    call: &robi_core::message::ToolCall,
+    card: &tool_card::Card,
+    render: &Render,
+    expanded: bool,
+) -> Vec<CardLine> {
+    if expanded && (call.name == "shell" || call.name.starts_with("mcp_")) {
+        if let Some(original) = render.originals.get(&call.id) {
+            let mut lines: Vec<CardLine> = original.lines().map(CardLine::body).collect();
+            let limit = tool_card::MAX_EXPANDED_TOOL_LINES;
+            if lines.len() > limit {
+                let hidden = lines.len() - limit;
+                lines.truncate(limit);
+                lines.push(more_line(hidden));
             }
+            return lines;
         }
     }
-    let compact = serde_json::to_string(&call.args).unwrap_or_default();
-    if compact.is_empty() || compact == "null" {
-        return String::new();
+    let mut lines = card.lines.clone();
+    if card.hidden > 0 {
+        lines.push(more_line(card.hidden));
     }
-    compact
+    lines
 }
 
-/// The readable lines of a call's result, or why it failed.
-///
-/// A result is JSON of whatever shape the tool chose, so the common body fields
-/// are tried first and anything else is pretty-printed rather than dropped.
-fn call_body(call: &robi_core::message::ToolCall) -> Vec<String> {
-    if let Some(error) = &call.error {
-        return error.lines().map(str::to_owned).collect();
+fn more_line(hidden: usize) -> CardLine {
+    CardLine {
+        kind: CardLineKind::More,
+        text: format!("\u{2026} (+{hidden} more lines)"),
     }
-    let Some(result) = &call.result else {
-        return match call.execution_status {
-            ExecutionStatus::Running => vec!["running\u{2026}".to_owned()],
-            ExecutionStatus::NotStarted => vec!["waiting for approval".to_owned()],
-            _ => Vec::new(),
-        };
-    };
-    let text = match result {
-        serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Object(map) => BODY_FIELDS
-            .iter()
-            .find_map(|field| map.get(*field))
-            .map(|value| match value {
-                serde_json::Value::String(text) => text.clone(),
-                other => serde_json::to_string_pretty(other).unwrap_or_default(),
-            })
-            .unwrap_or_else(|| serde_json::to_string_pretty(result).unwrap_or_default()),
-        other => serde_json::to_string_pretty(other).unwrap_or_default(),
-    };
-    text.lines().map(str::to_owned).collect()
 }
 
 /// Cells, not chars: a wide character occupies two columns.
@@ -681,7 +946,7 @@ pub(crate) fn styled_row(
 #[cfg(test)]
 mod tests {
     use robi_core::ids::ToolCallId;
-    use robi_core::message::{ApprovalStatus, ToolCall};
+    use robi_core::message::{ApprovalStatus, ExecutionStatus, ToolCall};
 
     use super::*;
 
@@ -720,6 +985,8 @@ mod tests {
                 RowKind::Assistant => 'a',
                 RowKind::ToolHeading => 'h',
                 RowKind::ToolCard => 'c',
+                RowKind::DiffAdd => '+',
+                RowKind::DiffDel => '-',
                 RowKind::Divider => 'd',
                 RowKind::Spacer => ' ',
             })
@@ -905,6 +1172,8 @@ mod tests {
                 let kind = match row.kind {
                     RowKind::ToolHeading => "heading",
                     RowKind::ToolCard => "card",
+                    RowKind::DiffAdd => "add",
+                    RowKind::DiffDel => "del",
                     RowKind::Spacer => "spacer",
                     RowKind::User => "user",
                     RowKind::Assistant => "assistant",
@@ -1310,5 +1579,177 @@ mod tests {
         assert_eq!(transcript.generation(), 0);
         assert_eq!(transcript.next_generation(), 1);
         assert_eq!(transcript.next_generation(), 2);
+    }
+
+    #[test]
+    fn an_opened_card_shows_more_output_than_a_closed_one() {
+        let output: String = (0..20).map(|i| format!("line {i}\n")).collect();
+        let call = call(
+            "shell",
+            serde_json::json!({ "command": "seq 20" }),
+            serde_json::json!({ "stdout": output }),
+        );
+        let id = call.id;
+        let messages = vec![Message::assistant_with_tool_calls("", vec![call])];
+
+        let mut transcript = transcript_of(messages, 60, 40);
+        let closed = transcript.rows().len();
+        assert!(transcript.toggle_expanded(id));
+        let opened = transcript.rows().len();
+        assert!(
+            opened > closed,
+            "opening a card has to add rows: {closed} -> {opened}"
+        );
+        assert!(transcript.is_expanded(id));
+
+        transcript.toggle_expanded(id);
+        assert_eq!(transcript.rows().len(), closed);
+        assert!(!transcript.is_expanded(id));
+    }
+
+    #[test]
+    fn a_fetched_original_replaces_the_compressed_output() {
+        let call = call(
+            "shell",
+            serde_json::json!({ "command": "seq" }),
+            serde_json::json!({ "stdout": "the compressed view" }),
+        );
+        let id = call.id;
+        let messages = vec![Message::assistant_with_tool_calls("", vec![call])];
+        let mut transcript = transcript_of(messages, 60, 40);
+        transcript.toggle_expanded(id);
+        assert!(texts(transcript.rows())
+            .iter()
+            .any(|row| row.contains("the compressed view")));
+
+        transcript.set_original(id, "the whole thing".to_owned());
+        let rows = texts(transcript.rows()).join("\n");
+        assert!(rows.contains("the whole thing"), "{rows}");
+        assert!(!rows.contains("the compressed view"), "{rows}");
+    }
+
+    #[test]
+    fn an_edit_card_tints_its_added_and_removed_rows() {
+        let mut call = call(
+            "edit_file",
+            serde_json::json!({
+                "path": "a.rs",
+                "old_string": "let a = 1;",
+                "new_string": "let a = 2;",
+            }),
+            serde_json::Value::Null,
+        );
+        call.result = None;
+        call.approval_status = ApprovalStatus::Pending;
+        call.execution_status = ExecutionStatus::NotStarted;
+        let rows = build_rows(&[Message::assistant_with_tool_calls("", vec![call])], 60);
+        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+        assert!(kinds.contains(&RowKind::DiffDel), "{kinds:?}");
+        assert!(kinds.contains(&RowKind::DiffAdd), "{kinds:?}");
+    }
+
+    /// Prose, then two cards: the three kinds of block a transcript has.
+    fn prose_then_two_cards() -> (Vec<Message>, MessageId, ToolCallId, ToolCallId) {
+        let first = call(
+            "shell",
+            serde_json::json!({ "command": "one" }),
+            serde_json::json!({ "stdout": "first" }),
+        );
+        let second = call(
+            "shell",
+            serde_json::json!({ "command": "two" }),
+            serde_json::json!({ "stdout": "second" }),
+        );
+        let ids = (first.id, second.id);
+        let message = Message::assistant_with_tool_calls("here is what I ran", vec![first, second]);
+        let message_id = message.id;
+        (vec![message], message_id, ids.0, ids.1)
+    }
+
+    #[test]
+    fn the_selection_walks_prose_and_cards_and_reveals_each_one() {
+        let (messages, message_id, first, second) = prose_then_two_cards();
+        // A viewport of one row, so revealing a block always has to move.
+        let mut transcript = transcript_of(messages, 60, 1);
+        assert_eq!(transcript.selection(), None);
+
+        transcript.select(1);
+        assert_eq!(
+            transcript.selection(),
+            Some(BlockRef::message(message_id)),
+            "the first block is the message's prose"
+        );
+
+        transcript.select(1);
+        assert_eq!(
+            transcript.selected_call(),
+            Some(first),
+            "down from the prose is the first card"
+        );
+        transcript.select(1);
+        assert_eq!(transcript.selected_call(), Some(second));
+        transcript.select(1);
+        assert_eq!(
+            transcript.selected_call(),
+            Some(second),
+            "the last block is the end"
+        );
+
+        transcript.select(-1);
+        assert_eq!(transcript.selected_call(), Some(first));
+
+        let selected = transcript.selection().expect("something is selected");
+        let row = transcript
+            .rows()
+            .iter()
+            .position(|row| row.block == Some(selected))
+            .expect("the block has rows");
+        assert!(
+            transcript
+                .visible()
+                .iter()
+                .any(|row| row.block == Some(selected)),
+            "revealing a block puts it in view (block at row {row}, offset {})",
+            transcript.offset()
+        );
+        transcript.clear_selection();
+        assert_eq!(transcript.selection(), None);
+    }
+
+    #[test]
+    fn a_selection_survives_an_upsert_of_its_own_row() {
+        let (messages, message_id, first, _) = prose_then_two_cards();
+        let mut transcript = transcript_of(messages, 60, 40);
+        transcript.select(1);
+        transcript.select(1);
+        let selected = transcript.selection();
+        assert_eq!(transcript.selected_call(), Some(first));
+
+        // The call comes back with a different body, in the same message: new
+        // rows, same block id, so the selection is still on that card.
+        let mut updated = call(
+            "shell",
+            serde_json::json!({ "command": "one" }),
+            serde_json::json!({ "stdout": "changed" }),
+        );
+        updated.id = first;
+        let mut message = Message::assistant_with_tool_calls("here is what I ran", vec![updated]);
+        message.id = message_id;
+        transcript.upsert(message);
+        assert_eq!(transcript.selection(), selected, "same block, new rows");
+    }
+
+    #[test]
+    fn a_new_message_id_is_a_different_block() {
+        // The block is keyed on the message, so a row replaced by id keeps the
+        // selection and one replaced wholesale does not. That is the rule the
+        // reconcile depends on, so it is worth stating.
+        let (messages, _, first, _) = prose_then_two_cards();
+        let mut transcript = transcript_of(messages, 60, 40);
+        transcript.select(1);
+        transcript.select(1);
+        assert_eq!(transcript.selected_call(), Some(first));
+        transcript.set_messages(vec![Message::user("just prose")]);
+        assert_eq!(transcript.selection(), None);
     }
 }

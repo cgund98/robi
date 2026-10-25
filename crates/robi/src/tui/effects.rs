@@ -78,6 +78,49 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 },
             }
         }
+        Action::Decide {
+            session,
+            call,
+            decision,
+        } => {
+            // The word and the optional reason are the service's interface: an
+            // empty reason is sent as `None`, so the service supplies its own
+            // default rather than the model reading a blank line.
+            match state
+                .chat_message_service
+                .decide_tool_call(session, call, decision.word(), decision.reason())
+                .await
+            {
+                Ok(()) => ActionOutcome::Decided { session, call },
+                Err(error) => ActionOutcome::DecideFailed {
+                    session,
+                    call,
+                    message: error.to_string(),
+                },
+            }
+        }
+        Action::LoadOriginal {
+            session,
+            call,
+            original_id,
+        } => match state.originals.lookup(session, &original_id).await {
+            Ok(crate::agent::compress::Lookup::One(body)) => ActionOutcome::Original {
+                session,
+                call,
+                text: crate::tui::state::tool_card::original_text(&body),
+            },
+            Ok(crate::agent::compress::Lookup::Missing)
+            | Ok(crate::agent::compress::Lookup::Ambiguous(_)) => ActionOutcome::OriginalFailed {
+                session,
+                call,
+                message: format!("the full output for {original_id} is gone"),
+            },
+            Err(error) => ActionOutcome::OriginalFailed {
+                session,
+                call,
+                message: error,
+            },
+        },
         Action::Stop { session } => match state.chat_message_service.stop(session).await {
             Ok(()) => ActionOutcome::Stopped { session },
             Err(error) => ActionOutcome::Failed {

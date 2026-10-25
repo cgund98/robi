@@ -141,6 +141,7 @@ Do not sprinkle raw hex in components.
 | `--warn` | `#e8c547` | Yellow text for the review **Reject with reason** menu item and its **Reject and send** button |
 | `--mode-ask` | `#6fbf7a` | Ask mode in the composer |
 | `--mode-plan` | `#e39a3c` | Plan mode, and the plan Build and View Plan buttons |
+| `--attention` | `#e39a3c` | A tool call waiting on a decision: the card's left rail. Same value as `--mode-plan`, named separately so "this needs you" can diverge from "this session is in plan mode" |
 | `--diff-add` | `#5db27b` | `+N` line counts in edit summaries |
 | `--diff-del` | `#c46b6b` | `-N` line counts in edit summaries |
 | `--find-hit` | `#6b5416` | Find-in-document match background |

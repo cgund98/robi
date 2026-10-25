@@ -1,5 +1,5 @@
 import { BarsBottomLeft, CommandLine, Document, MagnifyingGlass } from '../../components/ui/icons'
-import { createEffect, createSignal, For, onCleanup, Show, type JSX } from 'solid-js'
+import { createEffect, createSignal, For, on, onCleanup, Show, type JSX } from 'solid-js'
 
 import { isTauri } from '@tauri-apps/api/core'
 
@@ -18,6 +18,7 @@ import {
   exploreSummary,
   hasDetail,
   needsDecision,
+  shellOutputTail,
   subagentCount,
   subagentStepSummary,
   subagentView,
@@ -584,32 +585,51 @@ function ShellCard(props: {
     () => props.originalId,
     () => props.output
   )
-  const [open, setOpen] = createOpen(
-    props.expansionKey,
-    (props.defaultOpen ?? false) || (props.running ?? false)
+  /**
+   * The running command opens the card, but that is not a choice the user made,
+   * so it is not remembered: a finished call starts closed on every refresh.
+   * Only a click writes to `expandedToolCalls`, and it outlives the card.
+   */
+  const chosen = () => expandedToolCalls.get(props.expansionKey)
+  const [open, setOpenState] = createSignal(
+    chosen() ?? ((props.defaultOpen ?? false) || (props.running ?? false))
   )
-  createEffect(() => {
-    if (props.running && expandedToolCalls.get(props.expansionKey) === undefined) {
-      setOpen(true)
-    }
-  })
+  const setOpen = (value: boolean) => {
+    expandedToolCalls.set(props.expansionKey, value)
+    setOpenState(value)
+  }
+  createEffect(
+    on(
+      () => props.running ?? false,
+      (running) => {
+        if (chosen() !== undefined) {
+          return
+        }
+        setOpenState(running)
+      },
+      { defer: true }
+    )
+  )
   return (
     <Show
       when={open()}
       fallback={
-        <div class={styles.editHead}>
-          <button
-            type="button"
-            class={styles.row}
-            aria-expanded={false}
-            onClick={() => setOpen(true)}
-          >
-            <ToolIcon name="shell" />
-            <span class={styles.verb}>{props.summary.verb}</span>
-            <SummaryLabel summary={props.summary} />
-            {props.status}
-          </button>
-          {props.actions}
+        <div class={styles.shell}>
+          <div class={styles.editHead}>
+            <button
+              type="button"
+              class={styles.editRow}
+              aria-expanded={false}
+              onClick={() => setOpen(true)}
+            >
+              <ToolIcon name="shell" />
+              <span class={styles.verb}>{props.summary.verb}</span>
+              <SummaryLabel summary={props.summary} />
+              {props.status}
+            </button>
+            {props.actions}
+          </div>
+          <ShellPreview command={props.command} lines={shellOutputTail(props.output)} />
         </div>
       }
     >
@@ -628,7 +648,7 @@ function ShellCard(props: {
           </button>
           {props.actions}
         </div>
-        <ShellBody command={props.command} output={shown()} compact={!props.actions} />
+        <ShellBody command={props.command} output={shown()} />
       </div>
     </Show>
   )
@@ -748,15 +768,27 @@ function LogLines(props: { text: string; startLine: number }) {
   )
 }
 
-function ShellBody(props: { command: string; output: string; compact?: boolean }) {
+function ShellBody(props: { command: string; output: string }) {
   return (
-    <pre
-      class={props.compact ? `${styles.shellBody} ${styles.shellBodyCompact}` : styles.shellBody}
-    >
+    <pre class={`${styles.shellBody} ${styles.shellCardBody}`}>
       <span class={styles.shellCommand}>
         <span class={styles.prompt}>$</span> {props.command}
       </span>
       {props.output}
+    </pre>
+  )
+}
+
+/** Collapsed shell card: the command on one line, then the tail of the output. */
+function ShellPreview(props: { command: string; lines: string[] }) {
+  return (
+    <pre class={styles.shellPreview}>
+      <span class={styles.shellPreviewCommand}>
+        <span class={styles.prompt}>$</span> {props.command}
+      </span>
+      <Show when={props.lines.length > 0}>
+        <span class={styles.shellPreviewOutput}>{props.lines.join('\n')}</span>
+      </Show>
     </pre>
   )
 }
