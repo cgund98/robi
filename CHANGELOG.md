@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.11](https://github.com/cgund98/robi/compare/v0.1.10...v0.1.11) (2026-10-26)
+
+
+### Features
+
+* add containerized sandbox ([8037c60](https://github.com/cgund98/robi/commit/8037c60da760a66c683519a46ca4d2f5df950be0))
+* add safe multi-process locks ([09657dc](https://github.com/cgund98/robi/commit/09657dc5da591d08c464253c119aad1db40a6163))
+* add setting for custom file opener ([45c658f](https://github.com/cgund98/robi/commit/45c658fa76fe66650660208514f155777cfeb837))
+* add settings view to TUI ([0671c8f](https://github.com/cgund98/robi/commit/0671c8f7288582979b652750e815b70d3ebb8999))
+* create boilerplate for TUI ([4fdfb0d](https://github.com/cgund98/robi/commit/4fdfb0d73af08f1a3239e8a1b296ed48f57cedd0))
+* implement file attachments and open command ([88d722b](https://github.com/cgund98/robi/commit/88d722b707ddfd466b189146c87590c4e0c97ec2))
+* implement model picker in TUI ([cc285ca](https://github.com/cgund98/robi/commit/cc285cadd2aaeb4ad39e27d5cdbf74de38419d37))
+* implement streamlined GUI ([20a16ea](https://github.com/cgund98/robi/commit/20a16ea3b1111ca96cb2fc2a0eb18092f025cfb4))
+* implement tool card approvals in TUI ([f2d13ef](https://github.com/cgund98/robi/commit/f2d13ef0c63b03c470fe1676c8fbc55d9916375c))
+* manage sessions and workspace in TUI ([3e23aa8](https://github.com/cgund98/robi/commit/3e23aa805ea63a63f7f5079cb2ee3e444a775fc2))
+* support opening files externally ([37bf84b](https://github.com/cgund98/robi/commit/37bf84b6d9727f939457589ee26d9e29f6bcf107))
+* toggle off edit tools, lsp, semantic index ([4334db4](https://github.com/cgund98/robi/commit/4334db43272c8aab8f506e9f9bd4e4ddd1d7eb02))
+
+
+### Bug Fixes
+
+* cleanup sandbox containers ([e71e9f0](https://github.com/cgund98/robi/commit/e71e9f0756719df929cd16e10f64343dc228c591))
+* do not clip shell in detail view, show unsandboxed in TUI ([f9637e4](https://github.com/cgund98/robi/commit/f9637e4c90aa0d4eccc87d0bdf6cc1ec7bd23f79))
+* keep focus on composer when opening skills ([713256d](https://github.com/cgund98/robi/commit/713256dc7b2425044e4cc0d62c8612eb9ac0107f))
+* load directory as closed if no children found ([93519ce](https://github.com/cgund98/robi/commit/93519ce4d9778c1aa8c5ff7ae329b0050b7537b7))
+* remove optimistic card, scroll with tool card approvals ([a7cc119](https://github.com/cgund98/robi/commit/a7cc119868c3cf1f86beb1127a856760d459e303))
+* remove relay container ([c5378f3](https://github.com/cgund98/robi/commit/c5378f374a56c751345a37c0b6a23da48895cfc4))
+* remove unused semantic index ([c93031d](https://github.com/cgund98/robi/commit/c93031d6bd5de7a0b88f34eef0007b4de7ea3c26))
+
 ## [0.1.10](https://github.com/cgund98/robi/compare/v0.1.9...v0.1.10) (2026-10-10)
 
 
