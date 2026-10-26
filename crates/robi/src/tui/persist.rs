@@ -100,7 +100,11 @@ pub fn load(state_dir: &Path) -> ViewState {
 pub fn save(state_dir: &Path, view: &ViewState) -> io::Result<()> {
     std::fs::create_dir_all(state_dir)?;
     let target = path(state_dir);
-    let temporary = target.with_extension("json.tmp");
+    // One temp name per process. The name was constant, which was safe only while
+    // one terminal ran at a time: two processes racing a rename onto the same
+    // temp file can leave a half-written `tui.json` or lose a save. The rename is
+    // still what commits, so a reader sees the previous file or the next one.
+    let temporary = target.with_extension(format!("{}.json.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(view).map_err(io::Error::other)?;
     std::fs::write(&temporary, text)?;
     std::fs::rename(&temporary, &target)
@@ -113,8 +117,7 @@ mod tests {
     use super::*;
 
     fn state_dir() -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("robi-tui-persist-{}", Uuid::now_v7().simple()));
+        let dir = std::env::temp_dir().join(format!("robi-persist-{}", Uuid::now_v7().simple()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         dir
     }
@@ -134,9 +137,15 @@ mod tests {
         save(&dir, &view).expect("a write");
         assert_eq!(load(&dir), view);
         assert!(
-            !path(&dir).with_extension("json.tmp").exists(),
+            !dir.join(format!("tui.{}.tmp", std::process::id())).exists(),
             "the temporary file is renamed, not left behind"
         );
+        let leftovers = std::fs::read_dir(&dir)
+            .expect("the directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "and two processes cannot share one temp name");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

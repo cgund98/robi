@@ -272,6 +272,16 @@ receives `robi.agent.v1.transcript_compacted` refetches the message list.
 
 Unsent text stays with the chat it was typed in. Switching sessions, or moving between the greeting card and the bottom field, restores that chat's draft. A successful send clears it. The new-chat draft is its own slot until the first send creates a row.
 
+`Cmd+Shift+K` on a Mac, `Ctrl+Shift+K` elsewhere, asks before it empties the
+field. The confirm says **Clear composer**, names what goes — the text, plus the
+attachments when there are any — and says it cannot be undone. **Cancel**,
+Escape, and an outside click leave the text and the attachments alone.
+**Clear** empties the field, that chat's draft, and every attachment, then puts
+the caret back in the field. A composer with no text and no attachments ignores
+the chord. The listener sits on the mounted composer, so the shortcut does
+nothing while no chat is on screen, and a chord pressed inside an open dialog
+belongs to that dialog.
+
 The textarea stays editable while a turn runs and while a send is in flight.
 Enter does not submit during session load, while a stop has not returned, or
 while a send has not returned. Until that send returns, the send slot is a

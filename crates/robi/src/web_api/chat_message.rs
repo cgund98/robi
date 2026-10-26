@@ -214,7 +214,7 @@ async fn ingest_multipart(
         let id = Uuid::now_v7().to_string();
         state
             .image_source
-            .store(&session.to_string(), &id, &media_type, bytes.to_vec())
+            .store(session, &id, &media_type, bytes.to_vec())
             .await?;
         images.push(ImageAttachment { id, media_type });
     }
@@ -331,12 +331,10 @@ pub async fn get_image(
     Path((id, image_id)): Path<(String, String)>,
 ) -> Result<Response, ServiceError> {
     let session = parse_session_id(&id)?;
-    // The session id is not a column on the read, but the row belongs to a
-    // session; crossing the streams only matters for correctness of access. The
-    // store scopes reads by id alone, and the image id is a uuid no caller can
-    // guess, so no session check is needed here.
-    let _ = session;
-    match state.image_source.image(&image_id).await? {
+    // Scoped by the path's session: the bytes live in that chat's own blob file,
+    // which is also the index. An image id from another chat reads as missing
+    // rather than resolving, so a guessed id cannot cross sessions.
+    match state.image_source.image(session, &image_id).await? {
         Some((media_type, bytes)) => Ok((
             [
                 (axum::http::header::CONTENT_TYPE, media_type),
@@ -816,6 +814,7 @@ fn execution_name(status: ExecutionStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::chat_session::lease::MemoryLocks;
     use robi_core::message::Usage;
 
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -897,6 +896,7 @@ mod tests {
             asset_cleaner: None,
         });
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
@@ -915,6 +915,7 @@ mod tests {
                 sessions,
                 runtime,
                 store,
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
@@ -929,6 +930,7 @@ mod tests {
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
         }
     }
 

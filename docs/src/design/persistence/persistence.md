@@ -87,8 +87,9 @@ and no `user_id`.
 ### Schema
 
 Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
-chat sessions, chat messages, and file baselines. There is one migration. An
-existing database from the earlier series has to be deleted and created again.
+chat sessions, chat messages, and file baselines. Three migrations follow it in
+the same directory: `0002` adds `turn_display`, `0003` drops `plan_path`, and
+`0004` adds `turn_settled`.
 Tool originals and image bytes are not in this file. Their record shape is in
 [shell-output.md](../compression/shell-output.md).
 The four path-rule columns default to `[]`.
@@ -125,6 +126,8 @@ Index: `(created_at DESC, id DESC)`.
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
 | `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, a host-allow edit, or a model-config edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
+| `turn_display` | `TEXT NOT NULL` | `idle`, `pending`, `awaiting_approval`, or `failed`. A display summary, not a source of truth. `0` on create and written by the runtime; see below |
+| `turn_settled` | `INTEGER NOT NULL` | `1` when `turn_display` is known to match the transcript. Stored by the same write as `turn_display`, from whether that display is `pending`. Scopes the startup repair |
 
 Index: `(workspace_id, last_used_at DESC, id DESC)`.
 
@@ -156,10 +159,20 @@ has `~/.robi/sessions/<session_id>/blobs.redb`. Tables inside that file:
 | `images` | image id | raw bytes |
 | `image_types` | image id | media type |
 
-`~/.robi/sessions/image-index.redb` maps an image id to its session id. That
-file holds no image bytes. `GET /chat_sessions/{id}/images/{image_id}` serves
-the bytes for the UI's message bubbles. There is no DTO, because the transcript's
-`images` list already carries the reference.
+The session file is also that session's image index. `images` and `image_types`
+are keyed by image id inside `sessions/<id>/blobs.redb`, so `image id → session`
+is answered by the file the bytes already sit in, and a read takes the session id
+from its caller: `Message`'s `images` list, or the route's path.
+`GET /chat_sessions/{id}/images/{image_id}` serves the bytes for the UI's message
+bubbles, and an id belonging to another chat reads as missing. There is no DTO,
+because the transcript's `images` list already carries the reference.
+
+There used to be a shared `~/.robi/sessions/image-index.redb` holding that
+mapping, because the read had no session id. It was the only `redb` file no
+session owned, so no per-session lock covered it and two processes could collide
+on it while either stored an image. Images attached before it was removed 404;
+tool results in the same sessions are unaffected, because they are keyed inside
+the session file.
 
 `session_file_baselines` is the pre-edit body of each path a chat session has
 written or deleted. The edit tools insert it, so in the default build — where the
@@ -247,6 +260,13 @@ writes `pending` when a message or a tool decision is accepted, and writes
 recomputes it from the transcript: a waiting tool call becomes
 `awaiting_approval`, a stored `failed` stays when nothing is waiting, and a
 leftover `pending` becomes `idle`.
+
+That repair only reads sessions with `turn_settled = 0`. Every write to
+`turn_display` stores both columns, so a finished turn settles its own row and a
+turn in flight is the only thing that leaves one to repair. 0004 backfills
+`turn_settled` from `turn_display` for the same reason: only a `pending` row
+needed repair when the migration ran. The repair reads the transcript without
+tool results, so it never opens a session's blob file.
 
 ### Chat messages and the runtime
 

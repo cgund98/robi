@@ -38,6 +38,11 @@ pub enum ToolError {
     Panicked,
     #[error("the tool timed out")]
     TimedOut,
+    /// Another process holds the resource this call edits, and the bounded wait
+    /// ran out. `Locked` rather than `Failed` so a front end and the model can
+    /// tell a contended write from a broken one: one is worth retrying.
+    #[error("{0} is held by another process")]
+    Locked(String),
     #[error("cancelled")]
     Cancelled,
     #[error("{0}")]
@@ -52,6 +57,7 @@ impl ToolError {
             ToolError::InvalidArgs(_) => "invalid_args",
             ToolError::Panicked => "panicked",
             ToolError::TimedOut => "timed_out",
+            ToolError::Locked(_) => "locked",
             ToolError::Cancelled => "cancelled",
             ToolError::Failed(_) => "failed",
         }

@@ -41,7 +41,7 @@ pub fn spawn() -> io::Result<Input> {
 
     let reader = tx.clone();
     std::thread::Builder::new()
-        .name("robi-tui-input".to_owned())
+        .name("robi-input".to_owned())
         .spawn(move || read_loop(reader))?;
 
     watch_terminate(tx);
@@ -83,8 +83,9 @@ pub fn translate(event: Event) -> Option<Msg> {
         Event::FocusGained => Some(Msg::Focus(true)),
         Event::FocusLost => Some(Msg::Focus(false)),
         Event::Mouse(mouse) => scroll_rows(mouse.kind).map(Msg::Scroll),
-        // Paste has no binding yet.
-        _ => None,
+        // Bracketed paste: the block, as text. It is never replayed as
+        // keystrokes, because one of them would be the newline that sends.
+        Event::Paste(text) => Some(Msg::Paste(text)),
     }
 }
 
@@ -123,6 +124,17 @@ fn watch_terminate(_tx: mpsc::Sender<Msg>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paste is one message, never a run of keystrokes: replayed, the first
+    /// newline in a pasted block would be `Enter` and would send.
+    #[test]
+    fn a_paste_is_carried_whole_and_never_as_keys() {
+        let block = "one\ntwo\nthree";
+        assert_eq!(
+            translate(ratatui::crossterm::event::Event::Paste(block.to_owned())),
+            Some(Msg::Paste(block.to_owned()))
+        );
+    }
 
     /// The wheel is the newest input source, and its sign convention is the
     /// easiest thing to get backwards: up is negative, like every scroll in the

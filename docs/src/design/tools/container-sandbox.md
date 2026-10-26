@@ -750,7 +750,7 @@ the container without each handler remembering to. The release runs first, so a
 blob failure cannot strand a container.
 
 The reaper (`container/reaper.rs`) is one task started by
-`bootstrap::build_app_state`, so `robi-api`, `robi-tui`, and the desktop app all
+`bootstrap::build_app_state`, so `robi-api`, `robi`, and the desktop app all
 get it from the one place they share. It ticks every `REAP_INTERVAL` (120 s) and
 removes a container whose `last_used` is at least `IDLE_TIMEOUT` (600 s) old. Both
 are constants for now; `Registry::sweep_idle` takes the timeout as an argument, so
@@ -787,7 +787,7 @@ way out, and each does it on the runtime that built the Docker client:
 | Surface | Where the cleanup runs |
 |---|---|
 | `robi-api` | After `axum::serve` returns from `with_graceful_shutdown`, which resolves on `Ctrl-C` or `SIGTERM` |
-| `robi-tui` | After `tui::run` returns, which already turns `SIGTERM` into a quit |
+| `robi` | After `tui::run` returns, which already turns `SIGTERM` into a quit |
 | Desktop app | On `RunEvent::Exit`, which asks the API thread to stop and waits up to 10 s for its cleanup |
 
 `Registry::shutdown_all` drains the registry under its lock and removes each

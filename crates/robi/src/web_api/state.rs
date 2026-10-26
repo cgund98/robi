@@ -3,8 +3,11 @@ use std::sync::Arc;
 use crate::agent::docs::DocsEditCache;
 use crate::agent::providers::ImageStore;
 use crate::domain::{
-    chat_message::service::ChatMessageService, chat_session::service::ChatSessionService,
-    events::EventBus, file_change::repo::FileChangeRepository, settings::SettingsService,
+    chat_message::service::ChatMessageService,
+    chat_session::{lease::Locks, service::ChatSessionService},
+    events::EventBus,
+    file_change::repo::FileChangeRepository,
+    settings::SettingsService,
     workspace::service::WorkspaceService,
 };
 
@@ -28,4 +31,8 @@ pub struct AppState {
     /// Recent document versions, keyed by content hash. The docs editor sends
     /// deltas against a version; a hit means the base is still reachable.
     pub docs_edits: Arc<DocsEditCache>,
+    /// Cross-process ownership of a session. A front end takes `Open` on the
+    /// session it displays, which is what decides whether its blob file may be
+    /// opened here at all.
+    pub locks: Arc<dyn Locks>,
 }

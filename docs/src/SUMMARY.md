@@ -5,6 +5,7 @@
 # Guides
 
 - [Quickstart](guides/quickstart.md)
+- [The terminal app](guides/terminal.md)
 - [Using an editor](guides/editor.md)
 - [Reviewing changes with git](guides/code-review.md)
 - [Setting up MCP servers](guides/mcp-servers.md)

@@ -271,6 +271,7 @@ fn frame(envelope: &EventEnvelope) -> SseEvent {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -321,6 +322,10 @@ mod tests {
             &self,
             _workspace_id: Option<WorkspaceId>,
         ) -> Result<Vec<ChatSession>, ServiceError> {
+            unreachable!("events stream does not touch chat sessions")
+        }
+
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
             unreachable!("events stream does not touch chat sessions")
         }
 
@@ -428,6 +433,7 @@ mod tests {
 
     fn test_state(fanout: Arc<EventBus>) -> AppState {
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(Unused),
             workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
             events: None,
@@ -444,6 +450,7 @@ mod tests {
                 sessions,
                 runtime: Arc::new(Unused),
                 store: Arc::new(Unused),
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService { store: settings }),
             event_bus: Arc::clone(&fanout),
@@ -454,6 +461,7 @@ mod tests {
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
         }
     }
 

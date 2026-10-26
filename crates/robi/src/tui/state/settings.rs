@@ -389,6 +389,15 @@ impl SettingsView {
         }
     }
 
+    /// Insert pasted text into the open editor band, if there is one.
+    ///
+    /// A settings value is one line, so a break is a space.
+    pub fn editor_insert(&mut self, text: &str) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.area.insert_str(text);
+        }
+    }
+
     /// Close the band and drop what was typed.
     pub fn cancel(&mut self) {
         self.editor = None;

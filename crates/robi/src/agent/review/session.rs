@@ -190,7 +190,11 @@ pub async fn decide_review(
         return Err(ServiceError::NotFound(path.to_owned()));
     };
     let absolute = absolute_from_relative(root, &stored.path);
-    let _guard = lock_path(&absolute).await;
+    // Only `Locked` can come back, and a contended edit is a conflict rather
+    // than a server failure: the caller can retry it.
+    let _guard = lock_path(&absolute)
+        .await
+        .map_err(|error| ServiceError::Conflict(error.to_string()))?;
     let Some((current, exists)) = read_current(root, &stored)? else {
         return Err(ServiceError::NotFound(path.to_owned()));
     };

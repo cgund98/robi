@@ -1,6 +1,6 @@
 //! The startup prompt: the path has no workspace behind it.
 //!
-//! `robi-tui ~/code/pocket` names a directory. When no workspace row has that
+//! `robi ~/code/pocket` names a directory. When no workspace row has that
 //! root, the frame says so and offers the two answers that exist — create it
 //! here, or go and pick another — instead of silently opening whichever
 //! workspace an earlier run left open. Silence there is the bug: the session list

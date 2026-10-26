@@ -15,7 +15,10 @@ use robi_core::event::Event;
 use robi_core::ids::{MessageId, SessionId, ToolCallId, WorkspaceId};
 use robi_core::message::{ApprovalStatus, ExecutionStatus, Message, ToolCall};
 
+use std::sync::Arc;
+
 use crate::domain::chat_message::runtime::SubmitOutcome;
+use crate::domain::chat_session::lease::{Locks, MemoryLocks};
 use crate::domain::chat_session::model::{
     AgentMode, ChatSession, ModelConfig, PathRules, TurnDisplay,
 };
@@ -29,6 +32,11 @@ use crate::tui::persist::ViewState;
 use crate::tui::state::approval::Decision;
 use crate::tui::state::transcript::RAIL_CHAR;
 use crate::tui::state::{Focus, Mode, Phase};
+
+/// Locks that grant everything: a test runs as one process.
+pub fn memory_locks() -> Arc<dyn Locks> {
+    Arc::new(MemoryLocks::new())
+}
 
 /// Render one frame and return each row as a trimmed string.
 pub fn rows(app: &App, width: u16, height: u16) -> Vec<String> {
@@ -163,11 +171,21 @@ pub fn test_workspace_path() -> PathBuf {
 
 /// An app with one workspace, one session, and no messages yet.
 pub fn booted(width: u16, height: u16) -> (App, WorkspaceId, SessionId) {
+    booted_under(width, height, memory_locks())
+}
+
+/// [`booted`] with a chosen lock adapter, so a test can play the other process.
+pub fn booted_under(
+    width: u16,
+    height: u16,
+    locks: Arc<dyn Locks>,
+) -> (App, WorkspaceId, SessionId) {
     let mut app = App::new(
         ViewState::default(),
         "sqlite://test.db",
         test_workspace_path(),
         morning(),
+        locks,
     );
     app.resize(width, height);
     let workspace = workspace("robi");
@@ -380,6 +398,7 @@ fn the_empty_state_names_the_missing_workspace() {
         "sqlite://test.db",
         test_workspace_path(),
         morning(),
+        memory_locks(),
     );
     app.resize(80, 24);
     let frame = screen(&app, 80, 24);
@@ -2111,6 +2130,69 @@ fn the_landing_page_creates_the_session_when_the_first_message_is_sent() {
 }
 
 #[test]
+fn a_pasted_block_is_text_and_never_sends() {
+    // The bug: a terminal types a paste at the field, newline and all, and the
+    // newline is `Enter`. The first line of a pasted message was sent as a
+    // message of its own. Bracketed paste delivers the block as one message, and
+    // nothing in it is a keystroke.
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+
+    app.update(Msg::Paste("first line\r\nsecond line\nthird".to_owned()));
+    assert_eq!(
+        app.composer().text(),
+        "first line\nsecond line\nthird",
+        "the breaks are the message's, in the one shape a field stores"
+    );
+    assert!(
+        app.take_actions().is_empty(),
+        "a paste issues nothing: no submit, no stop, no quit"
+    );
+    assert!(!app.is_busy());
+    assert_eq!(
+        app.open_session_id(),
+        Some(app.open_session_id().expect("a session"))
+    );
+    assert!(!app.should_quit());
+
+    // A block that looks like a command is still text.
+    app.update(Msg::Paste("/quit\nC-c".to_owned()));
+    assert_eq!(
+        app.composer().text(),
+        "first line\nsecond line\nthird/quit\nC-c"
+    );
+    assert!(!app.should_quit(), "a paste cannot quit");
+    assert!(app.take_actions().is_empty());
+}
+
+#[test]
+fn a_paste_on_the_landing_page_creates_no_session() {
+    let (mut app, _, _) = booted(80, 24);
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    app.take_actions();
+
+    app.update(Msg::Paste("one\ntwo".to_owned()));
+    assert_eq!(app.composer().text(), "one\ntwo");
+    assert!(created_sessions(&mut app).is_empty(), "nothing is created");
+}
+
+#[test]
+fn a_paste_into_a_one_line_field_is_flattened() {
+    let (mut app, _, _) = booted(80, 24);
+    app.take_actions();
+    press(&mut app, ctrl(KeyCode::Char('s')));
+    assert_eq!(app.mode(), Mode::Sessions);
+
+    app.update(Msg::Paste("alpha\nbeta".to_owned()));
+    assert_eq!(
+        app.sessions_view().query(),
+        "alpha beta",
+        "a filter holds one line"
+    );
+    assert!(app.take_actions().is_empty());
+}
+
+#[test]
 fn a_failed_first_send_keeps_the_session_and_the_text() {
     let (mut app, workspace, _) = booted(80, 24);
     press(&mut app, ctrl(KeyCode::Char('n')));
@@ -2129,6 +2211,36 @@ fn a_failed_first_send_keeps_the_session_and_the_text() {
     assert_eq!(app.composer().text(), "read the config", "so does the text");
     assert_eq!(app.status().error(), Some("the provider refused"));
     assert!(!app.is_busy());
+}
+
+#[test]
+fn a_sent_first_message_does_not_come_back_on_the_next_new_chat() {
+    // The bug: the row arrives before the send is reported taken, so opening the
+    // new session parked the message under the landing page's draft key, and
+    // `take_sent` then cleared a field that was already empty. The text came
+    // back on the next New chat.
+    let (mut app, workspace, _) = booted(80, 24);
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    app.take_actions();
+    type_text(&mut app, "read the config");
+    press(&mut app, key(KeyCode::Enter));
+    app.take_actions();
+
+    let created = session(workspace, None);
+    app.update(Msg::Done(ActionOutcome::SessionStarted {
+        session: Box::new(created),
+        outcome: Some(SubmitOutcome::Accepted),
+        error: None,
+    }));
+    assert!(app.composer().is_blank(), "a taken send clears the field");
+
+    press(&mut app, ctrl(KeyCode::Char('n')));
+    assert!(app.landing());
+    assert_eq!(
+        app.composer().text(),
+        "",
+        "the sent message must not come back"
+    );
 }
 
 #[test]
@@ -2959,6 +3071,7 @@ fn missing_page() -> (App, WorkspaceId) {
         "sqlite://test.db",
         PathBuf::from("/elsewhere/pocket"),
         morning(),
+        memory_locks(),
     );
     app.resize(80, 24);
     let other = workspace("robi");
@@ -3001,7 +3114,13 @@ fn the_first_session_listing_reads_the_restored_open_session() {
         open_session_id: Some(session_id),
         ..ViewState::default()
     };
-    let mut app = App::new(view, "sqlite://test.db", test_workspace_path(), morning());
+    let mut app = App::new(
+        view,
+        "sqlite://test.db",
+        test_workspace_path(),
+        morning(),
+        memory_locks(),
+    );
     app.resize(80, 24);
     app.take_actions();
 
@@ -3105,6 +3224,7 @@ fn a_typed_path_with_no_workspace_asks_instead_of_opening_another() {
         "sqlite://test.db",
         PathBuf::from("/elsewhere/pocket"),
         morning(),
+        memory_locks(),
     );
     app.resize(80, 24);
     let other = workspace("robi");
@@ -3212,6 +3332,7 @@ fn the_path_of_the_process_picks_its_workspace() {
         "sqlite://test.db",
         PathBuf::from(format!("{}/", target.root)),
         morning(),
+        memory_locks(),
     );
     app.resize(80, 24);
     let generation = app.workspaces_generation();
@@ -3427,6 +3548,7 @@ fn the_greeting_follows_the_clock_the_process_started_with() {
             "sqlite://test.db",
             test_workspace_path(),
             greeting,
+            memory_locks(),
         );
         app.resize(80, 24);
         let workspace = workspace("robi");
@@ -3475,6 +3597,61 @@ fn a_tool_call_next_in_line_is_not_a_waiting_card() {
         "no card wears the attention rail"
     );
     let _ = id;
+}
+
+#[test]
+fn a_switch_back_to_a_running_session_does_not_turn_its_call_into_a_question() {
+    // The bug: a switch parks the phase at idle, and the frames that would set
+    // it again are the other session's while this one is on screen. A `pending`
+    // + `not_started` call under an idle phase is exactly a question, so a call
+    // the loop was still about to run came back wearing the approval bar.
+    let (mut app, workspace, first) = booted(80, 24);
+    let call = pending_call("shell", serde_json::json!({ "command": "ls" }));
+    app.update(Msg::Agent(turn_started(first)));
+    land(
+        &mut app,
+        first,
+        vec![Message::assistant_with_tool_calls("", vec![call])],
+    );
+    app.take_actions();
+
+    // Away: a list read that names only the other session, and says A is live.
+    let second = session(workspace, Some("b"));
+    let second_id = second.id;
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![second],
+        running: vec![first],
+    }));
+    assert_eq!(app.open_session_id(), Some(second_id));
+
+    // Back: the actor never stopped, so its turn is still running.
+    let mut first_row = session(workspace, Some("a"));
+    first_row.id = first;
+    let generation = app.sessions_generation();
+    app.update(Msg::Done(ActionOutcome::Sessions {
+        workspace,
+        generation,
+        sessions: vec![first_row],
+        running: vec![first],
+    }));
+    assert_eq!(app.open_session_id(), Some(first));
+    let call = pending_call("shell", serde_json::json!({ "command": "ls" }));
+    land(
+        &mut app,
+        first,
+        vec![Message::assistant_with_tool_calls("", vec![call])],
+    );
+
+    let frame = screen(&app, 80, 24);
+    assert!(
+        !frame.contains(tool_card::WAITING_LABEL),
+        "a running turn does not ask after a switch: {frame}"
+    );
+    assert!(frame.contains(tool_card::RUNNING_LABEL), "{frame}");
+    assert!(app.approval().is_none(), "and no approval is opened for it");
 }
 
 #[test]
@@ -4801,6 +4978,25 @@ fn a_refused_send_keeps_the_text_and_the_attachments() {
 }
 
 #[test]
+fn a_send_refused_by_another_process_names_the_pid_and_keeps_the_draft() {
+    let (mut app, _, session) = booted(80, 24);
+    type_text(&mut app, "look at this");
+    press(&mut app, key(KeyCode::Enter));
+    app.take_actions();
+
+    app.update(Msg::Done(ActionOutcome::SubmitFailed {
+        session,
+        message: "that chat is open in another process (pid 4812)".to_owned(),
+    }));
+    assert_eq!(app.composer().text(), "look at this", "the draft survives");
+    let frame = screen(&app, 80, 24);
+    assert!(
+        frame.contains("4812"),
+        "the footer names the holder: {frame}"
+    );
+}
+
+#[test]
 fn open_issues_one_call_for_a_workspace_relative_path() {
     let (mut app, _, _) = booted(80, 24);
     command(&mut app, "/open src/app.rs");
@@ -4894,4 +5090,94 @@ fn the_slash_menu_offers_the_three_path_commands() {
             "{typed} does not offer {name}: {screen}"
         );
     }
+}
+
+/// Refuses every session, so a test can be the second process.
+struct HeldByAnother {
+    pid: u32,
+}
+
+impl Locks for HeldByAnother {
+    fn try_acquire(
+        &self,
+        resource: &crate::domain::chat_session::lease::Resource,
+        scope: crate::domain::chat_session::lease::Scope,
+    ) -> Result<
+        crate::domain::chat_session::lease::LeaseGuard,
+        crate::domain::chat_session::lease::LeaseError,
+    > {
+        use crate::domain::chat_session::lease::{LeaseError, LeaseHolder, Resource};
+        if matches!(resource, Resource::Session(_)) {
+            return Err(LeaseError::held(
+                resource,
+                LeaseHolder::new(self.pid, scope),
+            ));
+        }
+        Ok(crate::domain::chat_session::lease::LeaseGuard::noop())
+    }
+
+    fn holder(
+        &self,
+        resource: &crate::domain::chat_session::lease::Resource,
+    ) -> Option<crate::domain::chat_session::lease::LeaseHolder> {
+        use crate::domain::chat_session::lease::{LeaseHolder, Resource, Scope};
+        matches!(resource, Resource::Session(_)).then(|| LeaseHolder::new(self.pid, Scope::Open))
+    }
+}
+
+#[test]
+fn a_session_another_process_holds_is_named_in_the_footer() {
+    // The refusal has to be visible: a transcript that silently loses every tool
+    // result reads as a broken chat, not as one that is open elsewhere.
+    // One session, selected while another process holds it: the selection is what
+    // takes `Open`, so the refusal is what the boot path meets.
+    let (app, _, _) = booted_under(80, 24, Arc::new(HeldByAnother { pid: 4812 }));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("4812"), "{frame}");
+    assert!(frame.contains("another robi"), "{frame}");
+    assert_eq!(app.held_by(), Some(4812));
+    // A notice, not a failure: the strip is for the process, the footer for what
+    // the reader just asked for.
+    assert_eq!(app.status().error(), None);
+}
+
+#[test]
+fn a_tool_result_held_elsewhere_reads_as_a_line_not_as_an_empty_card() {
+    use robi_core::message::{ExecutionStatus, ToolCall};
+    let call = ToolCall::new("shell", serde_json::json!({ "command": "ls" }));
+    let mut message = Message::assistant_with_tool_calls("listing", vec![call]);
+    message.tool_calls[0].execution_status = ExecutionStatus::Succeeded;
+    let mut app = with_messages(80, 24, vec![message]);
+    app.set_result_holder_for_test(Some(4812));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("open in another process"), "{frame}");
+    assert!(frame.contains("4812"), "{frame}");
+}
+
+#[test]
+fn a_locked_tool_call_sets_the_strip_once() {
+    let (mut app, _, _) = booted(80, 24);
+    let locked = serde_json::json!({
+        "ok": false,
+        "kind": "locked",
+        "error": "/workspace/src/lib.rs is held by another process (turn 4812)",
+    });
+    let call = robi_core::message::ToolCall {
+        result: Some(locked),
+        ..robi_core::message::ToolCall::new(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        )
+    };
+    let message = Message::assistant_with_tool_calls("writing", vec![call]);
+    let generation = app.transcript().generation();
+    let session = app.open_session_id().expect("a session is open");
+    app.update(Msg::Done(ActionOutcome::Transcript {
+        session,
+        generation,
+        messages: vec![message],
+    }));
+    let frame = screen(&app, 80, 24);
+    assert!(frame.contains("4812"), "{frame}");
+    assert!(frame.contains("is held by another process"), "{frame}");
 }

@@ -288,6 +288,7 @@ impl From<ReviewLineKind> for ReviewLineStatus {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -425,6 +426,7 @@ mod tests {
             workspaces,
             events: None,
             session_cleaner: None,
+            locks: Arc::new(MemoryLocks::new()),
         });
         let session = sessions
             .create_chat_session(CreateChatSessionCommand {
@@ -455,6 +457,7 @@ mod tests {
                 sessions,
                 runtime: Arc::new(Idle),
                 store: Arc::new(Idle),
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
@@ -465,6 +468,7 @@ mod tests {
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(MemoryLocks::new()),
         };
 
         let body = get_session_review(State(state.clone()), Path(session.id.to_string()))

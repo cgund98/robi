@@ -33,6 +33,9 @@ use crate::adapters::model_source::{EffectiveChoice, ModeDefaults};
 use crate::agent::providers::ModelInfo;
 use crate::domain::chat_message::attachment::{MAX_ATTACHMENTS, MAX_TEXT_TOTAL_BYTES};
 use crate::domain::chat_message::runtime::SubmitOutcome;
+use std::sync::Arc;
+
+use crate::domain::chat_session::lease::{LeaseGuard, Locks, Resource, Scope};
 use crate::domain::chat_session::model::{
     AgentMode, ChatSession, ChoiceKey, ModeOverride, ModelConfig,
 };
@@ -92,6 +95,11 @@ enum Scroll {
 pub enum Msg {
     /// A keystroke. Releases are filtered in `input`, and ignored here too.
     Key(KeyEvent),
+    /// A bracketed paste: the block, as text.
+    ///
+    /// It goes to the field on top and never to the key map, so nothing in it
+    /// can submit, stop a turn, or open a surface.
+    Paste(String),
     /// One frame from the bus.
     Agent(EventEnvelope),
     /// 250 ms: elapsed time, the dots, and the catch-up reload.
@@ -121,6 +129,27 @@ pub struct App {
     view: ViewState,
     /// The database this session opened, shown when there is nothing to show.
     database_url: String,
+    /// The `Open` lease on the session on screen, when this process has it.
+    ///
+    /// Held as long as the session is displayed, so a second process sees the
+    /// session as owned and renders its results as unavailable rather than
+    /// racing this one for the blob file.
+    open_lease: Option<LeaseGuard>,
+    /// The pid holding the session on screen, when this process does not.
+    ///
+    /// Set from the refusal, so the transcript can say why a result is missing
+    /// and the footer can name it.
+    held_by: Option<u32>,
+    /// The session `open_lease` was taken for, so a re-render does not refcount.
+    lease_session: Option<SessionId>,
+    /// Cross-process ownership, shared with the services.
+    locks: Arc<dyn Locks>,
+    /// Calls whose `locked` failure has already been announced.
+    ///
+    /// A refusal arrives once per store row and again on every reload. The strip
+    /// overwrites, so repeating it is not noise, but a reload of fifty cards would
+    /// end on whichever came last. This keeps it to the calls that are new.
+    locked_announced: BTreeSet<String>,
     workspaces: Vec<Workspace>,
     sessions: Vec<ChatSession>,
     transcript: Transcript,
@@ -238,6 +267,7 @@ impl App {
         database_url: impl Into<String>,
         target_workspace: PathBuf,
         greeting: Greeting,
+        locks: Arc<dyn Locks>,
     ) -> Self {
         let mut transcript = Transcript::new();
         // The persisted expansion set is the transcript's, and the transcript's is
@@ -246,6 +276,11 @@ impl App {
         Self {
             view,
             database_url: database_url.into(),
+            open_lease: None,
+            held_by: None,
+            lease_session: None,
+            locks,
+            locked_announced: BTreeSet::new(),
             workspaces: Vec::new(),
             sessions: Vec::new(),
             transcript,
@@ -725,6 +760,7 @@ impl App {
     pub fn update(&mut self, message: Msg) {
         match message {
             Msg::Key(key) => self.on_key(key),
+            Msg::Paste(text) => self.on_paste(&text),
             Msg::Agent(envelope) => self.on_agent(envelope),
             Msg::Tick => self.on_tick(),
             Msg::Done(outcome) => self.on_done(outcome),
@@ -735,6 +771,55 @@ impl App {
             Msg::Terminate => self.quit = true,
         }
         self.sync_viewport();
+    }
+
+    /// A paste. Text, never a keystroke.
+    ///
+    /// The terminal types a pasted block at the field if paste marking is off,
+    /// and a newline among those keystrokes is `Enter`: the first line of a
+    /// pasted message was sent as a message of its own. Here the block only ever
+    /// reaches a field, and no character in it is a binding — a paste cannot
+    /// send, stop, or quit whatever it contains.
+    ///
+    /// The field is the same one a keystroke would reach, so a paste is never
+    /// silently dropped from a surface that accepts typing.
+    fn on_paste(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self.mode() {
+            Mode::Prompt => {
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.insert_text(&one_line(text));
+                }
+            }
+            Mode::Sessions => {
+                self.sessions_view.insert_text(&one_line(text));
+                self.reconcile_sessions_view();
+            }
+            Mode::Workspaces => {
+                if self.workspaces_view.screen == Screen::New {
+                    self.workspaces_view.insert_path(&one_line(text));
+                    self.request_candidates();
+                }
+            }
+            Mode::Manage => {
+                self.manage.insert_text(&one_line(text));
+                // A filter that changed can shrink the list under the selection.
+                self.manage.selected = 0;
+                self.reconcile_manage();
+            }
+            Mode::Settings => self.settings.editor_insert(&one_line(text)),
+            Mode::Chat if self.focus.is_composer() && !self.composer.sending() => {
+                self.composer.insert_text(&pasted_lines(text));
+                self.refresh_completion();
+            }
+            Mode::Complete => {
+                self.composer.insert_text(&pasted_lines(text));
+                self.refresh_completion();
+            }
+            _ => {}
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -2659,6 +2744,21 @@ impl App {
                 self.bell |= !self.focused;
                 self.notice = Some(Notice::info("another session is waiting for approval"));
             }
+            // Whether that actor is live is what the phase is rebuilt from when
+            // the reader switches to it, so the two frames that change it are
+            // recorded rather than waited for: a list read is a round trip, and
+            // the switch can land first.
+            if let Some(other) = session_id(&envelope) {
+                match envelope.event_type.as_str() {
+                    TURN_STARTED => {
+                        self.running.insert(other);
+                    }
+                    TURN_FINISHED => {
+                        self.running.remove(&other);
+                    }
+                    _ => {}
+                }
+            }
             return;
         }
 
@@ -2853,7 +2953,13 @@ impl App {
                     let picked = lifecycle::pick_session(&self.sessions, workspace, open);
                     if picked.is_some() || open.is_some() {
                         self.select_session(picked);
-                        self.notice = None;
+                        // Unless the selection itself had something to say: a
+                        // session another process holds sets the footer notice,
+                        // and clearing it here would hide the one refusal the
+                        // reader cannot get anywhere else.
+                        if self.held_by.is_none() {
+                            self.notice = None;
+                        }
                     }
                 }
                 let rows = self.session_ids();
@@ -2877,8 +2983,11 @@ impl App {
                 // same way, or the pause is on screen with no way to answer it.
                 let pending = pending_calls(&messages);
                 self.transcript.set_messages(messages);
-                self.notice = None;
+                if self.held_by.is_none() {
+                    self.notice = None;
+                }
                 self.status.clear_error();
+                self.note_locked_results();
                 self.open_approval_for(pending);
                 // The pause labels its field before the reload lands, so the
                 // call it names may only have arrived now.
@@ -2893,7 +3002,7 @@ impl App {
                     SubmitOutcome::Accepted => {
                         // Only a send that was taken clears the buffer; a
                         // refused one has to leave it exactly as it was.
-                        self.composer.take_sent();
+                        self.composer.take_sent(Some(session));
                         self.activity.start(Phase::Thinking);
                         self.running.insert(session);
                         self.notice = None;
@@ -2964,7 +3073,10 @@ impl App {
                     // lists it again is already on its way.
                     approval.push(call);
                 }
-                self.status.set_error(message);
+                // The footer answers the keystroke; the strip keeps it. A refusal
+                // because another process owns the chat lands here.
+                self.status.set_error(message.clone());
+                self.notice = Some(Notice::error(message));
             }
             ActionOutcome::Original {
                 session,
@@ -3057,7 +3169,10 @@ impl App {
                 self.composer.set_sending(false);
                 match outcome {
                     Some(SubmitOutcome::Accepted) => {
-                        self.composer.take_sent();
+                        // The landing page's own key: the row that was just
+                        // created is already on screen, so `switch_to` above
+                        // parked this message under `None`, not under `id`.
+                        self.composer.take_sent(None);
                         self.activity.start(Phase::Thinking);
                         self.running.insert(id);
                         self.notice = None;
@@ -3141,14 +3256,21 @@ impl App {
                 self.status.set_error(message);
             }
             ActionOutcome::DeleteFailed { message } => {
-                self.status.set_error(message);
+                self.status.set_error(message.clone());
+                self.notice = Some(Notice::error(message));
             }
             ActionOutcome::SubmitFailed { session, message } => {
                 if Some(session) == self.view.open_session_id {
                     self.composer.set_sending(false);
                     self.activity.idle();
                 }
-                self.status.set_error(message);
+                // Both surfaces: the footer answers the keystroke that failed, and
+                // the strip keeps it visible after the next keystroke clears the
+                // footer. A refusal for a held session is the case that matters —
+                // the draft survives and the reader needs to know why it did not
+                // send.
+                self.status.set_error(message.clone());
+                self.notice = Some(Notice::error(message));
             }
             ActionOutcome::Attached {
                 session,
@@ -3240,7 +3362,7 @@ impl App {
     /// The workspace to open at startup.
     ///
     /// The path the process was started on wins over the remembered workspace:
-    /// `robi-tui ~/code/pocket` means that directory or a prompt, never some
+    /// `robi ~/code/pocket` means that directory or a prompt, never some
     /// other workspace an earlier run happened to leave open. The two are
     /// compared canonically, because one directory has many spellings; the store
     /// keeps the canonical root.
@@ -3320,6 +3442,82 @@ impl App {
     }
 
     /// Make `id` the open session, saving on a change and reloading always.
+    /// Take `Open` on the session about to be displayed, or note who has it.
+    ///
+    /// `Open` never refuses a transcript. It decides whether this process may open
+    /// the session's blob file, and a refusal means tool results render as a line
+    /// naming the other pid while everything in the chat database still shows.
+    ///
+    /// Refcounted inside the adapter, but re-taking on every render would leak
+    /// references, so the session id is remembered.
+    fn take_open_lease(&mut self, id: Option<SessionId>) {
+        if self.lease_session == id {
+            return;
+        }
+        self.open_lease = None;
+        self.held_by = None;
+        self.lease_session = id;
+        self.transcript.set_result_holder(None);
+        let Some(id) = id else {
+            return;
+        };
+        match self.locks.try_acquire(&Resource::Session(id), Scope::Open) {
+            Ok(guard) => self.open_lease = Some(guard),
+            Err(error) => {
+                let pid = error.holder().map(|holder| holder.pid);
+                self.held_by = pid;
+                self.transcript.set_result_holder(pid);
+                if let Some(pid) = pid {
+                    self.notice = Some(Notice::info(format!(
+                        "tool results are hidden: another robi has this chat open (pid {pid})"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// Set the degraded-render pid, for a test that has no second process.
+    #[cfg(test)]
+    pub fn set_result_holder_for_test(&mut self, pid: Option<u32>) {
+        self.transcript.set_result_holder(pid);
+    }
+
+    /// The pid holding the session on screen, when it is not this one.
+    pub fn held_by(&self) -> Option<u32> {
+        self.held_by
+    }
+
+    /// Put a tool call's lock refusal in the status strip, once.
+    ///
+    /// The tool payload carries a stable `kind`, so this reads the same field the
+    /// model does rather than matching a sentence. `Locked` is not a failure of
+    /// the tool: another process held the file for longer than the wait.
+    fn note_locked_results(&mut self) {
+        let mut announced = None;
+        for message in self.transcript.messages() {
+            for call in &message.tool_calls {
+                let Some(result) = call.result.as_ref() else {
+                    continue;
+                };
+                if result.get("kind").and_then(|kind| kind.as_str()) != Some("locked") {
+                    continue;
+                }
+                if self.locked_announced.contains(&call.id.to_string()) {
+                    continue;
+                }
+                let detail = result
+                    .get("error")
+                    .and_then(|error| error.as_str())
+                    .unwrap_or("another robi is editing that file");
+                announced = Some(detail.to_owned());
+                self.locked_announced.insert(call.id.to_string());
+            }
+        }
+        if let Some(detail) = announced {
+            self.status.set_error(detail);
+        }
+    }
+
     fn select_session(&mut self, id: Option<SessionId>) {
         let previous = self.view.open_session_id;
         if previous != id {
@@ -3329,6 +3527,7 @@ impl App {
             self.actions.push(Action::SaveView {
                 view: self.snapshot(),
             });
+            self.take_open_lease(id);
         }
         // The pause belongs to the session that was paused, not to the one on
         // screen now. The new session's own pause arrives with its transcript.
@@ -3337,9 +3536,17 @@ impl App {
         // being typed and brings back the other session's.
         self.composer.switch_to(previous, id);
         self.composer.set_sending(false);
-        self.activity.idle();
+        // A session that is still running keeps its busy phase across the
+        // switch: the frames that would have set it were another session's and
+        // were dropped, and an idle phase is what makes a call the loop has not
+        // started yet read as one waiting on the reader.
+        if id.is_some_and(|id| self.running.contains(&id)) {
+            self.activity.start(Phase::Thinking);
+        } else {
+            self.activity.idle();
+        }
         self.stopping = false;
-        self.transcript.set_phase(Phase::Idle);
+        self.transcript.set_phase(self.activity.phase());
         let rows = self.session_ids();
         self.sessions_view.set_selected(id, &rows);
         if let Some(session) = id {
@@ -3484,6 +3691,30 @@ impl App {
 /// rather than this helper guessing.
 pub fn canonical(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A pasted block with its line breaks in the one shape a field stores.
+///
+/// A terminal may send `\r\n` or a bare `\r` for the breaks in a paste. A text
+/// area holds `\n`, and a stray carriage return inside a message is a character
+/// the reader cannot see and cannot delete on purpose.
+fn pasted_lines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// A pasted block as one line, for a field that holds one.
+///
+/// A path, a title, a filter: a break in any of them is a mistake, and a field
+/// that cannot hold one would otherwise show the first line and hide the rest.
+fn one_line(text: &str) -> String {
+    pasted_lines(text).replace('\n', " ").trim().to_owned()
+}
+
+/// The session a frame's `subject` names.
+fn session_id(envelope: &EventEnvelope) -> Option<SessionId> {
+    uuid::Uuid::parse_str(&envelope.subject)
+        .ok()
+        .map(SessionId::from_uuid)
 }
 
 fn tool_call_id(envelope: &EventEnvelope) -> Option<ToolCallId> {

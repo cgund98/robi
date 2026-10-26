@@ -361,6 +361,7 @@ mod tests {
         keys::{self, OPENCODE_GO_API_KEY},
         memory::MemorySettingsStore,
     };
+    use robi_core::ids::SessionId;
 
     /// No attachment is ever resolved in these tests; build_model only touches it
     /// when a transcript carries images, which none of these do.
@@ -368,7 +369,11 @@ mod tests {
 
     #[async_trait]
     impl ImageSource for NoImages {
-        async fn image(&self, _id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
+        async fn image(
+            &self,
+            _session: SessionId,
+            _id: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
             Ok(None)
         }
     }

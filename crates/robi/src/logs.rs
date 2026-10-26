@@ -66,7 +66,7 @@ static LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 enum Target {
     /// `robi-api` and the Tauri process.
     Api,
-    /// `robi-tui`.
+    /// The terminal front end, `robi`.
     Tui,
 }
 

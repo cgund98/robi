@@ -41,6 +41,19 @@ pub trait MessageStore: Send + Sync {
     /// `pending` to `approved`, or gaining its result.
     async fn update(&self, session: SessionId, message: Message) -> Result<(), StoreError>;
 
+    /// The whole transcript, with tool results left in the blob file.
+    ///
+    /// For a session another process has open: this process may read the chat
+    /// database but must not open that session's blob file, so a result stays
+    /// `None` and the caller renders a line saying so. The default is `messages`,
+    /// which is right for a store that keeps results inline.
+    async fn messages_without_results(
+        &self,
+        session: SessionId,
+    ) -> Result<Vec<Message>, StoreError> {
+        self.messages(session).await
+    }
+
     /// Delete `delete` and insert `summary` before what remains, atomically.
     ///
     /// Compaction rewrites the transcript once, after the summary call has

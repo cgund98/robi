@@ -230,11 +230,21 @@ pub fn summary(call: &ToolCall) -> Summary {
     }
 }
 
+/// One line per tool result another process's file answered for.
+///
+/// The transcript still renders: text, tool names, arguments, and statuses are in
+/// the chat database, and only the results live in the session's blob file. This
+/// is what stands in for the result that could not be read.
+pub fn held_elsewhere(pid: u32) -> String {
+    format!("open in another process (pid {pid})")
+}
+
 /// One call's card, in its collapsed or expanded form.
 ///
 /// `phase` decides whether a `pending` call is a question or work in progress;
-/// see [`needs_decision`].
-pub fn card(call: &ToolCall, phase: Phase, expanded: bool) -> Card {
+/// see [`needs_decision`]. `result_holder` is the pid of a process that has the
+/// session's blob file open, which is why a result may be missing.
+pub fn card(call: &ToolCall, phase: Phase, expanded: bool, result_holder: Option<u32>) -> Card {
     let summary = summary(call);
     let marker = if call.name == "shell" { '$' } else { '>' };
     let mut card = Card {
@@ -245,7 +255,12 @@ pub fn card(call: &ToolCall, phase: Phase, expanded: bool) -> Card {
         lines: Vec::new(),
         hidden: 0,
     };
-    card.lines = body(call, Form::card(expanded, phase), &mut card.hidden);
+    card.lines = body(
+        call,
+        Form::card(expanded, phase),
+        &mut card.hidden,
+        result_holder,
+    );
     card
 }
 
@@ -255,7 +270,7 @@ pub fn card(call: &ToolCall, phase: Phase, expanded: bool) -> Card {
 /// stay scrollable; a view of its own does not.
 pub fn full_body(call: &ToolCall, phase: Phase) -> Vec<CardLine> {
     let mut hidden = 0;
-    body(call, Form::uncapped(true, phase), &mut hidden)
+    body(call, Form::uncapped(true, phase), &mut hidden, None)
 }
 
 /// Which form a body is cut for. The one thing that decides a body's length.
@@ -378,7 +393,12 @@ const BODY_FIELDS: &[&str] = &["output", "stdout", "content", "text", "result", 
 /// What a `retrieve` card says instead of the page it fetched.
 const RETRIEVE_HINT: &str = "\u{2026} Enter opens the output";
 
-fn body(call: &ToolCall, form: Form, hidden: &mut usize) -> Vec<CardLine> {
+fn body(
+    call: &ToolCall,
+    form: Form,
+    hidden: &mut usize,
+    result_holder: Option<u32>,
+) -> Vec<CardLine> {
     if let Some(error) = &call.error {
         return error
             .lines()
@@ -418,7 +438,12 @@ fn body(call: &ToolCall, form: Form, hidden: &mut usize) -> Vec<CardLine> {
     }
 
     let Some(result) = &call.result else {
-        return Vec::new();
+        // The result is in the session's blob file, which another process has
+        // open. Everything else about the call is in the chat database.
+        return match result_holder {
+            Some(pid) => vec![CardLine::hint(held_elsewhere(pid))],
+            None => Vec::new(),
+        };
     };
     let text = match result {
         Value::String(text) => text.clone(),
@@ -858,7 +883,7 @@ mod tests {
         assert_eq!(summary.verb, "Run");
         assert_eq!(summary.target, "cargo");
 
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         assert_eq!(card.heading, "Run the suite");
         assert_eq!(card.heading_line(), "# Run the suite");
         assert_eq!(card.subject.as_deref(), Some("cargo test"));
@@ -894,7 +919,7 @@ mod tests {
         call.approval_status = ApprovalStatus::Pending;
         call.execution_status = ExecutionStatus::NotStarted;
 
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         assert_eq!(card.summary.verb, "Edit");
         let kinds: Vec<CardLineKind> = card.lines.iter().map(|line| line.kind).collect();
         assert_eq!(
@@ -918,7 +943,7 @@ mod tests {
                 "deletions": 1,
             }),
         );
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         assert_eq!(
             texts(&card.lines),
             vec!["  keep", "- old", "+ new"],
@@ -936,13 +961,13 @@ mod tests {
             Value::Null,
         );
         call.result = None;
-        let collapsed = card(&call, Phase::Idle, false);
+        let collapsed = card(&call, Phase::Idle, false, None);
         assert_eq!(collapsed.lines.len(), EDIT_VISIBLE_LINES);
         assert_eq!(collapsed.hidden, 16);
 
         // The whole change is 20 lines, under the opened cap, so nothing is
         // hidden and the count disappears.
-        let expanded = card(&call, Phase::Idle, true);
+        let expanded = card(&call, Phase::Idle, true, None);
         assert_eq!(expanded.lines.len(), 20);
         assert_eq!(expanded.hidden, 0);
     }
@@ -956,15 +981,15 @@ mod tests {
             serde_json::json!({ "stdout": output }),
         );
         assert_eq!(
-            card(&call, Phase::Idle, false).lines.len(),
+            card(&call, Phase::Idle, false, None).lines.len(),
             MAX_TOOL_OUTPUT_LINES
         );
-        assert_eq!(card(&call, Phase::Idle, false).hidden, 54);
+        assert_eq!(card(&call, Phase::Idle, false, None).hidden, 54);
         assert_eq!(
-            card(&call, Phase::Idle, true).lines.len(),
+            card(&call, Phase::Idle, true, None).lines.len(),
             MAX_EXPANDED_TOOL_LINES
         );
-        assert_eq!(card(&call, Phase::Idle, true).hidden, 20);
+        assert_eq!(card(&call, Phase::Idle, true, None).hidden, 20);
     }
 
     #[test]
@@ -973,7 +998,7 @@ mod tests {
         call.result = None;
         call.execution_status = ExecutionStatus::Failed;
         call.error = Some("it broke".to_owned());
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         assert_eq!(card.lines.len(), 1);
         assert_eq!(card.lines[0].kind, CardLineKind::Error);
         assert_eq!(card.lines[0].text, "it broke");
@@ -990,7 +1015,7 @@ mod tests {
         call.approval_status = ApprovalStatus::Pending;
         call.execution_status = ExecutionStatus::NotStarted;
         call.execution_status = ExecutionStatus::NotStarted;
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         assert_eq!(texts(&card.lines), vec![WAITING_LABEL]);
     }
 
@@ -1003,7 +1028,7 @@ mod tests {
         );
         assert_eq!(summary(&call).verb, "MCP call");
         assert_eq!(summary(&call).target, "github_search");
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         let joined = texts(&card.lines).join("\n");
         assert!(joined.contains("\"query\": \"x\""), "{joined}");
         assert!(joined.contains("found 2"), "{joined}");
@@ -1026,7 +1051,7 @@ mod tests {
         assert_eq!(summary.target, "0193a1b2 stdout");
         assert_eq!(summary.range.as_deref(), Some("L10-20"));
         assert_eq!(
-            card(&call, Phase::Idle, false).subject.as_deref(),
+            card(&call, Phase::Idle, false, None).subject.as_deref(),
             Some("0193a1b2 stdout")
         );
 
@@ -1034,7 +1059,7 @@ mod tests {
         // opening a card in place does not change that. Only the detail view's
         // uncapped form builds the text.
         for expanded in [false, true] {
-            let card = card(&call, Phase::Idle, expanded);
+            let card = card(&call, Phase::Idle, expanded, None);
             assert_eq!(texts(&card.lines), vec![RETRIEVE_HINT]);
             assert_eq!(card.hidden, 0, "there is no count to report");
         }
@@ -1066,7 +1091,7 @@ mod tests {
             ],
         });
 
-        let collapsed = card(&call, Phase::Idle, false);
+        let collapsed = card(&call, Phase::Idle, false, None);
         assert_eq!(collapsed.heading, "Find the parser");
         assert!(
             !texts(&collapsed.lines)
@@ -1079,7 +1104,7 @@ mod tests {
             .iter()
             .any(|text| text.contains("parse.rs")));
 
-        let expanded = card(&call, Phase::Idle, true);
+        let expanded = card(&call, Phase::Idle, true, None);
         assert!(
             texts(&expanded.lines)
                 .iter()
@@ -1109,7 +1134,7 @@ mod tests {
         );
         assert_eq!(summary(&call).verb, "mystery");
         assert_eq!(summary(&call).target, "a.rs");
-        let card = card(&call, Phase::Idle, false);
+        let card = card(&call, Phase::Idle, false, None);
         assert!(texts(&card.lines).join("").contains("nested"));
     }
 }
@@ -1155,11 +1180,11 @@ mod decision_tests {
     #[test]
     fn the_idle_card_says_waiting_and_the_busy_one_says_running() {
         let call = pending();
-        let waiting = card(&call, Phase::Idle, false);
+        let waiting = card(&call, Phase::Idle, false, None);
         assert_eq!(texts(&waiting.lines), vec![WAITING_LABEL]);
         assert_eq!(waiting.heading, "shell \u{b7} not started");
 
-        let running = card(&call, Phase::Thinking, false);
+        let running = card(&call, Phase::Thinking, false, None);
         assert_eq!(texts(&running.lines), vec![RUNNING_LABEL]);
         assert_eq!(
             running.heading, "shell \u{b7} running",
@@ -1174,7 +1199,7 @@ mod decision_tests {
         call.execution_status = ExecutionStatus::Running;
         assert!(is_running(&call, Phase::Idle));
         assert_eq!(
-            texts(&card(&call, Phase::Idle, false).lines),
+            texts(&card(&call, Phase::Idle, false, None).lines),
             vec![RUNNING_LABEL]
         );
     }

@@ -340,11 +340,12 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let result = sqlx::query(
             r#"
             UPDATE chat_sessions
-            SET turn_display = ?1
-            WHERE id = ?2
+            SET turn_display = ?1, turn_settled = ?2
+            WHERE id = ?3
             "#,
         )
         .bind(display.as_str())
+        .bind(display.is_settled())
         .bind(id.to_string())
         .execute(self.pool.as_ref())
         .await
@@ -353,6 +354,19 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             return Err(ServiceError::NotFound(id.to_string()));
         }
         Ok(())
+    }
+
+    async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {SESSION_COLUMNS} FROM chat_sessions WHERE turn_settled = 0 ORDER BY last_used_at DESC, id DESC"
+        ))
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|err| log_unknown("list_unsettled_chat_sessions: select", err))?;
+
+        rows.into_iter()
+            .map(|row| chat_session_from_row("list_unsettled_chat_sessions: map row", row))
+            .collect()
     }
 }
 
@@ -439,6 +453,45 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_display_write_settles_the_row_it_stores() {
+        let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
+        let created = repo
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id,
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        // A fresh row is unsettled: nothing has compared it to a transcript yet.
+        let unsettled = repo.list_unsettled_chat_sessions().await.unwrap();
+        assert_eq!(unsettled.len(), 1);
+        assert_eq!(unsettled[0].id, created.id);
+
+        // A turn in flight leaves it unsettled, so the next start repairs it.
+        repo.set_turn_display(created.id, TurnDisplay::Pending)
+            .await
+            .unwrap();
+        assert_eq!(repo.list_unsettled_chat_sessions().await.unwrap().len(), 1);
+
+        // The write that ends the turn is the one that settles it.
+        repo.set_turn_display(created.id, TurnDisplay::Idle)
+            .await
+            .unwrap();
+        assert!(repo
+            .list_unsettled_chat_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+        let loaded = repo.get_chat_session(created.id).await.unwrap().unwrap();
+        assert_eq!(loaded.turn_display, TurnDisplay::Idle);
     }
 
     #[tokio::test]

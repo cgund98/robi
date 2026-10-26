@@ -168,6 +168,11 @@ impl WorkspacesView {
         self.path.input(*key);
     }
 
+    /// Insert pasted text into the path field. One line, so a break is a space.
+    pub fn insert_path(&mut self, text: &str) {
+        self.path.insert_str(text);
+    }
+
     pub fn candidates(&self) -> &[String] {
         &self.candidates
     }

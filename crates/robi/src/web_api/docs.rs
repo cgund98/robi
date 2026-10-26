@@ -251,7 +251,11 @@ pub async fn put_doc(
     };
 
     // The lock covers the read and the write, so two saves cannot interleave.
-    let _guard = lock_path(&absolute).await;
+    // Only `Locked` can come back, and a contended edit is a conflict rather
+    // than a server failure: the caller can retry it.
+    let _guard = lock_path(&absolute)
+        .await
+        .map_err(|error| ServiceError::Conflict(error.to_string()))?;
 
     let existed = {
         let absolute = absolute.clone();
@@ -999,6 +1003,7 @@ fn is_markdown(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1282,6 +1287,10 @@ mod tests {
             unreachable!("docs search does not touch chat sessions")
         }
 
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+            unreachable!("docs search does not touch chat sessions")
+        }
+
         async fn update_chat_session(
             &self,
             _command: UpdateChatSessionCommand,
@@ -1405,6 +1414,7 @@ mod tests {
         let workspace_id = WorkspaceId::new();
         let fanout = Arc::new(EventBus::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(Unused),
             workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
             events: None,
@@ -1423,6 +1433,7 @@ mod tests {
                 sessions,
                 runtime: Arc::new(Unused),
                 store: Arc::new(Unused),
+                locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
@@ -1435,6 +1446,7 @@ mod tests {
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
         };
         Fixture {
             state,

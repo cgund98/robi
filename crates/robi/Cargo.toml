@@ -22,7 +22,7 @@ edit-tools = ["review"]
 # S5: `web_api/docs.rs` and its four routes. Search is a literal markdown scan
 # over the `ignore` walk, so the dependency comes with them.
 docs-viewer = ["dep:ignore"]
-# T0: the terminal front end in `tui/` and the `robi-tui` binary. Not a
+# T0: the terminal front end in `tui/` and the `robi` binary. Not a
 # streamlining workstream: off by default so `robi-api` and `src-tauri` do not
 # compile ratatui. `tokio/signal` is not here: every surface needs it, to catch
 # Ctrl-C and SIGTERM and remove its sandbox containers on the way out.
@@ -100,6 +100,6 @@ path = "src/bin/export-openapi.rs"
 # The terminal front end. `required-features` keeps it out of a default build,
 # so `cargo build` never compiles ratatui.
 [[bin]]
-name = "robi-tui"
-path = "src/bin/robi-tui.rs"
+name = "robi"
+path = "src/bin/robi.rs"
 required-features = ["tui"]

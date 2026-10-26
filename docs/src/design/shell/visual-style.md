@@ -324,7 +324,7 @@ conversation” until that transcript arrives. Opening it again uses the copy
 already in memory and does not show that spinner.
 
 The workspace dropdown sits after the history pair. The workspace menu is a
-Kobalte dropdown, and the rename and delete
+Kobalte dropdown, and the rename, delete, and clear-composer
 dialogs are Kobalte dialogs. Both are styled with these tokens. The active
 workspace uses an open folder. The others use a closed folder. The closed control
 is an inline chip — icon, name, chevron — with no border until hover. The open

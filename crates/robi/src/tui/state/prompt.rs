@@ -59,6 +59,11 @@ impl Prompt {
         self.field.input(*key);
     }
 
+    /// Insert pasted text. The prompt is one line, so a break is a space.
+    pub fn insert_text(&mut self, text: &str) {
+        self.field.insert_str(text);
+    }
+
     /// The field's text, as typed.
     pub fn text(&self) -> String {
         self.field.lines().join("\n")

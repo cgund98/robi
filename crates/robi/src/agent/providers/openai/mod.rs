@@ -106,7 +106,7 @@ impl Model for OpenAiCompatibleModel {
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         let tools = self.tools.tools();
-        let images = self.resolve_images(transcript).await?;
+        let images = self.resolve_images(session, transcript).await?;
         let request = wire::build_request(&self.settings, &tools, transcript, &images)
             .map_err(|error| ProviderError::from(error).into_model_error())?;
         let body = serde_json::to_vec(&request)
@@ -143,6 +143,7 @@ impl OpenAiCompatibleModel {
     /// dropped part.
     async fn resolve_images(
         &self,
+        session: SessionId,
         transcript: &[Message],
     ) -> Result<wire::ResolvedImages, ModelError> {
         let any_images = transcript.iter().any(|m| !m.images.is_empty());
@@ -166,7 +167,7 @@ impl OpenAiCompatibleModel {
             for attachment in &message.images {
                 let Some((media_type, bytes)) = self
                     .images
-                    .image(&attachment.id)
+                    .image(session, &attachment.id)
                     .await
                     .map_err(ProviderError::into_model_error)?
                 else {
@@ -493,7 +494,11 @@ mod tests {
 
     #[async_trait]
     impl ImageSource for MapSource {
-        async fn image(&self, id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
+        async fn image(
+            &self,
+            _session: SessionId,
+            id: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
             Ok(self.0.get(id).cloned())
         }
     }
@@ -536,7 +541,7 @@ mod tests {
         // configured model cannot see it — fail loudly, never silently drop it.
         let m = model("visionless", catalog(), source(&[]));
         let error = m
-            .resolve_images(&[image_message()])
+            .resolve_images(SessionId::new(), &[image_message()])
             .await
             .expect_err("a vision-less model cannot take images");
         let ModelError::Provider(text) = error else {
@@ -556,7 +561,7 @@ mod tests {
             source(&[("img", "image/png", b"\x89PNG\r\n")]),
         );
         let resolved = m
-            .resolve_images(&[image_message()])
+            .resolve_images(SessionId::new(), &[image_message()])
             .await
             .expect("the vision model resolves the image");
         assert_eq!(
@@ -571,7 +576,7 @@ mod tests {
         // corrupt store, never a silently dropped part.
         let m = model("vision", catalog(), source(&[]));
         let error = m
-            .resolve_images(&[image_message()])
+            .resolve_images(SessionId::new(), &[image_message()])
             .await
             .expect_err("the row is missing");
         let ModelError::Provider(text) = error else {
@@ -585,7 +590,7 @@ mod tests {
         // A text-only turn never touches the image source or the vision flag.
         let m = model("visionless", catalog(), source(&[]));
         let resolved = m
-            .resolve_images(&[Message::user("plain")])
+            .resolve_images(SessionId::new(), &[Message::user("plain")])
             .await
             .expect("text-only turns resolve to an empty map");
         assert!(resolved.is_empty());

@@ -133,6 +133,11 @@ impl SessionsView {
         self.filter.input(*key);
     }
 
+    /// Insert pasted text. The filter is one line, so a break is a space.
+    pub fn insert_text(&mut self, text: &str) {
+        self.filter.insert_str(text);
+    }
+
     /// The selected row, where zero is the new-session action.
     pub fn selected(&self) -> usize {
         self.selected

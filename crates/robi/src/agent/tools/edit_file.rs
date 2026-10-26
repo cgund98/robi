@@ -77,7 +77,7 @@ impl Tool for EditFile {
         reject_marker(&args.new_string)?;
         self.ctx.filter().await?;
         let resolved = self.ctx.resolve(&args.path)?;
-        let _guard = lock_path(&resolved.absolute).await;
+        let _guard = lock_path(&resolved.absolute).await?;
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }

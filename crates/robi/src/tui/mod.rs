@@ -14,14 +14,17 @@
 //!
 //! # Terminal lifecycle
 //!
-//! [`run`] owns the terminal: it refuses a non-TTY, takes the stopgap process
-//! lock, initializes the alternate screen, and restores on every exit path. It
+//! [`run`] owns the terminal: it refuses a non-TTY, initializes the alternate
+//! screen, and restores on every exit path. There is no process-wide lock: two
+//! terminals in one workspace are allowed, and what one may touch is decided per
+//! session by `domain::chat_session::lease`. It
 //! **does not** install the tracing subscriber: the binary calls
 //! [`logs::init_tui`](crate::logs::init_tui) before it builds the app state, so
 //! startup logging lands in the file and never on stderr.
 
 pub mod action;
 pub mod app;
+pub mod args;
 pub mod command;
 pub mod effects;
 pub mod input;
@@ -36,6 +39,7 @@ pub mod view;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -71,12 +75,9 @@ pub struct Options {
 pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     if !io::stdout().is_terminal() {
         return Err(io::Error::other(
-            "robi-tui needs a terminal: stdout is not a TTY",
+            "robi needs a terminal: stdout is not a TTY",
         ));
     }
-
-    // Before the alternate screen: a refusal has to print on a normal terminal.
-    let _lock = lifecycle::Lock::acquire(&options.state_dir, &options.database_url)?;
 
     let view = lifecycle::restore(&options.state_dir);
     // The greeting is read here, once: `update` and `view` stay pure functions of
@@ -86,6 +87,7 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
         options.database_url.clone(),
         options.workspace_path.clone(),
         Greeting::now(),
+        Arc::clone(&state.locks),
     );
 
     let mut terminal = ratatui::init();
@@ -94,6 +96,11 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     if let Err(error) = lifecycle::enable_mouse() {
         ratatui::restore();
         return Err(error);
+    }
+    // Paste marking: without it a pasted block is typed keystroke by keystroke,
+    // and its newlines send.
+    if let Err(error) = lifecycle::enable_bracketed_paste() {
+        tracing::warn!(%error, "could not turn bracketed paste on");
     }
     // Focus reporting is optional: a terminal that ignores it never sends the
     // events, and the most that costs is a bell that is not rung.
@@ -123,6 +130,7 @@ pub async fn run(state: AppState, options: Options) -> io::Result<()> {
     // task would die with the runtime.
     effects::save_view(&options, &app.snapshot()).await;
     lifecycle::disable_focus_change();
+    lifecycle::disable_bracketed_paste();
     lifecycle::disable_mouse();
     // Put the title back before the alternate screen goes, so the shell's own
     // title is not replaced by ours.

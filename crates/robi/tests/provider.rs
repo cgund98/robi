@@ -237,6 +237,7 @@ struct NoImages;
 impl ImageSource for NoImages {
     async fn image(
         &self,
+        _session: robi_core::ids::SessionId,
         _id: &str,
     ) -> Result<Option<(String, Vec<u8>)>, robi::agent::providers::ProviderError> {
         Ok(None)

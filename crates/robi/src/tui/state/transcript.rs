@@ -206,6 +206,46 @@ pub const MAX_TOOL_OUTPUT_LINES: usize = tool_card::MAX_TOOL_OUTPUT_LINES;
 /// Cells of padding at each edge of a card's band.
 const PAD_X: usize = 1;
 
+/// The widest a card's line is drawn while the card is collapsed, as a multiple
+/// of the frame's width.
+///
+/// A tool result is often one line — a JSON body, a minified bundle, a
+/// base64 blob — of thousands of cells. Wrapped, that is dozens of rows of one
+/// band, and the rest of the turn is a page of scrolling away. Two widths is
+/// long enough to read the shape of the line and short enough that it cannot
+/// own the transcript. The cut belongs to the collapsed card only: an opened
+/// card draws the line whole, and the detail view shows the whole body.
+pub const CARD_LINE_FACTOR: usize = 2;
+
+/// The widest a card's line may be, for a frame `width` cells across.
+pub fn card_line_limit(width: usize) -> usize {
+    width.saturating_mul(CARD_LINE_FACTOR)
+}
+
+/// Cut `text` to `limit` cells, marking the cut with an ellipsis.
+///
+/// Cells, not chars, so a run of wide characters is measured the way the band
+/// draws it. `limit` includes the ellipsis, so the result is never wider than
+/// what was asked for.
+pub fn truncate_line(text: &str, limit: usize) -> String {
+    if display_width(text) <= limit {
+        return text.to_owned();
+    }
+    let room = limit.saturating_sub(1);
+    let mut cut = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let cell = ch.width().unwrap_or(0);
+        if used + cell > room {
+            break;
+        }
+        cut.push(ch);
+        used += cell;
+    }
+    cut.push('\u{2026}');
+    cut
+}
+
 /// The vertical rail on a band's left edge. One column, on every row of the
 /// band, so the line is continuous from the top padding to the bottom.
 ///
@@ -294,6 +334,11 @@ pub struct Render {
     pub expanded: BTreeSet<String>,
     /// The uncompressed body of a compressed result, once fetched.
     pub originals: BTreeMap<ToolCallId, String>,
+    /// The pid of a process holding this session's blob file, when one does.
+    ///
+    /// A tool result lives in that file, so a call whose result is missing renders
+    /// this instead of an empty body. Not persisted: it is true of this moment.
+    pub result_holder: Option<u32>,
 }
 
 impl Render {
@@ -544,6 +589,19 @@ impl Transcript {
     // -- Expansion (dormant) ------------------------------------------------
 
     /// The render state, for the view and for `App` to mirror into `ViewState`.
+    /// The pid of a process holding this session's blob file, when one does.
+    ///
+    /// A tool result lives in that file, so the card renders a line naming the pid
+    /// instead of an empty body. `None` means this process owns the session, which
+    /// is the normal case.
+    pub fn set_result_holder(&mut self, pid: Option<u32>) {
+        if self.render.result_holder == pid {
+            return;
+        }
+        self.render.result_holder = pid;
+        self.rebuild();
+    }
+
     pub fn render(&self) -> &Render {
         &self.render
     }
@@ -1020,7 +1078,10 @@ fn tool_card_rows(
     let inner = inner_width(width);
     let id = call.id;
     let expanded = render.is_expanded(id);
-    let card = tool_card::card(call, phase, expanded);
+    // A collapsed card cuts a line that would otherwise wrap into the rest of
+    // the turn; an opened one draws it whole, so `Enter` is the way to the rest.
+    let limit = (!expanded).then(|| card_line_limit(width));
+    let card = tool_card::card(call, phase, expanded, render.result_holder);
     // A call the loop is waiting on for an answer — not one that is merely next
     // in line. `needs_decision` adds the phase, which is the difference between a
     // question and a shell command that will run the moment it is its turn.
@@ -1035,7 +1096,7 @@ fn tool_card_rows(
     );
 
     // The heading: `# what ran`. Muted, so it reads as a label.
-    for line in wrap_text(&card.heading_line(), inner) {
+    for line in wrap_text(&fitted(&card.heading_line(), limit), inner) {
         rows.push(
             Row::new(RowKind::ToolHeading, band_line(&line, inner))
                 .in_block(block)
@@ -1057,7 +1118,10 @@ fn tool_card_rows(
     if let Some(subject) = &card.subject {
         let marker = card.marker;
         let first = format!("{marker} {subject}");
-        for (index, line) in wrap_text(&first, inner).into_iter().enumerate() {
+        for (index, line) in wrap_text(&fitted(&first, limit), inner)
+            .into_iter()
+            .enumerate()
+        {
             if index == 0 {
                 // The marker gets its own, quieter tone. Its offset is where
                 // the text starts inside the row's padding.
@@ -1101,7 +1165,7 @@ fn tool_card_rows(
                 CardLineKind::Hint => RowKind::ToolHint,
                 _ => RowKind::ToolCard,
             };
-            for wrapped in wrap_text(&line.text, inner) {
+            for wrapped in wrap_text(&fitted(&line.text, limit), inner) {
                 rows.push(
                     Row::new(kind, band_line(&wrapped, inner))
                         .in_block(block)
@@ -1149,6 +1213,14 @@ fn body_lines(
         lines.push(more_line(card.hidden));
     }
     lines
+}
+
+/// `text`, cut to the card's limit when it has one.
+fn fitted(text: &str, limit: Option<usize>) -> String {
+    match limit {
+        Some(limit) => truncate_line(text, limit),
+        None => text.to_owned(),
+    }
 }
 
 fn more_line(hidden: usize) -> CardLine {
@@ -1461,6 +1533,103 @@ mod tests {
             second_heading > first_body,
             "the second card starts after the first one ends: {texts:?}"
         );
+    }
+
+    #[test]
+    fn a_collapsed_card_cuts_a_line_that_would_own_the_transcript() {
+        // A JSON result arrives as one line of thousands of cells. Wrapped, it
+        // was dozens of rows of one band, and the next card was a page away.
+        let width = 40u16;
+        // One line, as a minified body arrives.
+        let json = format!("[{}]", "{\"a\":1},".repeat(400));
+        let call = call(
+            "read_file",
+            serde_json::json!({ "path": "package.json" }),
+            serde_json::Value::String(json),
+        );
+        let id = call.id;
+        let messages = vec![Message::assistant_with_tool_calls("", vec![call])];
+        let rows = build_rows(&messages, width);
+
+        let limit = card_line_limit(usize::from(width));
+        assert_eq!(limit, 80, "two widths");
+        assert!(
+            rows.iter()
+                .all(|row| display_width(&row.text) <= usize::from(width)),
+            "every row still fits the frame"
+        );
+        assert!(
+            rows.iter().any(|row| content(row).ends_with('\u{2026}')),
+            "the cut is marked: {:#?}",
+            texts(&rows)
+        );
+        // Two widths into rows of `inner` cells each: the band cannot be taller.
+        let rows_for_body = rows.len();
+        assert!(
+            rows_for_body <= 12,
+            "a 4800-cell line costs a handful of rows, not a page: {rows_for_body}"
+        );
+
+        // Opened, the same call draws the line whole.
+        let mut render = Render::default();
+        render.set_expanded(id, true);
+        let opened = build_rows_with(&messages, width, &render, Phase::Idle);
+        assert!(
+            opened.len() > rows_for_body,
+            "the opened card shows the rest: {} vs {rows_for_body}",
+            opened.len()
+        );
+    }
+
+    #[test]
+    fn a_long_subject_and_heading_are_cut_too() {
+        let command = "echo ".to_owned() + &"x".repeat(400);
+        let call = call(
+            "shell",
+            serde_json::json!({ "command": command, "description": "d".repeat(400) }),
+            serde_json::json!({ "stdout": "ok" }),
+        );
+        let rows = build_rows(&[Message::assistant_with_tool_calls("", vec![call])], 40);
+        let limit = card_line_limit(40);
+        for row in &rows {
+            let text = content(row);
+            assert!(
+                display_width(text) <= limit.min(40),
+                "row is wider than the frame: {text:?}"
+            );
+        }
+        let headings: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.kind == RowKind::ToolHeading)
+            .map(content)
+            .collect();
+        assert!(
+            headings
+                .last()
+                .is_some_and(|text| text.ends_with('\u{2026}')),
+            "the heading is cut, and the cut is marked: {headings:?}"
+        );
+        assert!(
+            rows.iter()
+                .filter(|row| row.kind == RowKind::ToolCard)
+                .any(|row| content(row).starts_with("$ echo")),
+            "the subject still names what ran"
+        );
+    }
+
+    #[test]
+    fn a_line_inside_the_limit_is_left_alone() {
+        let text = "short enough";
+        assert_eq!(truncate_line(text, 40), text);
+        assert_eq!(truncate_line(text, text.chars().count()), text);
+    }
+
+    #[test]
+    fn a_cut_measures_cells_so_a_wide_run_cannot_overflow() {
+        // Two cells each: the limit counts cells, and it includes the ellipsis.
+        let cut = truncate_line(&"\u{4e2d}".repeat(50), 10);
+        assert_eq!(display_width(&cut), 9, "{cut:?}");
+        assert!(cut.ends_with('\u{2026}'));
     }
 
     #[test]

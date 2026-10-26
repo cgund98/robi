@@ -169,6 +169,7 @@ impl FileChangeRepository for SqliteFileChangeRepository {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use robi_core::ids::SessionId;
     use uuid::Uuid;
 
@@ -208,6 +209,7 @@ mod tests {
             workspaces,
             events: None,
             session_cleaner: None,
+            locks: Arc::new(MemoryLocks::new()),
         };
         let chat = sessions
             .create_chat_session(CreateChatSessionCommand {

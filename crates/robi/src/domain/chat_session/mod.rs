@@ -1,4 +1,5 @@
 pub mod data;
+pub mod lease;
 pub mod model;
 pub mod repo;
 pub mod service;

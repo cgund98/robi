@@ -329,12 +329,30 @@ impl Composer {
         self.textarea.insert_newline();
     }
 
+    /// Insert pasted text at the caret, newlines and all.
+    ///
+    /// A paste is text, never a press: the newlines in the block are newlines in
+    /// the message, and nothing is sent. That is the whole point of bracketed
+    /// paste here — typed one keystroke at a time, the first newline in a pasted
+    /// block would be `Enter`.
+    pub fn insert_text(&mut self, text: &str) {
+        self.textarea.insert_str(text);
+    }
+
     /// The text that was sent, and an empty buffer with no attachments.
     ///
     /// Called when a submit succeeds, never when it is issued: a failed send
     /// has to leave the buffer and its attachments exactly as they were.
-    pub fn take_sent(&mut self) -> String {
+    ///
+    /// `from` is the draft key the message was typed under, and its draft goes
+    /// with the send. A store under that key is a copy `switch_to` parked
+    /// earlier — a message typed on the landing page survives the switch to the
+    /// session its first send creates, because the row arrives before the send
+    /// is reported taken. Dropping it here is what stops that text from coming
+    /// back the next time that key is opened, whatever order the two ran in.
+    pub fn take_sent(&mut self, from: Option<SessionId>) -> String {
         let text = self.text();
+        self.drafts.remove(&draft_key(from));
         self.clear();
         self.attachments.clear();
         text
@@ -506,7 +524,7 @@ mod tests {
         assert_eq!(composer.text_total(), 4);
 
         // Only a taken send clears it, and it clears both halves.
-        let sent = composer.take_sent();
+        let sent = composer.take_sent(None);
         assert_eq!(sent, "");
         assert!(composer.is_blank());
         assert_eq!(composer.attachment_count(), 0);
@@ -611,13 +629,38 @@ mod tests {
         assert_eq!(composer.text(), "ab", "the first draft came back");
 
         // A sent draft is gone: the buffer is cleared and nothing is kept.
-        assert_eq!(composer.take_sent(), "ab");
+        assert_eq!(composer.take_sent(Some(first)), "ab");
         assert!(composer.is_blank());
         composer.switch_to(Some(first), Some(second));
         composer.switch_to(Some(second), Some(first));
         assert!(
             composer.is_blank(),
             "a sent draft must not come back on the next switch"
+        );
+    }
+
+    #[test]
+    fn a_send_from_the_landing_page_leaves_no_draft_behind() {
+        let created = SessionId::new();
+        let mut composer = Composer::new();
+
+        composer.input(&plain(KeyCode::Char('h')));
+        composer.input(&plain(KeyCode::Char('i')));
+        // The row arrives before the send is reported taken, so the new session
+        // is opened first and the message is parked under the landing page's key.
+        composer.switch_to(None, Some(created));
+        assert!(composer.is_blank(), "the new session starts empty");
+
+        assert_eq!(composer.take_sent(None), "");
+        assert!(composer.is_blank());
+        composer.switch_to(Some(created), None);
+        assert!(
+            composer.is_blank(),
+            "the sent message must not come back on a new chat"
+        );
+        assert!(
+            composer.drafts.is_empty(),
+            "no copy of the sent message is kept"
         );
     }
 }

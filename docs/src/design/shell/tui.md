@@ -59,7 +59,7 @@ feature. In-process. Elm-shaped. One event subscription. Refetch, never append.*
 ```mermaid
 flowchart LR
   subgraph P["one process"]
-    T[robi-tui<br/>tui::app] --> S[bootstrap::build_app_state]
+    T[robi<br/>tui::app] --> S[bootstrap::build_app_state]
     S --> D[domain services]
     R[SerializedChatRuntime] --> A[Agent loop]
     D --- R
@@ -98,7 +98,7 @@ crates/robi/
                      # approval, prompt, confirm, status, detail
     view/            # header, transcript, detail, composer, prompt,
                      # strip, sessions, workspaces
-  src/bin/robi-tui.rs
+  src/bin/robi.rs
 ```
 
 `Cargo.toml` gains a feature and a binary:
@@ -111,8 +111,8 @@ tui = ["dep:ratatui"]
 ratatui = { workspace = true, optional = true }
 
 [[bin]]
-name = "robi-tui"
-path = "src/bin/robi-tui.rs"
+name = "robi"
+path = "src/bin/robi.rs"
 required-features = ["tui"]
 ```
 
@@ -146,19 +146,50 @@ that happened too early" anti-signal.
 
 ### Process model
 
-In-process, no listener, no port. `robi-tui` shares `ROBI_DATABASE_URL` with
-`robi-api` and `src-tauri`, so all three see the same sessions.
+In-process, no listener, no port. `robi` shares `ROBI_DATABASE_URL` with
+`robi-api` and `src-tauri`, so all three see the same sessions. With that
+variable unset it opens the desktop app's database — the app's own in a release
+build, the `dev` one in a debug build, which is the condition
+`src-tauri`'s `is_dev()` applies. The rule is in `bootstrap::desktop_database_url`,
+and [file-locations.md](../../reference/file-locations.md) states it for users.
+
+### Distribution
+
+Each release carries a tarball per target, beside the desktop bundles:
+
+| Asset | Target | Runner |
+|---|---|---|
+| `robi-v<X.Y.Z>-aarch64-apple-darwin.tar.gz` | arm64 macOS | `macos-latest` |
+| `robi-v<X.Y.Z>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 Linux | `ubuntu-22.04` |
+
+Each holds one directory, `robi-v<X.Y.Z>-<target>/`, with `robi` and `LICENSE`.
+`checksums.txt` on the release covers them with the bundles.
+
+The Linux tarball is built on 22.04, which sets its glibc floor at 2.35, so one
+file runs on 22.04 and 24.04 both. Nothing in `crates/robi` needs more: SQLite is
+bundled, `reqwest` is rustls, and `bollard` is pure Rust. The desktop bundles
+still build on 24.04, and a binary that needs the system's WebKitGTK is why they
+are separate.
+
+Only `tui` is enabled: the gated workstreams are the restore path, so the shipped
+binary is the default harness. The binary is stripped, and on macOS re-signed
+ad-hoc after stripping, because `strip` voids the signature `ld64` wrote and an
+arm64 binary without one does not run. Nothing is notarised, so a downloaded
+macOS binary needs `xattr -d com.apple.quarantine`.
+
+`--version` on the packaged binary is the release smoke test: it proves the
+tarball runs and that the tag and `CARGO_PKG_VERSION` agree.
 
 ### The workspace argument
 
 ```
-robi-tui [PATH]
+robi [PATH]
 ```
 
 `PATH` is the workspace the process opens, and it is **the** answer to which
 sessions the reader starts with: the remembered workspace from `tui.json` is not
 a fallback. Without an argument the path is the working directory, so
-`cd ~/code/pocket && robi-tui` and `robi-tui ~/code/pocket` are the same session
+`cd ~/code/pocket && robi` and `robi ~/code/pocket` are the same session
 list. The argument is canonicalised before it is compared, because the store keeps
 a canonical root and one directory has many spellings.
 
@@ -178,9 +209,24 @@ first cut left the question first and opened the overlay in the chat, so
 `Esc`-ing the overlay landed the reader in a chat frame with no workspace, no
 session, and no way to answer.
 
-One path argument, not a flag set: a second argument is a mistake worth naming on
-stderr before the alternate screen, because a terminal that ignores an argument
-opens the wrong chat. It is checked before the terminal is taken raw.
+Two flags and one path, not a flag set:
+
+```
+-h, --help      Print the help and exit.
+-V, --version   Print `robi <version>` and exit.
+--              Treat every later argument as a path.
+```
+
+`--` exists so a directory whose name starts with a dash has a spelling. A second
+path is a mistake worth naming on stderr before the alternate screen, because a
+terminal that ignores an argument opens the wrong chat. Everything is parsed
+before the terminal is taken raw, and before the TTY check, so `robi --version |
+cat` works. A usage error exits 2, to tell it apart from a run that started and
+failed.
+
+`args::parse` in `tui/args.rs` returns the decision; `bin/robi.rs` owns the TTY
+check, the logger, and the exit code. The split is what makes the flags a unit
+test rather than a terminal session.
 
 `SerializedChatRuntime` is per-process and in memory: `running_session_ids` is
 not persisted, and an actor belongs to the process that started it. Two front
@@ -191,8 +237,15 @@ Ownership across processes is a per-session lease, not a database lock: the TUI
 takes `Open` on the session it displays and `Turn` through the runtime, so a
 second process may read that session and may not submit to it. The lease, the
 `redb` handle invariant it depends on, and what parallel processes still share
-are in [parallel-front-ends.md](parallel-front-ends.md). Until that module
-lands, one front end at a time is the rule; see *Failure modes*.
+are in [parallel-front-ends.md](parallel-front-ends.md).
+
+**Two terminals in one workspace are allowed.** There is no `~/.robi/tui.lock`:
+the whole-home lock is gone. A session another process owns still renders — its
+transcript, tool names, arguments, and statuses come from the chat database —
+and each tool result it holds is replaced by `open in another process (pid N)`,
+with the same sentence in the footer. A submit to that session is refused with
+`Conflict`, which reads as a footer notice naming the pid, and the draft stays in
+the composer.
 
 ### The loop
 
@@ -328,7 +381,7 @@ the index itself, so nothing in the frame carries an index line.
 | `RecentsMenu` (filter, rename, delete) | sessions overlay: filter-as-you-type, running spinner, waiting dot, `Ctrl-R` rename, `Ctrl-D` delete behind a confirm; `New session…` is the first row | T3 |
 | `WorkspaceSwitcher` | workspace overlay: the eight most recent, then `Manage workspaces…` and `New workspace…` | T3 |
 | `WorkspacesPage` | `manage` view: every workspace with its own filter and remove, `Ctrl-N` to create; the create screen's typed path with directory completion | T3 |
-| `robi-tui` workspace argument | `robi-tui [PATH]`, the working directory by default; a path with no workspace is a prompt, not a fallback | T3 |
+| `robi` workspace argument | `robi [PATH]`, the working directory by default; a path with no workspace is a prompt, not a fallback | T3 |
 | `ErrorNotices`, `ApiStatus` | status strip above the composer: `! <error>`, `! health: …`, `sending…`, `stopping…` | T3 |
 | MCP marks in the tray | one word at the header's right edge: `MCP Online` / `MCP Failed` (per-server detail later) | T3 |
 | New chat | `Ctrl-N`: the landing page, and no session until the first message | T3 |
@@ -417,7 +470,7 @@ the index itself, so nothing in the frame carries an index line.
   what a block does inside its own band. T2 replaces the output per variant and
   adds expansion.
 
-**Exit** — `cargo run -p robi --features tui --bin robi-tui` shows the most recent
+**Exit** — `cargo run -p robi --features tui --bin robi` shows the most recent
 session of the active workspace, scrolls, and quits cleanly. One snapshot test
 renders a two-message transcript.
 
@@ -493,6 +546,14 @@ provider.
   A card in the running window says **running…** instead, and its heading reads
   `shell · running` rather than `shell · not started`: the turn is what the reader
   is watching, and a call that is next in line is not a call that has stalled.
+  The phase is what tells those two apart, so a **session switch has to rebuild
+  it**: an opening session whose actor is still live opens at `Thinking`, from
+  `App::running` — the same set the list read fills — rather than at idle. The
+  frames that would have set it belong to the session that was on screen, and a
+  phase left at idle drew the in-flight call of a running turn as a question. For
+  the same reason `turn_started` and `turn_finished` keep `App::running` current
+  for a session that is *not* on screen, so a switch does not have to wait for a
+  list read to learn whether the actor is still there.
 - **The dots are painted, not stored.** A row whose text changed every second would
   rebuild and rewrap the transcript once a second, and the scroll offset would
   twitch. The dots play into the band's own padding instead: the view rebuilds the
@@ -554,6 +615,18 @@ provider.
   lines; the detail view is what shows the rest, so an opened card no longer
   fetches anything by itself — opening the view does, through
   `OriginalStore::lookup`, the same body `getToolOriginal` serves the GUI.
+- **A card's line stops at two frame widths.** Lines are wrapped, not counted, so
+  a cap on *lines* said nothing about a result that is one enormous line: a JSON
+  body, a minified bundle, or a base64 blob arrived as a single line of thousands
+  of cells and wrapped into dozens of rows of one band, pushing the rest of the
+  turn a page away. Every line the band draws — heading, subject, and body —
+  is cut to `CARD_LINE_FACTOR` (2) times the frame width, with `…` as the mark,
+  and the cut is measured in cells so a run of wide characters cannot overflow
+  the frame. Two widths is long enough to read the shape of the line and short
+  enough that one result cannot own the transcript. The cut belongs to the
+  collapsed card only: `Enter` opens the detail view, which builds its own lines
+  from `tool_card::full_body` and draws them whole, so the full context is always
+  one key away.
 - **A retrieve card shows no output at all.** Its body is a page of *another*
   call's log, so the transcript is the wrong place for it: the card keeps the
   window — `# retrieve` over `> 0193a1b2 stdout`, the id and the stream — and one
@@ -611,7 +684,7 @@ rejection. That is `Event::AwaitingApproval` →
   painted with its background applied *after* the text style, so a selected row
   is one unbroken band — including the two action rows, which the theme helpers
   were silently cancelling to canvas.
-- `robi-tui [PATH]` — the process opens the workspace at `PATH`, or the working
+- `robi [PATH]` — the process opens the workspace at `PATH`, or the working
   directory. A path with no workspace is a prompt (`y` create, `n` switcher over
   the question), not a fallback to whichever workspace an earlier run left open;
   see *The workspace argument*.
@@ -766,7 +839,7 @@ message rather than a fallback when none is set.
 | **Docs surface** — tree, viewer, find, search, editor | Off in the GUI as S5. Not replaced. The agent still reads and edits docs through the existing tools; a human reads them in their editor |
 | **In-app file peek** (`OpenedFile` dialog) | The GUI needs a second destination so a path can render inside the app. `/open` has one destination — the configured program — so there is no dialog and no `fileOpenPatterns` split to reproduce |
 | In-terminal markdown editor | Roadmap non-goal: "not a code editor" |
-| Clipboard image paste, drag-and-drop | No terminal protocol worth the complexity. Paths only, through `/attach` |
+| Clipboard image paste, drag-and-drop | No terminal protocol worth the complexity. Paths only, through `/attach`. Pasting *text* does work: see [the keyboard model](#keyboard-model) |
 | Image and diagram rendering | No portable cell-accurate graphics; the source is shown, and an image is a `[name, 1.2 MB]` chip |
 | An `@` file picker over the workspace | Dropped for `/attach`: a menu over a per-workspace index needs an `ignore` walk, a relaxed `@` token rule and a Cargo feature edge, and a path typed after a command is the same gesture with none of that |
 | OS notifications | Tauri-only. Bell and title change instead |
@@ -852,6 +925,19 @@ because typing is what a chat is for. The composer's own bindings:
 the turn and then send the draft. `Alt-Enter` stays bound where a terminal
 reports it as one key.
 
+**A paste is text, never keystrokes.** The app asks the terminal for bracketed
+paste (DECSET 2004) at startup and releases it on the way out, so a pasted block
+arrives as one `Msg::Paste` instead of being typed at the field. Anything else is
+a bug with a message attached: typed one character at a time, the first newline
+in a pasted block is `Enter`, so a pasted message was sent a line at a time. The
+block goes to the field a keystroke would reach — the composer, the prompt, a
+filter, the path field, a settings value — and no character in it is a binding,
+so a paste cannot send, stop, turn, or quit however it is spelled. A field that
+holds one line gets the block flattened, with each break a space, and the
+composer keeps the breaks as breaks and normalises `\r\n` and a bare `\r` to
+`\n`. A terminal that ignores the request degrades to the old behaviour; the
+key path is still the one that submits.
+
 With the transcript focused, the keys act on the selected block:
 
 | Key | Does |
@@ -933,7 +1019,11 @@ the hint below.
   retries it.
 - The composer keeps its per-session draft, so text typed on the landing page is
   parked under the draft key the GUI's `composerDrafts.ts` uses for a chat with no
-  row yet.
+  row yet. **A send that is taken drops that draft with the field.** The row exists
+  before the send is reported, so opening the new session parks the message under
+  the landing page's key a moment before `Composer::take_sent(None)` runs; taking
+  the draft as well as the buffer is what keeps a sent message from coming back on
+  the next `Ctrl-N`.
 
 ### The composer band
 
@@ -1489,11 +1579,11 @@ collapsed directories, docs-tray width, UI scale.
   A refusal keeps the call listed and shows the message.
 - **A pause restored from the database.** The actor belonged to the process that
   started it, so a pause found by a later process is decided by a new one: the
-  decision settles the call in the store and resumes the turn here. That is the
-  same exposure a submit already has (two front ends, two runtimes), and the
-  per-session lease in [parallel-front-ends.md](parallel-front-ends.md) is what
-  removes it. Until then the selection says nothing about which process is
-  driving.
+  decision settles the call in the store and resumes the turn here. The lease in
+  [parallel-front-ends.md](parallel-front-ends.md) narrows it rather than removing
+  it: a paused turn keeps its `Turn` until the call is answered or the process
+  exits, so a second process cannot resume it, but a crash mid-pause releases the
+  lease and the next process may.
 - **`turn_finished` closing a live pause.** The worst failure in this phase,
   because it degrades into the previous one: the pause opens on
   `awaiting_approval` and a paused `turn_finished` tears it down a frame later, so
@@ -1559,7 +1649,7 @@ collapsed directories, docs-tray width, UI scale.
   the reason a list row's highlight is a band and not just font colour.
 - **Terminal too small.** Below 40×12 render one centered message instead of a
   broken layout.
-- **No TTY** (`robi-tui` in a pipe or CI). Refuse to start with a line on stderr,
+- **No TTY** (`robi` in a pipe or CI). Refuse to start with a line on stderr,
   rather than drawing escape codes into a file.
 - **Quit with a turn running.** Confirm; on confirm, `Stop` then exit, so the
   transcript is left resolvable. Never drop the process mid-turn.
@@ -1662,7 +1752,9 @@ collapsed directories, docs-tray width, UI scale.
 - Reopening a paused session: a transcript that loads with a `pending` +
   `not_started` call selects that call's card, and `a` then issues one `Decide`; a
   call that ran without asking selects nothing; a session switch drops the
-  previous session's pause.
+  previous session's pause. A switch **back** to a session whose turn is still
+  running keeps that turn busy, so its in-flight call comes back as *running…* and
+  no approval opens for it.
 - Selection: the arrows walk the prose and then each card; a selection survives an
   upsert of its own row and is dropped when its block goes; `Enter` opens the
   detail view on a card and does nothing on a paragraph. Frames assert the
@@ -1710,7 +1802,18 @@ collapsed directories, docs-tray width, UI scale.
 - A message carrying only an attachment is sendable, and a refused send keeps both
   the text and the chips. The band grows one row for the chips row, and a sent
   attachment reads as `app.rs (40-80)` in the user band beside
-  `[image, image/png]`.
+  `[image, image/png]`. A send that is taken drops the draft it came from: the
+  first message of a new chat leaves nothing behind for the next `Ctrl-N` to
+  restore.
+- Paste: `Event::Paste` becomes one message and never a run of keys. A block with
+  newlines lands in the composer with its newlines, and issues nothing — no send,
+  no stop, no quit — so a pasted message cannot be sent a line at a time. A
+  one-line field gets the block flattened, with each break a space. The landing
+  page gets text and creates no session.
+- A card's long line: a 4800-cell result costs a handful of rows in the
+  transcript, its cut marked with `…`, and the same call in the detail view shows
+  the whole line. The heading and the subject are cut the same way, and a cut is
+  measured in cells so a wide run cannot overflow the frame.
 - A mermaid fence renders as its own source with the language on the fence line
   and does not panic.
 - A skill whose id collides with a built-in is listed but not selectable, and
@@ -1801,7 +1904,7 @@ collapsed directories, docs-tray width, UI scale.
    but no view from T2, and one shared one-row prompt fixes both. The status
    surface is a strip above the composer rather than a bar below it, plus the
    header's MCP word and the per-turn `Worked for` footer. The phase's last pass
-   took the startup path (`robi-tui [PATH]` and the missing-workspace prompt),
+   took the startup path (`robi [PATH]` and the missing-workspace prompt),
    lifted managing workspaces out of the switcher into its own view, put
    `New session…` first in the sessions overlay, and fixed two things only the
    screen showed: a highlighted action row that was not, and an empty state

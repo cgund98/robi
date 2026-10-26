@@ -70,7 +70,7 @@ impl Tool for WriteFile {
         reject_marker(&args.content)?;
         self.ctx.filter().await?;
         let resolved = self.ctx.resolve(&args.path)?;
-        let _guard = lock_path(&resolved.absolute).await;
+        let _guard = lock_path(&resolved.absolute).await?;
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }

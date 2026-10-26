@@ -1,4 +1,4 @@
-//! Startup: the view state, the first pick, and the stopgap process lock.
+//! Startup: the view state and the first pick.
 //!
 //! The picks are pure functions of what the services returned, so they are
 //! tested without a database. `app::update` calls them when an outcome lands.
@@ -7,8 +7,7 @@
 //! cover: mouse reporting, which has to be turned on next to raw mode and off
 //! again before the alternate screen goes.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io;
 use std::path::Path;
 
 use robi_core::ids::{SessionId, WorkspaceId};
@@ -16,12 +15,6 @@ use robi_core::ids::{SessionId, WorkspaceId};
 use crate::domain::chat_session::model::ChatSession;
 use crate::domain::workspace::model::Workspace;
 use crate::tui::persist::{self, ViewState};
-
-/// The stopgap lock file, under `~/.robi`.
-///
-/// Deleted, not extended, when the per-session lease lands: the lease in
-/// `docs/src/design/shell/parallel-front-ends.md` replaces it.
-pub const LOCK_FILE: &str = "tui.lock";
 
 /// The view state from the last run.
 pub fn restore(state_dir: &Path) -> ViewState {
@@ -37,6 +30,33 @@ pub fn restore(state_dir: &Path) -> ViewState {
 /// and it reads only wheel events — a click, a drag, and a move are ignored.
 pub fn enable_mouse() -> io::Result<()> {
     ratatui::crossterm::execute!(io::stdout(), ratatui::crossterm::event::EnableMouseCapture)
+}
+
+/// Ask the terminal to mark a paste, so it arrives as one event.
+///
+/// DECSET 2004. Without it a terminal *types* the pasted text at the field,
+/// newline and all, and a newline is `Enter`: pasting a block of text sent its
+/// first line as a message. With it the block arrives as one [`Msg::Paste`] and
+/// the field takes it as text. A terminal that does not implement it degrades
+/// to the old behaviour, which is why the key path is still the one that
+/// submits.
+///
+/// [`Msg::Paste`]: crate::tui::app::Msg::Paste
+pub fn enable_bracketed_paste() -> io::Result<()> {
+    ratatui::crossterm::execute!(
+        io::stdout(),
+        ratatui::crossterm::event::EnableBracketedPaste
+    )
+}
+
+/// Stop paste marking, before the alternate screen goes.
+pub fn disable_bracketed_paste() {
+    if let Err(error) = ratatui::crossterm::execute!(
+        io::stdout(),
+        ratatui::crossterm::event::DisableBracketedPaste
+    ) {
+        tracing::warn!(%error, "could not turn bracketed paste off");
+    }
 }
 
 /// Ask the terminal to report whether its window is in front.
@@ -118,79 +138,12 @@ pub fn pick_session(
     sessions.first().map(|session| session.id)
 }
 
-/// The advisory lock one process holds for its lifetime.
-///
-/// Two front ends on one database can drive two turns on one session, and this
-/// detects terminal-against-terminal only. It cannot see `robi-api` or the
-/// desktop app, which is why the design doc calls it a stopgap.
-#[derive(Debug)]
-pub struct Lock {
-    /// Held for its descriptor: the OS releases the lock when it closes,
-    /// including when the process is killed.
-    _file: File,
-}
-
-impl Lock {
-    /// Take the lock, or fail with a message naming the holder.
-    pub fn acquire(state_dir: &Path, database_url: &str) -> io::Result<Lock> {
-        std::fs::create_dir_all(state_dir)?;
-        let path = state_dir.join(LOCK_FILE);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => {
-                let holder = read_holder(&mut file);
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    holder_message(holder.as_deref()),
-                ));
-            }
-            Err(std::fs::TryLockError::Error(err)) => return Err(err),
-        }
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        writeln!(file, "pid {} database {database_url}", std::process::id())?;
-        // The holder line is read by the next process, so it has to be on disk
-        // before that process can fail the lock.
-        file.sync_all()?;
-        Ok(Lock { _file: file })
-    }
-}
-
-fn read_holder(file: &mut File) -> Option<String> {
-    file.seek(SeekFrom::Start(0)).ok()?;
-    let mut text = String::new();
-    file.read_to_string(&mut text).ok()?;
-    let line = text.lines().next().unwrap_or("").trim().to_owned();
-    (!line.is_empty()).then_some(line)
-}
-
-fn holder_message(holder: Option<&str>) -> String {
-    match holder {
-        Some(holder) => format!("robi-tui is already running ({holder})"),
-        None => "robi-tui is already running in another process".to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use uuid::Uuid;
-
     use super::*;
     // The row fixtures live in one place, so a field added to or removed from
     // `ChatSession` is one edit for the whole module.
     use crate::tui::testing::{session, workspace};
-
-    fn state_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("robi-tui-lock-{}", Uuid::now_v7().simple()));
-        std::fs::create_dir_all(&dir).expect("a temp dir");
-        dir
-    }
 
     #[test]
     fn the_remembered_workspace_wins_when_it_still_exists() {
@@ -226,25 +179,5 @@ mod tests {
             Some(list[0].id)
         );
         assert_eq!(pick_session(&[], workspace_id, None), None);
-    }
-
-    #[test]
-    fn the_lock_is_exclusive_and_reacquirable() {
-        let dir = state_dir();
-        let first = Lock::acquire(&dir, "sqlite://a.db").expect("the first lock");
-
-        let error = Lock::acquire(&dir, "sqlite://a.db").expect_err("the second must fail");
-        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert!(error.to_string().contains("already running"), "{error}");
-        assert!(
-            error.to_string().contains(&std::process::id().to_string()),
-            "the message names the holder: {error}"
-        );
-
-        drop(first);
-        let again = Lock::acquire(&dir, "sqlite://a.db");
-        assert!(again.is_ok(), "dropping the lock frees it");
-        drop(again);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

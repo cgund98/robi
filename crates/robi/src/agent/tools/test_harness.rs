@@ -3,6 +3,7 @@
 //! The edit, read, shell, and subagent tests all need a real session with real
 //! path rules, so the builder lives here and is compiled in every test build.
 
+use crate::domain::chat_session::lease::MemoryLocks;
 use std::sync::Arc;
 
 use robi_core::ids::SessionId;
@@ -48,6 +49,7 @@ pub(crate) async fn harness() -> Harness {
     .await
     .unwrap();
     let sessions = Arc::new(ChatSessionService {
+        locks: Arc::new(MemoryLocks::new()),
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces,
         events: None,

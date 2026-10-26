@@ -9,13 +9,22 @@ variable says otherwise. The directory is created mode `0700` on first use.
 | `~/.robi/config.toml` | Ordinary settings. See [Configuration](configuration.md). |
 | `~/.robi/secrets.toml` | Credentials. Mode `0600`, refused when readable by group or world. |
 | `~/.robi/plans/<session_id>/` | Legacy plan files from before S9. New plans are written to `<workspace>/.robi/plans/` and these are no longer read. |
-| `~/.robi/sessions/<session_id>/blobs.redb` | Tool results, tool originals, and image bytes for one chat. |
-| `~/.robi/sessions/image-index.redb` | Image id to session id. No image bytes. |
+| `~/.robi/sessions/<session_id>/blobs.redb` | Tool results, tool originals, and image bytes for one chat. It is also that chat's image index: an image id resolves only inside its own session file. |
+| `~/.robi/locks/sessions/<session_id>.lock` | Held while a process owns a chat. Contains the holder's pid and scope. |
+| `~/.robi/locks/paths/<sha256>.lock` | One workspace file, held across a read-modify-write. Removed after seven days if nothing holds it. |
+| `~/.robi/locks/startup.lock` | Held while a process runs migrations, the blob evacuation, the prune, and the turn-display repair. |
+| `~/.robi/locks/settings.lock` | Held across a `config.toml` or `secrets.toml` write. |
 | `~/.robi/index/<workspace_id>/` | A legacy semantic index from a build before M11. Nothing writes it now; deleting the workspace still removes the directory. |
 | `~/.robi/mcp.json` | User-scoped MCP server config. |
 | `~/.robi/mcp-icons.json` | Cached MCP server icons (capped at 256 KiB). |
 | `~/.robi/logs/` | Process logs. One file per start, `robi-api-<timestamp>.log` or `robi-dev-<timestamp>.log`; the newest prior file is kept, older than seven days is pruned. |
 | `~/.robi/logs/mcp/<server_id>/` | One MCP server's logs, one `mcp-<timestamp>.log` per connection. Mode `0600`. See [MCP](../concepts/mcp.md). |
+
+The lock files are empty apart from one line naming the holder: `pid 4812 scope
+turn database sqlite://… at …`. A refused process reads that line, so the message
+it shows names the pid that has the session. There is no TTL and no heartbeat:
+the operating system drops a file lock when the holding process exits, including
+on `kill -9`, so a stale lock cannot outlive its owner.
 
 ## The session database
 
@@ -30,10 +39,13 @@ app opens. WAL mode adds the `robi.db-wal` and `robi.db-shm` sidecar files, both
 gitignored.
 
 **The terminal app chooses differently.** With `ROBI_DATABASE_URL` unset,
-`robi-tui` opens the desktop app's dev database —
-`~/Library/Application Support/com.github.cgund98.robi/dev/robi.db` on macOS —
-rather than a file relative to the working directory, so it shows the same
-workspaces `pnpm tauri dev` shows. It also opens the workspace named by its first
+`robi` opens the desktop app's own database —
+`~/Library/Application Support/com.github.cgund98.robi/robi.db` on macOS — rather
+than a file relative to the working directory. A debug build, which is what a
+`cargo run` from a checkout is, opens the app's **dev** database instead
+(`.../com.github.cgund98.robi/dev/robi.db`), so it shows the same workspaces
+`pnpm tauri dev` shows, and a migration applied while developing does not reach
+the installed app's file. It also opens the workspace named by its first
 argument, or the working directory when there is none, and asks before creating a
 workspace at a path that has none. See
 [the terminal shell](../design/shell/tui.md#process-model) and

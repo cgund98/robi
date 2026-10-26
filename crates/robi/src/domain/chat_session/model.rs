@@ -32,6 +32,16 @@ impl TurnDisplay {
         }
     }
 
+    /// Whether a stored display is known to match its transcript.
+    ///
+    /// `Pending` is the only value written while a turn is still running, so it is
+    /// the only one a restart has to repair. `AwaitingApproval` is written when the
+    /// actor stops at a pending call, and `reconciled_turn_display` reaches the same
+    /// answer from the transcript, so it needs no repair either.
+    pub fn is_settled(self) -> bool {
+        !matches!(self, Self::Pending)
+    }
+
     pub fn from_outcome(outcome: &TurnOutcome) -> Self {
         match outcome {
             TurnOutcome::Complete | TurnOutcome::Cancelled => Self::Idle,

@@ -123,7 +123,7 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 Ok(outcome) => ActionOutcome::Submitted { session, outcome },
                 Err(error) => ActionOutcome::SubmitFailed {
                     session,
-                    message: error.to_string(),
+                    message: error.user_message(),
                 },
             }
         }
@@ -606,7 +606,7 @@ async fn store_images(
         let id = uuid::Uuid::now_v7().to_string();
         state
             .image_source
-            .store(&session.to_string(), &id, &image.media_type, image.bytes)
+            .store(session, &id, &image.media_type, image.bytes)
             .await
             .map_err(|error| format!("{} could not be stored: {error}", image.name))?;
         stored.push(robi_core::message::ImageAttachment {

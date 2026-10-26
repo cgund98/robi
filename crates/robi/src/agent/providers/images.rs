@@ -11,21 +11,30 @@
 //! only the adapter's request builder reaches it.
 
 use async_trait::async_trait;
+use robi_core::ids::SessionId;
 
 use super::error::ProviderError;
 
 /// The stored bytes and media type behind one attachment id.
 ///
 /// Read-only: the model's request builder uses this to resolve ids to bytes.
+///
+/// Scoped by session. The bytes live in that session's own `blobs.redb`, which
+/// is also the index that resolves the id, so the session is part of the
+/// question rather than something the store looks up.
 #[async_trait]
 pub trait ImageSource: Send + Sync {
     /// The stored bytes for one attachment id, with its media type.
     ///
-    /// `Ok(None)` means the id is unknown (a deleted row or a corrupt
-    /// database). The caller must fail the turn rather than drop the part: the
-    /// user attached it, and quiet loss is the one failure neither the model
-    /// nor the user can detect.
-    async fn image(&self, id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError>;
+    /// `Ok(None)` means the id is unknown in this session (a deleted row, a
+    /// corrupt database, or an image that belongs to another chat). The caller
+    /// must fail the turn rather than drop the part: the user attached it, and
+    /// quiet loss is the one failure neither the model nor the user can detect.
+    async fn image(
+        &self,
+        session: SessionId,
+        id: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, ProviderError>;
 }
 
 /// An [`ImageSource`] that also accepts new images.
@@ -39,7 +48,7 @@ pub trait ImageStore: ImageSource {
     /// transcript's `ImageAttachment`.
     async fn store(
         &self,
-        chat_session_id: &str,
+        session: SessionId,
         id: &str,
         media_type: &str,
         bytes: Vec<u8>,

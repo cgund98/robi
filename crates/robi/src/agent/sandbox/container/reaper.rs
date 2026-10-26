@@ -29,7 +29,7 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 /// Starts the sweep on the current runtime. Returns immediately.
 ///
 /// Called once from the composition root, which is the one place `robi-api`,
-/// `robi-tui`, and the Tauri process all pass through, so every surface gets it
+/// `robi`, and the Tauri process all pass through, so every surface gets it
 /// without its own copy.
 pub fn spawn() {
     tokio::spawn(async {

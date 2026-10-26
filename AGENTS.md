@@ -51,7 +51,7 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `agent/skills/` | M8 | Skill scan, catalog, and `/id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
 | `agent/mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
 | `agent/compress/` | M9 | Tool-output compression and the original store |
-| `tui/` | T0 | Terminal front end and the `robi-tui` binary, behind `--features tui`. A surface, not a milestone: same services as `web_api`, no HTTP. See [docs/src/design/shell/tui.md](docs/src/design/shell/tui.md) |
+| `tui/` | T0 | Terminal front end and the `robi` binary, behind `--features tui`. A surface, not a milestone: same services as `web_api`, no HTTP. See [docs/src/design/shell/tui.md](docs/src/design/shell/tui.md) |
 
 Inside `crates/robi`, `web_api` and `adapters` depend on `domain`, and `domain`
 depends on neither. `bootstrap` is the composition root both processes call. Schema,
@@ -133,7 +133,7 @@ Menus and dialogs use Kobalte primitives, styled with those tokens.
 |------|---------|
 | Web-only Vite dev | `pnpm dev` (port **1430**, strict; proxies `/api` → `127.0.0.1:1431`) |
 | Local API | `cargo run -p robi --bin robi-api` (default `127.0.0.1:1431`) |
-| Terminal app | `cargo run -p robi --features tui --bin robi-tui` (one at a time; it takes `~/.robi/tui.lock`) |
+| Terminal app | `cargo run -p robi --features tui --bin robi` (two terminals in one workspace are allowed; a session is locked per process) |
 | Desktop app | `pnpm tauri dev` |
 | Production web build | `pnpm build` |
 | Lint (ESLint + Prettier) | `pnpm run lint` |

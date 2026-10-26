@@ -40,7 +40,7 @@ impl Detail {
     /// answer to "the rest of it". A shell or MCP result that was compressed on
     /// the way to the model is replaced by `original` when the fetch has landed.
     pub fn new(call: &ToolCall, phase: Phase, original: Option<&str>) -> Self {
-        let card = tool_card::card(call, phase, true);
+        let card = tool_card::card(call, phase, true, None);
         // The heading and subject come from the short parse; the body is the
         // uncapped one. `card.lines` is only used when it is all there is.
         let mut lines = Vec::new();

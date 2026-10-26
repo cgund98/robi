@@ -1,31 +1,34 @@
-//! The terminal front end: `cargo run -p robi --features tui --bin robi-tui`.
+//! The terminal front end: `cargo run -p robi --features tui --bin robi`.
 //!
 //! The binary mirrors `robi-api`: environment to `AppConfig`, one `AppState`
 //! from the composition root, then the front end. Three differences, all
 //! deliberate:
 //!
-//! - The TTY check comes first, so a pipe gets one line on stderr instead of a
-//!   log file and a half-opened database.
+//! - The arguments are read first, so `--version` prints on a pipe. The TTY
+//!   check comes after them, and before the log file and the half-opened
+//!   database.
 //! - The log layer is installed before the app state is built, and it is
 //!   [`logs::init_tui`], which never writes to stderr — a tracing line there
 //!   would overwrite the frame the terminal is drawing.
-//! - The default database is the desktop app's **dev** database, the same one
-//!   `pnpm tauri dev` opens, rather than a file relative to the working
-//!   directory. Otherwise a terminal started from a source checkout sees an
-//!   empty session list while the desktop app shows a full one.
+//! - The default database is the desktop app's **dev** database in a debug
+//!   build, the same one `pnpm tauri dev` opens, and the app's own database in a
+//!   release build. Otherwise a terminal started from a source checkout sees an
+//!   empty session list while the desktop app shows a full one, and a downloaded
+//!   binary writes a second database beside the one the app uses.
 //!
 //! `ROBI_DATABASE_URL` still wins, so any other database is one variable away.
 //!
 //! # The workspace
 //!
-//! `robi-tui [PATH]` opens the workspace at `PATH`, or at the working directory
+//! `robi [PATH]` opens the workspace at `PATH`, or at the working directory
 //! when no argument is given. The path decides which sessions the reader starts
 //! with; a path with no workspace behind it is a prompt, not a silent fallback to
 //! whichever workspace a previous run left open.
 
-use std::path::PathBuf;
+use std::io::IsTerminal;
 
 use robi::bootstrap::{self, AppConfig};
+use robi::tui::args::{self, Outcome};
 use robi::tui::{self, Options};
 
 /// The last resort: a file beside the working directory.
@@ -35,20 +38,43 @@ use robi::tui::{self, Options};
 /// sessions with does not.
 const CWD_DATABASE_URL: &str = "sqlite://robi.db?mode=rwc";
 
+/// Exit code for arguments the binary cannot act on.
+///
+/// 2, not 1: a bad invocation is a usage error, and a script can tell it apart
+/// from a run that started and failed.
+const BAD_USAGE: i32 = 2;
+
 #[tokio::main]
 async fn main() {
-    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        eprintln!("robi-tui needs a terminal: stdout is not a TTY");
+    // One optional argument: the workspace root. Anything else is a mistake worth
+    // naming, because a terminal that ignores an argument opens the wrong chat.
+    let workspace_path = match args::parse(std::env::args_os().skip(1)) {
+        Outcome::Run(path) => path,
+        Outcome::Help => {
+            println!("{}", args::HELP);
+            return;
+        }
+        Outcome::Version => {
+            println!("{}", args::VERSION);
+            return;
+        }
+        Outcome::Error(message) => {
+            eprintln!("{message}");
+            std::process::exit(BAD_USAGE);
+        }
+    };
+
+    // After the flags, so `robi --version | cat` works. A pipe with no path
+    // is still a mistake: the frame cannot be drawn into it.
+    if !std::io::stdout().is_terminal() {
+        eprintln!("robi needs a terminal: stdout is not a TTY");
         std::process::exit(1);
     }
 
     robi::logs::init_tui();
 
-    // One optional argument: the workspace root. Anything else is a mistake worth
-    // naming, because a terminal that ignores an argument opens the wrong chat.
-    let mut args = std::env::args_os().skip(1);
-    let workspace_path = match args.next() {
-        Some(argument) => PathBuf::from(argument),
+    let workspace_path = match workspace_path {
+        Some(path) => path,
         None => match std::env::current_dir() {
             Ok(cwd) => cwd,
             Err(err) => {
@@ -57,13 +83,6 @@ async fn main() {
             }
         },
     };
-    if let Some(extra) = args.next() {
-        eprintln!(
-            "robi-tui takes one workspace path, and got another: {}",
-            PathBuf::from(extra).display()
-        );
-        std::process::exit(1);
-    }
     // Canonical before the app sees it: the workspace row stores a canonical root,
     // and `..` or a symlink in the argument must still match it.
     let workspace_path = workspace_path
@@ -72,9 +91,9 @@ async fn main() {
 
     let database_url = match std::env::var("ROBI_DATABASE_URL") {
         Ok(url) => url,
-        Err(_) => match bootstrap::desktop_dev_database_url() {
+        Err(_) => match bootstrap::desktop_database_url() {
             Some(url) => {
-                tracing::info!(%url, "using the desktop app's dev database");
+                tracing::info!(%url, "using the desktop app's database");
                 url
             }
             None => {

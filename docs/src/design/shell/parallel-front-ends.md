@@ -1,13 +1,14 @@
 # Parallel front ends
 
-Several Robi processes on one machine: one database, one `~/.robi`. The rule
-today is one front end at a time. This page decides how that relaxes — a
-**per-session lease**, plus the handle-ownership rule that makes the
-per-session `redb` files safe to open from a second process.
+Several Robi processes on one machine: one database, one `~/.robi`. Two front
+ends now run at once. Ownership is a **lease per resource**, plus the
+handle-ownership rule that makes a session's `redb` file safe to open from a
+second process.
 
-The blast radius is small. Nothing in `robi-core`. Nothing moves between blobs
-and the chat database. Once ownership is explicit, the alarming part is not
-corruption; it is where the refusal lands.
+The blast radius was small. One data variant in `robi-core` (`ToolError::Locked`),
+nothing moved between blobs and the chat database, and the alarming part turned
+out not to be corruption but where the refusal lands: it used to arrive as
+`Internal server error` at startup.
 
 ## What this page does not cover
 
@@ -83,13 +84,28 @@ that a session's `redb` file may only be open while this process holds it.**
 
 ### The lease
 
-`~/.robi/leases/<session_id>.lock`, one OS lock per session through
+One OS lock file per resource under `~/.robi/locks/`, through
 `std::fs::File::try_lock` (stable since Rust 1.89; the workspace floor is 1.90).
 Acquiring truncates the file and writes the holder: pid, scope, database url, and
 the time. A refusal reads that back and reports it.
 
-The OS drops a file lock when the descriptor closes, including on `kill -9`.
-There is no TTL, no heartbeat, and no stale-lease sweep.
+| Resource | File | Held by | Wait |
+|---|---|---|---|
+| Session `S` | `locks/sessions/<S>.lock` | every process with `S`'s `blobs.redb` open | none |
+| Workspace file `P` | `locks/paths/<sha256(P)>.lock` | an edit's read-modify-write | 10 s |
+| Startup work | `locks/startup.lock` | migrations, evacuation, prune, repair | 10 s |
+| Settings write | `locks/settings.lock` | a `config.toml` or `secrets.toml` write | 10 s |
+
+Two kinds of wait, on purpose. **Ownership** (a session) refuses at once: the
+holder is mid-turn, so waiting only delays a decision already made. **Edits** wait
+`LOCK_TIMEOUT`, ten seconds, the same order as the pool's `busy_timeout`: losing a
+race to another process should not fail a turn over a write that takes
+milliseconds. A tool that waits out the window returns `ToolError::Locked`, and
+the refusal is a sentence naming the path and the pid.
+
+**An acquire timeout is not a lease TTL.** The wait bounds how long a caller
+retries; nothing expires a held lock. The OS drops a file lock when the descriptor
+closes, including on `kill -9`, so there is no heartbeat and no stale-lease sweep.
 
 Two scopes, one lock:
 
@@ -107,10 +123,12 @@ with the window that started it.
 - `Turn` refuses. Submitting, deciding, compacting and deleting are rejected with
   `ServiceError::Conflict`, which `web_api` already maps to 409
   (`web_api/error.rs:15`).
-- `Open` never refuses a transcript. It decides whether the blob file may be
-  opened, and the answer when it may not is the degraded render below. Calls that
-  need the bytes themselves — originals, images — have no degraded form, so they
-  are the one place `Open` produces an error.
+- `Open` never refuses a transcript. `ChatMessageService::list_messages` takes it
+  best effort: when another process has the session, the read goes through
+  `MessageStore::messages_without_results`, which leaves `call.result` empty, and
+  the card renders `open in another process (pid N)`. Calls that need the bytes
+  themselves — originals, images — have no degraded form, so they are the one
+  place `Open` produces an error.
 
 A **paused turn keeps its `Turn` lease.** The actor goes idle when a turn pauses
 for approval, so releasing on actor exit would let a second process resume a call
@@ -138,25 +156,51 @@ while a window reads through it under `Open`.
 
 | Caller | Scope | On refusal |
 |---|---|---|
-| TUI / desktop: a session is on screen | `Open`, for as long as it is | falls back, never blocks the render |
-| `ChatMessageService::submit_instruction` | `Turn` | `Conflict` |
-| `ChatMessageService::decide_tool_call` | `Turn` | `Conflict` |
-| `ChatMessageService::compact` | `Turn` | `Conflict` |
-| `ChatMessageService::stop` | `Turn` | `Conflict`; the owner stops its own turn |
-| `delete_chat_session` | `Turn` | `Conflict` |
-| `list_messages` / `get_message` | `Open`, best effort | degraded render |
-| originals read (`web_api/chat_message.rs:525`) | `Open` | `Conflict` |
-| image read (`web_api/chat_message.rs:446`) | `Open` | `Conflict` |
+| TUI: a session is on screen | `Open`, for as long as it is | the degraded render, plus one footer notice |
+| `ChatRuntime::submit` / `decide` / `compact` | `Turn`, held in the slot | `Conflict` with the pid |
+| `ChatMessageService::stop` | `Turn` already held by the runtime | `Conflict`; the owner stops its own turn |
+| `delete_chat_session` | `Turn` | `Conflict`, before the unlink |
+| `prune_excess_sessions` | through `delete_chat_session` | the session is kept, startup continues |
+| `reconcile_turn_displays` | `Turn` per session, no wait | the session is skipped |
+| `ChatMessageService::list_messages` | `Open`, best effort | `messages_without_results` |
+| the edit tools, the docs editor, the review reader | a path lock, 10 s | `ToolError::Locked`, and the card says so |
 | `robi-api` | nothing of its own; it is not a window | — |
+
+`prune_excess_sessions` matches the `Conflict` rather than propagating it: one
+session in use must not abort startup for the rest, and the workspace is only one
+over its limit until a later start.
+
+`reconcile_turn_displays` is the rule this page learned the hard way. A session
+another process is driving must not be repaired underneath it, or startup writes
+`idle` over a running turn. So the `Turn` is taken *before* the read and a refusal
+skips the session. The owner writes its own display, and the next start repairs
+the row if the owner exited first.
+
+The walk is scoped by `turn_settled`, which the same write as `turn_display`
+stores: only a `pending` display, written while a turn runs, leaves a row for the
+next start to read. It used to read every session, and that read reached
+`fill_results` and opened each session's blob file; the second process then exited
+1 on the first session it did not own, reporting a corrupt database. The read is
+now `messages_without_results`, since every field the repair looks at is in the
+message body, so no blob file is opened and no handle is left behind.
 
 `delete_chat_session` is not cosmetic. Deleting runs `remove_session_plans` →
 `SessionBlobs::remove_session` (`adapters/session_plans.rs:69`,
 `session_blobs.rs:245`), which unlinks a directory another process may have open.
 The lease makes that ordering explicit instead of accidental.
 
-`robi-api` taking no `Open` is deliberate and is open decision **P1**: the API
-serves whatever session it is asked about and has no window, so it cannot know
-what a GUI is displaying.
+`robi-api` takes no `Open` of its own, which is open decision **P1**: the API
+serves whatever session is asked for and has no window, so it cannot know what a
+GUI is displaying. It inherits the transient `Open` inside `list_messages`, so a
+shared database still gets the degraded transcript rather than a raw `redb`
+refusal.
+
+**Known gap: originals and images.** Those reads go straight to `SessionBlobs`
+and take no lease, so a second process asking for one gets `redb`'s own
+`DatabaseAlreadyOpen` rather than a sentence naming the pid. Both are only reached
+from an expanded card in a session the other process has, so the honest fix is to
+give `BlobImageStore` and `BlobOriginals` the `Locks` handle and take `Open` the
+way `list_messages` does. Not done here.
 
 ### The degraded transcript
 
@@ -170,50 +214,78 @@ subagent snapshot all stay in the row.
 So a read that cannot take `Open` renders user and assistant text plus one line
 per tool call, its result replaced by `open in another process (pid 1234)`. No
 schema change and no second open. The uncontended case is unchanged: taking an
-unheld `Open` is immediate, so the normal path is take, read, and hold until the
-session leaves the screen.
+unheld `Open` is immediate.
 
-`SessionLeases::holder(session)` reads the pid without taking the lock, for that
-line and for the refusal message.
+That read goes through `MessageStore::messages_without_results`, a defaulted trait
+method: `SqliteMessageStore` overrides it to skip `fill`, and every other store is
+right to inherit `messages` because it keeps results inline.
+
+`Locks::holder(resource)` reads the pid without taking the lock, for that line and
+for the refusal message.
+
+### Where a refusal surfaces
+
+Two surfaces in the terminal, and they mean different things.
+`Status::set_error` is for a fact about the process — a failed probe, an
+`APP_ERROR` frame. `Notice` is for the last thing the reader asked for, and it
+sits in the footer next to the composer.
+
+| Refusal | Surfaces as |
+|---|---|
+| `submit` / `decide` / delete hits a held `Turn` | footer notice *and* the strip: both `that chat is open in another process (pid 4812)`, with the draft left in the composer |
+| a tool times out on a path lock | the tool card, and the strip once per call, both `src/lib.rs is held by another process (turn 4812)` |
+| a session is `Open` elsewhere | one footer notice on selection, and the card line above |
+
+`ServiceError::user_message` drops the `Conflict: ` prefix on the way to the
+footer, so the sentence reads as prose rather than as a display impl.
+
+The path-lock refusal is typed rather than matched by text. `ToolError::Locked`
+is a variant whose `kind()` is `"locked"`, so the TUI reads the same field the
+model does and the payload the model receives is one it can branch on: wait and
+retry, or choose another file. No app-level error event is published for it: the
+tool result is already on screen in both front ends, and a global banner for one
+contended file would be louder than the event warrants.
 
 ### The image index
 
-`image-index.redb` is the one `redb` file no session owns, and
-`SessionBlobs::get_image` (`:212`) only has an image id. Two processes on two
-*different* sessions that both contain images would collide on a file neither
-session lease protects.
+`image-index.redb` was the one `redb` file no session owned: it mapped an image id
+to a session id, so two processes on two *different* sessions that both contained
+images could collide on a file no session lease covered. It is also why the file
+had to be held open for the whole process life, which is the exclusion this page
+removes.
 
-The pointer moves to SQLite. `chat_image_index(image_id, chat_session_id)` holds
-only the mapping, so a lookup is an ordinary WAL query, and the bytes are then
-read from that session's `redb` under that session's lease.
+It is deleted, and the pointer moves nowhere: `images` and `image_types` are
+already keyed by image id *inside* `sessions/<id>/blobs.redb`, so the session file
+is its own index. The map existed only because the read had no session id, and
+every caller has one — `Message`'s `images` list, or the route's path.
 
-```sql
-CREATE TABLE chat_image_index (
-    image_id        TEXT PRIMARY KEY NOT NULL,
-    chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_chat_image_index_session ON chat_image_index(chat_session_id);
+So the ports take the session:
+
+```rust
+async fn image(&self, session: SessionId, id: &str)
+    -> Result<Option<(String, Vec<u8>)>, ProviderError>;
+
+async fn store(&self, session: SessionId, id: &str, media_type: &str, bytes: Vec<u8>)
+    -> Result<(), ProviderError>;
 ```
 
-The foreign key is the point, not decoration: `foreign_keys` is already on
-(`adapters/sqlite/mod.rs`), so deleting a chat session removes its pointers with
-the row, and `SessionBlobs::forget_images` (`:260`) plus the `IMAGE_INDEX` table
-(`:25`) are deleted rather than ported.
+Both are in `agent/providers/images.rs`. `SessionBlobs::get_image` takes the
+session and stops looking anything up; `put_image` loses its second write;
+`IMAGE_INDEX`, `Inner::image_index`, `image_index()` and `forget_images` are
+deleted. `SessionBlobs::remove_session` already unlinks the directory, so cleanup
+needs nothing new.
 
-Ownership follows the same split as the rest of the page. Pointers belong to
-`BlobImageStore` — the adapter that already holds a pool and a `SessionBlobs` —
-not to `SessionBlobs`, which keeps no `SqlitePool` by design. So
-`BlobImageStore::image` resolves the id to a session, then calls a
-`SessionBlobs::get_image(session, id)` that no longer looks anything up, and
-`BlobImageStore::store` writes the row beside the bytes in one step.
+A pleasant consequence: an image id belonging to another chat now reads as
+missing rather than resolving. The route used to discard the session with
+`let _ = session;` and a comment saying no check was needed.
 
 **This breaks old images.** See *Compatibility*.
 
 ## Compatibility
 
 Robi is used experimentally, so this page takes the break instead of writing a
-migration. There is no shim for `image-index.redb`, no backfill of
-`chat_image_index`, and no compatibility reader.
+migration. There is no shim for `image-index.redb`, no import, and no
+compatibility reader.
 
 What breaks, precisely:
 
@@ -223,57 +295,75 @@ What breaks, precisely:
 | Tool results and tool originals in those sessions | **Still work.** They are keyed by `{message_id}/{tool_call_id}` and `originals_by_sha` *inside* the per-session file, so nothing about them depends on the global index. |
 | Transcripts, titles, settings, workspaces | Unaffected. |
 
-Two ways to clean up, either fine: leave `~/.robi/sessions/image-index.redb` on
-disk inert, or delete it on the first start after this lands (decision **P6**).
-Do **not** `rm -rf ~/.robi/sessions` to tidy up — that discards tool results for
-every existing chat, which this change does not require.
+`~/.robi/sessions/image-index.redb` is left inert on disk (decision **P6**).
+Nothing reads or writes it, and deleting it by hand is harmless. Do **not**
+`rm -rf ~/.robi/sessions` to tidy up — that discards tool results for every
+existing chat, which this change does not require.
 
-`chat_image_index` is the only schema change on this page. The lease adds no
-table — it is a file per session — so nothing else here needs a migration, and
-this policy is not a licence to drop unrelated tables.
+No schema change: the lease is a file per session, and the image pointer is the
+session file itself.
 
 ## Interfaces
 
 ```rust
-// domain/chat_session/lease.rs — declared here, implemented in `adapters`.
-#[async_trait]
-pub trait SessionLeases: Send + Sync {
-    /// Take or refcount the lease. `Held` names the other process.
-    async fn acquire(&self, session: SessionId, scope: LeaseScope)
-        -> Result<LeaseGuard, LeaseError>;
-
-    /// The current holder, without taking anything. For the notice and the
-    /// refusal message.
-    async fn holder(&self, session: SessionId) -> Option<LeaseHolder>;
+// domain/chat_session/lease.rs — declared here, implemented in `adapters/locks.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Resource {
+    Session(SessionId),
+    Path(PathBuf),
+    Startup,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaseScope { Open, Turn }
+pub enum Scope { Open, Turn }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaseHolder { pub pid: u32, pub scope: LeaseScope }
+/// Whether to wait for a held lock. `None` for ownership, `UpTo` for an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait { None, UpTo(Duration) }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LeaseError {
-    Held(LeaseHolder),
-    Io(String),
+pub struct LeaseHolder { pub pid: u32, pub scope: Scope }
+pub enum LeaseError { Held { resource: String, holder: LeaseHolder }, Io(String) }
+
+pub trait Locks: Send + Sync {
+    fn try_acquire(&self, resource: &Resource, scope: Scope) -> Result<LeaseGuard, LeaseError>;
+    fn holder(&self, resource: &Resource) -> Option<LeaseHolder>;
 }
 
-/// Dropping it releases one reference. The last reference closes the `redb`
-/// handle and unlocks the file.
-pub struct LeaseGuard { /* ... */ }
+/// Take the lock, sleeping on the runtime rather than the thread.
+pub async fn acquire_waiting(
+    locks: &dyn Locks,
+    resource: &Resource,
+    scope: Scope,
+    wait: Wait,
+) -> Result<LeaseGuard, LeaseError>;
 
-// adapters/session_blobs.rs — new
+/// `~/.robi/locks/<relative>`; `path_key` hashes the absolute path.
+pub fn lock_path(settings_dir: &Path, resource: &Resource) -> PathBuf;
+
+// adapters/session_blobs.rs
 impl SessionBlobs {
     /// Drop the cached handle without touching the directory.
     pub fn close_session(&self, session: SessionId) -> Result<(), String>;
 }
 ```
 
-`bootstrap::build_app_state` builds one `Arc<dyn SessionLeases>` and hands it to
-`ChatMessageService` (the `Turn` checks and the best-effort `Open`), to
-`SerializedChatRuntime` (the paused-turn rule), and to the front ends, which take
-`Open` on the session they display.
+`Locks` is sync because `SessionBlobs` is sync and calls it from
+`spawn_blocking`; the waiting loop is async and sits beside it. `LeaseError::conflict`
+is the one place a refusal becomes `ServiceError::Conflict`, so the TUI footer and
+the 409 body are the same sentence. `MemoryLocks` grants everything and is what a
+test passes; `FileLocks` is the real one.
+
+`adapters::locks::FileLocks` holds `Mutex<HashMap<Resource, Entry>>` for the
+in-process refcount, one `Arc<File>` per held resource, and a release hook the
+composition root supplies, so the last drop calls `SessionBlobs::close_session`
+before the kernel unlocks the file.
+
+`bootstrap::build_app_state` builds one `Arc<dyn Locks>` and hands it to
+`ChatSessionService` (delete, prune, reconcile), to `ChatMessageService` (the
+best-effort `Open`), to `SerializedChatRuntime` (the `Turn` and the paused-turn
+rule), to `web_api::AppState`, to the TUI, and to `path_lock::init` for the edit
+tools.
 
 ## Rejected alternatives
 
@@ -309,8 +399,11 @@ impl SessionBlobs {
   process acquires. No cleanup, no zombie lease.
 - **You submit to a session another process has open.** `Conflict` naming the pid.
   The draft survives; the send is refused.
-- **You read a session another process has open.** It renders from the row, with
-  tool results marked `open in another process`. No error.
+- **You read a session another process has open.** It renders from the chat
+  database, with each tool result replaced by `open in another process (pid N)`.
+  No error, and one footer notice when the session is selected. Opening such a
+  card's original output, or an image in it, reports `redb`'s refusal instead: see
+  *Known gap*.
 - **You delete a session another process has open.** Refused, before the unlink.
 - **Another process tries to resume your paused turn.** Refused: the paused turn
   keeps `Turn` until it is resolved or the process exits.
@@ -339,41 +432,43 @@ impl SessionBlobs {
   pointer that resolved it was in the file this change deletes. Tool results in
   the same chat still render.
 - **A restart reconciles turn display.** `ChatSessionService::reconcile_turn_displays`
-  can flip a turn another process is running to `idle`. Display only; the owning
-  actor rewrites it.
+  repairs a session left `pending`, and skips one another process holds. Display
+  only; the owning actor rewrites it.
 
 ## Build order
 
-1. `domain` lease trait, `adapters` file implementation, in-process refcount, and
-   the tests. No caller changes and no behaviour change.
-2. `SessionBlobs::close_session`, and the invariant applied where a session is
-   displayed: the terminal shell's open session first, then the desktop window.
-3. `Turn` in `SerializedChatRuntime` including the paused-turn rule, and
-   `delete_chat_session` ordered behind the lease.
-4. `chat_image_index` and `BlobImageStore` owning the pointer; delete the
-   `IMAGE_INDEX` table and `forget_images`. No migration — see *Compatibility*.
-5. The degraded transcript and the `open in pid N` line.
-6. `path_lock` if concurrent edits matter.
+All six steps are in. Each landed with its tests and its page.
+
+1. `domain/chat_session/lease.rs` + `adapters/locks.rs`: the resources, the
+   refcount, the holder line, the path hash, the startup prune, the filesystem
+   probe, and the bounded wait.
+2. `SessionBlobs::close_session` and the release hook in bootstrap, so the
+   handle's lifetime is the lock's.
+3. `Turn` in `SerializedChatRuntime` including the paused-turn rule;
+   `delete_chat_session` and prune behind it; `reconcile_turn_displays` taking
+   `Turn` per session and skipping what it cannot take. This is the step that
+   stopped a second process failing at boot.
+4. The global image index deleted and `BlobImageStore` reading through the
+   session file.
+5. The degraded transcript and the `open in another process (pid N)` line.
+6. `path_lock` across processes, with `ToolError::Locked`.
 
 ## Documentation
 
-This page is the decision; the pages that describe today's code are updated when
-the step that changes the code lands, per the *write what the code does* rule.
-Pending:
-
-| Page | Step | Change |
-|---|---|---|
-| [persistence.md](../persistence/persistence.md) | 4 | The `image-index.redb` paragraph becomes the `chat_image_index` table and the foreign key. |
-| [file-locations.md](../../reference/file-locations.md) | 4 | Drop the `~/.robi/sessions/image-index.redb` row. |
-| [tui.md](tui.md) | 2 | Its *one front end at a time* rule becomes the lease. |
-| [file-locations.md](../../reference/file-locations.md) | 1 | Add `~/.robi/leases/<session_id>.lock`. |
+| Page | Change |
+|---|---|
+| [persistence.md](../persistence/persistence.md) | The session file is the image index; no shared `image-index.redb`. |
+| [file-locations.md](../../reference/file-locations.md) | The `locks/` tree replaces `image-index.redb`. |
+| [tui.md](tui.md) | The one-front-end rule is gone; a refusal surfaces as a notice and a card line. |
+| [terminal.md](../../guides/terminal.md) | *Two terminals*, in place of *One at a time*. |
+| [AGENTS.md](../../../../AGENTS.md) | The command table no longer says one at a time. |
 
 ## Open decisions
 
 | # | Decision | Notes |
 |---|---|---|
 | P1 | Does `robi-api` take `Open`? | No: it serves whatever session it is asked about. The GUI therefore gets turn-level protection only until a client id or a "viewing" call exists. |
-| P2 | Where the lock file lives | `~/.robi/leases/<id>.lock`, not inside `sessions/<id>/`, so a session that stores nothing grows no blob directory and a delete never unlinks a held file. |
+| P2 | Where the lock file lives | `~/.robi/locks/sessions/<id>.lock`, not inside `sessions/<id>/`, so a session that stores nothing grows no blob directory and a delete never unlinks a held file. |
 | P3 | Does the refusal name the scope? | The file records it; the user-facing sentence is the same either way, because a user does not distinguish `Open` from `Turn`. |
 | P4 | May a second process steal an idle lease? | No. Stealing needs liveness detection, which holding the file already gives. |
 | P5 | Two views of one session inside **one** process? | Nothing to do: one owner, so tabs and splits need no lease at all. |
@@ -382,8 +477,7 @@ Pending:
 ## Relationship to the terminal shell
 
 [tui.md](tui.md) assumed a whole-database lock and called a second front end "a
-documented hazard". Under this page the terminal takes `Open` on the session it
-displays and `Turn` through the runtime, and the hazard becomes a `Conflict` with
-a pid in it. The lease module is therefore needed earlier than the rest of this
-page: a terminal that cannot read its own transcript is not a skeleton worth
-shipping.
+documented hazard". The terminal now takes `Open` on the session it displays and
+`Turn` through the runtime, and the hazard is a `Conflict` with a pid in it, or a
+transcript whose tool results say which process has them. `~/.robi/tui.lock` is
+deleted with the code that took it.

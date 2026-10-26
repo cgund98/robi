@@ -25,6 +25,21 @@ pub enum ServiceError {
     Unknown,
 }
 
+impl ServiceError {
+    /// The sentence to put in front of a person.
+    ///
+    /// `Display` carries the kind, which is right in a log and wrong in the
+    /// terminal footer: `Conflict: that chat is open in another process (pid
+    /// 4812)` reads as a stack trace. A conflict's own message is already a
+    /// sentence, so it is returned as written.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Conflict(message) => message.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl From<crate::agent::providers::ProviderError> for ServiceError {
     fn from(error: crate::agent::providers::ProviderError) -> Self {
         // The HTTP body stays the fixed Unknown sentence. The detail has to be

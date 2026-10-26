@@ -375,6 +375,7 @@ mod tests {
             "sqlite:///tmp/other.db",
             std::path::PathBuf::from("/tmp"),
             crate::tui::state::landing::Greeting::Morning,
+            testing::memory_locks(),
         );
         app.resize(80, 24);
         let frame = testing::screen(&app, 80, 24);

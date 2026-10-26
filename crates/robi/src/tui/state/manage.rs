@@ -56,6 +56,11 @@ impl ManageView {
         self.filter.input(*key);
     }
 
+    /// Insert pasted text. The filter is one line, so a break is a space.
+    pub fn insert_text(&mut self, text: &str) {
+        self.filter.insert_str(text);
+    }
+
     /// Move the selection within `rows`, clamped.
     pub fn select(&mut self, delta: isize, rows: usize) {
         if rows == 0 {

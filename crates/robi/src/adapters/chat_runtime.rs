@@ -25,6 +25,7 @@ use crate::{
     domain::{
         chat_message::runtime::{ChatRuntime, SubmitOutcome},
         chat_session::{
+            lease::{LeaseGuard, Locks, Resource, Scope},
             model::{AgentMode, ModeOverride, TurnDisplay},
             service::ChatSessionService,
         },
@@ -47,6 +48,9 @@ pub struct AgentFactory {
     pub config: LoopConfig,
     /// Chat session rows. Absent in tests that do not name sessions.
     pub sessions: Option<Arc<ChatSessionService>>,
+    /// Cross-process ownership. A turn cannot start on a session another process
+    /// is driving.
+    pub locks: Arc<dyn Locks>,
     /// Baselines for files this session changes. Required when `sessions` is set.
     pub file_changes: Option<Arc<dyn FileChangeRepository>>,
     /// Brave, or a fake in tests. `web_search` calls this.
@@ -268,6 +272,13 @@ struct Slot {
     running: bool,
     /// Bumped each time an actor is started, so stop waits for that actor only.
     generation: u64,
+    /// The `Turn` lease this process holds on the session.
+    ///
+    /// Taken before an actor starts and kept after it goes idle when the turn
+    /// paused for approval: releasing there would let another process resume a
+    /// call this one is still showing as pending. Dropping it releases one
+    /// reference, and the last reference closes the session's `redb` handle.
+    lease: Option<LeaseGuard>,
 }
 
 struct Slots {
@@ -291,6 +302,27 @@ impl SerializedChatRuntime {
                 idle: Notify::new(),
             }),
         }
+    }
+
+    /// Take the `Turn` lease for a session this process is about to drive.
+    ///
+    /// No wait: the holder is mid-turn, so a refusal that is already decided
+    /// should not be delayed by ten seconds first. Refcounting happens inside the
+    /// adapter, so a slot that already holds it is the same owner.
+    fn take_turn(&self, slot: &mut Slot, session: SessionId) -> Result<(), ServiceError> {
+        if slot.lease.is_some() {
+            return Ok(());
+        }
+        let guard = self
+            .factory
+            .locks
+            .try_acquire(&Resource::Session(session), Scope::Turn)
+            .map_err(|error| {
+                tracing::info!(%session, refusal = %error, "turn refused: another process owns the chat");
+                error.conflict()
+            })?;
+        slot.lease = Some(guard);
+        Ok(())
     }
 
     fn spawn_actor(&self, session: SessionId, actor: Actor, max_iterations: u32) {
@@ -325,6 +357,7 @@ impl SerializedChatRuntime {
             replace_pending(slot, session, instruction, images, files);
             return Ok(SubmitOutcome::Accepted);
         }
+        self.take_turn(slot, session)?;
         slot.running = true;
         slot.generation += 1;
         slot.pending = Some(Work::Instruction {
@@ -351,6 +384,7 @@ impl SerializedChatRuntime {
             tracing::warn!(%session, "decision refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
+        self.take_turn(slot, session)?;
         slot.running = true;
         slot.generation += 1;
         slot.pending = Some(Work::Decision { call, reject });
@@ -367,6 +401,7 @@ impl SerializedChatRuntime {
             tracing::warn!(%session, "compaction refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
+        self.take_turn(slot, session)?;
         slot.running = true;
         slot.generation += 1;
         slot.pending = Some(Work::Compact);
@@ -591,6 +626,39 @@ impl ChatRuntime for SerializedChatRuntime {
     }
 }
 
+/// Release the `Turn` lease unless the transcript still has an unfinished call.
+///
+/// A paused turn keeps it. The actor goes idle when a turn pauses for approval,
+/// so releasing here would let a second process resume a call this one is still
+/// showing as pending. `unresolved_turn` is the same test the loop uses to decide
+/// whether a transcript is mid-turn, so the two cannot drift.
+async fn settle_lease(store: &Arc<dyn MessageStore>, slots: &Arc<Slots>, session: SessionId) {
+    let paused = match store.messages(session).await {
+        Ok(messages) => robi_core::message::unresolved_turn(&messages).is_some(),
+        Err(err) => {
+            // Cannot tell, so do not hoard the session: the next start reconciles
+            // the display, and a wrong release is recoverable where a held lock
+            // the user cannot see is not.
+            tracing::warn!(%session, %err, "could not read the transcript to settle the lease");
+            false
+        }
+    };
+    if paused {
+        tracing::info!(%session, "keeping the session lease: the turn is paused");
+        return;
+    }
+    let mut guard = slots.map.lock().await;
+    if let Some(slot) = guard.get_mut(&session) {
+        if slot.running {
+            // A new actor took the session between the notify and this lock.
+            return;
+        }
+        if slot.lease.take().is_some() {
+            tracing::info!(%session, "released the session lease");
+        }
+    }
+}
+
 async fn interrupt_if_running(
     slots: &Slots,
     session: SessionId,
@@ -701,6 +769,10 @@ async fn run_actor(
                         tracing::warn!(%session, %err, "failed to store turn display");
                     }
                 }
+                // Last, because it decides whether this process still owns the
+                // session, and the answer depends on the transcript the turn
+                // just wrote.
+                settle_lease(&store, &slots, session).await;
                 return;
             };
             let cancel = CancellationToken::new();
@@ -781,6 +853,9 @@ async fn run_actor(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::{
+        LeaseError, LeaseGuard, LeaseHolder, Locks, MemoryLocks, Resource, Scope,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -960,7 +1035,17 @@ mod tests {
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
     ) -> SerializedChatRuntime {
+        runtime_under(store, model, tools, Arc::new(MemoryLocks::new()))
+    }
+
+    fn runtime_under(
+        store: Arc<dyn MessageStore>,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+        locks: Arc<dyn Locks>,
+    ) -> SerializedChatRuntime {
         SerializedChatRuntime::new(AgentFactory {
+            locks,
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FixedModelSource::new(model)),
@@ -1338,11 +1423,190 @@ mod tests {
         }
     }
 
+    /// Answers with nothing. Enough for a refusal, which happens before any
+    /// delta would be read.
+    struct Silent;
+
+    /// Answers from a queue of finished messages, then repeats the last one.
+    struct Scripted(Mutex<Vec<Message>>);
+
+    #[async_trait]
+    impl Model for Scripted {
+        async fn generate(
+            &self,
+            _session: SessionId,
+            _transcript: &[Message],
+            _cancel: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            let message = {
+                let mut queue = self.0.lock().expect("script");
+                if queue.len() > 1 {
+                    queue.remove(0)
+                } else {
+                    queue[0].clone()
+                }
+            };
+            let (tx, rx) = mpsc::channel(1);
+            let stream = ModelStream::new(rx);
+            let mut message = message;
+            message.id = stream.message_id();
+            // `try_send`, not `send`: a `send` future that is dropped unawaited
+            // never puts anything on the channel, and this adapter answers at once.
+            let _ = tx.try_send(Delta::Finished(Box::new(message)));
+            Ok(stream)
+        }
+    }
+
+    #[async_trait]
+    impl Model for Silent {
+        async fn generate(
+            &self,
+            _session: SessionId,
+            _transcript: &[Message],
+            _cancel: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(ModelStream::new(rx))
+        }
+    }
+
+    /// Refuses one session and grants the rest, so a refusal needs no second
+    /// process to produce.
+    struct HeldByAnother {
+        session: SessionId,
+    }
+
+    impl Locks for HeldByAnother {
+        fn try_acquire(&self, resource: &Resource, scope: Scope) -> Result<LeaseGuard, LeaseError> {
+            if *resource == Resource::Session(self.session) {
+                return Err(LeaseError::held(resource, LeaseHolder::new(4812, scope)));
+            }
+            Ok(LeaseGuard::noop())
+        }
+
+        fn holder(&self, resource: &Resource) -> Option<LeaseHolder> {
+            (*resource == Resource::Session(self.session))
+                .then(|| LeaseHolder::new(4812, Scope::Turn))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_on_a_session_another_process_drives_is_a_conflict() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let runtime = runtime_under(
+            store.clone(),
+            Arc::new(Silent),
+            Arc::new(ToolRegistry::new()),
+            Arc::new(HeldByAnother { session }),
+        );
+
+        let error = runtime
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
+            .await
+            .expect_err("another process owns the chat");
+        let ServiceError::Conflict(message) = error else {
+            panic!("a held session is a conflict, got {error:?}");
+        };
+        assert!(
+            message.contains("4812"),
+            "the refusal names the holder: {message}"
+        );
+        assert!(
+            runtime.running_session_ids().await.is_empty(),
+            "a refused turn starts no actor"
+        );
+    }
+
+    /// A paused turn keeps its lease, which is what stops a second process
+    /// resuming a call this one is still offering to the user.
+    ///
+    /// Two real `FileLocks` over one temp directory rather than a double, so the
+    /// assertion is the one the operating system makes.
+    #[tokio::test]
+    async fn a_paused_turn_keeps_its_lease_until_the_call_is_answered() {
+        let home = std::env::temp_dir().join(format!(
+            "robi-runtime-lease-{}",
+            uuid::Uuid::now_v7().simple()
+        ));
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let tools = ToolRegistry::new();
+        tools
+            .register(Arc::new(GateTool {
+                name: "shell",
+                decision: ApprovalDecision::NeedsApproval,
+            }))
+            .unwrap();
+        // One call that needs a decision, then a plain finish for the resume.
+        let model = Arc::new(Scripted(Mutex::new(vec![
+            Message::assistant_with_tool_calls(
+                "run",
+                vec![ToolCall::new("shell", serde_json::json!({}))],
+            ),
+            Message::assistant("done"),
+        ])));
+        let runtime = runtime_under(
+            store.clone(),
+            model,
+            Arc::new(tools),
+            Arc::new(crate::adapters::locks::FileLocks::new(
+                &home,
+                "sqlite://runtime.db",
+            )),
+        );
+        // A second process, in effect: the same files, no shared refcount.
+        let other = crate::adapters::locks::FileLocks::new(&home, "sqlite://runtime.db");
+        let resource = Resource::Session(session);
+
+        runtime
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
+            .await
+            .expect("the turn starts");
+        let paused = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let messages = store.messages(session).await.unwrap();
+
+                if let Some(index) = robi_core::message::unresolved_turn(&messages) {
+                    if runtime.running_session_ids().await.is_empty() {
+                        return messages[index].tool_calls[0].id;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the turn paused for approval");
+
+        assert!(
+            other.try_acquire(&resource, Scope::Turn).is_err(),
+            "a paused turn still owns the session"
+        );
+
+        // Answering the call lets the turn finish, and the lease goes with it.
+        runtime
+            .decide(session, paused, Some("no".into()))
+            .await
+            .expect("the decision lands");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if other.try_acquire(&resource, Scope::Turn).is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a finished turn releases the session");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test]
     async fn a_model_that_cannot_be_built_does_not_mark_the_session_running() {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let runtime = SerializedChatRuntime::new(AgentFactory {
+            locks: Arc::new(MemoryLocks::new()),
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FailSource),
@@ -1440,6 +1704,7 @@ mod tests {
             ..ModelConfig::default()
         };
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
@@ -1447,6 +1712,7 @@ mod tests {
         });
         let seen = Arc::new(Mutex::new(None));
         let runtime = SerializedChatRuntime::new(AgentFactory {
+            locks: Arc::new(MemoryLocks::new()),
             store,
             events: Arc::new(NopSink),
             models: Arc::new(ChoiceSource {
@@ -1487,6 +1753,7 @@ mod tests {
         bus: Arc<EventBus>,
     ) -> SerializedChatRuntime {
         SerializedChatRuntime::new(AgentFactory {
+            locks: Arc::new(MemoryLocks::new()),
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FixedModelSource::new(model)),
@@ -1528,6 +1795,7 @@ mod tests {
         let session = store.create_session(WorkspaceId::new());
         let bus = Arc::new(EventBus::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: Some(Arc::clone(&bus)),
@@ -1609,6 +1877,7 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::named(session, "Kept")),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
@@ -1661,6 +1930,7 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
@@ -1721,6 +1991,7 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let mut subscription = bus.subscribe();
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
@@ -1775,6 +2046,7 @@ mod tests {
             .await
             .unwrap();
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
@@ -1824,6 +2096,7 @@ mod tests {
             .await
             .unwrap();
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
@@ -1914,6 +2187,10 @@ mod tests {
             &self,
             _workspace_id: Option<WorkspaceId>,
         ) -> Result<Vec<ChatSession>, ServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
             Ok(Vec::new())
         }
 

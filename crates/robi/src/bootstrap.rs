@@ -25,6 +25,7 @@ use crate::{
         chat_runtime::{AgentFactory, SerializedChatRuntime},
         chat_session::repo::SqliteChatSessionRepository,
         file_change::repo::SqliteFileChangeRepository,
+        locks::{self, FileLocks},
         model_source::SettingsModelSource,
         originals::BlobOriginals,
         session_blobs::{evacuate_sqlite, SessionBlobs},
@@ -38,7 +39,10 @@ use crate::{
     agent::{compress::OriginalStore, mcp::McpHub, web::BraveSearch},
     domain::{
         chat_message::service::ChatMessageService,
-        chat_session::service::ChatSessionService,
+        chat_session::{
+            lease::{acquire_waiting, Locks, Resource, Scope, Wait},
+            service::ChatSessionService,
+        },
         events::{BusEventSink, EventBus},
         file_change::repo::FileChangeRepository,
         settings::{store::SettingsStore, SettingsService},
@@ -56,25 +60,33 @@ pub const DEFAULT_PORT: u16 = 1431;
 /// has to open the same database, so the two agree on it here.
 pub const DESKTOP_IDENTIFIER: &str = "com.github.cgund98.robi";
 
-/// The database URL `robi-tui` uses when `ROBI_DATABASE_URL` is unset.
+/// The database URL `robi` uses when `ROBI_DATABASE_URL` is unset.
 ///
 /// This mirrors `src-tauri/src/lib.rs::database_url`, which is the
 /// authoritative version: it asks Tauri for `app_data_dir()` and appends `dev`
 /// when `is_dev()`. The terminal cannot call that (nothing depends on
-/// `src-tauri`), so it repeats the rule. A terminal started from a source
-/// checkout is a development build, so it opens the **dev** database, the same
-/// one `pnpm tauri dev` uses.
+/// `src-tauri`), so it repeats the rule, and the condition with it: a debug
+/// build is a development build, so it opens the **dev** database, the same one
+/// `pnpm tauri dev` uses. A release build opens the app's own database, because
+/// a downloaded binary that wrote a second one beside it would show an empty
+/// session list.
 ///
 /// `None` when the platform data directory cannot be resolved, and the caller
 /// falls back to a path relative to the working directory.
-pub fn desktop_dev_database_url() -> Option<String> {
-    Some(desktop_dev_database_url_in(&data_dir()?))
+pub fn desktop_database_url() -> Option<String> {
+    Some(desktop_database_url_in(
+        &data_dir()?,
+        cfg!(debug_assertions),
+    ))
 }
 
 /// The URL for one platform data directory. Separated from [`data_dir`] so the
 /// rule is a unit test rather than an environment variable.
-fn desktop_dev_database_url_in(data_dir: &std::path::Path) -> String {
-    let dir = data_dir.join(DESKTOP_IDENTIFIER).join("dev");
+fn desktop_database_url_in(data_dir: &std::path::Path, dev: bool) -> String {
+    let mut dir = data_dir.join(DESKTOP_IDENTIFIER);
+    if dev {
+        dir.push("dev");
+    }
     sqlite_url(&dir.join("robi.db"))
 }
 
@@ -145,6 +157,10 @@ pub enum BootstrapError {
 
     #[error("failed to move session blobs out of sqlite: {0}")]
     Blobs(String),
+
+    /// A lock another process holds, or a lock file that could not be written.
+    #[error("{0}")]
+    Lease(#[from] crate::domain::chat_session::lease::LeaseError),
 }
 
 /// Parse `ROBI_BIND`. The address must be loopback.
@@ -160,6 +176,52 @@ pub fn parse_bind(raw: &str) -> Result<SocketAddr, String> {
 
 /// Wire the pool, settings, tools, and chat runtime.
 pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapError> {
+    // The blob store first, because the lock adapter needs it: releasing a
+    // session's lock closes that session's `redb` handle, and the handle has to
+    // close before the lock frees.
+    let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
+    let close = blobs.clone();
+    let locks = Arc::new(
+        FileLocks::new(&config.settings_dir, &config.database_url).with_release(Box::new(
+            move |resource| {
+                if let Resource::Session(session) = resource {
+                    if let Err(err) = close.close_session(*session) {
+                        tracing::warn!(%session, %err, "failed to close a session's blob file");
+                    }
+                }
+            },
+        )),
+    );
+
+    // A filesystem whose locking is a local no-op is the one way this design can
+    // corrupt data. Warn rather than refuse: it is a misconfiguration to fix, not
+    // a reason the user cannot open their own editor.
+    if let Err(reason) = locks.probe() {
+        tracing::warn!(%reason, "file locks are not enforced on this filesystem");
+    }
+    // The edit tools serialize a read-modify-write against a path across
+    // processes. They have no settings directory of their own, so the adapter
+    // arrives through this one call. Absent when no feature compiled them in.
+    #[cfg(any(feature = "edit-tools", feature = "docs-viewer", feature = "review"))]
+    crate::agent::tools::path_lock::init(Arc::clone(&locks) as Arc<dyn Locks>);
+
+    let pruned = locks.prune_path_locks(locks::PATH_LOCK_MAX_AGE);
+    if pruned > 0 {
+        tracing::info!(pruned, "removed stale path lock files");
+    }
+
+    // Everything below runs before a front end exists, and two processes starting
+    // together would otherwise race the migrations, the blob evacuation, and the
+    // prune. This serialises starting, not running: a process already mid-turn is
+    // handled per session further down.
+    let _startup = acquire_waiting(
+        locks.as_ref(),
+        &Resource::Startup,
+        Scope::Turn,
+        Wait::edit(),
+    )
+    .await?;
+
     let pool = Arc::new(sqlite::init_pool(&config.database_url).await?);
     tracing::info!("opened the database");
     let settings_store = Arc::new(TomlSettingsStore::load(&config.settings_dir)?);
@@ -175,7 +237,6 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     let tools = Arc::new(ToolRegistry::new());
     let event_bus = Arc::new(EventBus::new());
     let index_assets = Arc::new(WorkspaceIndexAssets::new(config.settings_dir.clone()));
-    let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
     evacuate_sqlite(&pool, &blobs)
         .await
         .map_err(BootstrapError::Blobs)?;
@@ -189,6 +250,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         workspaces: workspaces.clone(),
         events: Some(Arc::clone(&event_bus)),
         session_cleaner: Some(Arc::new(SessionCleanup::new(blobs))),
+        locks: Arc::clone(&locks) as Arc<dyn Locks>,
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
@@ -199,6 +261,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     ));
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
+        locks: Arc::clone(&locks) as Arc<dyn Locks>,
         events: Arc::new(BusEventSink::new(Arc::clone(&event_bus))),
         models: Arc::new(SettingsModelSource::new(
             Arc::clone(&settings),
@@ -221,10 +284,16 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     if removed > 0 {
         tracing::info!(removed, "pruned chat sessions");
     }
-    chat_session_service
+    let skipped = chat_session_service
         .reconcile_turn_displays(store.as_ref())
         .await
         .map_err(|err| BootstrapError::Prune(err.to_string()))?;
+    if skipped > 0 {
+        tracing::info!(
+            skipped,
+            "left turn display alone for sessions another process holds"
+        );
+    }
     // Removes a sandbox container that nothing has run in for a while. On the
     // runtime that serves the API, so it ends with the process.
     crate::agent::sandbox::container::reaper::spawn();
@@ -238,6 +307,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
             sessions: chat_session_service,
             runtime,
             store,
+            locks: Arc::clone(&locks) as Arc<dyn Locks>,
         }),
         settings_service,
         event_bus,
@@ -246,6 +316,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         originals,
         image_source,
         docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+        locks: Arc::clone(&locks) as Arc<dyn Locks>,
     })
 }
 
@@ -260,7 +331,7 @@ pub fn router(state: AppState) -> Router {
 /// A running API server: where it listens, and how to stop it.
 ///
 /// The desktop app holds one so it can shut the server down, and with it the
-/// sandbox containers, before the process exits. `robi-api` and `robi-tui` own
+/// sandbox containers, before the process exits. `robi-api` and `robi` own
 /// the runtime themselves and do not need it.
 pub struct ApiServer {
     addr: SocketAddr,
@@ -524,10 +595,10 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_opens_the_database_tauri_dev_opens() {
+    fn a_debug_build_opens_the_database_tauri_dev_opens() {
         // `pnpm tauri dev` resolves this itself through Tauri's `app_data_dir`.
         // If that path moves, this test and the terminal are both wrong.
-        let url = desktop_dev_database_url_in(std::path::Path::new("/data"));
+        let url = desktop_database_url_in(std::path::Path::new("/data"), true);
         assert_eq!(
             url, "sqlite:///data/com.github.cgund98.robi/dev/robi.db?mode=rwc",
             "the identifier and the `dev` subdirectory are the whole rule"
@@ -535,12 +606,24 @@ mod tests {
     }
 
     #[test]
+    fn a_release_build_opens_the_apps_own_database() {
+        // A downloaded binary that opened `dev/` would create a second database
+        // beside the one the installed app reads, and show it empty.
+        let url = desktop_database_url_in(std::path::Path::new("/data"), false);
+        assert_eq!(
+            url, "sqlite:///data/com.github.cgund98.robi/robi.db?mode=rwc",
+            "a release build is not a development build"
+        );
+    }
+
+    #[test]
     fn a_path_with_a_space_needs_no_encoding() {
         // The macOS app data directory has a space in it, and sqlx accepts the
         // URL as written.
-        let url = desktop_dev_database_url_in(std::path::Path::new(
-            "/Home/me/Library/Application Support",
-        ));
+        let url = desktop_database_url_in(
+            std::path::Path::new("/Home/me/Library/Application Support"),
+            true,
+        );
         assert_eq!(
             url,
             "sqlite:///Home/me/Library/Application Support/com.github.cgund98.robi/dev/robi.db?mode=rwc"
@@ -551,6 +634,6 @@ mod tests {
     fn this_platform_resolves_a_data_directory() {
         // The fallback to a working-directory path is for a broken environment,
         // not the normal case.
-        assert!(desktop_dev_database_url().is_some());
+        assert!(desktop_database_url().is_some());
     }
 }
