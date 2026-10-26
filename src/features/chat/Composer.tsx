@@ -1,5 +1,5 @@
 import { PaperClip } from '../../components/ui/icons'
-import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 
 import { modelDisplayName, type CatalogModel } from '../../api/models'
 import type { ChatMessage } from '../../api/messages'
@@ -25,8 +25,10 @@ import {
   readFileAttachment,
   type FileAttachment
 } from './textAttachments'
+import { clearComposerShortcut } from './composerShortcut'
 import { AttachmentChip } from './AttachmentChip'
 import { ChoiceMenu } from './ChoiceMenu'
+import { ClearComposerDialog } from './ClearComposerDialog'
 import { ContextMeter } from './ContextMeter'
 import { ModelEffortMenu } from './ModelEffortMenu'
 import { SkillMenu } from './SkillMenu'
@@ -109,6 +111,7 @@ export function Composer(props: {
   const [images, setImages] = createSignal<File[]>([])
   const [files, setFiles] = createSignal<FileAttachment[]>([])
   const [attachError, setAttachError] = createSignal<string | null>(null)
+  const [confirmingClear, setConfirmingClear] = createSignal(false)
   const [dragOver, setDragOver] = createSignal(false)
   let fieldRef: HTMLTextAreaElement | undefined
   let fileRef: HTMLInputElement | undefined
@@ -174,6 +177,40 @@ export function Composer(props: {
   const welcome = () => (props.placement ?? 'dock') === 'welcome'
   const attachmentCount = () => images().length + files().length
   const canSend = () => !props.disabled && (draft().trim().length > 0 || attachmentCount() > 0)
+  const hasContent = () => draft().length > 0 || attachmentCount() > 0
+
+  // The chord is scoped to a mounted composer, so the listener comes with the
+  // component. A key pressed inside an open dialog belongs to that dialog.
+  onMount(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!clearComposerShortcut(event) || !hasContent()) {
+        return
+      }
+      const target = event.target
+      if (target instanceof Element && target.closest('[role="dialog"]')) {
+        return
+      }
+      event.preventDefault()
+      setConfirmingClear(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    onCleanup(() => window.removeEventListener('keydown', onKeyDown))
+  })
+
+  function clearComposer() {
+    updateDraft('')
+    setImages([])
+    setFiles([])
+    setAttachError(null)
+    setCaret(0)
+    setConfirmingClear(false)
+    requestAnimationFrame(() => fieldRef?.focus())
+  }
+
+  function cancelClear() {
+    setConfirmingClear(false)
+    requestAnimationFrame(() => fieldRef?.focus())
+  }
 
   async function submit() {
     if (!canSend()) {
@@ -496,6 +533,12 @@ export function Composer(props: {
           <div class={styles.toolbar}>{controls()}</div>
         </Show>
       </div>
+      <ClearComposerDialog
+        open={confirmingClear()}
+        attachmentCount={attachmentCount()}
+        onCancel={cancelClear}
+        onClear={clearComposer}
+      />
     </div>
   )
 }

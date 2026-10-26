@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, TableDefinition};
 use robi_core::ids::{MessageId, SessionId};
 use robi_core::message::Message;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,6 @@ const ORIGINALS_BY_SHA: TableDefinition<&str, &str> = TableDefinition::new("orig
 const RESULTS: TableDefinition<&str, &str> = TableDefinition::new("results");
 const IMAGES: TableDefinition<&str, &[u8]> = TableDefinition::new("images");
 const IMAGE_TYPES: TableDefinition<&str, &str> = TableDefinition::new("image_types");
-const IMAGE_INDEX: TableDefinition<&str, &str> = TableDefinition::new("image_index");
 
 #[derive(Clone)]
 pub struct SessionBlobs {
@@ -32,7 +31,6 @@ pub struct SessionBlobs {
 struct Inner {
     root: PathBuf,
     dbs: Mutex<HashMap<String, Arc<Database>>>,
-    image_index: Mutex<Option<Arc<Database>>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,7 +47,6 @@ impl SessionBlobs {
             inner: Arc::new(Inner {
                 root: root.into(),
                 dbs: Mutex::new(HashMap::new()),
-                image_index: Mutex::new(None),
             }),
         }
     }
@@ -197,32 +194,21 @@ impl SessionBlobs {
             types.insert(id, media_type).map_err(redb_err)?;
         }
         write.commit().map_err(redb_err)?;
-        let index = self.image_index()?;
-        let write = index.begin_write().map_err(redb_err)?;
-        {
-            let mut table = write.open_table(IMAGE_INDEX).map_err(redb_err)?;
-            table
-                .insert(id, session.to_string().as_str())
-                .map_err(redb_err)?;
-        }
-        write.commit().map_err(redb_err)?;
         Ok(())
     }
 
-    pub fn get_image(&self, id: &str) -> Result<Option<(String, Vec<u8>)>, String> {
-        let index = self.image_index()?;
-        let session = {
-            let read = index.begin_read().map_err(redb_err)?;
-            let table = read.open_table(IMAGE_INDEX).map_err(redb_err)?;
-            match table.get(id).map_err(redb_err)? {
-                Some(session) => session.value().to_owned(),
-                None => return Ok(None),
-            }
-        };
-        let Ok(uuid) = session.parse::<uuid::Uuid>() else {
-            return Ok(None);
-        };
-        let session = SessionId::from_uuid(uuid);
+    /// The bytes for one image in one session.
+    ///
+    /// The session's own file is the index: `images` and `image_types` are keyed
+    /// by image id, so an id from another session simply misses. There used to be
+    /// a shared `image-index.redb` mapping id to session; it was the only `redb`
+    /// file no session owned, which is why two processes could collide on it and
+    /// no session lock covered it.
+    pub fn get_image(
+        &self,
+        session: SessionId,
+        id: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, String> {
         let Some(db) = self.session_db_if_present(session)? else {
             return Ok(None);
         };
@@ -241,53 +227,41 @@ impl SessionBlobs {
         )))
     }
 
-    /// Drop the session directory. The image index entries for it go too.
+    /// Drop the cached handle, keeping the directory.
+    ///
+    /// The invariant this serves: a session's `blobs.redb` is open only while
+    /// this process holds that session's lock. Releasing the lock closes the
+    /// handle first, so a second process can open the file the moment the lock
+    /// frees. `redb` takes a whole-file exclusive lock, so a leaked handle is a
+    /// refusal for the next process, not a leak of memory.
+    ///
+    /// The next read reopens the file. Nothing is deleted.
+    pub fn close_session(&self, session: SessionId) -> Result<(), String> {
+        self.inner
+            .dbs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session.to_string());
+        Ok(())
+    }
+
+    /// Drop the session directory.
+    ///
+    /// The images go with it: they live in the session's own file, so there is no
+    /// shared index to clean up after. One image id used to be resolvable from
+    /// anywhere through `~/.robi/sessions/image-index.redb`; that file is gone.
     pub fn remove_session(&self, session: SessionId) -> Result<(), String> {
         self.inner
             .dbs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session.to_string());
-        self.forget_images(session)?;
         let directory = self.inner.root.join(session.to_string());
         match std::fs::remove_dir_all(&directory) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(format!("remove {}: {err}", directory.display())),
         }
-    }
-
-    fn forget_images(&self, session: SessionId) -> Result<(), String> {
-        let index_path = self.inner.root.join("image-index.redb");
-        if !index_path.exists() {
-            return Ok(());
-        }
-        let index = self.image_index()?;
-        let session = session.to_string();
-        let read = index.begin_read().map_err(redb_err)?;
-        let ids: Vec<String> = {
-            let table = read.open_table(IMAGE_INDEX).map_err(redb_err)?;
-            let mut ids = Vec::new();
-            for item in table.iter().map_err(redb_err)? {
-                let (id, owner) = item.map_err(redb_err)?;
-                if owner.value() == session {
-                    ids.push(id.value().to_owned());
-                }
-            }
-            ids
-        };
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let write = index.begin_write().map_err(redb_err)?;
-        {
-            let mut table = write.open_table(IMAGE_INDEX).map_err(redb_err)?;
-            for id in &ids {
-                table.remove(id.as_str()).map_err(redb_err)?;
-            }
-        }
-        write.commit().map_err(redb_err)?;
-        Ok(())
     }
 
     fn session_db(&self, session: SessionId) -> Result<Arc<Database>, String> {
@@ -316,29 +290,6 @@ impl SessionBlobs {
             return Ok(None);
         }
         Ok(Some(self.session_db(session)?))
-    }
-
-    fn image_index(&self) -> Result<Arc<Database>, String> {
-        let mut guard = self
-            .inner
-            .image_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(db) = guard.as_ref() {
-            return Ok(Arc::clone(db));
-        }
-        std::fs::create_dir_all(&self.inner.root).map_err(|err| err.to_string())?;
-        let db = Arc::new(
-            Database::create(self.inner.root.join("image-index.redb"))
-                .map_err(|err| err.to_string())?,
-        );
-        let write = db.begin_write().map_err(redb_err)?;
-        {
-            let _ = write.open_table(IMAGE_INDEX).map_err(redb_err)?;
-        }
-        write.commit().map_err(redb_err)?;
-        *guard = Some(Arc::clone(&db));
-        Ok(db)
     }
 }
 
@@ -596,12 +547,47 @@ mod tests {
             .put_image(session, "img-1", "image/png", b"png")
             .unwrap();
         assert_eq!(
-            blobs.get_image("img-1").unwrap(),
+            blobs.get_image(session, "img-1").unwrap(),
             Some(("image/png".into(), b"png".to_vec()))
         );
         blobs.remove_session(session).unwrap();
-        assert!(blobs.get_image("img-1").unwrap().is_none());
+        assert!(blobs.get_image(session, "img-1").unwrap().is_none());
         assert!(!root.join(session.to_string()).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_image_is_scoped_to_its_own_session() {
+        let (blobs, root) = blobs();
+        let owner = SessionId::new();
+        let other = SessionId::new();
+        blobs
+            .put_image(owner, "img-1", "image/png", b"png")
+            .unwrap();
+        assert_eq!(
+            blobs.get_image(other, "img-1").unwrap(),
+            None,
+            "another session's id reads as a missing image"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_closed_session_reopens() {
+        let (blobs, root) = blobs();
+        let session = SessionId::new();
+        blobs
+            .put_image(session, "img-1", "image/png", b"png")
+            .unwrap();
+        // The invariant the lease relies on: the handle can be dropped mid-run
+        // without losing the file, so a second process can open it.
+        blobs.close_session(session).unwrap();
+        assert!(root.join(session.to_string()).exists());
+        assert_eq!(
+            blobs.get_image(session, "img-1").unwrap(),
+            Some(("image/png".into(), b"png".to_vec())),
+            "the bytes survive the handle closing"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -427,6 +427,7 @@ fn rfc3339(timestamp: DateTime<Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
@@ -539,10 +540,11 @@ mod tests {
             asset_cleaner: None,
         });
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let store: Arc<dyn MessageStore> = Arc::new(SqliteMessageStore::new(
             Arc::clone(&pool),
@@ -557,6 +559,7 @@ mod tests {
                 sessions,
                 runtime,
                 store,
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
@@ -567,15 +570,11 @@ mod tests {
                     &pool,
                 )),
             ),
-            index: Arc::new(crate::agent::index::IndexHub::new(
-                std::env::temp_dir(),
-                Arc::new(EventBus::new()),
-                Arc::new(robi_index::FakeEmbedder::new(4)),
-            )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
         }
     }
 

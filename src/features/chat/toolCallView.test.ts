@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import {
   EDIT_PREVIEW_LINES,
+  SHELL_PREVIEW_LINES,
   editPreview,
   editSuggestion,
   hasDetail,
   needsDecision,
+  shellOutputTail,
   exploreSummary,
-  planBuildInstruction,
-  planView,
   toolDetail,
   toolSummary,
   type ChatToolCall
@@ -108,11 +108,36 @@ describe('toolSummary', () => {
 })
 
 describe('exploreSummary', () => {
-  it('counts unique files and searches', () => {
+  it('counts shell commands, because a child reads through the shell now', () => {
     expect(
       exploreSummary({
         mode: 'explore',
         description: 'Find resume',
+        startedMs: 0,
+        answer: '',
+        steps: [
+          { name: 'shell', target: "grep -rn 'resume' .", status: 'ok' },
+          { name: 'shell', target: "sed -n '1,40p' a.rs", status: 'ok' },
+          { name: 'shell', target: "sed -n '1,40p' b.rs", status: 'ok' }
+        ]
+      })
+    ).toBe('Exploring 3 commands')
+    expect(
+      exploreSummary({
+        mode: 'explore',
+        description: '',
+        startedMs: 0,
+        answer: '',
+        steps: []
+      })
+    ).toBe('Exploring')
+  })
+
+  it('still reports a read or search tool when the read tools are restored', () => {
+    expect(
+      exploreSummary({
+        mode: 'explore',
+        description: '',
         startedMs: 0,
         answer: '',
         steps: [
@@ -124,105 +149,6 @@ describe('exploreSummary', () => {
         ]
       })
     ).toBe('Exploring 2 files, 2 searches')
-    expect(
-      exploreSummary({
-        mode: 'explore',
-        description: '',
-        startedMs: 0,
-        answer: '',
-        steps: []
-      })
-    ).toBe('Exploring')
-  })
-})
-
-describe('planView', () => {
-  it('uses the first heading, then the plan name, then the file name', () => {
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: { plan_name: 'Ship modes', body: '# Ship modes\n\nAdd the modes.\n' },
-          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
-        })
-      )
-    ).toEqual({
-      title: 'Ship modes',
-      summary: 'Add the modes.',
-      body: '# Ship modes\n\nAdd the modes.\n',
-      path: '.robi/plans/ship-modes.md',
-      created: true,
-      todos: []
-    })
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: { plan_name: 'Ship modes', body: 'No heading yet.\n' },
-          result: { path: '.robi/plans/ship-modes.md' }
-        })
-      )?.title
-    ).toBe('Ship modes')
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: { body: 'No heading yet.\n' },
-          result: { path: '.robi/plans/ship-modes-abc.md' }
-        })
-      )?.title
-    ).toBe('ship-modes-abc')
-  })
-
-  it('stays closed until the write succeeds', () => {
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          execution_status: 'running',
-          args: { plan_name: 'Ship modes', body: '# Ship modes\n' }
-        })
-      )
-    ).toBeNull()
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          execution_status: 'failed',
-          error: 'plan file does not exist',
-          args: { body: '# Ship modes\n' }
-        })
-      )
-    ).toBeNull()
-  })
-
-  it('keeps the todo steps from the plan write', () => {
-    expect(
-      planView(
-        call({
-          name: 'write_plan',
-          args: {
-            body: '# Ship modes\n',
-            todos: [
-              { id: 'modes', content: 'Add the mode registry', status: 'pending' },
-              { id: 'wire', content: 'Register the tool', status: 'in_progress' },
-              { id: 'skip', content: '   ' },
-              { id: 'bad', content: 'Nope', status: 'done' }
-            ]
-          },
-          result: { path: '.robi/plans/ship-modes.md', status: 'created' }
-        })
-      )?.todos
-    ).toEqual([
-      { id: 'modes', content: 'Add the mode registry', status: 'pending' },
-      { id: 'wire', content: 'Register the tool', status: 'in_progress' }
-    ])
-  })
-
-  it('names the file the build turn should read', () => {
-    expect(planBuildInstruction('.robi/plans/ship-modes.md')).toBe(
-      'Implement the plan at .robi/plans/ship-modes.md. Read that file and make the changes it describes.'
-    )
   })
 })
 
@@ -394,5 +320,24 @@ describe('toolDetail', () => {
         })
       )
     ).toEqual({ kind: 'code', startLine: 4, lines: ['a', 'b'] })
+  })
+})
+
+describe('shell output tail', () => {
+  it('keeps the last lines, which is where a command fails', () => {
+    const output = ['a', 'b', 'c', 'd', 'e', 'f'].join('\n')
+    expect(shellOutputTail(output)).toEqual(['c', 'd', 'e', 'f'])
+    expect(SHELL_PREVIEW_LINES).toBe(4)
+  })
+
+  it('keeps short output whole and drops a trailing blank line', () => {
+    expect(shellOutputTail('one\ntwo\n')).toEqual(['one', 'two'])
+    expect(shellOutputTail('')).toEqual([])
+    expect(shellOutputTail('   ')).toEqual([])
+  })
+
+  it('honours an explicit count', () => {
+    expect(shellOutputTail('a\nb\nc', 1)).toEqual(['c'])
+    expect(shellOutputTail('a\nb\nc', 0)).toEqual([])
   })
 })

@@ -34,6 +34,15 @@ opencode_go_api_key = "sk-..."
 way. See the [Quickstart](https://cgund98.github.io/robi/guides/quickstart.html)
 for the full walkthrough.
 
+There is also a terminal app:
+
+```bash
+cargo run -p robi --features tui --bin robi
+```
+
+It is published with every release as a tarball; see
+[the terminal app](https://cgund98.github.io/robi/guides/terminal.html).
+
 ## Highlights
 
 - **Sandboxed shell** — commands run under Seatbelt on macOS and bubblewrap on

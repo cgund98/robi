@@ -87,8 +87,9 @@ and no `user_id`.
 ### Schema
 
 Migration `crates/robi/migrations/0001_chat_sessions.sql` creates workspaces,
-chat sessions, chat messages, and file baselines. There is one migration. An
-existing database from the earlier series has to be deleted and created again.
+chat sessions, chat messages, and file baselines. Three migrations follow it in
+the same directory: `0002` adds `turn_display`, `0003` drops `plan_path`, and
+`0004` adds `turn_settled`.
 Tool originals and image bytes are not in this file. Their record shape is in
 [shell-output.md](../compression/shell-output.md).
 The four path-rule columns default to `[]`.
@@ -100,7 +101,7 @@ applied in code and are not written on the row.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `TEXT PRIMARY KEY` | `WorkspaceId`, UUIDv7, minted in the adapter |
-| `name` | `TEXT NOT NULL` | Final path component of `root`. The sidebar workspace header shows this |
+| `name` | `TEXT NOT NULL` | Final path component of `root`. The workspace dropdown shows this |
 | `root` | `TEXT NOT NULL UNIQUE` | Canonical absolute directory. Opening the same directory again returns this row |
 | `mcp_project_sha256` | `TEXT` | SHA-256 of `<workspace>/.robi/mcp.json` after the user enables that file. Null until then. See [mcp.md](../reach/mcp.md) |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
@@ -114,7 +115,7 @@ Index: `(created_at DESC, id DESC)`.
 | `id` | `TEXT PRIMARY KEY` | `SessionId`, UUIDv7, minted in the adapter |
 | `workspace_id` | `TEXT NOT NULL` | `WorkspaceId`. References `workspaces(id)` `ON DELETE CASCADE`. A chat session does not move workspaces |
 | `title` | `TEXT` | Null until set. At most 200 characters. The model writes it after the first turn when it is still null |
-| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny. The compiled filter also allows reading `~/.robi/plans/<session_id>`. That allow is not stored |
+| `path_allow_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that read through a deny |
 | `path_allow_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended to the empty built-in allow list. A more specific match lets that write through a deny |
 | `path_deny_read` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in read denies |
 | `path_deny_write` | `TEXT NOT NULL` | JSON array of regexes. `[]` on create. Appended after the built-in write denies |
@@ -122,10 +123,11 @@ Index: `(created_at DESC, id DESC)`.
 | `mcp_allows` | `TEXT NOT NULL` | JSON array of `{ "server", "tool" }`. `[]` on create. An MCP approval that allows the tool for this session appends one pair. See [mcp.md](../reach/mcp.md) |
 | `mode` | `TEXT NOT NULL` | `ask`, `plan`, or `agent`. `agent` on create. Selects the tool registry and the prompt prefix |
 | `model_config` | `TEXT NOT NULL` | JSON object. `{}` on create. Optional `agent`, `ask`, and `plan` objects, each with optional `model` and `reasoning_effort`. An absent key inherits that mode's setting, then the fallback setting, then the built-in model |
-| `plan_path` | `TEXT` | Null until `write_plan` or `todos` writes a plan. Stored as `~/.robi/plans/<session_id>/<file>.md`. A later write replaces it. `updated_at` and `last_used_at` do not move. Deleting the session removes the row and, best effort, the files under `~/.robi/plans/<session_id>` |
 | `created_at` | `TEXT NOT NULL` | RFC 3339 |
 | `updated_at` | `TEXT NOT NULL` | RFC 3339. Moves on a title change, a path-rule edit, a host-allow edit, or a model-config edit |
 | `last_used_at` | `TEXT NOT NULL` | RFC 3339. Set at create. Moves when a chat message is appended. A title edit and an in-place transcript update leave it alone |
+| `turn_display` | `TEXT NOT NULL` | `idle`, `pending`, `awaiting_approval`, or `failed`. A display summary, not a source of truth. `0` on create and written by the runtime; see below |
+| `turn_settled` | `INTEGER NOT NULL` | `1` when `turn_display` is known to match the transcript. Stored by the same write as `turn_display`, from whether that display is `pending`. Scopes the startup repair |
 
 Index: `(workspace_id, last_used_at DESC, id DESC)`.
 
@@ -157,14 +159,28 @@ has `~/.robi/sessions/<session_id>/blobs.redb`. Tables inside that file:
 | `images` | image id | raw bytes |
 | `image_types` | image id | media type |
 
-`~/.robi/sessions/image-index.redb` maps an image id to its session id. That
-file holds no image bytes. `GET /chat_sessions/{id}/images/{image_id}` serves
-the bytes for the UI's message bubbles. There is no DTO, because the transcript's
-`images` list already carries the reference.
+The session file is also that session's image index. `images` and `image_types`
+are keyed by image id inside `sessions/<id>/blobs.redb`, so `image id → session`
+is answered by the file the bytes already sit in, and a read takes the session id
+from its caller: `Message`'s `images` list, or the route's path.
+`GET /chat_sessions/{id}/images/{image_id}` serves the bytes for the UI's message
+bubbles, and an id belonging to another chat reads as missing. There is no DTO,
+because the transcript's `images` list already carries the reference.
+
+There used to be a shared `~/.robi/sessions/image-index.redb` holding that
+mapping, because the read had no session id. It was the only `redb` file no
+session owned, so no per-session lock covered it and two processes could collide
+on it while either stored an image. Images attached before it was removed 404;
+tool results in the same sessions are unaffected, because they are keyed inside
+the session file.
 
 `session_file_baselines` is the pre-edit body of each path a chat session has
-written or deleted. The edit tools insert it. Review reads it. See
-[checkpoints.md](../tools/checkpoints.md).
+written or deleted. The edit tools insert it, so in the default build — where the
+shell is the editor — nothing writes it and nothing reads it. The table stays
+because the `edit-tools` restore path still uses it, and because dropping it is a
+migration that should ride with the code that stopped reading it. See
+[checkpoints.md](../tools/checkpoints.md) and
+[feature-switches.md](../core/feature-switches.md).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -201,7 +217,7 @@ Base path `/api/v1`. One error body, `{ "error": "..." }`.
 | `GET` | `/chat_sessions` | `200` list | `400` if `workspace_id` is present and not a UUID |
 | `GET` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID |
 | `PATCH` | `/chat_sessions/{id}` | `200` chat session | `404` if missing, `400` if `id` is not a UUID, `title` is invalid, a path pattern is not a regex, a host is empty or includes a scheme, port, or user info, `mode` is not `ask`, `plan`, or `agent`, `model` is unknown, or `reasoning_effort` is not `low`, `medium`, or `high` |
-| `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. A running turn is stopped first, and the request returns after that session's actor has exited. The session's plan files under `~/.robi/plans/<session_id>` are removed too |
+| `DELETE` | `/chat_sessions/{id}` | `204` | `404` if missing, `400` if `id` is not a UUID. A running turn is stopped first, and the request returns after that session's actor has exited. The session's blobs are removed too |
 
 `POST /workspaces` body is `{ "root" }`. The adapter canonicalizes the path,
 so a symlink and its target are one workspace. `name` is the last path
@@ -244,6 +260,13 @@ writes `pending` when a message or a tool decision is accepted, and writes
 recomputes it from the transcript: a waiting tool call becomes
 `awaiting_approval`, a stored `failed` stays when nothing is waiting, and a
 leftover `pending` becomes `idle`.
+
+That repair only reads sessions with `turn_settled = 0`. Every write to
+`turn_display` stores both columns, so a finished turn settles its own row and a
+turn in flight is the only thing that leaves one to repair. 0004 backfills
+`turn_settled` from `turn_display` for the same reason: only a `pending` row
+needed repair when the migration ran. The repair reads the transcript without
+tool results, so it never opens a session's blob file.
 
 ### Chat messages and the runtime
 
@@ -314,7 +337,6 @@ that is not in this list is `400`.
 | `base_url` | no | None. Optional base URL for OpenCode Go and Anthropic |
 | `deepseek_base_url` | no | None. Optional DeepSeek base URL. Unset uses `https://api.deepseek.com` |
 | `system_prompt` | no | None. Optional text added to the system prompt after the built-in block |
-| `lsp` | no | `on`, written on the first read when the key is absent. `off` leaves the language-server tools unregistered. See [lsp.md](../intelligence/lsp.md) |
 | `max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one primary-agent run, from 1 to 500. Read when the session actor starts |
 | `subagent_max_iterations` | no | `50`, written on the first read when the key is absent. Model turns in one explore or general child, from 1 to 500. Read when `delegate` starts that child |
 | `subagent_timeout_seconds` | no | `120`, written on the first read when the key is absent. Seconds before an explore or general child is stopped, from 1 to 3600 |
@@ -361,9 +383,7 @@ environment variables. `examples/simple.rs` still reads `OPENCODE_GO_API_KEY`,
 `ROBI_MODEL`, `ROBI_BASE_URL`, and `ROBI_EFFORT` for that one program.
 
 `make api` runs the server. `make dev-api` restarts it when `crates/robi` or
-`crates/robi-core` change, and needs `cargo-watch`. A Rust diagnostics call
-still triggers that restart; see [lsp.md](../intelligence/lsp.md#failure-modes). Swagger UI is
-at `/docs`.
+`crates/robi-core` change, and needs `cargo-watch`. Swagger UI is at `/docs`.
 `make openapi-spec` writes `openapi/openapi.json`. `cargo run -p robi --bin
 export-openapi` prints the same document.
 
@@ -391,10 +411,12 @@ Vite origin and from `http://tauri.localhost`, `https://tauri.localhost`, and
 
 The shell shows one workspace at a time. The active id is
 `localStorage` key `robi.activeWorkspaceId`. `/workspaces` is the list: search,
-sort, create, and open. The sidebar links there under the workspace dropdown, and an empty list
-opens that page instead of the chat. The workspace dropdown at the top of the
-sidebar still switches the active workspace without leaving the chat. Add opens the system
-folder dialog in the desktop window, and asks for a path in a normal browser.
+sort, create, and open. An empty list
+opens that page instead of the chat. The workspace dropdown in the window bar
+still switches the active workspace without leaving the chat, and its
+**Manage workspaces…** item opens that page. Adding a workspace lives there, not
+in the dropdown: **New workspace** opens the system folder dialog in the desktop
+window, and asks for a path in a normal browser.
 List and create of chat sessions use that active id. Switching workspaces
 clears the open session and shows the draft composer for the newly selected
 workspace. Null titles render as **New session**.
@@ -433,8 +455,8 @@ rules are in [events-sse.md](../shell/events-sse.md).
 - A missing workspace is `404`. Creating a chat session for an unknown
   workspace is the same. Deleting a workspace removes its sessions and, because
   foreign keys are on, their messages. After the row is gone, derived files
-  are removed: the semantic index under `~/.robi/index/<workspace_id>/`,
-  including a running index task for that id. That removal is best effort: a
+  are removed: a legacy index directory under `~/.robi/index/<workspace_id>/`,
+  if an older build left one. That removal is best effort: a
   failure is logged and the request still returns `204`.
 - A workspace root that is empty, missing, or a file is `400` and is not written.
 - A title over 200 characters is `400` and is not written. A missing title is
@@ -444,9 +466,10 @@ rules are in [events-sse.md](../shell/events-sse.md).
   messages.
 - Deleting a session stops its running actor first, so the `DELETE` request
   blocks until that actor has exited. An idle session is a no-op. The session's
-  plan files under `~/.robi/plans/<session_id>` are removed after the row. That
-  removal is best effort: a failure is logged and the request still returns
-  `204`.
+  blobs are removed after the row. That removal is best effort: a failure is
+  logged and the request still returns `204`. Plan directories are **not**
+  session data: since S9 they live in the workspace at `.robi/plans/<name>/`
+  and outlive the session that wrote them.
 - `last_used_at` does not move on rename. A title edit is not use.
 - In-memory pools (tests) skip WAL. File pools set it. Shared-cache memory is
   how adapter tests share one database across pooled connections.
@@ -474,12 +497,13 @@ rules are in [events-sse.md](../shell/events-sse.md).
   a title, empty path lists on create, a path pattern that does not compile,
   missing get, list filter, missing update, a null title written once
   and not replaced, an empty or oversized generated title refused, delete, create against
-  an unknown workspace, and a fake `SessionPlanCleaner` that is called for the
+  an unknown workspace, and a fake `SessionDataCleaner` that is called for the
   deleted session, skipped for a missing one, and whose failure does not fail
   the delete.
-- `FilesystemSessionPlans` tests pin a throwaway home under the temp directory:
-  the session's plan directory is removed, a neighbouring session's is left, and
-  a missing directory is `Ok`.
+- Migration `0003` drops `plan_path`: a plan is a workspace file now, so a
+  session no longer points at one. `FilesystemSessionData` wraps
+  `SessionBlobs::remove_session`, which has its own tests over a throwaway blob
+  root under the temp directory.
 - `SqliteChatSessionRepository` tests use a shared-cache in-memory pool: round trip, list order,
   title update leaving `last_used_at` in place, empty path lists on create,
   a patch of one list leaving the others, a null title written once and

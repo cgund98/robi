@@ -1,10 +1,11 @@
 # Requires Settings → Actions → General → "Allow GitHub Actions to create and
 # approve pull requests". Without that, release-please cannot open release PRs.
 #
-# The desktop builds run in this same workflow, gated on the release output. A
-# separate workflow on `release: published` would not fire: events created with
-# the repository GITHUB_TOKEN do not start new workflow runs. Chaining
-# in-workflow avoids needing a PAT or GitHub App token for release-please.
+# The desktop bundles and the terminal tarballs run in this same workflow, gated
+# on the release output. A separate workflow on `release: published` would not
+# fire: events created with the repository GITHUB_TOKEN do not start new workflow
+# runs. Chaining in-workflow avoids needing a PAT or GitHub App token for
+# release-please.
 name: Release
 
 on:
@@ -41,9 +42,12 @@ jobs:
           - name: macos
             platform: macos-latest
             bundles: dmg
-          # 24.04 matches the glibc the prebuilt ONNX Runtime archive was built
-          # against. The AppImage bundles its own runtime dependencies; the deb
-          # needs libwebkit2gtk-4.1 at runtime. Both need glibc 2.38 or newer.
+          # 24.04 sets this bundle's glibc floor. The AppImage carries its own
+          # runtime dependencies; the deb needs libwebkit2gtk-4.1 at runtime.
+          # A prebuilt ONNX Runtime archive once forced 24.04, and it is no
+          # longer in the tree, but the row stays until a 22.04 build of the
+          # desktop bundles is tested. The terminal tarballs below need none of
+          # this and build on 22.04.
           - name: linux
             platform: ubuntu-24.04
             bundles: appimage,deb
@@ -110,10 +114,100 @@ jobs:
           path: release/*
           if-no-files-found: error
 
-  # Combine the per-platform bundles into one set of release assets, so the
-  # release carries a single checksums file covering every artifact.
+  # The terminal app, as a tarball per target. Its own job rather than a third
+  # row in the `build` matrix, because it builds on 22.04 instead of 24.04: that
+  # keeps the glibc floor at 2.35, so one tarball runs on 22.04 and 24.04 both.
+  # Nothing in `crates/robi` needs more — SQLite is bundled, `reqwest` is rustls,
+  # `bollard` is pure Rust — and the ONNX Runtime archive that forced 24.04 on the
+  # desktop bundles is no longer in the tree. It also needs no front end, so this
+  # job skips pnpm, Node, and the webkit packages.
+  tui:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The target is passed explicitly, so the asset name does not move if
+          # `macos-latest` changes architecture.
+          - target: aarch64-apple-darwin
+            platform: macos-latest
+          # The glibc floor: 2.35, and a binary built against it runs on newer.
+          - target: x86_64-unknown-linux-gnu
+            platform: ubuntu-22.04
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.90'
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+
+      # The shipped binary is the default feature set: the gated workstreams are
+      # the restore path, and `tui` only adds the front end.
+      - name: Build the terminal app
+        run: cargo build --release --locked -p robi --features tui --bin robi --target ${{ matrix.target }}
+
+      # The staging directory is outside `release/`: the `publish` job treats
+      # every file there as an asset, and so does the `sha256sum` above it.
+      - name: Package
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          dir="robi-${TAG}-${TARGET}"
+          mkdir -p "package/${dir}" release
+          cp "target/${TARGET}/release/robi" "package/${dir}/"
+          cp LICENSE "package/${dir}/"
+          if [[ "${TARGET}" == *-apple-darwin ]]; then
+            # `strip -x` drops the ad-hoc signature `ld64` wrote, and an arm64
+            # binary without a signature does not run. Re-sign after stripping.
+            strip -x "package/${dir}/robi"
+            codesign --force --sign - "package/${dir}/robi"
+          else
+            strip "package/${dir}/robi"
+          fi
+          tar -C package -czf "release/${dir}.tar.gz" "${dir}"
+          ls -l release
+
+      # The tarball runs, and the tag and `CARGO_PKG_VERSION` agree. Both are
+      # one command, and nothing else in the release proves either.
+      - name: Smoke test
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          dir="robi-${TAG}-${TARGET}"
+          mkdir -p smoke
+          tar -C smoke -xzf "release/${dir}.tar.gz"
+          got="$("./smoke/${dir}/robi" --version)"
+          want="robi ${TAG#v}"
+          echo "got:  ${got}"
+          echo "want: ${want}"
+          [[ "${got}" == "${want}" ]]
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: tui-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
+
+  # Combine the per-platform bundles and tarballs into one set of release
+  # assets, so the release carries a single checksums file covering every
+  # artifact.
   publish:
-    needs: [release-please, build]
+    needs: [release-please, build, tui]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:

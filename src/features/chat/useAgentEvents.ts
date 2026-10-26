@@ -3,9 +3,7 @@ import { createEffect, onCleanup } from 'solid-js'
 import { getMessage } from '../../api/messages'
 import { ApiError } from '../../api/sessions'
 import { chat, patchChat } from '../../state/chatStore'
-import { docs } from '../../state/docsStore'
 import { errors } from '../../state/errorLog'
-import { index } from '../../state/indexStore'
 import { mcp } from '../../state/mcpStore'
 import { workspaces } from '../../state/workspaceStore'
 import { postApprovalNotice, postTurnFailedNotice, releaseApprovalPause } from './approvalNotice'
@@ -24,21 +22,6 @@ type DeltaData = {
   turn_display?: string
   delta?: { kind?: string }
   outcome?: { kind?: string; message?: string }
-}
-
-/** The `data` of a `robi.workspace.v1.file_changed` frame. */
-type FileChangedData = {
-  path?: string
-  source?: string
-  outcome?: string
-  session_id?: string | null
-}
-
-function fileChangedData(data: unknown): FileChangedData | null {
-  if (!data || typeof data !== 'object') {
-    return null
-  }
-  return data as FileChangedData
 }
 
 function eventData(data: unknown): DeltaData | null {
@@ -126,18 +109,6 @@ export function useAgentEvents(): void {
     if (!envelope) {
       return
     }
-    if (envelope.type === 'robi.index.v1.progress') {
-      if (envelope.subject) {
-        // The frame carries the same status object as the GET, so apply it
-        // directly. A GET would be served from a 10-second cache and could
-        // drop the final `ready` transition.
-        const applied = index.applyFrame(envelope.subject, envelope.data)
-        if (!applied) {
-          void index.refresh(envelope.subject)
-        }
-      }
-      return
-    }
     if (envelope.type === 'robi.mcp.v1.status') {
       if (envelope.subject) {
         void mcp.refresh(envelope.subject)
@@ -145,15 +116,8 @@ export function useAgentEvents(): void {
       return
     }
     if (envelope.type === 'robi.workspace.v1.file_changed') {
-      const data = fileChangedData(envelope.data)
-      if (data && typeof data.path === 'string') {
-        docs.record({
-          path: data.path,
-          source: data.source === 'agent' ? 'agent' : 'user',
-          outcome: typeof data.outcome === 'string' ? data.outcome : 'applied',
-          sessionId: typeof data.session_id === 'string' ? data.session_id : null
-        })
-      }
+      // S5: the docs viewer was the reader. The turn-finished bump below still
+      // refreshes the transcript, so nothing else is needed here.
       return
     }
     const data = eventData(envelope.data)

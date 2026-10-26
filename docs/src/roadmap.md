@@ -44,11 +44,12 @@ network. It is done when its tests pass. See
 | M3 | Read-only tools | The assistant reads your workspace, with approval | `read_file`, `find`, `grep`, `list_dir`, approvals, compaction |
 | M4 | Editing | The assistant changes your files and runs commands | `write_file`, edit tools, checkpoints/undo, git awareness, sandboxed shell |
 | M5 | Modes and subagents | Ask, plan, and agent modes; read-only exploration | Modes, plan artifacts, `tasks`, `explore`, `delegate` |
-| M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments |
-| M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search |
+| M6 | Code review | Review a diff with the assistant inline | Review sessions, hunks, inline comments. **The screen is disabled in M11** |
+| M7 | Code intelligence | Symbol-aware navigation and semantic retrieval | LSP client, AST chunking, embeddings, vector search. **Removed in M11:** the five language-server tools, the semantic index, the LSP client, `read_code`, and the tree-sitter grammars are deleted |
 | M8 | Reach | Integrations and headless use | MCP client, skills, web tools |
 | M9 | Tool output compression | Large tool results reach the model smaller, and the original stays retrievable | Content-routed compression, a retrieve tool, savings on the context meter |
-| M10 | Docs view | Read and write project documentation | A filtered file tree, and an editor shared by the user and the agent |
+| M10 | Docs view | Read and write project documentation | A filtered file tree, and an editor shared by the user and the agent. **Disabled in M11** |
+| M11 | Streamlining | A smaller shell: a top bar, and fewer surfaces | [Streamlining roadmap](streamlining.md). S2, S3 (UI), S5, and S6 have shipped |
 
 The line between "usable" and "differentiated" falls after M5. M1–M3 produce a
 chat app that reads code. M4 makes it an agent. M5 is where Robi stops being a
@@ -81,6 +82,13 @@ chat shell, read and edit tools, the sandbox, modes, plans, delegate, session
 review, LSP, the semantic index, MCP, skills, and web tools. These pieces are
 still open. Delete a row when that piece ships, and update the milestone
 section that owns it.
+
+**M11 removed surfaces without removing code.** The [streamlining
+roadmap](streamlining.md) turns off the review screen (S2), the index status UI
+(S3), and the docs viewer (S5), and replaces the left sidebar with a top bar
+(S6). The code, the API routes, and the design pages stay; `src/app/surfaces.ts`
+is the switch. The rows below that belong to M6 and M10 are therefore not
+"remaining" in the UI — they are waiting on a decision to restore the surface.
 
 | Milestone | Piece | State |
 |---|---|---|
@@ -129,9 +137,8 @@ Tauri, no HTTP client, and no provider SDK:
   one of those arrives.
 - **One crate for implementations, not one per concern.** `crates/robi` holds
   the implementations: `providers` first (M1), then the session API's `domain`,
-  `adapters`, and `web_api` (M2), `tools` and `workspace` (M3), `review` (M6),
-  `lsp` and `index` (M7) — each a module, split into its own crate only if a
-  module outgrows the crate.
+  `adapters`, and `web_api` (M2), `tools` and `workspace` (M3), `review` (M6) —
+  each a module, split into its own crate only if a module outgrows the crate.
   `docs/src/design/providers/providers-streaming.md` records why providers did not become
   `robi-providers`.
 
@@ -545,7 +552,7 @@ made. The fix and its tests are in `robi-core`; see
   secrets in the OS keychain.
 - **Open decisions** — whether a workspace needs the explicit trust decision
   gopi records in `trust.json`. The session store is SQLite; see
-  `docs/src/design/persistence/persistence.md`. Token-usage history and the M7 index lean
+  `docs/src/design/persistence/persistence.md`. Token-usage history leans
   toward that same file. Settings live under `~/.robi`. The database file
   stays on `ROBI_DATABASE_URL`.
 
@@ -659,8 +666,9 @@ milestone.
   rather than what was requested.
 - Git awareness: read status/diff, never run history-rewriting commands without
   approval.
-- Diagnostics come from LSP in M7; until then, the model can run builds and
-  tests through a shell tool.
+- Diagnostics were LSP's job in M7. That surface is gone, so verification is
+  `cargo check`, `tsc --noEmit`, `eslint`, and the project's tests through the
+  shell tool.
 
 ### F4.4 Sandboxed shell tool
 
@@ -707,18 +715,23 @@ prefix, and that is why switching is instant and stateless.
 
 ### F5.2 Plan artifacts
 
-- `write_plan` creates a plan file; `update_plan` overwrites an existing one.
-- Plans live at `~/.robi/plans/<session_id>/`, with todo frontmatter, and
-  render in the UI as a checklist the user can watch advance.
-- The checklist is re-read into the next agent prompt. See F5.3.
+- Shipped as S9 and rewritten since: there is no plan tool. A plan is a
+  directory in the workspace, `.robi/plans/<name>/`, holding `PLAN.md` for the
+  prose and `TODO.md` for the checklist. The agent writes both with the shell.
+- The name is the plan's title in kebab case; Plan mode lists the directory
+  first so a second turn updates the existing plan.
+- `.robi/plans/.gitignore` holds a single `*`, so nothing there is tracked,
+  including the ignore file itself.
+- Plan mode's shell may write that one directory and nothing else; Agent mode
+  writes it as part of the workspace. See S9 in
+  [streamlining.md](streamlining.md#s9--no-built-in-todos).
 
 ### F5.3 Tasks / todos
 
-- Agent mode's `todos` tool patches the plan file's todo frontmatter. The
-  markdown body stays as written. There is no separate in-memory list.
-- The session stores the path of the plan last written. The next agent actor
-  reads that file into a `<todos>` block, so the open item is in front of the
-  model again. Ask, plan, and a delegate child do not get the tool.
+- Shipped as S9 and rewritten since: `TODO.md` is the checklist, one line per
+  step, `- [ ]` open and `- [x]` done, and `PLAN.md` carries no checkboxes.
+- Nothing is stored: no session column and no prompt injection. Agent mode reads
+  the files with `cat` and ticks a step by rewriting `TODO.md` after reading it.
 
 ### F5.4 Subagents
 
@@ -774,42 +787,45 @@ iterate. Inline comments and a review tool for the assistant stay later.
 
 ## M7 — Code intelligence
 
-**Goal** — retrieve and navigate code by meaning and by symbol, not by regex.
+**Removed in M11.** The milestone shipped two tracks — an LSP client and a
+semantic index — and both are gone. This section records what they were and why
+they went, so a return starts from a decision rather than a blank page.
 
-Two independent tracks. **Recommendation: build LSP first.** It is cheaper, it
-feeds the verification loop in M4 immediately, and its symbol data improves the
-chunking that semantic search depends on.
+The index, the LSP client, the five language-server tools, `semantic_search`,
+`read_code`, and the tree-sitter grammars were deleted. Nothing is behind a
+Cargo feature. `grep`, `find`, `read_file`, and the shell are the retrieval and
+verification path.
 
-### F7.1 LSP client
+### F7.1 LSP client (removed)
 
-Settled in [lsp.md](design/intelligence/lsp.md). **D8** is `async-lsp` with `lsp-types`.
-`tower-lsp` is a server framework and is not the client.
+Was: `async-lsp` with `lsp-types`. `tower-lsp` is a server framework and was not
+the client. One stdio server per catalog row per workspace root, started on the
+first tool call; the disk was the text the server saw. The first cut was five
+read-only tools: `diagnostics`, `definition`, `references`, `hover`, and
+`workspace_symbol`. A missing binary returned `available: false` and the model
+used `grep` or `shell`. The catalog was Rust, TypeScript and JavaScript, Python,
+Go, and C and C++. Rename, code action, and format never shipped.
 
-- One stdio server per catalog row per workspace root, started on the first
-  tool call. The disk is the text the server sees. Robi does not keep buffers.
-- The first cut is five read-only tools: `diagnostics`, `definition`,
-  `references`, `hover`, and `workspace_symbol`. A missing binary returns
-  `available: false` and the model uses `grep` or `shell`. The turn does not
-  fail. The `lsp` setting is `on` by default. `off` leaves the five tools
-  unregistered.
-- The catalog is Rust, TypeScript and JavaScript, Python, Go, and C and C++.
-  Adding a language is a row.
-- Rename, code action, and format stay a later cut. They apply through the
-  edit-tool write path so a change still gets a checkpoint. The server never
-  writes the disk itself.
+Why it went: the tools went unused in practice, and verification through the
+shell (`cargo check`, `tsc`, `eslint`, the project's tests) was both available
+and more honest than a diagnostics snapshot. With no tool driving the client,
+the client itself was dead weight.
 
-### F7.2 Semantic search: AST → vectors
+### F7.2 Semantic search (removed)
 
-Settled in [semantic-search.md](design/intelligence/semantic-search.md).
+Was: tree-sitter splitting source on symbol boundaries, a local ONNX model
+embedding those chunks on device (D6), and `sqlite-vec` plus FTS5 sharing one
+file per workspace (D7). Retrieval fused the two lists, and `semantic_search`
+returned paths and line ranges. The index updated while a workspace had an open
+session, and the user could pause it.
 
-Tree-sitter splits source on symbol boundaries. A local ONNX model embeds
-those chunks on device (D6). `sqlite-vec` and FTS5 share one file per
-workspace, separate from the session database (D7). Retrieval fuses the two
-lists. The model calls `semantic_search` and gets paths and line ranges.
-The index updates while that workspace has an open session, and the user
-can pause it.
+Why it went: agents did not call `semantic_search` often enough to justify an
+embedding runtime, a vector store, and a background index task. That is a real
+downgrade for "where is this concept handled?" questions, and the prompt says so:
+search by identifier and filename first, then read the hits.
 
-**Design doc** — `docs/src/design/intelligence/lsp.md`.
+`read_code` was the last user of the tree-sitter outline. It went with the
+grammars rather than staying as a second `read_file`.
 
 ---
 
@@ -895,7 +911,7 @@ makes no model call.
 | Logs and shell output | The head, the tail, and collapsed repeated lines. The phases, the store, and the decision to keep a learned model last are in [shell-output.md](design/compression/shell-output.md) |
 | MCP tool results | A JSON array or object keeps a sample, key types, and counts. Other text uses the shell line pass. The row is `kind: "mcp"`. See [mcp-output.md](design/compression/mcp-output.md) |
 | Search hits | Paths, line numbers, and a capped set of matching lines |
-| Source, short text, errors | The original. These are already dense, and a crushed file is how an agent edits the wrong lines. An outline the model asked for is a different tool, [code-outline.md](design/tools/code-outline.md). `read_file` stays on this row |
+| Source, short text, errors | The original. These are already dense, and a crushed file is how an agent edits the wrong lines. `read_file` stays on this row |
 
 The compressed body says that it was compressed, how big the original was, and
 the id the retrieve tool takes. A silent crush has the same failure mode as a
@@ -1020,11 +1036,11 @@ resolve them.
 | D1 | UI event delivery | F2.1 | Settled: HTTP SSE on the local API, CloudEvents envelope, in-process fan-out. See `docs/src/design/shell/events-sse.md`. Emit-after-persist still orders events against the store. The desktop process hosts that API (D3) |
 | D2 | Delta serialization and IPC encoding | F1.2 | The variant list is fixed in M0; these are the wire details. Expensive to change once the UI depends on them |
 | D3 | In-process loop vs. sidecar | F2.1 | Settled for the desktop app: the API runs in the Tauri process. `robi-api` remains for headless mode and `pnpm dev`. `ROBI_EXTERNAL_API=1` points `pnpm tauri dev` at that separate process |
-| D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/src/design/persistence/persistence.md`. App home directory is still open. The M7 index is a separate file; see D7 |
+| D4 | Persistence: SQLite for the session store | F2.3, F3.4, M7 | Chosen for sessions: one SQLite file and migrations, in `docs/src/design/persistence/persistence.md`. App home directory is still open |
 | D5 | Editing: search-and-replace vs. diff-based | F4.1 | Settled: exact search-and-replace. See below and `docs/src/design/tools/editing-tools.md` |
-| D6 | Embeddings: local vs. hosted | F7.2 | Settled: local ONNX, `nomic-embed-text-v1.5`. See below and `docs/src/design/intelligence/semantic-search.md` |
-| D7 | Vector store | F7.2 | Settled: one `sqlite-vec` file per workspace, plus FTS5. See below and `docs/src/design/intelligence/semantic-search.md` |
-| D8 | LSP client approach | F7.1 | Settled: `async-lsp` and `lsp-types`. A missing server degrades the tool. See below and `docs/src/design/intelligence/lsp.md` |
+| D6 | Embeddings: local vs. hosted | F7.2 | Settled: local ONNX, `nomic-embed-text-v1.5`. Superseded by M11, which removed the index. See below |
+| D7 | Vector store | F7.2 | Settled: one `sqlite-vec` file per workspace, plus FTS5. Superseded by M11, which removed the index. See below |
+| D8 | LSP client approach | F7.1 | Settled: `async-lsp` and `lsp-types`. Superseded by M11, which removed the client. See below |
 | D9 | Sandbox mechanism per platform, and the fallback where none exists | F4.4 | Settled: Seatbelt on macOS, bubblewrap on Linux, no Windows sandbox. A sandboxed call is refused when the mechanism is missing. `unsandboxed: true` runs only after approval. See below and `docs/src/design/tools/shell-tool.md`. The catalog "D9" in `providers-streaming.md` is a different decision |
 | D10 | MCP in v1 or later | M8 | Settled: M8, host only. The trait stays fixed. The registry gains `remove`. See [mcp.md](design/reach/mcp.md) |
 | D11 | Learned text compression vs. structural compressors only | M9 | A local model is a heavy optional dependency. The first cut is deterministic compressors for JSON, logs, and search hits |
@@ -1058,17 +1074,17 @@ should change.
 
 Settled. Chunks and queries are embedded locally with
 `nomic-ai/nomic-embed-text-v1.5` on CPU through ONNX. Source stays on this
-machine. Weights live under `~/.robi/models/`. A different model id rebuilds
-the index. See [semantic-search.md](design/intelligence/semantic-search.md).
+machine. Weights live under `~/.robi/models/`. A different model id rebuilt
+the index. M11 removed the index; this records the decision, not live code.
 
 <a id="d7"></a>
 
 ### D7: One sqlite-vec file per workspace
 
-Settled. Vectors and an FTS5 index share
-`~/.robi/index/<workspace_id>/index.sqlite`. The session database is a
-different file. LanceDB and Qdrant are not used. The index is rebuildable
-from the tree. See [semantic-search.md](design/intelligence/semantic-search.md).
+Settled. Vectors and an FTS5 index shared
+`~/.robi/index/<workspace_id>/index.sqlite`, separate from the session database.
+LanceDB and Qdrant were not used. M11 removed the index; the directory is only
+cleaned up now.
 
 <a id="d8"></a>
 
@@ -1078,7 +1094,7 @@ Settled. The client is `async-lsp` with `lsp-types`, in `crates/robi`. A
 hand-rolled JSON-RPC client deadlocks when the server sends
 `workspace/configuration` during startup. `tower-lsp` builds a server, not a
 client. The catalog, the five read-only tools, and the rule that a missing
-binary does not fail the turn are in [lsp.md](design/intelligence/lsp.md).
+binary did not fail the turn lived in the client. M11 deleted it.
 
 <a id="d9"></a>
 
@@ -1133,16 +1149,16 @@ Statuses: **needed**, **later**, **done**.
 | `docs/src/design/tools/editing-tools.md` | **D5**, tool schemas, fail-closed matching, verification | M4 | done |
 | `docs/src/design/tools/checkpoints.md` | Edit journal, undo, relation to git | M4 | done |
 | `docs/src/design/tools/shell-tool.md` | **D9**, the sandbox per platform, deny-by-default policy, environment scrubbing, network, output limits | M4 | done |
+| `docs/src/design/tools/container-sandbox.md` | A second mechanism: gVisor over the Docker API on macOS and Linux, the settings layering, services and the relay | M4 | started |
 | `docs/src/design/core/agent-modes.md` | Mode registry, prompt prefixes, transitions | M5 | done |
 | `docs/src/design/core/subagents.md` | Child policy, caps, transcript surfacing | M5 | done |
 | `docs/src/design/review/code-review.md` | Read-only session review: strip, file tree, unified diff | M6 | done |
-| `docs/src/design/intelligence/lsp.md` | **D8**, client, server discovery, host binaries on `PATH`, capability ladder, degradation | M7 | done |
-| `docs/src/design/intelligence/semantic-search.md` | **D6, D7**, chunking, hybrid retrieval, index lifecycle | M7 | done |
 | `docs/src/design/reach/mcp.md` | **D10**, host, config and trust, registry names, approval | M8 | done |
 | `docs/src/design/compression/tool-output-compression.md` | **D11, D12** for built-in JSON and search hits, content routing beyond shell and MCP | M9 | later |
 | `docs/src/design/compression/shell-output.md` | Shell stdout and stderr compression, in build order: collapse, slice, store, learned model | M9 | done |
 | `docs/src/design/compression/mcp-output.md` | MCP result compression: JSON samples and counts, the line pass, `kind: "mcp"` originals | M9 | done |
-| `docs/src/design/tools/code-outline.md` | Targeted AST unfolding, `read_code`, marker rejection on edit. Four slices: Rust with focus, then TypeScript, then Python and Go, then the depth and `compress` knobs | read tools | done |
+| `docs/src/design/shell/tui.md` | Terminal front end: module vs. crate, the TEA loop, the parity map, phases T0–T6. A surface, not a milestone | T6 | done |
+| `docs/src/design/shell/parallel-front-ends.md` | Per-session lease, the `redb` handle invariant it needs, the degraded transcript, and what parallel processes still share | T0 | done |
 
 Every design doc states: the problem, the decision, the rejected alternatives
 with reasons, the interfaces, and the failure modes. A doc that only describes

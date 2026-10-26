@@ -52,14 +52,11 @@ pub async fn stream_events(
     // Axum's `Query` extractor rejects a repeated key and a value that contains
     // `.`. Event types are dotted, and the shell repeats `event_types`.
     let mut filter = StreamFilter::from_query(parse_query(raw.as_deref()))?;
-    // Subscribe before the index starts so its first progress frame is not lost,
-    // then publish the current status for a client that connected mid-scan.
     let subscription = state.event_bus.subscribe();
-    let lease = open_index(&state, &mut filter).await;
+    resolve_workspace(&state, &mut filter).await;
     if let Some(workspace_id) = filter.workspace_id.as_deref() {
         if let Ok(id) = Uuid::parse_str(workspace_id) {
             let id = robi_core::ids::WorkspaceId::from_uuid(id);
-            state.index.publish_status(id);
             if state.mcp.is_some() {
                 // The tray paints from a refetch of this cue.
                 state
@@ -70,7 +67,7 @@ pub async fn stream_events(
             }
         }
     }
-    let stream = event_stream(subscription, filter, lease);
+    let stream = event_stream(subscription, filter);
     let response = (
         [(
             HeaderName::from_static("x-accel-buffering"),
@@ -100,7 +97,7 @@ pub struct EventsStreamQuery {
 struct StreamFilter {
     event_types: Option<HashSet<String>>,
     session_id: Option<String>,
-    /// Workspace of `session_id`, so index progress for that workspace is delivered.
+    /// Workspace of `session_id`, so MCP and file-change cues are delivered.
     workspace_id: Option<String>,
 }
 
@@ -226,48 +223,39 @@ fn decode_query_component(input: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-async fn open_index(
-    state: &AppState,
-    filter: &mut StreamFilter,
-) -> Option<crate::agent::index::IndexLease> {
+/// Fill in `workspace_id` from `session_id` when only the session was given.
+///
+/// The stream filter scopes workspace frames (MCP status, and the permission for
+/// `file_changed`) to this id, so it is still resolved here. Nothing is started.
+async fn resolve_workspace(state: &AppState, filter: &mut StreamFilter) {
     if let Some(session_id) = filter.session_id.as_deref() {
-        let uuid = Uuid::parse_str(session_id).ok()?;
-        let session = state
+        let Ok(uuid) = Uuid::parse_str(session_id) else {
+            return;
+        };
+        let Ok(session) = state
             .chat_session_service
             .get_chat_session(robi_core::ids::SessionId::from_uuid(uuid))
             .await
-            .ok()?;
+        else {
+            return;
+        };
         filter.workspace_id = Some(session.workspace_id.to_string());
     }
-    let workspace_id = filter.workspace_id.as_deref()?;
-    let uuid = Uuid::parse_str(workspace_id).ok()?;
-    let workspace_id = robi_core::ids::WorkspaceId::from_uuid(uuid);
-    let workspace = state
-        .workspace_service
-        .get_workspace(workspace_id)
-        .await
-        .ok()?;
-    Some(
-        state
-            .index
-            .acquire(workspace_id, std::path::PathBuf::from(workspace.root)),
-    )
 }
 
 fn event_stream(
     subscription: EventSubscription,
     filter: StreamFilter,
-    lease: Option<crate::agent::index::IndexLease>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures_util::stream::unfold(
-        (subscription, filter, lease),
-        |(mut subscription, filter, lease)| async move {
+        (subscription, filter),
+        |(mut subscription, filter)| async move {
             loop {
                 let envelope = subscription.recv().await?;
                 if !filter.matches(&envelope) {
                     continue;
                 }
-                return Some((Ok(frame(&envelope)), (subscription, filter, lease)));
+                return Some((Ok(frame(&envelope)), (subscription, filter)));
             }
         },
     )
@@ -283,6 +271,7 @@ fn frame(envelope: &EventEnvelope) -> SseEvent {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -336,6 +325,10 @@ mod tests {
             unreachable!("events stream does not touch chat sessions")
         }
 
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+            unreachable!("events stream does not touch chat sessions")
+        }
+
         async fn update_chat_session(
             &self,
             _command: UpdateChatSessionCommand,
@@ -357,10 +350,6 @@ mod tests {
             _display: crate::domain::chat_session::model::TurnDisplay,
         ) -> Result<(), ServiceError> {
             Ok(())
-        }
-
-        async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
-            unreachable!("events stream does not touch chat sessions")
         }
 
         async fn delete_chat_session(&self, _id: SessionId) -> Result<(), ServiceError> {
@@ -444,10 +433,11 @@ mod tests {
 
     fn test_state(fanout: Arc<EventBus>) -> AppState {
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(Unused),
             workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let settings: Arc<dyn SettingsStore> = Arc::new(MemorySettingsStore::new());
         AppState {
@@ -460,21 +450,18 @@ mod tests {
                 sessions,
                 runtime: Arc::new(Unused),
                 store: Arc::new(Unused),
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService { store: settings }),
             event_bus: Arc::clone(&fanout),
             file_changes: Arc::new(
                 crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
             ),
-            index: Arc::new(crate::agent::index::IndexHub::new(
-                std::env::temp_dir(),
-                Arc::clone(&fanout),
-                Arc::new(robi_index::FakeEmbedder::new(4)),
-            )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
         }
     }
 

@@ -94,8 +94,62 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The terminal front end is off by default, so the workspace run above
+      # never compiles it. `make lint` lints it here rather than on the restore
+      # path only.
+      - name: Clippy (terminal front end)
+        run: cargo clippy -p robi --features tui --all-targets -- -D warnings
+
       - name: Test
         run: cargo test --workspace
+
+      - name: Test (terminal front end)
+        run: cargo test -p robi --features tui
+
+  rust-restore:
+    name: Rust restore path (all features)
+    # Every feature in `crates/robi/Cargo.toml` is off by default, so the default
+    # build compiles none of the gated modules. This job is the only place a
+    # missing feature-graph edge fails, which makes it load-bearing rather than
+    # a second copy of the `rust` job.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.90'
+          components: rustfmt, clippy
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          key: restore
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
 
   docs:
     name: Docs links and build

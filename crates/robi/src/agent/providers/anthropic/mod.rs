@@ -94,12 +94,12 @@ impl AnthropicModel {
 impl Model for AnthropicModel {
     async fn generate(
         &self,
-        _session: SessionId,
+        session: SessionId,
         transcript: &[Message],
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         let tools = self.tools.tools();
-        let images = self.resolve_images(transcript).await?;
+        let images = self.resolve_images(session, transcript).await?;
         let request = wire::build_request(
             &self.settings,
             &tools,
@@ -140,6 +140,7 @@ impl AnthropicModel {
     /// is missing (D11).
     async fn resolve_images(
         &self,
+        session: SessionId,
         transcript: &[Message],
     ) -> Result<wire::ResolvedImages, ModelError> {
         let any_images = transcript.iter().any(|m| !m.images.is_empty());
@@ -163,7 +164,7 @@ impl AnthropicModel {
             for attachment in &message.images {
                 let Some((media_type, bytes)) = self
                     .images
-                    .image(&attachment.id)
+                    .image(session, &attachment.id)
                     .await
                     .map_err(ProviderError::into_model_error)?
                 else {
@@ -482,7 +483,11 @@ mod tests {
 
     #[async_trait]
     impl ImageSource for MapSource {
-        async fn image(&self, id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
+        async fn image(
+            &self,
+            _session: SessionId,
+            id: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
             Ok(self.0.get(id).cloned())
         }
     }
@@ -519,7 +524,7 @@ mod tests {
     async fn a_non_vision_model_rejects_the_turn_naming_itself() {
         let m = model("ant_visionless", catalog(), source(&[]));
         let error = m
-            .resolve_images(&[image_message()])
+            .resolve_images(SessionId::new(), &[image_message()])
             .await
             .expect_err("a vision-less model cannot take images");
         let ModelError::Provider(text) = error else {
@@ -536,7 +541,7 @@ mod tests {
             source(&[("img", "image/png", b"\x89PNG\r\n")]),
         );
         let resolved = m
-            .resolve_images(&[image_message()])
+            .resolve_images(SessionId::new(), &[image_message()])
             .await
             .expect("resolves");
         assert_eq!(
@@ -549,7 +554,7 @@ mod tests {
     async fn a_missing_row_fails_the_turn() {
         let m = model("ant_vision", catalog(), source(&[]));
         let error = m
-            .resolve_images(&[image_message()])
+            .resolve_images(SessionId::new(), &[image_message()])
             .await
             .expect_err("the row is missing");
         let ModelError::Provider(text) = error else {
@@ -562,7 +567,7 @@ mod tests {
     async fn a_transcript_without_images_skips_the_store_and_vision_check() {
         let m = model("ant_visionless", catalog(), source(&[]));
         let resolved = m
-            .resolve_images(&[Message::user("plain")])
+            .resolve_images(SessionId::new(), &[Message::user("plain")])
             .await
             .expect("text-only turns resolve to an empty map");
         assert!(resolved.is_empty());

@@ -1,5 +1,6 @@
 //! Submitting an instruction and reading the transcript.
 
+pub mod attachment;
 pub mod runtime;
 pub mod service;
 

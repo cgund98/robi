@@ -18,21 +18,16 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    domain::{chat_message::runtime::SubmitOutcome, error::ServiceError},
+    domain::{
+        chat_message::attachment::{self, AttachmentInput, MAX_IMAGE_BYTES},
+        chat_message::runtime::SubmitOutcome,
+        error::ServiceError,
+    },
     web_api::state::AppState,
 };
 
-/// The largest image an ingestion request will accept.
-const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 /// The most images one message may carry.
 const MAX_IMAGES_PER_MESSAGE: usize = 8;
-/// The most file attachments one message may carry.
-const MAX_FILES_PER_MESSAGE: usize = 8;
-/// The largest text slice one attachment may carry. Well under `read_file`'s
-/// 32 KiB window, because an attachment is inlined into every later request.
-const MAX_FILE_BYTES: usize = 64 * 1024;
-/// The sum of every attachment's text on one message.
-const MAX_FILES_TOTAL_BYTES: usize = 256 * 1024;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -106,7 +101,7 @@ pub async fn submit_instruction(
             .await
             .map(|Json(payload)| payload)
             .map_err(|error| ServiceError::BadRequest(error.to_string()))?;
-        let files = build_files(workspace_root(&state, session).await, payload.files)?;
+        let files = attach(workspace_root(&state, session).await, payload.files)?;
         (payload.instruction, Vec::new(), files)
     };
 
@@ -171,7 +166,7 @@ async fn ingest_multipart(
                 serde_json::from_str(&text).map_err(|error| {
                     ServiceError::BadRequest(format!("files must be a JSON array: {error}"))
                 })?;
-            files = build_files(workspace_root(state, session).await, inputs)?;
+            files = attach(workspace_root(state, session).await, inputs)?;
             continue;
         }
         if name != "images" {
@@ -210,7 +205,7 @@ async fn ingest_multipart(
                 bytes.len()
             )));
         }
-        if !matches_media_type(&media_type, &bytes) {
+        if !attachment::matches_media_type(&media_type, &bytes) {
             return Err(ServiceError::UnsupportedMediaType(format!(
                 "the bytes do not match a {media_type} image"
             )));
@@ -219,70 +214,11 @@ async fn ingest_multipart(
         let id = Uuid::now_v7().to_string();
         state
             .image_source
-            .store(&session.to_string(), &id, &media_type, bytes.to_vec())
+            .store(session, &id, &media_type, bytes.to_vec())
             .await?;
         images.push(ImageAttachment { id, media_type });
     }
     Ok((instruction, images, files))
-}
-
-/// Validate the client's attachments and turn them into the transcript type.
-///
-/// The client sends each file's bytes base64-encoded; this decodes them and is
-/// the authority on whether the file is text — the name is not consulted. Order:
-/// an 8-file count cap, an oversized-payload guard, the per-file cap, the total
-/// cap, then the content check. A binary file is `415`, an oversized one `413`,
-/// and the rest `400`.
-fn build_files(
-    root: Option<PathBuf>,
-    inputs: Vec<FileAttachmentInput>,
-) -> Result<Vec<FileAttachment>, ServiceError> {
-    let root = root.as_deref();
-    if inputs.len() > MAX_FILES_PER_MESSAGE {
-        return Err(ServiceError::BadRequest(format!(
-            "a message can carry at most {MAX_FILES_PER_MESSAGE} files"
-        )));
-    }
-    let mut total = 0usize;
-    let mut files = Vec::with_capacity(inputs.len());
-    for input in inputs {
-        if input.name.trim().is_empty() {
-            return Err(ServiceError::BadRequest(
-                "a file attachment needs a name".into(),
-            ));
-        }
-        // Guard before decoding: base64 is 4/3 of the bytes, so a payload over
-        // twice the cap cannot decode to something within it.
-        if input.content_base64.len() > MAX_FILE_BYTES * 2 {
-            return Err(ServiceError::PayloadTooLarge(format!(
-                "{} is over the {MAX_FILE_BYTES} byte limit",
-                input.name
-            )));
-        }
-        let bytes = decode_base64(&input.name, &input.content_base64)?;
-        if bytes.len() > MAX_FILE_BYTES {
-            return Err(ServiceError::PayloadTooLarge(format!(
-                "{} is {} bytes, over the {MAX_FILE_BYTES} limit",
-                input.name,
-                bytes.len()
-            )));
-        }
-        total += bytes.len();
-        if total > MAX_FILES_TOTAL_BYTES {
-            return Err(ServiceError::BadRequest(format!(
-                "the attached files total more than {MAX_FILES_TOTAL_BYTES} bytes"
-            )));
-        }
-        let text = decode_text(&input.name, bytes)?;
-        files.push(FileAttachment {
-            name: input.name,
-            path: classify_path(input.absolute_path.as_deref(), root),
-            start_line: input.start_line,
-            end_line: input.end_line,
-            text,
-        });
-    }
-    Ok(files)
 }
 
 /// The session's workspace root, for deciding in-workspace vs outside. `None`
@@ -306,68 +242,25 @@ async fn workspace_root(state: &AppState, session: robi_core::ids::SessionId) ->
     Some(PathBuf::from(workspace.root))
 }
 
-/// The workspace-relative path of an attachment, or `None` when it is outside.
+/// The wire DTO, mapped onto the domain's input shape.
 ///
-/// The client sends the file's absolute path when its picker provides one; the
-/// server decides here, so the client never classifies. Both paths are
-/// canonicalized, which resolves symlinks — a link that points out of the
-/// workspace is outside. A path that is not under the root, or cannot be
-/// resolved (a file the server cannot see, e.g. a browser upload with no path),
-/// is outside and keeps only its name. The server canonicalizes to compare; it
-/// never reads the file's contents.
-fn classify_path(absolute_path: Option<&str>, root: Option<&std::path::Path>) -> Option<String> {
-    let absolute_path = absolute_path?;
-    let root = std::fs::canonicalize(root?).ok()?;
-    let file = std::fs::canonicalize(absolute_path).ok()?;
-    let relative = file.strip_prefix(&root).ok()?;
-    let relative = relative.to_string_lossy().replace('\\', "/");
-    if relative.is_empty() {
-        return None;
-    }
-    Some(relative)
-}
-
-/// Base64-decode one attachment's bytes. A body that is not valid base64 is a
-/// malformed request.
-fn decode_base64(name: &str, encoded: &str) -> Result<Vec<u8>, ServiceError> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| ServiceError::BadRequest(format!("{name} is not valid base64: {error}")))
-}
-
-/// The text of one attachment, or `415` when the bytes are not text.
-///
-/// The same rule the read tools use (`read_code`, `grep`): a NUL byte marks
-/// binary, and the bytes must be valid UTF-8. This is the authority — the client
-/// sniffs too, for feedback at attach time, but a client that lies is caught
-/// here, and no file name or extension is trusted.
-fn decode_text(name: &str, bytes: Vec<u8>) -> Result<String, ServiceError> {
-    if bytes.contains(&0) {
-        return Err(ServiceError::UnsupportedMediaType(format!(
-            "{name} is not a text file"
-        )));
-    }
-    String::from_utf8(bytes)
-        .map_err(|_| ServiceError::UnsupportedMediaType(format!("{name} is not utf-8 text")))
-}
-
-/// Magic-byte media type check. No decode, no `image` crate: the signature is
-/// enough to catch a mis-typed part before it reaches the provider.
-fn matches_media_type(media_type: &str, bytes: &[u8]) -> bool {
-    match media_type {
-        "image/png" => {
-            bytes.len() >= 8 && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
-        }
-        "image/jpeg" => {
-            bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff
-        }
-        // WebP starts with "RIFF" + a 4-byte size + "WEBP".
-        "image/webp" => bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
-        // GIF87a or GIF89a.
-        "image/gif" => bytes.len() >= 6 && &bytes[0..4] == b"GIF8" && bytes[5] == b'a',
-        _ => false,
-    }
+/// The rules live in `domain::chat_message::attachment`; this is the HTTP
+/// surface's field set and nothing else.
+fn attach(
+    root: Option<PathBuf>,
+    inputs: Vec<FileAttachmentInput>,
+) -> Result<Vec<FileAttachment>, ServiceError> {
+    let inputs = inputs
+        .into_iter()
+        .map(|input| AttachmentInput {
+            name: input.name,
+            absolute_path: input.absolute_path,
+            start_line: input.start_line,
+            end_line: input.end_line,
+            content_base64: input.content_base64,
+        })
+        .collect();
+    Ok(attachment::build_files(root, inputs)?)
 }
 
 #[axum::debug_handler]
@@ -438,12 +331,10 @@ pub async fn get_image(
     Path((id, image_id)): Path<(String, String)>,
 ) -> Result<Response, ServiceError> {
     let session = parse_session_id(&id)?;
-    // The session id is not a column on the read, but the row belongs to a
-    // session; crossing the streams only matters for correctness of access. The
-    // store scopes reads by id alone, and the image id is a uuid no caller can
-    // guess, so no session check is needed here.
-    let _ = session;
-    match state.image_source.image(&image_id).await? {
+    // Scoped by the path's session: the bytes live in that chat's own blob file,
+    // which is also the index. An image id from another chat reads as missing
+    // rather than resolving, so a guessed id cannot cross sessions.
+    match state.image_source.image(session, &image_id).await? {
         Some((media_type, bytes)) => Ok((
             [
                 (axum::http::header::CONTENT_TYPE, media_type),
@@ -923,6 +814,7 @@ fn execution_name(status: ExecutionStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::chat_session::lease::MemoryLocks;
     use robi_core::message::Usage;
 
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1004,10 +896,11 @@ mod tests {
             asset_cleaner: None,
         });
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let store: Arc<dyn robi_core::store::MessageStore> = Arc::new(SqliteMessageStore::new(
             Arc::clone(&pool),
@@ -1022,6 +915,7 @@ mod tests {
                 sessions,
                 runtime,
                 store,
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
@@ -1032,15 +926,11 @@ mod tests {
                     &pool,
                 )),
             ),
-            index: Arc::new(crate::agent::index::IndexHub::new(
-                std::env::temp_dir(),
-                Arc::new(EventBus::new()),
-                Arc::new(robi_index::FakeEmbedder::new(4)),
-            )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
         }
     }
 
@@ -1157,214 +1047,6 @@ mod tests {
         ])))
         .expect("json");
         assert_eq!(value["files"], serde_json::json!([{"name": "notes.txt"}]));
-    }
-
-    #[test]
-    fn build_files_accepts_a_normal_attachment() {
-        let files = build_files(None, vec![input("a.rs", "small")]).expect("under every cap");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].name, "a.rs");
-        assert_eq!(files[0].text, "small");
-    }
-
-    #[test]
-    fn build_files_accepts_a_log_file_because_its_bytes_are_text() {
-        // The point of the change: the name and extension are not consulted.
-        let files = build_files(None, vec![input("server.log", "2026-01-01 boot\n")])
-            .expect("a .log is text by content");
-        assert_eq!(files[0].text, "2026-01-01 boot\n");
-    }
-
-    #[test]
-    fn build_files_rejects_a_binary_file() {
-        // A NUL byte marks binary, whatever the name says.
-        let error =
-            build_files(None, vec![input_bytes("not-really.rs", b"\x00\x01\x02")]).unwrap_err();
-        assert!(matches!(error, ServiceError::UnsupportedMediaType(_)));
-    }
-
-    #[test]
-    fn build_files_rejects_non_utf8_text() {
-        let error =
-            build_files(None, vec![input_bytes("latin1.txt", b"\xff\xfe\xfa")]).unwrap_err();
-        assert!(matches!(error, ServiceError::UnsupportedMediaType(_)));
-    }
-
-    #[test]
-    fn build_files_rejects_bad_base64() {
-        let error = build_files(
-            None,
-            vec![FileAttachmentInput {
-                name: "a.rs".to_owned(),
-                absolute_path: None,
-                start_line: None,
-                end_line: None,
-                content_base64: "not base64!!".to_owned(),
-            }],
-        )
-        .unwrap_err();
-        assert!(matches!(error, ServiceError::BadRequest(_)));
-    }
-
-    #[test]
-    fn build_files_rejects_too_many_files() {
-        let inputs = (0..MAX_FILES_PER_MESSAGE + 1)
-            .map(|index| input(&format!("f{index}.rs"), "x"))
-            .collect();
-        let error = build_files(None, inputs).unwrap_err();
-        assert_eq!(
-            error,
-            ServiceError::BadRequest(format!(
-                "a message can carry at most {MAX_FILES_PER_MESSAGE} files"
-            ))
-        );
-    }
-
-    #[test]
-    fn build_files_rejects_an_oversized_file() {
-        let big = "x".repeat(MAX_FILE_BYTES + 1);
-        let error = build_files(None, vec![input("big.rs", &big)]).unwrap_err();
-        assert!(matches!(error, ServiceError::PayloadTooLarge(_)));
-    }
-
-    #[test]
-    fn build_files_rejects_a_total_over_the_cap() {
-        // Each file is under the per-file cap, but together they exceed the total.
-        let chunk = "x".repeat(MAX_FILE_BYTES);
-        let count = MAX_FILES_TOTAL_BYTES / MAX_FILE_BYTES + 1;
-        let inputs = (0..count)
-            .map(|index| input(&format!("f{index}.rs"), &chunk))
-            .collect();
-        let error = build_files(None, inputs).unwrap_err();
-        assert!(matches!(error, ServiceError::BadRequest(_)));
-    }
-
-    #[test]
-    fn build_files_rejects_a_nameless_file() {
-        let error = build_files(None, vec![input("   ", "x")]).unwrap_err();
-        assert_eq!(
-            error,
-            ServiceError::BadRequest("a file attachment needs a name".into())
-        );
-    }
-
-    fn base64(bytes: &[u8]) -> String {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    }
-
-    /// An outside-workspace attachment: no absolute path.
-    fn input(name: &str, text: &str) -> FileAttachmentInput {
-        input_bytes(name, text.as_bytes())
-    }
-
-    fn input_bytes(name: &str, bytes: &[u8]) -> FileAttachmentInput {
-        FileAttachmentInput {
-            name: name.to_owned(),
-            absolute_path: None,
-            start_line: None,
-            end_line: None,
-            content_base64: base64(bytes),
-        }
-    }
-
-    /// An attachment from an absolute path; the server classifies it.
-    fn at_path(name: &str, absolute_path: &str, text: &str) -> FileAttachmentInput {
-        FileAttachmentInput {
-            name: name.to_owned(),
-            absolute_path: Some(absolute_path.to_owned()),
-            start_line: None,
-            end_line: None,
-            content_base64: base64(text.as_bytes()),
-        }
-    }
-
-    /// A canonical temp dir with one nested file, as a workspace root with a file.
-    fn workspace_with_file(relative: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let root = std::env::temp_dir().join(format!("robi-attach-{unique}"));
-        let file = root.join(relative);
-        std::fs::create_dir_all(file.parent().expect("a parent")).expect("mkdir");
-        std::fs::write(&file, "boom").expect("write");
-        (root.canonicalize().expect("canonical root"), file)
-    }
-
-    #[test]
-    fn an_in_workspace_file_keeps_its_relative_path() {
-        let (root, file) = workspace_with_file("src/error.rs");
-        let files = build_files(
-            Some(root.clone()),
-            vec![at_path("error.rs", file.to_str().expect("utf-8"), "boom")],
-        )
-        .expect("a relative path");
-        assert_eq!(files[0].path.as_deref(), Some("src/error.rs"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn a_file_outside_the_root_has_no_path() {
-        let (root, _) = workspace_with_file("src/error.rs");
-        // A real file that is not under the root.
-        let outside = root
-            .parent()
-            .expect("a parent")
-            .join("robi-outside-attach.md");
-        std::fs::write(&outside, "hi").expect("write");
-        let files = build_files(
-            Some(root.clone()),
-            vec![at_path(
-                "robi-outside-attach.md",
-                outside.to_str().expect("utf-8"),
-                "hi",
-            )],
-        )
-        .expect("it is text");
-        assert_eq!(files[0].path, None, "a path outside the root is outside");
-        let _ = std::fs::remove_file(&outside);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn an_attachment_with_no_absolute_path_is_outside() {
-        // A browser upload, or a client that sent no path.
-        let (root, _) = workspace_with_file("src/error.rs");
-        let files =
-            build_files(Some(root.clone()), vec![input("server.log", "boot")]).expect("it is text");
-        assert_eq!(files[0].path, None);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn no_root_means_everything_is_outside() {
-        let (root, file) = workspace_with_file("src/error.rs");
-        let files = build_files(
-            None,
-            vec![at_path("error.rs", file.to_str().expect("utf-8"), "boom")],
-        )
-        .expect("it is text");
-        assert_eq!(files[0].path, None);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn a_symlink_that_leaves_the_root_is_outside() {
-        let (root, _) = workspace_with_file("src/error.rs");
-        let outside =
-            std::env::temp_dir().join(format!("robi-attach-outside-{}", std::process::id()));
-        std::fs::write(&outside, "secret").expect("write");
-        let link = root.join("leak.md");
-        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-        let files = build_files(
-            Some(root.clone()),
-            vec![at_path("leak.md", link.to_str().expect("utf-8"), "hi")],
-        )
-        .expect("it is text");
-        assert_eq!(files[0].path, None, "a symlink out of the root is outside");
-        let _ = std::fs::remove_file(&outside);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

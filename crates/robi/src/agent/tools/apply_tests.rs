@@ -1,95 +1,11 @@
 use std::sync::Arc;
 
-use robi_core::ids::SessionId;
-use robi_core::tool::{ApprovalDecision, Tool, ToolRun};
+use robi_core::tool::{ApprovalDecision, Tool};
 use serde_json::json;
-use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-use super::context::ToolContext;
-use super::{
-    delete_file::DeleteFile, edit_file::EditFile, read_code::ReadCode, write_file::WriteFile,
-};
-use crate::adapters::{
-    chat_session::repo::SqliteChatSessionRepository, file_change::repo::SqliteFileChangeRepository,
-    sqlite, workspace::repo::SqliteWorkspaceRepository,
-};
+use super::test_harness::{harness, run};
+use super::{delete_file::DeleteFile, edit_file::EditFile, write_file::WriteFile};
 use crate::agent::review::{hunks_for_session, reject, FileStatus};
-use crate::domain::{
-    chat_session::{
-        model::{AgentMode, CreateChatSessionCommand},
-        service::ChatSessionService,
-    },
-    workspace::service::WorkspaceService,
-};
-
-pub(crate) struct Harness {
-    pub(crate) ctx: Arc<ToolContext>,
-    pub(crate) root: std::path::PathBuf,
-    pub(crate) session_id: SessionId,
-}
-
-pub(crate) async fn harness() -> Harness {
-    let url = format!(
-        "sqlite://file:robi-edit-{}?mode=memory&cache=shared",
-        Uuid::now_v7().simple()
-    );
-    let pool = Arc::new(sqlite::init_pool(&url).await.expect("pool"));
-    let root = std::env::temp_dir().join(format!("robi-edit-{}", Uuid::now_v7().simple()));
-    std::fs::create_dir_all(&root).unwrap();
-    let workspaces = Arc::new(SqliteWorkspaceRepository::new(Arc::clone(&pool)));
-    let opened = WorkspaceService {
-        repository: workspaces.clone(),
-        asset_cleaner: None,
-    }
-    .open_workspace(root.to_str().unwrap())
-    .await
-    .unwrap();
-    let sessions = Arc::new(ChatSessionService {
-        repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
-        workspaces,
-        events: None,
-        plan_cleaner: None,
-    });
-    let chat = sessions
-        .create_chat_session(CreateChatSessionCommand {
-            workspace_id: opened.workspace.id,
-            title: None,
-            mode: AgentMode::Agent,
-            model_config: crate::domain::chat_session::model::ModelConfig::default(),
-        })
-        .await
-        .unwrap();
-    let canonical = std::fs::canonicalize(&root).unwrap();
-    let ctx = Arc::new(ToolContext {
-        session_id: chat.id,
-        workspace_id: chat.workspace_id,
-        root: canonical,
-        sessions,
-        file_changes: Arc::new(SqliteFileChangeRepository::new(pool)),
-        index: None,
-        lsp: crate::agent::lsp::LspHub::new(),
-        lsp_enabled: true,
-        originals: None,
-        settings: None,
-        events: None,
-    });
-    Harness {
-        ctx,
-        root,
-        session_id: chat.id,
-    }
-}
-
-impl Drop for Harness {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn run() -> ToolRun {
-    ToolRun::new(CancellationToken::new())
-}
 
 #[tokio::test]
 async fn edit_file_replaces_one_match_and_keeps_the_first_baseline() {
@@ -261,10 +177,10 @@ async fn delete_file_refuses_a_directory() {
 }
 
 #[tokio::test]
-async fn edit_and_write_refuse_an_omitted_marker() {
+async fn edit_and_write_refuse_a_compressed_shell_marker() {
     let harness = harness().await;
     std::fs::write(harness.root.join("pay.rs"), "fn keep() {}\n").unwrap();
-    let marker = "<<<ROBI_OMITTED symbol=\"keep\" lines=1-1 sha256=\"abcdabcdabcdabcd\">>>";
+    let marker = "<<<ROBI_LOG id=\"abc\" sha256=\"abcdabcdabcdabcd\" exit=0>>>";
     let edit = EditFile::new(Arc::clone(&harness.ctx));
     let error = edit
         .execute(
@@ -273,8 +189,10 @@ async fn edit_and_write_refuse_an_omitted_marker() {
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("omitted-body marker"), "{error}");
-    assert!(error.to_string().contains("symbol: keep"), "{error}");
+    assert!(
+        error.to_string().contains("compressed shell marker"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read_to_string(harness.root.join("pay.rs")).unwrap(),
         "fn keep() {}\n"
@@ -284,25 +202,8 @@ async fn edit_and_write_refuse_an_omitted_marker() {
         .execute(json!({"path": "pay.rs", "content": marker}), run())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("omitted-body marker"), "{error}");
-}
-
-#[tokio::test]
-async fn read_code_outlines_a_rust_file() {
-    let harness = harness().await;
-    std::fs::write(
-        harness.root.join("pay.rs"),
-        "fn one() {\n    let value = 1;\n}\nfn two() {\n    let value = 2;\n}\n",
-    )
-    .unwrap();
-    let tool = ReadCode::new(Arc::clone(&harness.ctx));
-    let result = tool
-        .execute(json!({"path": "pay.rs", "focus_symbols": ["one"]}), run())
-        .await
-        .unwrap();
-    assert_eq!(result["view"], "outline");
-    let content = result["content"].as_str().unwrap();
-    assert!(content.contains("let value = 1;"), "{content}");
-    assert!(content.contains("<<<ROBI_OMITTED"), "{content}");
-    assert!(!content.contains("let value = 2;"), "{content}");
+    assert!(
+        error.to_string().contains("compressed shell marker"),
+        "{error}"
+    );
 }

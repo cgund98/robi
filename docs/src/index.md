@@ -45,8 +45,7 @@ use the app.
   [Core](design/core/agent-loop.md), [Providers](design/providers/providers-streaming.md),
   [Shell](design/shell/frontend-layout.md), [Persistence](design/persistence/persistence.md),
   [Tools](design/tools/read-tools.md), [Review](design/review/code-review.md),
-  [Intelligence](design/intelligence/lsp.md), [Reach](design/reach/mcp.md),
-  [Compression](design/compression/shell-output.md).
+  [Reach](design/reach/mcp.md), [Compression](design/compression/shell-output.md).
 - **Discovery notes** — research that fed a design, kept as an appendix:
   [Skills discovery](discovery/skills.md).
 

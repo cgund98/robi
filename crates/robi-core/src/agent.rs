@@ -140,6 +140,8 @@ pub struct Agent {
     config: LoopConfig,
     compressor: Option<Arc<dyn Compressor>>,
     compactor: Option<Arc<dyn Compactor>>,
+    /// The mode this agent's turns were built for, stamped on each user message.
+    mode_label: Option<String>,
 }
 
 impl Agent {
@@ -158,6 +160,7 @@ impl Agent {
             config,
             compressor: None,
             compactor: None,
+            mode_label: None,
         }
     }
 
@@ -170,6 +173,17 @@ impl Agent {
     /// Summarize an older prefix and rewrite the transcript. Absent in tests.
     pub fn with_compactor(mut self, compactor: Arc<dyn Compactor>) -> Self {
         self.compactor = Some(compactor);
+        self
+    }
+
+    /// Label every turn this agent runs with the mode it was built for.
+    ///
+    /// The label goes on the user message a turn starts with, and nowhere else:
+    /// the turns that follow it belong to that message, so a front end can colour
+    /// a turn by the mode that produced it without the loop ever reading the
+    /// field back. Absent in tests, which have no mode.
+    pub fn with_mode_label(mut self, mode: impl Into<String>) -> Self {
+        self.mode_label = Some(mode.into());
         self
     }
 
@@ -310,9 +324,12 @@ impl Agent {
             Err(error) => return TurnOutcome::Failed(error),
         }
 
-        let message = Message::user_with_images(text, images)
+        let mut message = Message::user_with_images(text, images)
             .with_skills(skills)
             .with_files(files);
+        if let Some(mode) = &self.mode_label {
+            message = message.with_mode_label(mode.clone());
+        }
         if let Err(error) = self.store.append(session, message.clone()).await {
             return TurnOutcome::Failed(error.into());
         }
@@ -481,13 +498,13 @@ impl Agent {
                     // A cancelled turn does not append, and neither does a stream
                     // that ends without a finished message.
                     message.id = message_id;
-                    self.store.append(*session, message.clone()).await?;
+                    self.store.append(*session, (*message).clone()).await?;
                     self.emit(Event::MessageAdded {
                         session: *session,
                         message: message.id,
                     })
                     .await;
-                    return Ok(message);
+                    return Ok(*message);
                 }
                 Some(Delta::Failed(error)) => return Err(error.into()),
                 Some(delta) => {

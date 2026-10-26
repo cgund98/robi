@@ -237,6 +237,7 @@ struct NoImages;
 impl ImageSource for NoImages {
     async fn image(
         &self,
+        _session: robi_core::ids::SessionId,
         _id: &str,
     ) -> Result<Option<(String, Vec<u8>)>, robi::agent::providers::ProviderError> {
         Ok(None)
@@ -253,7 +254,7 @@ async fn drain(mut stream: ModelStream) -> (Vec<Delta>, Option<Message>) {
     let mut finished = None;
     while let Some(delta) = stream.next().await {
         if let Delta::Finished(message) = &delta {
-            finished = Some(message.clone());
+            finished = Some((**message).clone());
         }
         deltas.push(delta);
     }

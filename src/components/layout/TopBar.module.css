@@ -1,0 +1,65 @@
+.bar {
+  position: absolute;
+  top: calc(-1 * var(--titlebar-height));
+  right: 0;
+  left: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-3);
+  height: var(--titlebar-height);
+  padding: 0 var(--space-3) 0 var(--space-2);
+  /* macOS draws its window buttons over the app; leave them their corner. */
+  padding-left: var(--traffic-light-inset);
+  user-select: none;
+}
+
+.leading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  justify-self: start;
+}
+
+.center {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  max-width: var(--chat-column-width);
+  justify-self: center;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-self: end;
+}
+
+.iconButton {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.iconButton:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg-surface-hover);
+}
+
+.iconButton:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.iconButton:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

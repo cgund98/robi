@@ -25,6 +25,7 @@ use crate::{
     domain::{
         chat_message::runtime::{ChatRuntime, SubmitOutcome},
         chat_session::{
+            lease::{LeaseGuard, Locks, Resource, Scope},
             model::{AgentMode, ModeOverride, TurnDisplay},
             service::ChatSessionService,
         },
@@ -47,6 +48,9 @@ pub struct AgentFactory {
     pub config: LoopConfig,
     /// Chat session rows. Absent in tests that do not name sessions.
     pub sessions: Option<Arc<ChatSessionService>>,
+    /// Cross-process ownership. A turn cannot start on a session another process
+    /// is driving.
+    pub locks: Arc<dyn Locks>,
     /// Baselines for files this session changes. Required when `sessions` is set.
     pub file_changes: Option<Arc<dyn FileChangeRepository>>,
     /// Brave, or a fake in tests. `web_search` calls this.
@@ -54,17 +58,23 @@ pub struct AgentFactory {
     /// Publishes `robi.session.v1.updated` after a title is stored. Absent when
     /// there is no bus.
     pub bus: Option<Arc<EventBus>>,
-    /// Workspace semantic index. Absent in tests that do not search.
-    pub index: Option<Arc<crate::agent::index::IndexHub>>,
-    /// Language servers shared by sessions on one workspace. Absent in tests
-    /// that do not call them; those sessions get a hub of their own.
-    pub lsp: Option<Arc<crate::agent::lsp::LspHub>>,
     /// Global settings. Absent in tests, which leave language-server tools on.
     pub settings: Option<Arc<dyn SettingsStore>>,
     /// MCP host. Absent in tests. Agent mode attaches its tools before the model runs.
     pub mcp: Option<Arc<crate::agent::mcp::McpHub>>,
     /// Capped shell streams. Absent in tests that do not compress.
     pub originals: Option<Arc<dyn crate::agent::compress::OriginalStore>>,
+}
+
+/// What one session actor is built from: the model and registry it drives, and the
+/// mode its turns are stamped with.
+///
+/// A bundle rather than three parameters, because the three always travel together
+/// and every `start_*` and `spawn_actor` would otherwise take each of them.
+struct Actor {
+    model: Arc<dyn Model>,
+    tools: Arc<ToolRegistry>,
+    mode: AgentMode,
 }
 
 impl AgentFactory {
@@ -74,14 +84,19 @@ impl AgentFactory {
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
         max_iterations: u32,
+        mode: AgentMode,
     ) -> Agent {
+        // The mode is stamped on each turn's user message, so a front end can
+        // colour a turn by the mode that produced it after the session has moved
+        // on. The loop never reads it back.
         let agent = Agent::new(
             Arc::clone(&self.store),
             Arc::clone(&self.events),
             model,
             tools,
             self.config.with_max_iterations(max_iterations),
-        );
+        )
+        .with_mode_label(mode.as_str());
         match &self.originals {
             Some(store) => agent.with_compressor(Arc::new(
                 crate::agent::compress::ShellCompressor::new(Arc::clone(store), session),
@@ -129,7 +144,6 @@ impl AgentFactory {
             Option<std::path::PathBuf>,
             AgentMode,
             ModeOverride,
-            Option<String>,
         ),
         ServiceError,
     > {
@@ -139,7 +153,6 @@ impl AgentFactory {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             ));
         };
         let chat = sessions.get_chat_session(session).await?;
@@ -157,27 +170,12 @@ impl AgentFactory {
             ServiceError::Unknown
         })?;
         let registry = ToolRegistry::new();
-        let lsp_enabled = self.lsp_enabled().await?;
-        let lsp = match self.lsp.clone() {
-            Some(hub) => hub,
-            None => {
-                let extra = self.path_entries().await?;
-                let path =
-                    crate::agent::blocking::call(move || crate::agent::mcp::resolve_path(&extra))
-                        .await
-                        .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
-                crate::agent::lsp::LspHub::with_search_path(path)
-            }
-        };
         let ctx = Arc::new(crate::agent::tools::ToolContext {
             session_id: session,
             workspace_id: chat.workspace_id,
             root: root.clone(),
             sessions: Arc::clone(sessions),
             file_changes,
-            index: self.index.clone(),
-            lsp,
-            lsp_enabled,
             originals: self.originals.clone(),
             settings: self.settings.clone(),
             events: self.bus.clone(),
@@ -227,28 +225,7 @@ impl AgentFactory {
             }
         }
         tracing::info!(%session, mode = mode.as_str(), "prepared the session actor");
-        Ok((Arc::new(registry), Some(root), mode, choice, chat.plan_path))
-    }
-
-    async fn lsp_enabled(&self) -> Result<bool, ServiceError> {
-        let Some(settings) = &self.settings else {
-            return Ok(true);
-        };
-        let stored = settings.get(crate::domain::settings::keys::LSP).await?;
-        Ok(crate::domain::settings::keys::lsp_enabled(
-            stored.as_ref().map(|setting| setting.value.as_str()),
-        ))
-    }
-
-    /// The `path_entries` setting appended to the LSP resolver's `PATH`.
-    async fn path_entries(&self) -> Result<String, ServiceError> {
-        let Some(settings) = &self.settings else {
-            return Ok(String::new());
-        };
-        let stored = settings
-            .get(crate::domain::settings::keys::PATH_ENTRIES)
-            .await?;
-        Ok(stored.map(|setting| setting.value).unwrap_or_default())
+        Ok((Arc::new(registry), Some(root), mode, choice))
     }
 
     async fn approval_required(&self, key: &str) -> Result<bool, ServiceError> {
@@ -295,6 +272,13 @@ struct Slot {
     running: bool,
     /// Bumped each time an actor is started, so stop waits for that actor only.
     generation: u64,
+    /// The `Turn` lease this process holds on the session.
+    ///
+    /// Taken before an actor starts and kept after it goes idle when the turn
+    /// paused for approval: releasing there would let another process resume a
+    /// call this one is still showing as pending. Dropping it releases one
+    /// reference, and the last reference closes the session's `redb` handle.
+    lease: Option<LeaseGuard>,
 }
 
 struct Slots {
@@ -320,16 +304,36 @@ impl SerializedChatRuntime {
         }
     }
 
-    fn spawn_actor(
-        &self,
-        session: SessionId,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
-        max_iterations: u32,
-    ) {
-        let agent = self
+    /// Take the `Turn` lease for a session this process is about to drive.
+    ///
+    /// No wait: the holder is mid-turn, so a refusal that is already decided
+    /// should not be delayed by ten seconds first. Refcounting happens inside the
+    /// adapter, so a slot that already holds it is the same owner.
+    fn take_turn(&self, slot: &mut Slot, session: SessionId) -> Result<(), ServiceError> {
+        if slot.lease.is_some() {
+            return Ok(());
+        }
+        let guard = self
             .factory
-            .build(session, Arc::clone(&model), tools, max_iterations);
+            .locks
+            .try_acquire(&Resource::Session(session), Scope::Turn)
+            .map_err(|error| {
+                tracing::info!(%session, refusal = %error, "turn refused: another process owns the chat");
+                error.conflict()
+            })?;
+        slot.lease = Some(guard);
+        Ok(())
+    }
+
+    fn spawn_actor(&self, session: SessionId, actor: Actor, max_iterations: u32) {
+        let model = actor.model;
+        let agent = self.factory.build(
+            session,
+            Arc::clone(&model),
+            actor.tools,
+            max_iterations,
+            actor.mode,
+        );
         let slots = Arc::clone(&self.slots);
         let store = Arc::clone(&self.factory.store);
         let sessions = self.factory.sessions.clone();
@@ -345,8 +349,7 @@ impl SerializedChatRuntime {
         instruction: String,
         images: Vec<robi_core::message::ImageAttachment>,
         files: Vec<robi_core::message::FileAttachment>,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
+        actor: Actor,
     ) -> Result<SubmitOutcome, ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
@@ -354,6 +357,7 @@ impl SerializedChatRuntime {
             replace_pending(slot, session, instruction, images, files);
             return Ok(SubmitOutcome::Accepted);
         }
+        self.take_turn(slot, session)?;
         slot.running = true;
         slot.generation += 1;
         slot.pending = Some(Work::Instruction {
@@ -363,7 +367,7 @@ impl SerializedChatRuntime {
         });
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
-        self.spawn_actor(session, model, tools, max_iterations);
+        self.spawn_actor(session, actor, max_iterations);
         Ok(SubmitOutcome::Accepted)
     }
 
@@ -372,8 +376,7 @@ impl SerializedChatRuntime {
         session: SessionId,
         call: ToolCallId,
         reject: Option<String>,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
+        actor: Actor,
     ) -> Result<(), ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
@@ -381,33 +384,30 @@ impl SerializedChatRuntime {
             tracing::warn!(%session, "decision refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
+        self.take_turn(slot, session)?;
         slot.running = true;
         slot.generation += 1;
         slot.pending = Some(Work::Decision { call, reject });
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
-        self.spawn_actor(session, model, tools, max_iterations);
+        self.spawn_actor(session, actor, max_iterations);
         Ok(())
     }
 
-    async fn start_compact(
-        &self,
-        session: SessionId,
-        model: Arc<dyn Model>,
-        tools: Arc<ToolRegistry>,
-    ) -> Result<(), ServiceError> {
+    async fn start_compact(&self, session: SessionId, actor: Actor) -> Result<(), ServiceError> {
         let mut slots = self.slots.map.lock().await;
         let slot = slots.entry(session).or_default();
         if slot.running {
             tracing::warn!(%session, "compaction refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
+        self.take_turn(slot, session)?;
         slot.running = true;
         slot.generation += 1;
         slot.pending = Some(Work::Compact);
         drop(slots);
         let max_iterations = self.factory.max_iterations().await?;
-        self.spawn_actor(session, model, tools, max_iterations);
+        self.spawn_actor(session, actor, max_iterations);
         Ok(())
     }
 
@@ -433,7 +433,7 @@ impl SerializedChatRuntime {
         let model = self
             .factory
             .models
-            .model(Arc::new(ToolRegistry::new()), None, chat.mode, choice, None)
+            .model(Arc::new(ToolRegistry::new()), None, chat.mode, choice)
             .await?;
         Ok(model.context_window())
     }
@@ -481,8 +481,7 @@ impl ChatRuntime for SerializedChatRuntime {
         // Resolve before the slot is marked running, so a missing key does not
         // leave an actor that will never start. A paused turn is settled inside
         // `user_input`, which rejects the calls still waiting.
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
 
         if self.actor_running(session).await {
             let mut slots = self.slots.map.lock().await;
@@ -497,7 +496,7 @@ impl ChatRuntime for SerializedChatRuntime {
         let model = match self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await
         {
             Ok(model) => model,
@@ -507,7 +506,13 @@ impl ChatRuntime for SerializedChatRuntime {
             }
         };
         let outcome = self
-            .start_actor(session, instruction, images, files, model, tools)
+            .start_actor(
+                session,
+                instruction,
+                images,
+                files,
+                Actor { model, tools, mode },
+            )
             .await?;
         self.note_turn_display(session, TurnDisplay::Pending).await;
         Ok(outcome)
@@ -523,12 +528,11 @@ impl ChatRuntime for SerializedChatRuntime {
             tracing::warn!(%session, "decision refused because the session is running");
             return Err(ServiceError::Conflict("chat session is running".into()));
         }
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
         let model = match self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await
         {
             Ok(model) => model,
@@ -539,7 +543,7 @@ impl ChatRuntime for SerializedChatRuntime {
         };
         let approved = reject.is_none();
         tracing::info!(%session, %call, approved, "tool decision accepted");
-        self.start_decision(session, call, reject, model, tools)
+        self.start_decision(session, call, reject, Actor { model, tools, mode })
             .await?;
         self.note_turn_display(session, TurnDisplay::Pending).await;
         Ok(())
@@ -611,14 +615,47 @@ impl ChatRuntime for SerializedChatRuntime {
 
         // The actor's model only needs to expose the window; the compactor
         // builds its own no-tools model. A tools-less build is enough.
-        let (tools, workspace, mode, choice, plan_path) =
-            self.factory.session_registry(session).await?;
+        let (tools, workspace, mode, choice) = self.factory.session_registry(session).await?;
         let model = self
             .factory
             .models
-            .model(Arc::clone(&tools), workspace, mode, choice, plan_path)
+            .model(Arc::clone(&tools), workspace, mode, choice)
             .await?;
-        self.start_compact(session, model, tools).await
+        self.start_compact(session, Actor { model, tools, mode })
+            .await
+    }
+}
+
+/// Release the `Turn` lease unless the transcript still has an unfinished call.
+///
+/// A paused turn keeps it. The actor goes idle when a turn pauses for approval,
+/// so releasing here would let a second process resume a call this one is still
+/// showing as pending. `unresolved_turn` is the same test the loop uses to decide
+/// whether a transcript is mid-turn, so the two cannot drift.
+async fn settle_lease(store: &Arc<dyn MessageStore>, slots: &Arc<Slots>, session: SessionId) {
+    let paused = match store.messages(session).await {
+        Ok(messages) => robi_core::message::unresolved_turn(&messages).is_some(),
+        Err(err) => {
+            // Cannot tell, so do not hoard the session: the next start reconciles
+            // the display, and a wrong release is recoverable where a held lock
+            // the user cannot see is not.
+            tracing::warn!(%session, %err, "could not read the transcript to settle the lease");
+            false
+        }
+    };
+    if paused {
+        tracing::info!(%session, "keeping the session lease: the turn is paused");
+        return;
+    }
+    let mut guard = slots.map.lock().await;
+    if let Some(slot) = guard.get_mut(&session) {
+        if slot.running {
+            // A new actor took the session between the notify and this lock.
+            return;
+        }
+        if slot.lease.take().is_some() {
+            tracing::info!(%session, "released the session lease");
+        }
     }
 }
 
@@ -732,6 +769,10 @@ async fn run_actor(
                         tracing::warn!(%session, %err, "failed to store turn display");
                     }
                 }
+                // Last, because it decides whether this process still owns the
+                // session, and the answer depends on the transcript the turn
+                // just wrote.
+                settle_lease(&store, &slots, session).await;
                 return;
             };
             let cancel = CancellationToken::new();
@@ -812,6 +853,9 @@ async fn run_actor(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::{
+        LeaseError, LeaseGuard, LeaseHolder, Locks, MemoryLocks, Resource, Scope,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -838,7 +882,6 @@ mod tests {
     };
     use crate::domain::error::ServiceError;
     use crate::domain::events::{EventBus, SESSION_UPDATED};
-    use crate::domain::settings::store::SettingsStore;
     use crate::domain::workspace::repo::AnyWorkspace;
 
     struct MemoryStore {
@@ -968,7 +1011,9 @@ mod tests {
 
             self.release.notified().await;
             let (tx, rx) = mpsc::channel(1);
-            let _ = tx.send(Delta::Finished(Message::assistant("done"))).await;
+            let _ = tx
+                .send(Delta::Finished(Box::new(Message::assistant("done"))))
+                .await;
             Ok(ModelStream::new(rx))
         }
     }
@@ -990,7 +1035,17 @@ mod tests {
         model: Arc<dyn Model>,
         tools: Arc<ToolRegistry>,
     ) -> SerializedChatRuntime {
+        runtime_under(store, model, tools, Arc::new(MemoryLocks::new()))
+    }
+
+    fn runtime_under(
+        store: Arc<dyn MessageStore>,
+        model: Arc<dyn Model>,
+        tools: Arc<ToolRegistry>,
+        locks: Arc<dyn Locks>,
+    ) -> SerializedChatRuntime {
         SerializedChatRuntime::new(AgentFactory {
+            locks,
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FixedModelSource::new(model)),
@@ -1000,8 +1055,6 @@ mod tests {
             file_changes: None,
             bus: None,
             search: idle_search(),
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1290,7 +1343,9 @@ mod tests {
             let _ = self.started.send(session);
             self.release.cancelled().await;
             let (tx, rx) = mpsc::channel(1);
-            let _ = tx.send(Delta::Finished(Message::assistant("done"))).await;
+            let _ = tx
+                .send(Delta::Finished(Box::new(Message::assistant("done"))))
+                .await;
             Ok(ModelStream::new(rx))
         }
     }
@@ -1361,7 +1416,6 @@ mod tests {
             _workspace: Option<std::path::PathBuf>,
             _mode: AgentMode,
             _choice: ModeOverride,
-            _plan_path: Option<String>,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             Err(ServiceError::BadRequest(
                 "opencode_go_api_key is not set".into(),
@@ -1369,11 +1423,190 @@ mod tests {
         }
     }
 
+    /// Answers with nothing. Enough for a refusal, which happens before any
+    /// delta would be read.
+    struct Silent;
+
+    /// Answers from a queue of finished messages, then repeats the last one.
+    struct Scripted(Mutex<Vec<Message>>);
+
+    #[async_trait]
+    impl Model for Scripted {
+        async fn generate(
+            &self,
+            _session: SessionId,
+            _transcript: &[Message],
+            _cancel: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            let message = {
+                let mut queue = self.0.lock().expect("script");
+                if queue.len() > 1 {
+                    queue.remove(0)
+                } else {
+                    queue[0].clone()
+                }
+            };
+            let (tx, rx) = mpsc::channel(1);
+            let stream = ModelStream::new(rx);
+            let mut message = message;
+            message.id = stream.message_id();
+            // `try_send`, not `send`: a `send` future that is dropped unawaited
+            // never puts anything on the channel, and this adapter answers at once.
+            let _ = tx.try_send(Delta::Finished(Box::new(message)));
+            Ok(stream)
+        }
+    }
+
+    #[async_trait]
+    impl Model for Silent {
+        async fn generate(
+            &self,
+            _session: SessionId,
+            _transcript: &[Message],
+            _cancel: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(ModelStream::new(rx))
+        }
+    }
+
+    /// Refuses one session and grants the rest, so a refusal needs no second
+    /// process to produce.
+    struct HeldByAnother {
+        session: SessionId,
+    }
+
+    impl Locks for HeldByAnother {
+        fn try_acquire(&self, resource: &Resource, scope: Scope) -> Result<LeaseGuard, LeaseError> {
+            if *resource == Resource::Session(self.session) {
+                return Err(LeaseError::held(resource, LeaseHolder::new(4812, scope)));
+            }
+            Ok(LeaseGuard::noop())
+        }
+
+        fn holder(&self, resource: &Resource) -> Option<LeaseHolder> {
+            (*resource == Resource::Session(self.session))
+                .then(|| LeaseHolder::new(4812, Scope::Turn))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_on_a_session_another_process_drives_is_a_conflict() {
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let runtime = runtime_under(
+            store.clone(),
+            Arc::new(Silent),
+            Arc::new(ToolRegistry::new()),
+            Arc::new(HeldByAnother { session }),
+        );
+
+        let error = runtime
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
+            .await
+            .expect_err("another process owns the chat");
+        let ServiceError::Conflict(message) = error else {
+            panic!("a held session is a conflict, got {error:?}");
+        };
+        assert!(
+            message.contains("4812"),
+            "the refusal names the holder: {message}"
+        );
+        assert!(
+            runtime.running_session_ids().await.is_empty(),
+            "a refused turn starts no actor"
+        );
+    }
+
+    /// A paused turn keeps its lease, which is what stops a second process
+    /// resuming a call this one is still offering to the user.
+    ///
+    /// Two real `FileLocks` over one temp directory rather than a double, so the
+    /// assertion is the one the operating system makes.
+    #[tokio::test]
+    async fn a_paused_turn_keeps_its_lease_until_the_call_is_answered() {
+        let home = std::env::temp_dir().join(format!(
+            "robi-runtime-lease-{}",
+            uuid::Uuid::now_v7().simple()
+        ));
+        let store = Arc::new(MemoryStore::new());
+        let session = store.create_session(WorkspaceId::new());
+        let tools = ToolRegistry::new();
+        tools
+            .register(Arc::new(GateTool {
+                name: "shell",
+                decision: ApprovalDecision::NeedsApproval,
+            }))
+            .unwrap();
+        // One call that needs a decision, then a plain finish for the resume.
+        let model = Arc::new(Scripted(Mutex::new(vec![
+            Message::assistant_with_tool_calls(
+                "run",
+                vec![ToolCall::new("shell", serde_json::json!({}))],
+            ),
+            Message::assistant("done"),
+        ])));
+        let runtime = runtime_under(
+            store.clone(),
+            model,
+            Arc::new(tools),
+            Arc::new(crate::adapters::locks::FileLocks::new(
+                &home,
+                "sqlite://runtime.db",
+            )),
+        );
+        // A second process, in effect: the same files, no shared refcount.
+        let other = crate::adapters::locks::FileLocks::new(&home, "sqlite://runtime.db");
+        let resource = Resource::Session(session);
+
+        runtime
+            .submit(session, "hello".into(), Vec::new(), Vec::new())
+            .await
+            .expect("the turn starts");
+        let paused = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let messages = store.messages(session).await.unwrap();
+
+                if let Some(index) = robi_core::message::unresolved_turn(&messages) {
+                    if runtime.running_session_ids().await.is_empty() {
+                        return messages[index].tool_calls[0].id;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the turn paused for approval");
+
+        assert!(
+            other.try_acquire(&resource, Scope::Turn).is_err(),
+            "a paused turn still owns the session"
+        );
+
+        // Answering the call lets the turn finish, and the lease goes with it.
+        runtime
+            .decide(session, paused, Some("no".into()))
+            .await
+            .expect("the decision lands");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if other.try_acquire(&resource, Scope::Turn).is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a finished turn releases the session");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test]
     async fn a_model_that_cannot_be_built_does_not_mark_the_session_running() {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let runtime = SerializedChatRuntime::new(AgentFactory {
+            locks: Arc::new(MemoryLocks::new()),
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FailSource),
@@ -1383,8 +1616,6 @@ mod tests {
             file_changes: None,
             bus: None,
             search: idle_search(),
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1434,7 +1665,9 @@ mod tests {
                 } else {
                     "done"
                 };
-                let _ = tx.send(Delta::Finished(Message::assistant(text))).await;
+                let _ = tx
+                    .send(Delta::Finished(Box::new(Message::assistant(text))))
+                    .await;
             }
             Ok(ModelStream::new(rx))
         }
@@ -1453,7 +1686,6 @@ mod tests {
             _workspace: Option<std::path::PathBuf>,
             mode: AgentMode,
             choice: ModeOverride,
-            _plan_path: Option<String>,
         ) -> Result<Arc<dyn Model>, ServiceError> {
             *self.seen.lock().expect("choice") = Some((mode, choice));
             Ok(Arc::clone(&self.model))
@@ -1472,13 +1704,15 @@ mod tests {
             ..ModelConfig::default()
         };
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::with_model_config(session, choice.clone())),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let seen = Arc::new(Mutex::new(None));
         let runtime = SerializedChatRuntime::new(AgentFactory {
+            locks: Arc::new(MemoryLocks::new()),
             store,
             events: Arc::new(NopSink),
             models: Arc::new(ChoiceSource {
@@ -1497,8 +1731,6 @@ mod tests {
             )),
             bus: None,
             search: idle_search(),
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1514,82 +1746,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn lsp_off_keeps_the_language_server_tools_out_of_the_actor() {
-        let store = Arc::new(MemoryStore::new());
-        let session = store.create_session(WorkspaceId::new());
-        let sessions = Arc::new(ChatSessionService {
-            repository: Arc::new(MemorySessions::new(session)),
-            workspaces: Arc::new(AnyWorkspace),
-            events: None,
-            plan_cleaner: None,
-        });
-        let settings = Arc::new(crate::domain::settings::memory::MemorySettingsStore::new());
-        settings
-            .set(
-                crate::domain::settings::keys::LSP,
-                crate::domain::settings::keys::LSP_OFF.into(),
-                false,
-            )
-            .await
-            .unwrap();
-        let names = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&names);
-        let runtime = SerializedChatRuntime::new(AgentFactory {
-            store,
-            events: Arc::new(NopSink),
-            models: Arc::new(ToolListSource {
-                names: seen,
-                model: Arc::new(TitleModel {
-                    calls: AtomicUsize::new(0),
-                    prompts: Mutex::new(Vec::new()),
-                    fail_user_turns: false,
-                }),
-            }),
-            tools: Arc::new(ToolRegistry::new()),
-            config: LoopConfig::default(),
-            sessions: Some(sessions),
-            file_changes: Some(Arc::new(
-                crate::domain::file_change::memory::MemoryFileChangeRepository::new(),
-            )),
-            bus: None,
-            search: idle_search(),
-            index: None,
-            lsp: None,
-            settings: Some(settings),
-            mcp: None,
-            originals: None,
-        });
-
-        runtime
-            .submit(session, "hello".into(), Vec::new(), Vec::new())
-            .await
-            .unwrap();
-        let names = names.lock().expect("names").clone();
-        assert!(names.iter().any(|name| name == "read_file"));
-        assert!(!names.iter().any(|name| name == "diagnostics"));
-    }
-
-    struct ToolListSource {
-        names: Arc<Mutex<Vec<String>>>,
-        model: Arc<dyn Model>,
-    }
-
-    #[async_trait]
-    impl ModelSource for ToolListSource {
-        async fn model(
-            &self,
-            tools: Arc<ToolRegistry>,
-            _workspace: Option<std::path::PathBuf>,
-            _mode: AgentMode,
-            _choice: ModeOverride,
-            _plan_path: Option<String>,
-        ) -> Result<Arc<dyn Model>, ServiceError> {
-            *self.names.lock().expect("names") = tools.names();
-            Ok(Arc::clone(&self.model))
-        }
-    }
-
     fn titled_runtime(
         store: Arc<dyn MessageStore>,
         model: Arc<dyn Model>,
@@ -1597,6 +1753,7 @@ mod tests {
         bus: Arc<EventBus>,
     ) -> SerializedChatRuntime {
         SerializedChatRuntime::new(AgentFactory {
+            locks: Arc::new(MemoryLocks::new()),
             store,
             events: Arc::new(NopSink),
             models: Arc::new(FixedModelSource::new(model)),
@@ -1608,8 +1765,6 @@ mod tests {
             )),
             bus: Some(bus),
             search: idle_search(),
-            index: None,
-            lsp: None,
             settings: None,
             mcp: None,
             originals: None,
@@ -1640,10 +1795,11 @@ mod tests {
         let session = store.create_session(WorkspaceId::new());
         let bus = Arc::new(EventBus::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: Some(Arc::clone(&bus)),
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let mut subscription = bus.subscribe();
         let model = Arc::new(TitleModel {
@@ -1721,10 +1877,11 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::named(session, "Kept")),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1773,10 +1930,11 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let session = store.create_session(WorkspaceId::new());
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let model = Arc::new(TitleModel {
             calls: AtomicUsize::new(0),
@@ -1833,10 +1991,11 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let mut subscription = bus.subscribe();
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let runtime = titled_runtime(
             store.clone(),
@@ -1887,10 +2046,11 @@ mod tests {
             .await
             .unwrap();
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let runtime = titled_runtime(
@@ -1936,10 +2096,11 @@ mod tests {
             .await
             .unwrap();
         let sessions = Arc::new(ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: Arc::new(MemorySessions::new(session)),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         });
         let runtime = titled_runtime(
             store,
@@ -1993,7 +2154,6 @@ mod tests {
                 mcp_allows: Vec::new(),
                 mode: AgentMode::Agent,
                 model_config: crate::domain::chat_session::model::ModelConfig::default(),
-                plan_path: None,
                 turn_display: crate::domain::chat_session::model::TurnDisplay::Idle,
                 created_at: now,
                 updated_at: now,
@@ -2030,6 +2190,10 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+            Ok(Vec::new())
+        }
+
         async fn update_chat_session(
             &self,
             command: crate::domain::chat_session::model::UpdateChatSessionCommand,
@@ -2047,15 +2211,6 @@ mod tests {
                 .get_mut(&id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
             session.turn_display = display;
-            Ok(())
-        }
-
-        async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-            let mut sessions = self.sessions.lock().expect("sessions");
-            let session = sessions
-                .get_mut(&id)
-                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
-            session.plan_path = Some(path);
             Ok(())
         }
 

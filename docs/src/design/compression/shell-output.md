@@ -5,7 +5,6 @@ how the model gets the capped stdout and stderr back. It is the log row of
 **M9** in the [roadmap](../../roadmap.md). The command, the sandbox, and the
 256 KiB stream cap stay in [shell-tool.md](../tools/shell-tool.md). The session
 database that holds the original stays in [persistence.md](../persistence/persistence.md).
-Source outlines are a different tool, in [code-outline.md](../tools/code-outline.md).
 
 JSON arrays and search hits are not this page. They remain
 `docs/src/design/compression/tool-output-compression.md`.
@@ -15,7 +14,6 @@ JSON arrays and search hits are not this page. They remain
 | Topic | Where it belongs |
 |---|---|
 | Whether the command runs, and the 256 KiB cap on each stream | [shell-tool.md](../tools/shell-tool.md) |
-| Folding a source file | [code-outline.md](../tools/code-outline.md) |
 | Which MCP result uses this collapser | [mcp-output.md](mcp-output.md). The line pass calls this collapser. JSON takes that page's own pass |
 | Crushing JSON or a `grep` result | `docs/src/design/compression/tool-output-compression.md` |
 | The context meter drawing the saving | [roadmap](../../roadmap.md) F3.4. This page says the compressor reports bytes in and bytes out |
@@ -258,7 +256,7 @@ eleven are not copied.
 
 `<<<ROBI_LOG` is the marker prefix. It is not a comment and it is not
 source. `edit_file` and `write_file` reject `<<<ROBI_` in `old_string`, `new_string`, and
-`content`, as [code-outline.md](../tools/code-outline.md) specifies.
+`content`, as [editing-tools.md](../tools/editing-tools.md) specifies.
 
 A green `cargo test` of a few hundred tests becomes the progress summaries,
 one test summary, and the real `test result:` line. That result is under
@@ -454,17 +452,17 @@ ask for. This phase exists so a learned model is a measured addition rather
 than the implementation of "drop boilerplate."
 
 Headroom's Kompress model is the reference for the behavior, not a
-dependency. The semantic-search embedder is the wrong model: it maps a
-chunk to 768 dimensions for retrieval, and loading it on a tool result
-couples log compression to the index feature.
+dependency. A retrieval embedder is the wrong model for this: it maps a chunk
+to hundreds of dimensions for search, where a line classifier wants a small
+local opinion about one line.
 
 What would be built, after a corpus of real shell results shows that phase
 2 still leaves more than 8 KiB of low-value lines on a typical failed
 build:
 
 - A line classifier, ONNX, CPU, two intra-op threads, weights under
-  `~/.robi/models/`. Feature `log-model`, off by default, same shape as
-  `local-embed` on `robi-index`.
+  `~/.robi/models/`. Feature `log-model`, off by default, gating the model and
+  its loader together.
 - It scores lines that phase 2 is about to omit. It does not override a
   pinned line, a summary, the head, or the tail. It may move a high-scoring
   omitted line into the kept set, with the same 2-line window, until the

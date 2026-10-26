@@ -18,7 +18,7 @@ use crate::domain::{
     error::ServiceError,
 };
 
-const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, plan_path, turn_display, created_at, updated_at, last_used_at";
+const SESSION_COLUMNS: &str = "id, workspace_id, title, path_allow_read, path_allow_write, path_deny_read, path_deny_write, allow_hosts, mcp_allows, mode, model_config, turn_display, created_at, updated_at, last_used_at";
 
 fn log_unknown(context: &'static str, err: impl std::fmt::Debug + 'static) -> ServiceError {
     if let Some(sql) = (&err as &dyn std::any::Any).downcast_ref::<sqlx::Error>() {
@@ -57,9 +57,6 @@ fn chat_session_from_row(
     let mode = AgentMode::parse(&row_text(context, &row, "mode")?)
         .map_err(|err| log_unknown(context, err))?;
     let model_config = decode_model_config(context, &row_text(context, &row, "model_config")?)?;
-    let plan_path: Option<String> = row
-        .try_get("plan_path")
-        .map_err(|err| log_unknown(context, err))?;
     let turn_display = TurnDisplay::parse(&row_text(context, &row, "turn_display")?)
         .map_err(|err| log_unknown(context, err))?;
     let created_at: String = row
@@ -81,7 +78,6 @@ fn chat_session_from_row(
         mcp_allows,
         mode,
         model_config,
-        plan_path,
         turn_display,
         created_at: parse_timestamp(context, &created_at)?,
         updated_at: parse_timestamp(context, &updated_at)?,
@@ -200,7 +196,6 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             mcp_allows: Vec::new(),
             mode: command.mode,
             model_config: command.model_config,
-            plan_path: None,
             turn_display: TurnDisplay::Idle,
             created_at: now,
             updated_at: now,
@@ -337,25 +332,6 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         Ok(())
     }
 
-    async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-        let result = sqlx::query(
-            r#"
-            UPDATE chat_sessions
-            SET plan_path = ?1
-            WHERE id = ?2
-            "#,
-        )
-        .bind(&path)
-        .bind(id.to_string())
-        .execute(self.pool.as_ref())
-        .await
-        .map_err(|err| log_unknown("set_plan_path: update", err))?;
-        if result.rows_affected() == 0 {
-            return Err(ServiceError::NotFound(id.to_string()));
-        }
-        Ok(())
-    }
-
     async fn set_turn_display(
         &self,
         id: SessionId,
@@ -364,11 +340,12 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
         let result = sqlx::query(
             r#"
             UPDATE chat_sessions
-            SET turn_display = ?1
-            WHERE id = ?2
+            SET turn_display = ?1, turn_settled = ?2
+            WHERE id = ?3
             "#,
         )
         .bind(display.as_str())
+        .bind(display.is_settled())
         .bind(id.to_string())
         .execute(self.pool.as_ref())
         .await
@@ -377,6 +354,19 @@ impl ChatSessionRepository for SqliteChatSessionRepository {
             return Err(ServiceError::NotFound(id.to_string()));
         }
         Ok(())
+    }
+
+    async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {SESSION_COLUMNS} FROM chat_sessions WHERE turn_settled = 0 ORDER BY last_used_at DESC, id DESC"
+        ))
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|err| log_unknown("list_unsettled_chat_sessions: select", err))?;
+
+        rows.into_iter()
+            .map(|row| chat_session_from_row("list_unsettled_chat_sessions: map row", row))
+            .collect()
     }
 }
 
@@ -458,20 +448,50 @@ mod tests {
 
         let loaded = repo.get_chat_session(created.id).await.unwrap().unwrap();
         assert_eq!(loaded, created);
-        assert_eq!(loaded.plan_path, None);
-        let updated_at = loaded.updated_at;
-        repo.set_plan_path(created.id, ".robi/plans/ship.md".into())
-            .await
-            .unwrap();
-        let pointed = repo.get_chat_session(created.id).await.unwrap().unwrap();
-        assert_eq!(pointed.plan_path.as_deref(), Some(".robi/plans/ship.md"));
-        assert_eq!(pointed.updated_at, updated_at);
-        assert_eq!(pointed.last_used_at, loaded.last_used_at);
         assert!(repo
             .get_chat_session(SessionId::new())
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_display_write_settles_the_row_it_stores() {
+        let repo = repository().await;
+        let workspace_id = WorkspaceId::new();
+        insert_workspace(repo.pool.as_ref(), &workspace_id.to_string()).await;
+        let created = repo
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id,
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        // A fresh row is unsettled: nothing has compared it to a transcript yet.
+        let unsettled = repo.list_unsettled_chat_sessions().await.unwrap();
+        assert_eq!(unsettled.len(), 1);
+        assert_eq!(unsettled[0].id, created.id);
+
+        // A turn in flight leaves it unsettled, so the next start repairs it.
+        repo.set_turn_display(created.id, TurnDisplay::Pending)
+            .await
+            .unwrap();
+        assert_eq!(repo.list_unsettled_chat_sessions().await.unwrap().len(), 1);
+
+        // The write that ends the turn is the one that settles it.
+        repo.set_turn_display(created.id, TurnDisplay::Idle)
+            .await
+            .unwrap();
+        assert!(repo
+            .list_unsettled_chat_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+        let loaded = repo.get_chat_session(created.id).await.unwrap().unwrap();
+        assert_eq!(loaded.turn_display, TurnDisplay::Idle);
     }
 
     #[tokio::test]

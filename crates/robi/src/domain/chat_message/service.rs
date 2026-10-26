@@ -7,7 +7,10 @@ use robi_core::store::MessageStore;
 
 use crate::domain::{
     chat_message::runtime::{ChatRuntime, SubmitOutcome},
-    chat_session::service::ChatSessionService,
+    chat_session::{
+        lease::{LeaseGuard, LeaseHolder, Locks, Resource, Scope},
+        service::ChatSessionService,
+    },
     error::ServiceError,
 };
 
@@ -20,6 +23,8 @@ pub struct ChatMessageService {
     pub sessions: Arc<ChatSessionService>,
     pub runtime: Arc<dyn ChatRuntime>,
     pub store: Arc<dyn MessageStore>,
+    /// Cross-process ownership, for the best-effort `Open` on a transcript read.
+    pub locks: Arc<dyn Locks>,
 }
 
 impl ChatMessageService {
@@ -81,9 +86,23 @@ impl ChatMessageService {
         self.runtime.compact(session).await
     }
 
+    /// The transcript.
+    ///
+    /// Takes `Open` best effort. It never refuses: a transcript renders from the
+    /// chat database either way, and only the tool results live in the session's
+    /// blob file. When another process owns that file the read leaves the results
+    /// where they are and the caller says so, which is better than an error the
+    /// user cannot act on.
     pub async fn list_messages(&self, session: SessionId) -> Result<Vec<Message>, ServiceError> {
         self.sessions.get_chat_session(session).await?;
-        self.store.messages(session).await.map_err(map_store)
+        match self.open(session) {
+            Some(_guard) => self.store.messages(session).await.map_err(map_store),
+            None => self
+                .store
+                .messages_without_results(session)
+                .await
+                .map_err(map_store),
+        }
     }
 
     pub async fn get_message(
@@ -97,6 +116,28 @@ impl ChatMessageService {
             .await
             .map_err(map_store)?
             .ok_or_else(|| ServiceError::NotFound(message_id.to_string()))
+    }
+
+    /// `Open` on a session, or `None` when another process has it.
+    ///
+    /// Best effort by design: the caller decides whether a refusal is a degraded
+    /// render or an error, and for a transcript it is the former.
+    fn open(&self, session: SessionId) -> Option<LeaseGuard> {
+        match self
+            .locks
+            .try_acquire(&Resource::Session(session), Scope::Open)
+        {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                tracing::info!(%session, refusal = %error, "reading a session another process holds");
+                None
+            }
+        }
+    }
+
+    /// Whether another process has this session's blob file open.
+    pub fn holder(&self, session: SessionId) -> Option<LeaseHolder> {
+        self.locks.holder(&Resource::Session(session))
     }
 
     /// Sessions that currently have a running actor. Read from memory.
@@ -128,6 +169,7 @@ mod tests {
     use robi_core::store::MessageStore;
 
     use super::*;
+    use crate::domain::chat_session::lease::MemoryLocks;
     use crate::domain::{
         chat_message::runtime::{ChatRuntime, SubmitOutcome},
         chat_session::{
@@ -162,7 +204,6 @@ mod tests {
                     mcp_allows: Vec::new(),
                     mode: AgentMode::Agent,
                     model_config: crate::domain::chat_session::model::ModelConfig::default(),
-                    plan_path: None,
                     turn_display: crate::domain::chat_session::model::TurnDisplay::Idle,
                     created_at: now,
                     updated_at: now,
@@ -200,6 +241,10 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+            Ok(Vec::new())
+        }
+
         async fn update_chat_session(
             &self,
             _command: UpdateChatSessionCommand,
@@ -221,10 +266,6 @@ mod tests {
             _display: crate::domain::chat_session::model::TurnDisplay,
         ) -> Result<(), ServiceError> {
             Ok(())
-        }
-
-        async fn set_plan_path(&self, _id: SessionId, _path: String) -> Result<(), ServiceError> {
-            Err(ServiceError::Unknown)
         }
 
         async fn delete_chat_session(&self, _id: SessionId) -> Result<(), ServiceError> {
@@ -371,10 +412,12 @@ mod tests {
                 repository: sessions.clone(),
                 workspaces: Arc::new(crate::domain::workspace::repo::AnyWorkspace),
                 events: None,
-                plan_cleaner: None,
+                session_cleaner: None,
+                locks: Arc::new(crate::domain::chat_session::lease::MemoryLocks::new()),
             }),
             runtime: runtime.clone(),
             store: store.clone(),
+            locks: Arc::new(MemoryLocks::new()),
         };
         (service, sessions, runtime, store)
     }

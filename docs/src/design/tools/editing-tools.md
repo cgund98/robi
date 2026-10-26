@@ -1,5 +1,13 @@
 # Editing tools
 
+> **Disabled in M11. Kept for reference.** `write_file`, `edit_file`, and
+> `delete_file` are not registered; the shell is the editing interface. The code
+> below still runs behind the `edit-tools` Cargo feature. Because a shell command
+> is opaque, no automatic baseline or checkpoint is recorded: `git diff` is the
+> verification and git is the undo. See
+> [shell-tool.md](shell-tool.md), [checkpoints.md](checkpoints.md), and
+> [feature-switches.md](../core/feature-switches.md).
+
 This page settles **D5** and defines the three write tools. It is the design
 for **F4.1** in the [roadmap](../../roadmap.md). The session baseline those writes
 record is [checkpoints.md](checkpoints.md). Path rules are in
@@ -12,9 +20,8 @@ record is [checkpoints.md](checkpoints.md). Path rules are in
 |---|---|
 | Putting a hunk back, and the review window | `docs/src/design/review/code-review.md` (M6) |
 | The shell sandbox | `docs/src/design/tools/shell-tool.md` (M4) |
-| Diagnostics after a write | `docs/src/design/intelligence/lsp.md` (M7) |
 | A saved allow for the rest of the session | `grant`, in [read-tools.md](read-tools.md) |
-| Refusing an outline marker in `old_string`, `new_string`, or `content` | [code-outline.md](code-outline.md) |
+| Refusing a compressed shell marker in `old_string`, `new_string`, or `content` | [shell-output.md](../compression/shell-output.md) |
 
 ## Problem
 

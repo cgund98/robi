@@ -74,6 +74,7 @@ mod tests {
     use crate::agent::providers::config::{ApiKey, ModelId};
     use crate::agent::providers::images::ImageSource;
     use crate::agent::providers::ProviderError;
+    use robi_core::ids::SessionId;
 
     fn settings_for(model: &str) -> ProviderSettings {
         ProviderSettings::opencode_go(ApiKey::new("k"), ModelId::new(model))
@@ -84,7 +85,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ImageSource for NoImages {
-        async fn image(&self, _id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
+        async fn image(
+            &self,
+            _session: SessionId,
+            _id: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
             Ok(None)
         }
     }

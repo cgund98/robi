@@ -6,6 +6,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use http::{header::CONTENT_TYPE, HeaderValue, Method};
@@ -13,6 +14,7 @@ use robi_core::config::LoopConfig;
 use robi_core::tool::ToolRegistry;
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -23,19 +25,24 @@ use crate::{
         chat_runtime::{AgentFactory, SerializedChatRuntime},
         chat_session::repo::SqliteChatSessionRepository,
         file_change::repo::SqliteFileChangeRepository,
+        locks::{self, FileLocks},
         model_source::SettingsModelSource,
         originals::BlobOriginals,
         session_blobs::{evacuate_sqlite, SessionBlobs},
-        session_plans::FilesystemSessionPlans,
+        session_data::SessionCleanup,
         settings::TomlSettingsStore,
         sqlite,
         workspace::repo::SqliteWorkspaceRepository,
+        workspace_assets::WorkspaceIndexAssets,
     },
     agent::providers::ImageSource,
-    agent::{compress::OriginalStore, index::IndexHub, lsp::LspHub, mcp::McpHub, web::BraveSearch},
+    agent::{compress::OriginalStore, mcp::McpHub, web::BraveSearch},
     domain::{
         chat_message::service::ChatMessageService,
-        chat_session::service::ChatSessionService,
+        chat_session::{
+            lease::{acquire_waiting, Locks, Resource, Scope, Wait},
+            service::ChatSessionService,
+        },
         events::{BusEventSink, EventBus},
         file_change::repo::FileChangeRepository,
         settings::{store::SettingsStore, SettingsService},
@@ -46,6 +53,75 @@ use crate::{
 
 /// Default listen port. Vite owns `1430`.
 pub const DEFAULT_PORT: u16 = 1431;
+
+/// The Tauri identifier from `src-tauri/tauri.conf.json`.
+///
+/// Tauri derives its app data directory from this, and the terminal front end
+/// has to open the same database, so the two agree on it here.
+pub const DESKTOP_IDENTIFIER: &str = "com.github.cgund98.robi";
+
+/// The database URL `robi` uses when `ROBI_DATABASE_URL` is unset.
+///
+/// This mirrors `src-tauri/src/lib.rs::database_url`, which is the
+/// authoritative version: it asks Tauri for `app_data_dir()` and appends `dev`
+/// when `is_dev()`. The terminal cannot call that (nothing depends on
+/// `src-tauri`), so it repeats the rule, and the condition with it: a debug
+/// build is a development build, so it opens the **dev** database, the same one
+/// `pnpm tauri dev` uses. A release build opens the app's own database, because
+/// a downloaded binary that wrote a second one beside it would show an empty
+/// session list.
+///
+/// `None` when the platform data directory cannot be resolved, and the caller
+/// falls back to a path relative to the working directory.
+pub fn desktop_database_url() -> Option<String> {
+    Some(desktop_database_url_in(
+        &data_dir()?,
+        cfg!(debug_assertions),
+    ))
+}
+
+/// The URL for one platform data directory. Separated from [`data_dir`] so the
+/// rule is a unit test rather than an environment variable.
+fn desktop_database_url_in(data_dir: &std::path::Path, dev: bool) -> String {
+    let mut dir = data_dir.join(DESKTOP_IDENTIFIER);
+    if dev {
+        dir.push("dev");
+    }
+    sqlite_url(&dir.join("robi.db"))
+}
+
+/// `sqlite://{path}?mode=rwc`, the shape `src-tauri` writes.
+fn sqlite_url(path: &std::path::Path) -> String {
+    format!("sqlite://{}?mode=rwc", path.display())
+}
+
+/// The platform's per-user data directory, as Tauri's `app_data_dir()` sees it
+/// before the identifier is appended.
+fn data_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        return std::env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+    }
+    if cfg!(target_os = "macos") {
+        return std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(|home| {
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+            });
+    }
+    // Everything else follows the XDG base directory specification.
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local").join("share"))
+        })
+}
 
 /// How many ports to try, starting at [`DEFAULT_PORT`], when no address is fixed.
 pub const PORT_ATTEMPTS: u16 = 20;
@@ -81,6 +157,10 @@ pub enum BootstrapError {
 
     #[error("failed to move session blobs out of sqlite: {0}")]
     Blobs(String),
+
+    /// A lock another process holds, or a lock file that could not be written.
+    #[error("{0}")]
+    Lease(#[from] crate::domain::chat_session::lease::LeaseError),
 }
 
 /// Parse `ROBI_BIND`. The address must be loopback.
@@ -96,6 +176,52 @@ pub fn parse_bind(raw: &str) -> Result<SocketAddr, String> {
 
 /// Wire the pool, settings, tools, and chat runtime.
 pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapError> {
+    // The blob store first, because the lock adapter needs it: releasing a
+    // session's lock closes that session's `redb` handle, and the handle has to
+    // close before the lock frees.
+    let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
+    let close = blobs.clone();
+    let locks = Arc::new(
+        FileLocks::new(&config.settings_dir, &config.database_url).with_release(Box::new(
+            move |resource| {
+                if let Resource::Session(session) = resource {
+                    if let Err(err) = close.close_session(*session) {
+                        tracing::warn!(%session, %err, "failed to close a session's blob file");
+                    }
+                }
+            },
+        )),
+    );
+
+    // A filesystem whose locking is a local no-op is the one way this design can
+    // corrupt data. Warn rather than refuse: it is a misconfiguration to fix, not
+    // a reason the user cannot open their own editor.
+    if let Err(reason) = locks.probe() {
+        tracing::warn!(%reason, "file locks are not enforced on this filesystem");
+    }
+    // The edit tools serialize a read-modify-write against a path across
+    // processes. They have no settings directory of their own, so the adapter
+    // arrives through this one call. Absent when no feature compiled them in.
+    #[cfg(any(feature = "edit-tools", feature = "docs-viewer", feature = "review"))]
+    crate::agent::tools::path_lock::init(Arc::clone(&locks) as Arc<dyn Locks>);
+
+    let pruned = locks.prune_path_locks(locks::PATH_LOCK_MAX_AGE);
+    if pruned > 0 {
+        tracing::info!(pruned, "removed stale path lock files");
+    }
+
+    // Everything below runs before a front end exists, and two processes starting
+    // together would otherwise race the migrations, the blob evacuation, and the
+    // prune. This serialises starting, not running: a process already mid-turn is
+    // handled per session further down.
+    let _startup = acquire_waiting(
+        locks.as_ref(),
+        &Resource::Startup,
+        Scope::Turn,
+        Wait::edit(),
+    )
+    .await?;
+
     let pool = Arc::new(sqlite::init_pool(&config.database_url).await?);
     tracing::info!("opened the database");
     let settings_store = Arc::new(TomlSettingsStore::load(&config.settings_dir)?);
@@ -110,14 +236,7 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     ));
     let tools = Arc::new(ToolRegistry::new());
     let event_bus = Arc::new(EventBus::new());
-    let index = Arc::new(IndexHub::new(
-        config.settings_dir.clone(),
-        Arc::clone(&event_bus),
-        Arc::new(robi_index::LocalEmbedder::new(robi_index::model_cache_dir(
-            &config.settings_dir,
-        ))),
-    ));
-    let blobs = SessionBlobs::new(SessionBlobs::directory(&config.settings_dir));
+    let index_assets = Arc::new(WorkspaceIndexAssets::new(config.settings_dir.clone()));
     evacuate_sqlite(&pool, &blobs)
         .await
         .map_err(BootstrapError::Blobs)?;
@@ -130,9 +249,8 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
         workspaces: workspaces.clone(),
         events: Some(Arc::clone(&event_bus)),
-        plan_cleaner: Some(Arc::new(
-            FilesystemSessionPlans::default().with_blobs(blobs),
-        )),
+        session_cleaner: Some(Arc::new(SessionCleanup::new(blobs))),
+        locks: Arc::clone(&locks) as Arc<dyn Locks>,
     });
     let file_changes: Arc<dyn FileChangeRepository> =
         Arc::new(SqliteFileChangeRepository::new(Arc::clone(&pool)));
@@ -141,19 +259,9 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         config.settings_dir,
         Arc::clone(&event_bus),
     ));
-    let lsp_path_entries = settings
-        .get(crate::domain::settings::keys::PATH_ENTRIES)
-        .await
-        .ok()
-        .flatten()
-        .map(|setting| setting.value)
-        .unwrap_or_default();
-    let lsp_path =
-        crate::agent::blocking::call(move || crate::agent::mcp::resolve_path(&lsp_path_entries))
-            .await
-            .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
     let runtime = Arc::new(SerializedChatRuntime::new(AgentFactory {
         store: Arc::clone(&store),
+        locks: Arc::clone(&locks) as Arc<dyn Locks>,
         events: Arc::new(BusEventSink::new(Arc::clone(&event_bus))),
         models: Arc::new(SettingsModelSource::new(
             Arc::clone(&settings),
@@ -165,8 +273,6 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
         file_changes: Some(Arc::clone(&file_changes)),
         bus: Some(Arc::clone(&event_bus)),
         search,
-        index: Some(Arc::clone(&index)),
-        lsp: Some(LspHub::with_search_path(lsp_path)),
         settings: Some(Arc::clone(&settings)),
         mcp: Some(Arc::clone(&mcp)),
         originals: Some(Arc::clone(&originals)),
@@ -178,29 +284,39 @@ pub async fn build_app_state(config: AppConfig) -> Result<AppState, BootstrapErr
     if removed > 0 {
         tracing::info!(removed, "pruned chat sessions");
     }
-    chat_session_service
+    let skipped = chat_session_service
         .reconcile_turn_displays(store.as_ref())
         .await
         .map_err(|err| BootstrapError::Prune(err.to_string()))?;
+    if skipped > 0 {
+        tracing::info!(
+            skipped,
+            "left turn display alone for sessions another process holds"
+        );
+    }
+    // Removes a sandbox container that nothing has run in for a while. On the
+    // runtime that serves the API, so it ends with the process.
+    crate::agent::sandbox::container::reaper::spawn();
     Ok(AppState {
         workspace_service: Arc::new(WorkspaceService {
             repository: workspaces,
-            asset_cleaner: Some(index.clone() as Arc<dyn WorkspaceAssetCleaner>),
+            asset_cleaner: Some(index_assets as Arc<dyn WorkspaceAssetCleaner>),
         }),
         chat_session_service: Arc::clone(&chat_session_service),
         chat_message_service: Arc::new(ChatMessageService {
             sessions: chat_session_service,
             runtime,
             store,
+            locks: Arc::clone(&locks) as Arc<dyn Locks>,
         }),
         settings_service,
         event_bus,
         file_changes,
-        index,
         mcp: Some(mcp),
         originals,
         image_source,
         docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+        locks: Arc::clone(&locks) as Arc<dyn Locks>,
     })
 }
 
@@ -212,9 +328,96 @@ pub fn router(state: AppState) -> Router {
         .layer(cors_layer())
 }
 
+/// A running API server: where it listens, and how to stop it.
+///
+/// The desktop app holds one so it can shut the server down, and with it the
+/// sandbox containers, before the process exits. `robi-api` and `robi` own
+/// the runtime themselves and do not need it.
+pub struct ApiServer {
+    addr: SocketAddr,
+    shutdown: CancellationToken,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl ApiServer {
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Stops the server, waits for the sandbox cleanup, and gives up after
+    /// `timeout`.
+    ///
+    /// Returns whether the cleanup finished. Called on the way out, so a slow or
+    /// wedged daemon delays the quit by at most `timeout` and never hangs it.
+    pub fn shutdown(self, timeout: Duration) -> bool {
+        self.shutdown.cancel();
+        match self.done.recv_timeout(timeout) {
+            Ok(()) => true,
+            Err(_) => {
+                tracing::warn!("the API server did not shut down in time");
+                false
+            }
+        }
+    }
+}
+
+/// Removes every sandbox container this process owns.
+///
+/// The containers are labels in a daemon, not files a process holds, so they
+/// outlive an exit unless something removes them. Every surface calls this once,
+/// late, on its own runtime: the Docker client is only used from the runtime
+/// that built it.
+pub async fn shutdown_sandboxes() {
+    let removed = crate::agent::sandbox::container::Registry::global()
+        .shutdown_all()
+        .await;
+    if removed > 0 {
+        tracing::info!(removed, "removed sandbox containers on exit");
+    }
+}
+
+/// Resolves on `Ctrl-C` or, on Unix, `SIGTERM`.
+///
+/// `SIGTERM` is what a supervisor sends and what a terminal close turns into, so
+/// handling only `Ctrl-C` would leave the common case unhandled. A `SIGKILL` and
+/// a crash cannot be caught, and the sandbox containers from those are the gap
+/// the container page documents.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%err, "could not listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "could not listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutting down");
+}
+
 /// Start the server on a background thread. Returns after the listener is bound.
-pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapError> {
+pub fn spawn(config: AppConfig, listen: Listen) -> Result<ApiServer, BootstrapError> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let shutdown = CancellationToken::new();
+    let serve_token = shutdown.clone();
     std::thread::Builder::new()
         .name("robi-api".into())
         .spawn(move || {
@@ -244,16 +447,23 @@ pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapE
                 match started {
                     Ok((listener, app, addr)) => {
                         let _ = tx.send(Ok(addr));
-                        if let Err(err) =
-                            rt.block_on(async move { axum::serve(listener, app).await })
-                        {
+                        let served = rt.block_on(async move {
+                            let stop = async move { serve_token.cancelled().await };
+                            axum::serve(listener, app)
+                                .with_graceful_shutdown(stop)
+                                .await
+                        });
+                        if let Err(err) = served {
                             tracing::error!(%err, "server stopped");
                         }
+                        // On this runtime, where the Docker client was built.
+                        rt.block_on(shutdown_sandboxes());
                     }
                     Err(err) => {
                         let _ = tx.send(Err(err));
                     }
                 }
+                let _ = done_tx.send(());
             }));
             if let Err(payload) = panicked {
                 let message = panic_payload(payload.as_ref());
@@ -265,9 +475,14 @@ pub fn spawn(config: AppConfig, listen: Listen) -> Result<SocketAddr, BootstrapE
             }
         })
         .map_err(|err| BootstrapError::Bind(format!("failed to spawn the server thread: {err}")))?;
-    rx.recv().map_err(|_| {
+    let addr = rx.recv().map_err(|_| {
         BootstrapError::Bind("the server thread stopped before it bound a port".into())
-    })?
+    })??;
+    Ok(ApiServer {
+        addr,
+        shutdown,
+        done: done_rx,
+    })
 }
 
 /// Bind `listen` and return the listener. The bound port is `local_addr`.
@@ -377,5 +592,48 @@ mod tests {
         let addr = taken.local_addr().unwrap();
         let error = bind(Listen::Exact(addr)).await.unwrap_err();
         assert!(error.to_string().contains("failed to bind"));
+    }
+
+    #[test]
+    fn a_debug_build_opens_the_database_tauri_dev_opens() {
+        // `pnpm tauri dev` resolves this itself through Tauri's `app_data_dir`.
+        // If that path moves, this test and the terminal are both wrong.
+        let url = desktop_database_url_in(std::path::Path::new("/data"), true);
+        assert_eq!(
+            url, "sqlite:///data/com.github.cgund98.robi/dev/robi.db?mode=rwc",
+            "the identifier and the `dev` subdirectory are the whole rule"
+        );
+    }
+
+    #[test]
+    fn a_release_build_opens_the_apps_own_database() {
+        // A downloaded binary that opened `dev/` would create a second database
+        // beside the one the installed app reads, and show it empty.
+        let url = desktop_database_url_in(std::path::Path::new("/data"), false);
+        assert_eq!(
+            url, "sqlite:///data/com.github.cgund98.robi/robi.db?mode=rwc",
+            "a release build is not a development build"
+        );
+    }
+
+    #[test]
+    fn a_path_with_a_space_needs_no_encoding() {
+        // The macOS app data directory has a space in it, and sqlx accepts the
+        // URL as written.
+        let url = desktop_database_url_in(
+            std::path::Path::new("/Home/me/Library/Application Support"),
+            true,
+        );
+        assert_eq!(
+            url,
+            "sqlite:///Home/me/Library/Application Support/com.github.cgund98.robi/dev/robi.db?mode=rwc"
+        );
+    }
+
+    #[test]
+    fn this_platform_resolves_a_data_directory() {
+        // The fallback to a working-directory path is for a broken environment,
+        // not the normal case.
+        assert!(desktop_database_url().is_some());
     }
 }

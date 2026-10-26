@@ -288,7 +288,10 @@ fn describe(event: &Event) -> (&'static str, Option<MessageId>) {
 /// One scripted model turn.
 pub enum Script {
     /// One finished assistant message.
-    Message(Message),
+    ///
+    /// Boxed for the reason `Delta::Finished` is: a `Message` is the largest value
+    /// in the loop, and an enum that carries one inline is sized to fit it.
+    Message(Box<Message>),
     /// Deltas delivered in order, with a gap between them.
     Deltas { deltas: Vec<Delta>, gap: Duration },
     /// The provider fails before producing anything.
@@ -313,7 +316,7 @@ impl StubModel {
 
     /// A model that answers with plain text, once.
     pub fn saying(text: &str) -> Self {
-        Self::new(vec![Script::Message(Message::assistant(text))])
+        Self::new(vec![Script::Message(Box::new(Message::assistant(text)))])
     }
 
     /// The transcripts the loop handed the model, one per call.

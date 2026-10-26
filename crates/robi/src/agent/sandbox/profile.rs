@@ -12,6 +12,17 @@ pub enum NetworkMode {
     Unrestricted,
 }
 
+/// Whether the confined process may write the workspace.
+///
+/// Ask and Plan run a [`WriteAccess::ReadOnly`] shell so that having a shell does
+/// not mean having an editor. The `temp_dir` stays writable either way: it is
+/// private to the call and discarded afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedRule {
     /// `^.*$`, the workspace itself. The profile already allows it.
@@ -32,6 +43,8 @@ pub enum AccessClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
     pub sandboxed: bool,
+    /// Whether the workspace and the write roots are writable.
+    pub write: WriteAccess,
     pub workspace: PathBuf,
     pub home: PathBuf,
     pub temp_dir: PathBuf,
@@ -41,6 +54,12 @@ pub struct Profile {
     pub toolchain_reads: Vec<PathBuf>,
     pub wide_reads: Vec<PathBuf>,
     pub wide_writes: Vec<PathBuf>,
+    /// Read-write even when `write` is [`WriteAccess::ReadOnly`].
+    ///
+    /// S9: Plan mode's shell may write one directory, `.robi/plans`. These paths
+    /// are emitted after the credential denies and before the floor, the `.git`
+    /// deny, and the session deny lists, so every explicit deny still wins.
+    pub extra_writes: Vec<PathBuf>,
     pub protected_read_files: Vec<PathBuf>,
     pub protected_write_files: Vec<PathBuf>,
     pub protected_read_dirs: Vec<PathBuf>,

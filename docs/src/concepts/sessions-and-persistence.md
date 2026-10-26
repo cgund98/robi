@@ -19,7 +19,8 @@ The tables a user should know about:
   approved MCP pairs, the plan path, and timestamps.
 - `chat_messages` — the transcript, in order. A tool call's result payload is not in this row.
 - `session_file_baselines` — the file baselines that [checkpoints](../design/tools/checkpoints.md)
-  and review are computed against.
+  are computed against. Nothing writes them in the default build, because a
+  shell command is opaque; git is the undo.
 
 Tool results, the stored originals of compressed results, and image bytes live in
 `~/.robi/sessions/<session_id>/blobs.redb`, one file per session. The transcript

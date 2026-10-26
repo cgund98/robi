@@ -6,11 +6,35 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Every workstream in `docs/src/streamlining.md` is off by default: the
+# streamlined harness ships. Each feature is the restore path for one
+# workstream. See `docs/src/design/core/feature-switches.md`.
+default = []
+# S1 (read half): `read_file`, `list_dir`, `find`, `grep`. `find` matches with
+# `globset`, and it and `grep` walk with `ignore`, so those come with them.
+read-tools = ["dep:globset", "dep:ignore"]
+# S2: the session review routes, and the `review`/`session` baseline reader.
+review = []
+# S1 (write half): `write_file`, `edit_file`, `delete_file`. The diff helpers
+# and their tests use the review half, hence the edge.
+edit-tools = ["review"]
+# S5: `web_api/docs.rs` and its four routes. Search is a literal markdown scan
+# over the `ignore` walk, so the dependency comes with them.
+docs-viewer = ["dep:ignore"]
+# T0: the terminal front end in `tui/` and the `robi` binary. Not a
+# streamlining workstream: off by default so `robi-api` and `src-tauri` do not
+# compile ratatui. `tokio/signal` is not here: every surface needs it, to catch
+# Ctrl-C and SIGTERM and remove its sandbox containers on the way out.
+tui = [
+    "dep:ratatui",
+    "dep:ratatui-textarea",
+    "dep:tui-markdown",
+    "dep:unicode-width",
+]
 [dependencies]
 robi-core = { path = "../robi-core" }
-robi-index = { path = "../robi-index" }
 
-async-lsp.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 tower.workspace = true
@@ -18,13 +42,15 @@ tower-http.workspace = true
 axum = { workspace = true, features = ["macros"] }
 bytes.workspace = true
 chrono.workspace = true
-futures-io.workspace = true
 futures-util.workspace = true
 http.workspace = true
-globset.workspace = true
-ignore.workspace = true
+globset = { workspace = true, optional = true }
+ignore = { workspace = true, optional = true }
 redb.workspace = true
 regex.workspace = true
+ratatui = { workspace = true, optional = true }
+ratatui-textarea = { workspace = true, optional = true }
+tui-markdown = { workspace = true, optional = true }
 reqwest.workspace = true
 scraper.workspace = true
 serde.workspace = true
@@ -35,11 +61,21 @@ sqlx.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 # `net` and `rt-multi-thread` drive `robi-api` and the provider-test SSE server.
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "process", "io-util"] }
+# `signal` catches Ctrl-C and SIGTERM so an exit can remove the sandbox
+# containers first.
+tokio = { workspace = true, features = [
+    "net",
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "signal",
+] }
 tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+unicode-width = { workspace = true, optional = true }
 url.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
@@ -49,6 +85,9 @@ rmcp = { version = "0.12", features = [
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
+# The container sandbox in `agent/sandbox/container/`. Selected at run time by
+# `sandbox_mechanism`, not by a Cargo feature: one switch, not two.
+bollard = { version = "0.21.1", default-features = false, features = ["http", "pipe"] }
 
 [[bin]]
 name = "robi-api"
@@ -57,3 +96,10 @@ path = "src/bin/robi-api.rs"
 [[bin]]
 name = "export-openapi"
 path = "src/bin/export-openapi.rs"
+
+# The terminal front end. `required-features` keeps it out of a default build,
+# so `cargo build` never compiles ratatui.
+[[bin]]
+name = "robi"
+path = "src/bin/robi.rs"
+required-features = ["tui"]

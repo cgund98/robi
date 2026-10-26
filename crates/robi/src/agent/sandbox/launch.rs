@@ -86,6 +86,9 @@ pub async fn run_command(request: Request) -> Result<CommandOutput, String> {
         stderr,
         truncated: stdout_truncated || stderr_truncated,
         killed,
+        // The `os` mechanism runs in the host directory the tool already told the
+        // model about, so there is nothing new to report.
+        cwd: None,
     })
 }
 

@@ -288,6 +288,7 @@ impl From<ReviewLineKind> for ReviewLineStatus {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::chat_session::lease::MemoryLocks;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -424,7 +425,8 @@ mod tests {
             repository: Arc::new(SqliteChatSessionRepository::new(Arc::clone(&pool))),
             workspaces,
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
+            locks: Arc::new(MemoryLocks::new()),
         });
         let session = sessions
             .create_chat_session(CreateChatSessionCommand {
@@ -455,21 +457,18 @@ mod tests {
                 sessions,
                 runtime: Arc::new(Idle),
                 store: Arc::new(Idle),
+                locks: Arc::new(MemoryLocks::new()),
             }),
             settings_service: Arc::new(SettingsService {
                 store: Arc::new(MemorySettingsStore::new()) as Arc<dyn SettingsStore>,
             }),
             event_bus: Arc::new(EventBus::new()),
             file_changes,
-            index: Arc::new(crate::agent::index::IndexHub::new(
-                std::env::temp_dir(),
-                Arc::new(EventBus::new()),
-                Arc::new(robi_index::FakeEmbedder::new(4)),
-            )),
             mcp: None,
             originals: Arc::new(crate::agent::compress::MemoryOriginals::default()),
             image_source: Arc::new(crate::adapters::chat_image_store::MemoryImageStore::new()),
             docs_edits: Arc::new(crate::agent::docs::DocsEditCache::default()),
+            locks: Arc::new(MemoryLocks::new()),
         };
 
         let body = get_session_review(State(state.clone()), Path(session.id.to_string()))

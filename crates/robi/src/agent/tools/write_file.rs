@@ -8,11 +8,9 @@ use robi_core::tool::{ApprovalDecision, Concurrency, Tool, ToolRun};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::change::{
-    atomic_write, change_diff, diff_json, ensure_parent, lock_path, publish_file_changed,
-    read_text, record_baseline, status_outcome, write_approval,
-};
+use super::change::{change_diff, diff_json, publish_file_changed, status_outcome, write_approval};
 use super::context::{display_path, ToolContext};
+use super::fs_write::{atomic_write, ensure_parent, lock_path, read_text, record_baseline};
 use super::marker::reject_marker;
 
 pub struct WriteFile {
@@ -72,7 +70,7 @@ impl Tool for WriteFile {
         reject_marker(&args.content)?;
         self.ctx.filter().await?;
         let resolved = self.ctx.resolve(&args.path)?;
-        let _guard = lock_path(&resolved.absolute).await;
+        let _guard = lock_path(&resolved.absolute).await?;
         if run.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
@@ -108,7 +106,6 @@ impl Tool for WriteFile {
         })
         .await
         .map_err(ToolError::Failed)??;
-        self.ctx.note_lsp(&resolved.absolute, false).await;
         let file_diff = change_diff(&relative, &before, &args.content, existed, false);
         publish_file_changed(&self.ctx, &relative, status_outcome(file_diff.status));
         Ok(diff_json(&file_diff))

@@ -375,7 +375,9 @@ mod tests {
             let (tx, rx) = mpsc::channel(1);
             let reply = self.reply.lock().expect("reply").clone();
             tokio::spawn(async move {
-                let _ = tx.send(Delta::Finished(Message::assistant(reply))).await;
+                let _ = tx
+                    .send(Delta::Finished(Box::new(Message::assistant(reply))))
+                    .await;
             });
             Ok(ModelStream::new(rx))
         }

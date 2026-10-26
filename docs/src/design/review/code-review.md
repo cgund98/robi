@@ -1,8 +1,22 @@
 # Code review
 
+> **Disabled in M11. Kept for reference.** The review routes are not served and
+> the app has no review screen or edited-file strip. The user reviews with
+> `git diff` and their editor. The backend stays in
+> `crates/robi/src/web_api/review.rs` and `agent/review/session.rs` behind the
+> `review` Cargo feature; `agent/review/diff.rs` stays unconditional because the
+> docs merge path uses it. The session baseline table is still written by the
+> `edit-tools` restore path only. See
+> [feature-switches.md](../core/feature-switches.md) and
+> [Streamlining roadmap](../../streamlining.md#s2--no-in-app-code-review).
+
 This page is the review of files a chat session has changed. The
 baselines it reads are in [checkpoints.md](../tools/checkpoints.md). The chat strip
 that opens it is in [visual-style.md](../shell/visual-style.md).
+
+Two pieces still ship: the session review routes stay on the API, and the
+inline file peek from a tool call card uses `GET …/review/file` to show a
+file's diff in the chat.
 
 ## What this page does not cover
 

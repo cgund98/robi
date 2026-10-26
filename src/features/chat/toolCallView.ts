@@ -14,15 +14,12 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
   const path = stringField(args, 'path')
   const pattern = stringField(args, 'pattern')
   switch (call.name) {
-    case 'read_file':
-    case 'read_code': {
+    case 'read_file': {
       const range = readLineRange(args)
       return { verb: 'Read', target: path || 'file', ...(range ? { range } : {}) }
     }
     case 'grep':
       return { verb: 'Grepped', target: pattern || path || 'workspace' }
-    case 'semantic_search':
-      return { verb: 'Searched', target: stringField(args, 'query') || 'workspace' }
     case 'web_search':
       return { verb: 'Search', target: stringField(args, 'query') || 'the web' }
     case 'web_fetch':
@@ -51,10 +48,6 @@ export function toolSummary(call: ChatToolCall): ToolSummary {
         verb: 'Delegate',
         target: stringField(args, 'description') || stringField(args, 'task')
       }
-    case 'write_plan':
-      return { verb: 'Plan', target: planTitle(call) }
-    case 'todos':
-      return { verb: 'Update', target: 'tasks' }
     default:
       if (call.name.startsWith('mcp_')) {
         return { verb: 'MCP call', target: call.name.slice('mcp_'.length) }
@@ -77,6 +70,26 @@ export function needsDecision(
 
 export function hasDetail(call: ChatToolCall): boolean {
   return call.error != null || call.result != null
+}
+
+/** Output lines a collapsed shell card shows, from the end of the stream. */
+export const SHELL_PREVIEW_LINES = 4
+
+/**
+ * The last `count` lines of shell output, for the collapsed card.
+ *
+ * The model's copy is compressed head-and-tail, so its tail is the real tail.
+ * Empty trailing lines are dropped so a final newline does not eat a slot.
+ */
+export function shellOutputTail(output: string, count = SHELL_PREVIEW_LINES): string[] {
+  const lines = output.split('\n')
+  while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') {
+    lines.pop()
+  }
+  if (count <= 0) {
+    return []
+  }
+  return lines.length <= count ? lines : lines.slice(-count)
 }
 
 /** Diff lines an edit card shows before the user opens the rest. */
@@ -495,21 +508,31 @@ export function subagentView(call: ChatToolCall): SubagentView | null {
   }
 }
 
-/** The collapsed explore row: `Exploring 9 files, 5 searches`. */
+/**
+ * The collapsed explore row: `Exploring 4 commands`.
+ *
+ * A child now reads and searches through `shell`, so the read and search tools
+ * no longer appear in a step list. Counting shell steps is the honest summary;
+ * the commands themselves show in the expanded card.
+ */
 export function exploreSummary(view: SubagentView): string {
-  const files = new Set(
+  const commands = view.steps.filter((step) => step.name === 'shell' && step.target.length > 0)
+  const reads = new Set(
     view.steps
-      .filter(
-        (step) => (step.name === 'read_file' || step.name === 'read_code') && step.target.length > 0
-      )
+      .filter((step) => step.name === 'read_file' && step.target.length > 0)
       .map((step) => step.target)
   ).size
   const searches = view.steps.filter((step) => step.name === 'grep' || step.name === 'find').length
   const parts: string[] = []
-  if (files === 1) {
+  if (commands.length === 1) {
+    parts.push('1 command')
+  } else if (commands.length > 1) {
+    parts.push(`${commands.length} commands`)
+  }
+  if (reads === 1) {
     parts.push('1 file')
-  } else if (files > 1) {
-    parts.push(`${files} files`)
+  } else if (reads > 1) {
+    parts.push(`${reads} files`)
   }
   if (searches === 1) {
     parts.push('1 search')
@@ -523,6 +546,10 @@ export function exploreSummary(view: SubagentView): string {
 }
 
 export function subagentCount(view: SubagentView): string {
+  const commands = view.steps.filter((step) => step.name === 'shell').length
+  if (view.mode === 'explore' && commands > 0) {
+    return commands === 1 ? '1 command' : `${commands} commands`
+  }
   const searches = view.steps.filter((step) => step.name === 'grep' || step.name === 'find').length
   if (view.mode === 'explore' && searches > 0) {
     return searches === 1 ? '1 search' : `${searches} searches`
@@ -553,149 +580,6 @@ function stepStatus(status: string): SubagentStepView['status'] {
     return status
   }
   return 'failed'
-}
-
-export type PlanTodoStatus = 'pending' | 'in_progress' | 'completed' | 'canceled'
-
-export type PlanTodo = {
-  id: string
-  content: string
-  status: PlanTodoStatus
-}
-
-export type PlanView = {
-  title: string
-  summary: string
-  body: string
-  path: string
-  created: boolean
-  todos: PlanTodo[]
-}
-
-const PLAN_TODO_STATUSES: readonly PlanTodoStatus[] = [
-  'pending',
-  'in_progress',
-  'completed',
-  'canceled'
-]
-
-/** The markdown a finished `write_plan` saved, ready to open again. */
-export function planView(call: ChatToolCall): PlanView | null {
-  if (call.name !== 'write_plan' || call.error || call.execution_status !== 'succeeded') {
-    return null
-  }
-  const args = record(call.args)
-  const body = stringField(args, 'body')
-  const title = planTitle(call)
-  const path = stringField(record(call.result), 'path') || stringField(args, 'path')
-  return {
-    title,
-    summary: planSummary(body, title),
-    body,
-    path,
-    created: stringField(record(call.result), 'status') !== 'updated',
-    todos: parsePlanTodos(args?.todos)
-  }
-}
-
-/** Todo steps from a plan write or a `todos` result. Steps with no content are left off. */
-export function parsePlanTodos(value: unknown): PlanTodo[] {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  const todos: PlanTodo[] = []
-  for (const item of value) {
-    const fields = record(item)
-    if (!fields) {
-      continue
-    }
-    const id = stringField(fields, 'id').trim()
-    const content = stringField(fields, 'content').trim()
-    const raw = stringField(fields, 'status').trim() || 'pending'
-    if (!id || !content || !isPlanTodoStatus(raw)) {
-      continue
-    }
-    todos.push({ id, content, status: raw })
-  }
-  return todos
-}
-
-function isPlanTodoStatus(value: string): value is PlanTodoStatus {
-  return PLAN_TODO_STATUSES.some((status) => status === value)
-}
-
-/** The user message that asks agent mode to carry out a saved plan. */
-export function planBuildInstruction(path: string): string {
-  return `Implement the plan at ${path}. Read that file and make the changes it describes.`
-}
-
-function planTitle(call: ChatToolCall): string {
-  const args = record(call.args)
-  const path = stringField(record(call.result), 'path') || stringField(args, 'path')
-  const heading = firstHeading(stringField(args, 'body'))
-  if (heading) {
-    return heading
-  }
-  const name = stringField(args, 'plan_name').trim()
-  if (name) {
-    return name
-  }
-  const file = path.split('/').pop() ?? ''
-  const stem = file.replace(/\.md$/i, '')
-  return stem || 'plan'
-}
-
-function planSummary(body: string, title: string): string {
-  let fenced = false
-  const paragraphs: string[] = []
-  let current: string[] = []
-  const flush = () => {
-    const text = current.join(' ').replace(/\s+/g, ' ').trim()
-    current = []
-    if (text && text !== title) {
-      paragraphs.push(text)
-    }
-  }
-  for (const line of body.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('```')) {
-      if (fenced) {
-        flush()
-      }
-      fenced = !fenced
-      continue
-    }
-    if (fenced || /^#{1,6}\s+/.test(trimmed)) {
-      flush()
-      continue
-    }
-    if (!trimmed) {
-      flush()
-      continue
-    }
-    current.push(trimmed.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, ''))
-  }
-  flush()
-  return paragraphs[0] ?? ''
-}
-
-function firstHeading(body: string): string {
-  let fenced = false
-  for (const line of body.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('```')) {
-      fenced = !fenced
-      continue
-    }
-    if (fenced) {
-      continue
-    }
-    const match = /^#{1,6}\s+(\S.*?)\s*#*\s*$/.exec(line)
-    if (match) {
-      return match[1].trim()
-    }
-  }
-  return ''
 }
 
 function stringField(value: Record<string, unknown> | null, key: string): string {

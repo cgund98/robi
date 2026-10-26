@@ -6,8 +6,6 @@ use std::sync::Arc;
 use robi_core::error::ToolError;
 use robi_core::ids::{SessionId, WorkspaceId};
 
-use crate::agent::index::IndexHub;
-use crate::agent::lsp::LspHub;
 use crate::agent::workspace::{resolve_path, user_home, PathFilter, ResolvedPath};
 use crate::domain::chat_session::service::ChatSessionService;
 use crate::domain::events::EventBus;
@@ -22,11 +20,6 @@ pub struct ToolContext {
     pub root: PathBuf,
     pub sessions: Arc<ChatSessionService>,
     pub file_changes: Arc<dyn FileChangeRepository>,
-    pub index: Option<Arc<IndexHub>>,
-    pub lsp: Arc<LspHub>,
-    /// When false, language-server tools are not registered and writes do not
-    /// notify a server. Read once, when the actor builds its registry.
-    pub lsp_enabled: bool,
     /// Capped shell streams. Absent in tests that do not compress.
     pub originals: Option<Arc<dyn crate::agent::compress::OriginalStore>>,
     /// Live settings. Each path-filter and sandbox build reads
@@ -56,7 +49,7 @@ impl ToolContext {
                 .push(crate::agent::skills::read_allow(&relative));
         }
         self.append_configured_allows(&mut rules).await;
-        PathFilter::for_session(&rules, self.session_id).map_err(ToolError::Failed)
+        PathFilter::for_session(&rules).map_err(ToolError::Failed)
     }
 
     /// Settings paths, with `~/` expanded, appended to the session allow lists.
@@ -98,25 +91,6 @@ impl ToolContext {
             .map_err(|err| ToolError::Failed(format!("{err}: {argument}")))
     }
 
-    /// Remember the plan the next agent prompt should re-read.
-    pub async fn remember_plan(&self, path: &str) -> Result<(), ToolError> {
-        self.sessions
-            .set_plan_path(self.session_id, path.to_owned())
-            .await
-            .map_err(|err| ToolError::Failed(err.to_string()))
-    }
-
-    /// Tell a running language server that a write just changed this file.
-    ///
-    /// A server that is not running is left stopped. The next tool call reads
-    /// the disk.
-    pub async fn note_lsp(&self, absolute: &std::path::Path, deleted: bool) {
-        if !self.lsp_enabled {
-            return;
-        }
-        self.lsp.note_disk(&self.root, absolute, deleted).await;
-    }
-
     /// The stored string for `key`, or empty when it is absent or the read fails.
     /// A stored whole number from 1 through `max`. Absent or unusable is `default`.
     pub async fn bounded_u32(&self, key: &str, default: u32, max: u32) -> u32 {
@@ -145,6 +119,7 @@ pub fn display_path(path: &ResolvedPath) -> String {
     }
 }
 
+#[cfg(feature = "read-tools")]
 pub fn denied(path: &ResolvedPath) -> ToolError {
     ToolError::Failed(format!("path is not allowed: {}", display_path(path)))
 }

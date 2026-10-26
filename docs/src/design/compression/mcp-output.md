@@ -18,7 +18,6 @@ that result is appended.
 | Whether the server is called, and the 256 KiB bound on the joined text | [mcp.md](../reach/mcp.md) |
 | Collapsing a shell log, and the `<<<ROBI_LOG` marker grammar | [shell-output.md](shell-output.md) |
 | Crushing a `grep` result or a built-in JSON tool | `docs/src/design/compression/tool-output-compression.md` |
-| Folding a source file | [code-outline.md](../tools/code-outline.md) |
 | Summarizing older turns | [roadmap](../../roadmap.md) F3.4, `docs/src/design/workspace/context-management.md` |
 
 ## Problem

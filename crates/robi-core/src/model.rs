@@ -37,7 +37,13 @@ pub enum Delta {
     Usage(Usage),
     /// The adapter's assembled message. The loop stamps it with the stream's
     /// message id, so the transcript id and the delta events agree.
-    Finished(Message),
+    ///
+    /// Boxed for the reason `Event::MessageDelta`'s `delta` is: a `Message` is the
+    /// largest payload in the loop, and carrying it inline would size every `Delta`
+    /// to fit it. `Message` sits just under clippy's `large_enum_variant`
+    /// threshold, so any field added to it is what turns this into an error —
+    /// indirection here is what keeps a new `Message` field cheap.
+    Finished(Box<Message>),
     Failed(ModelError),
 }
 

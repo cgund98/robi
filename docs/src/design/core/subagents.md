@@ -32,16 +32,32 @@ One tool, `delegate`, with two modes.
 
 | | `explore` | `general` |
 |---|---|---|
-| Tools | `read_file`, `read_code`, `list_dir`, `find`, `grep`, `semantic_search`, and, when `lsp` is `on`, the read-only language-server tools | those, plus `shell` |
+| Tools | `shell` (`ShellAccess::ReadOnly`) and `retrieve` | the same |
 | Model turns | `subagent_max_iterations`, default 50 | the same setting |
 | Wall clock | `subagent_timeout_seconds`, default 120 | the same setting |
 | Calls per session | 6 | 4 |
 
-`explore` has no shell. Command output is `general`'s job, which is what makes
-explore safe to call for a search. Neither mode can edit, call `grant`, call
-`delegate`, call `skill`, call `web_search` or `web_fetch`, or call an MCP
-tool. A child cannot start another child. The child prompt does not include
-the skill catalog.
+**Both modes hold a read-only shell.** A child cannot ask for approval, and a
+sandboxed write inside the workspace needs no approval, so a writable child
+could edit files and leave the workspace changed after its summary came back.
+Read-only in the profile is what stops that, not the wrapper. A child that
+finds a change to make names it in the summary; the parent applies it with its
+own approval path. That is the price of having no approval channel, and it is
+better than a silent edit.
+
+The child schema has no `unsandboxed`, no `write_paths`, and no unrestricted
+network option at all — removing the key is stronger than rejecting the value.
+Build and test commands fail in a child for the same reason they fail in Ask and
+Plan: they write `target/`.
+
+Neither mode can edit, call `grant`, call `delegate`, call `skill`, call
+`web_search` or `web_fetch`, or call an MCP tool. A child cannot start another
+child. The child prompt does not include the skill catalog and is written for
+the shell: what to run to search, how to read a window, and that the parent
+makes the change.
+
+With `--features read-tools`, the corresponding tools join both child
+registries too. See [feature-switches.md](feature-switches.md).
 
 The agent-mode prompt, and the built-in rules when `delegate` is registered,
 tell the parent to use `explore` for a search that spans more than a couple of
@@ -79,6 +95,12 @@ A child tool that would return `NeedsApproval` does not run. It returns
 child. The child uses the parent session's path rules and cannot widen them.
 The parent grants a path first, then delegates.
 
+Read-only narrows writes; fail-closed still bounds reads. A child that asks for
+a path outside the session's rules needs approval for `read_paths`, so
+`FailClosed` turns that into `access_denied` rather than a prompt. Both
+invariants have a test: one asserts the read-only profile for each child mode,
+and one asserts no child tool schema carries an escalation key.
+
 Hitting the session budget returns `explore_limit` or `delegate_limit` as the
 tool result. The parent continues and does the work itself.
 
@@ -100,6 +122,13 @@ two minutes) cancels the child and the tool returns timed out.
 - **Giving explore a shell.** OpenCode's explore agent can run bash. The noisy
   part of exploration is file bodies, and a command's output belongs to
   `general`.
+- **Witholding the shell from explore once the read tools went.** Removing
+  `read_file`, `grep`, `find`, and `list_dir` would leave explore
+  with no tools at all, so both modes get the read-only shell. The distinction
+  between the modes is now the prompt and the call budget, not the tool set.
+- **A writable `general` child.** A sandboxed write needs no approval, so the
+  child would edit with nothing to audit it: its transcript is in memory and
+  the parent sees only the summary.
 
 ## Failure modes
 

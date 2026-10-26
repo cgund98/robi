@@ -55,7 +55,13 @@ async fn main() {
     };
     tracing::info!(%addr, "robi-api listening");
 
-    if let Err(err) = axum::serve(listener, bootstrap::router(state)).await {
+    let served = axum::serve(listener, bootstrap::router(state))
+        .with_graceful_shutdown(bootstrap::shutdown_signal())
+        .await;
+    // Before the process goes: a container is a label in a daemon, not a file
+    // this process holds, so it outlives an exit unless it is removed here.
+    bootstrap::shutdown_sandboxes().await;
+    if let Err(err) = served {
         eprintln!("server stopped: {err}");
         std::process::exit(1);
     }

@@ -1,15 +1,14 @@
-//! Shared read-modify-write for the edit tools.
+//! What an edit tool does beyond the write itself: approval, a diff, and the
+//! `file_changed` frame.
+//!
+//! The read-modify-write primitives live in [`super::fs_write`], because the
+//! plan, todo, and docs writers use them too.
 
-use std::path::Path;
-
-use robi_core::error::ToolError;
-use robi_core::ids::SessionId;
 use robi_core::tool::ApprovalDecision;
 use serde_json::{json, Value};
 
-use crate::agent::review::{diff, lock_path as lock_review_path, FileDiff, FileStatus};
+use crate::agent::review::{diff, FileDiff, FileStatus};
 use crate::domain::events::EventEnvelope;
-use crate::domain::file_change::repo::FileChangeRepository;
 
 use super::context::ToolContext;
 
@@ -32,59 +31,6 @@ pub async fn write_approval(ctx: &ToolContext, args: &Value) -> ApprovalDecision
         Ok(_) => ApprovalDecision::NeedsApproval,
         Err(_) => ApprovalDecision::AllowImmediately,
     }
-}
-
-pub async fn lock_path(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
-    lock_review_path(path).await
-}
-
-pub fn read_text(path: &Path) -> Result<Option<String>, ToolError> {
-    match std::fs::read(path) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| ToolError::Failed("file is not utf-8".to_owned())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(ToolError::Failed(format!("read file: {err}"))),
-    }
-}
-
-pub fn ensure_parent(path: &Path) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| ToolError::Failed(format!("create directory: {err}")))?;
-        }
-    }
-    Ok(())
-}
-
-pub fn atomic_write(path: &Path, text: &str) -> Result<(), ToolError> {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".to_owned());
-    let tmp = path.with_file_name(format!(".{name}.robi-tmp"));
-    if let Err(err) = std::fs::write(&tmp, text.as_bytes()) {
-        return Err(ToolError::Failed(format!("write file: {err}")));
-    }
-    if let Err(err) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(ToolError::Failed(format!("write file: {err}")));
-    }
-    Ok(())
-}
-
-pub async fn record_baseline(
-    repo: &dyn FileChangeRepository,
-    session_id: SessionId,
-    path: &str,
-    baseline: &str,
-    created: bool,
-) -> Result<(), ToolError> {
-    repo.record_baseline(session_id, path, baseline, created)
-        .await
-        .map_err(|err| ToolError::Failed(err.to_string()))?;
-    Ok(())
 }
 
 /// The diff of this write. `existed` is false when the file was created.
@@ -124,7 +70,7 @@ pub fn status_outcome(status: FileStatus) -> &'static str {
     }
 }
 
-/// Announce a path an edit tool just wrote, so the docs viewer can react.
+/// Announce a path an edit tool just wrote.
 ///
 /// The frame is `robi.workspace.v1.file_changed` with `source: "agent"`. A
 /// context with no bus (a test) publishes nothing.

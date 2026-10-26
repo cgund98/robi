@@ -9,7 +9,8 @@ const ITEMS = [
   { to: '/settings/general', label: 'General' },
   { to: '/settings/mcp', label: 'MCP' },
   { to: '/settings/providers', label: 'Model Providers' },
-  { to: '/settings/permissions', label: 'Permissions' }
+  { to: '/settings/permissions', label: 'Permissions' },
+  { to: '/settings/sandbox', label: 'Sandbox' }
 ] as const
 
 export function SettingsLayout(props: { children?: JSX.Element }) {

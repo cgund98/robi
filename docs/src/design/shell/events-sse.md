@@ -23,7 +23,6 @@ describe them. Process placement of the loop (in-process vs. sidecar) stays
 | Message REST and the transcript snapshot | [persistence.md](../persistence/persistence.md) (M2) |
 | Streaming caret, scroll-lock, tool-card layout | `docs/src/design/shell/chat-ui.md` (M2) |
 | In-process loop vs. sidecar, command IPC | `docs/src/design/core/architecture.md` (M2) |
-| Index progress (`robi.index.v1.progress`) | [semantic-search.md](../intelligence/semantic-search.md) (M7). It is published on this same stream. A `session_id` filter also lets through index progress whose subject is that session's workspace |
 
 ```mermaid
 flowchart LR
@@ -163,7 +162,7 @@ These are not core `Event`s. Build them with `EventEnvelope::from_payload`.
 
 A `session_id` query still delivers these four types, plus `turn_started` and
 `turn_finished` for every session. The four are the session list and
-process-wide failures. The turn pair updates a sidebar row that is not on
+process-wide failures. The turn pair updates a Recents row that is not on
 screen. Message frames for another session stay filtered out.
 
 `outcome` is one of:
@@ -225,20 +224,20 @@ One connection for the shell, mounted from `ChatChrome`.
 Handlers stay thin. They refetch HTTP and update the activity phase. They do
 not write message text from a frame. Two refetches of the same URL can be in
 flight together; only the one that started later is applied. A slower earlier
-`GET` of that message, session, session list, or index status is dropped. The
+`GET` of that message, session, or session list is dropped. The
 behavior is specified in [chat-ui.md](chat-ui.md).
 
 | `type` | Shell |
 |---|---|
-| `robi.agent.v1.turn_started` | Phase `thinking` when that session is on screen. Otherwise the sidebar marks that row running, and does not fetch its transcript |
+| `robi.agent.v1.turn_started` | Phase `thinking` when that session is on screen. Otherwise the Recents menu marks that row running, and does not fetch its transcript |
 | `robi.agent.v1.message_delta` | When that session is on screen: `reasoning` keeps **Thinking**, `text` switches to **Responding**. Other kinds are ignored. The `text` field is not stored. A frame for another session does not change the phase and does not fetch |
-| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | When that session is on screen: `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. One GET is in flight per message; a newer frame schedules one trailing GET. A full transcript reload merges with any row upserted after that reload started. `tool_call_updated` refreshes the review strip immediately, then once more after a burst goes quiet. A frame for another session does not fetch |
+| `robi.agent.v1.message_added`, `robi.agent.v1.message_updated`, `robi.agent.v1.tool_call_updated` | When that session is on screen: `GET /chat_sessions/{id}/messages/{message_id}` and upsert that row. One GET is in flight per message; a newer frame schedules one trailing GET. A full transcript reload merges with any row upserted after that reload started. With the review screen off, `tool_call_updated` starts no review fetch. A frame for another session does not fetch |
 | `robi.agent.v1.awaiting_approval` | When the desktop window is not in front, one OS notification for that pause. A click focuses the window and selects the session. See [chat-ui.md](chat-ui.md) |
 | `robi.agent.v1.turn_finished` | When that session is on screen: phase `idle`, then refetch the session and the message list. A `failed` outcome is recorded and shown under the window title until dismissed. When the desktop window is not in front, the same message is one OS notification; a click focuses the window and selects the session. The refetch does not put the phase back on `thinking` when `has_pending_agent` is still set: the actor clears that flag after this event. A `turn_started` that arrives during the refetch, including the next piece of work, sets `thinking` and the refetch leaves it. When another session is on screen: clear that row's running mark. A `failed` outcome is still recorded and shown under the window title until dismissed, and posted as that same notification when the window is not in front. No transcript fetch |
 | `robi.session.v1.created`, `robi.session.v1.updated` | `GET /chat_sessions/{id}` and replace that session in the list. A title carried on the frame is applied immediately. A frame that carries `turn_display` applies that value to the row immediately and still refetches. A fetch that started before the frame does not overwrite `turn_display` or put the running spinner back on an `awaiting_approval` row. A title-only frame does not refetch. A fetch that started before a title, or before a local insert, does not wipe them. The phase is unchanged |
 | `robi.session.v1.deleted` | Drop that session from the list. The phase is unchanged |
 | `robi.app.v1.error` | Record `message` and show it at the top of the shell until it is dismissed |
-| `robi.index.v1.progress` | `GET /workspaces/{id}/index` for `subject` when that workspace is active. A successful GET is reused for 10 seconds, and concurrent frames share one request. The stream publishes once when it opens, then again as the index changes |
+| `robi.index.v1.progress` | Dropped. The default build publishes none, because nothing takes an index lease, and no client reads it. `--features semantic-index` restores the frames; a client that wants them must add its own reader |
 | `robi.mcp.v1.status` | `GET /workspaces/{id}/mcp` for `subject` when that workspace is active. The stream publishes once when it opens, then again as a server's status changes. The tray does not poll |
 | `robi.workspace.v1.file_changed` | Record the path, source, and outcome in the docs store. The viewer refreshes the tree, and refetches the open page unless it holds unsaved edits — see [docs-mode.md](docs-mode.md). No fetch of its own |
 

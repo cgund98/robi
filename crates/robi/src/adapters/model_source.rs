@@ -11,14 +11,15 @@ use robi_core::model::Model;
 use robi_core::tool::ToolRegistry;
 
 use crate::agent::providers::{
-    build_model, ApiKey, ImageSource, ModelCatalog, ModelId, ProviderKind, ProviderSettings,
-    ReasoningEffort,
+    build_model, ApiKey, ImageSource, ModelCatalog, ModelId, ModelInfo, ProviderKind,
+    ProviderSettings, ReasoningEffort,
 };
 use crate::domain::{
     chat_session::model::{AgentMode, ModeOverride},
     error::ServiceError,
     settings::{
-        keys::{self, DEFAULT_MODEL},
+        keys::{self, provider_enabled, DEFAULT_MODEL},
+        service::{ReadSetting, SettingsService},
         store::SettingsStore,
     },
 };
@@ -36,7 +37,6 @@ pub trait ModelSource: Send + Sync {
         workspace: Option<std::path::PathBuf>,
         mode: AgentMode,
         choice: ModeOverride,
-        plan_path: Option<String>,
     ) -> Result<Arc<dyn Model>, ServiceError>;
 
     /// Build a model that offers `tools` and uses `system_prompt` as written.
@@ -51,7 +51,7 @@ pub trait ModelSource: Send + Sync {
         system_prompt: String,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         let _ = system_prompt;
-        self.model(tools, None, mode, choice, None).await
+        self.model(tools, None, mode, choice).await
     }
 }
 
@@ -74,7 +74,6 @@ impl ModelSource for FixedModelSource {
         _workspace: Option<std::path::PathBuf>,
         _mode: AgentMode,
         _choice: ModeOverride,
-        _plan_path: Option<String>,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         Ok(Arc::clone(&self.model))
     }
@@ -101,16 +100,14 @@ impl SettingsModelSource {
         mode: AgentMode,
         choice: &ModeOverride,
     ) -> Result<ProviderSettings, ServiceError> {
-        let model = match choice.model.as_deref().filter(|model| !model.is_empty()) {
-            Some(model) => model.to_owned(),
-            None => match self.stored(keys::model_key(mode)).await? {
-                Some(model) => model,
-                None => match self.stored(keys::MODEL).await? {
-                    Some(model) => model,
-                    None => DEFAULT_MODEL.to_owned(),
-                },
-            },
+        // Every layer of the model and effort resolution is one function now, so
+        // the terminal's picker and this builder cannot disagree about what a
+        // mode will actually use.
+        let settings_service = SettingsService {
+            store: Arc::clone(&self.settings),
         };
+        let effective = effective_choice(&settings_service, mode, choice).await?;
+        let model = effective.model;
 
         // A11: the prefix names the provider. An id with neither known prefix is a
         // legacy OpenCode Go id, read-compatible forever; new writes are prefixed.
@@ -166,28 +163,11 @@ impl SettingsModelSource {
                 settings.base_url = base_url.value;
             }
         }
-        settings.reasoning_effort = match choice
-            .reasoning_effort
-            .as_deref()
-            .filter(|effort| !effort.is_empty())
-        {
+        settings.reasoning_effort = match effective.effort.as_deref() {
             Some(effort) => Some(parse_effort(effort)?),
-            None => match self.stored(keys::effort_key(mode)).await? {
-                Some(effort) => Some(parse_effort(&effort)?),
-                None => match self.stored(keys::REASONING_EFFORT).await? {
-                    Some(effort) => Some(parse_effort(&effort)?),
-                    None => None,
-                },
-            },
+            None => None,
         };
         Ok(settings)
-    }
-
-    async fn stored(&self, key: &str) -> Result<Option<String>, ServiceError> {
-        match self.settings.get(key).await? {
-            Some(setting) if !setting.value.is_empty() => Ok(Some(setting.value)),
-            _ => Ok(None),
-        }
     }
 }
 
@@ -199,13 +179,17 @@ impl ModelSource for SettingsModelSource {
         workspace: Option<std::path::PathBuf>,
         mode: AgentMode,
         choice: ModeOverride,
-        plan_path: Option<String>,
     ) -> Result<Arc<dyn Model>, ServiceError> {
         let mut settings = self.provider_settings(mode, &choice).await?;
         let user_prompt = match self.settings.get(keys::SYSTEM_PROMPT).await? {
             Some(setting) if !setting.value.trim().is_empty() => Some(setting.value),
             _ => None,
         };
+        // Resolved before the blocking call: the prompt needs to know whether the
+        // workspace will be mounted at `/workspace` or stay at its host path.
+        let container_sandbox =
+            crate::agent::sandbox::container::config::mechanism(Some(self.settings.as_ref())).await
+                == crate::agent::sandbox::Mechanism::Container;
         let tools_for_prompt = Arc::clone(&tools);
         settings.system_prompt = crate::agent::blocking::call(move || {
             crate::agent::prompt::assemble_session(crate::agent::prompt::SessionPrompt {
@@ -214,8 +198,8 @@ impl ModelSource for SettingsModelSource {
                 config_dir: crate::adapters::settings::home_dir().ok(),
                 workspace,
                 mode,
-                plan_path,
                 max_bytes: crate::agent::prompt::DEFAULT_MAX_BYTES,
+                container_sandbox,
             })
         })
         .await
@@ -236,6 +220,124 @@ impl ModelSource for SettingsModelSource {
         build_model(settings, tools, self.images())
             .map_err(|error| ServiceError::BadRequest(format!("failed to build model: {error}")))
     }
+}
+
+/// Models a turn can actually drive: tool-capable, and offered by a provider
+/// whose setting is `on`.
+///
+/// The one implementation behind `/api/v1/models` and the terminal's picker.
+/// A provider whose setting is `off` is left out, so neither list offers a model
+/// a turn would fail to build (A11: one flat list, disjoint prefixed ids).
+pub async fn pickable_models(settings: &SettingsService) -> Vec<ModelInfo> {
+    let opencode = provider_on(settings, keys::PROVIDER_OPENCODE_GO).await;
+    let anthropic = provider_on(settings, keys::PROVIDER_ANTHROPIC).await;
+    let deepseek = provider_on(settings, keys::PROVIDER_DEEPSEEK).await;
+    ModelCatalog::all()
+        .tool_capable()
+        .filter(|info| match ProviderKind::of(info.id.as_str()) {
+            ProviderKind::OpenCodeGo => opencode,
+            ProviderKind::Anthropic => anthropic,
+            ProviderKind::DeepSeek => deepseek,
+        })
+        .cloned()
+        .collect()
+}
+
+/// A settings read that fails leaves the provider on, so a store error does not
+/// empty the picker.
+async fn provider_on(settings: &SettingsService, key: &str) -> bool {
+    match settings.get(key).await {
+        Ok(setting) => provider_enabled(setting.value.as_deref()),
+        Err(_) => true,
+    }
+}
+
+/// The model and effort one mode will use, after every layer has had its say.
+///
+/// `model` is always present: the last fallback is [`DEFAULT_MODEL`]. `effort` is
+/// absent when nothing anywhere names one, which is what leaves the provider's own
+/// default alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveChoice {
+    pub model: String,
+    pub effort: Option<String>,
+}
+
+impl EffectiveChoice {
+    /// The provider the model id names. A bare legacy id reads as OpenCode Go.
+    pub fn provider(&self) -> ProviderKind {
+        ProviderKind::of(&self.model)
+    }
+}
+
+/// Resolve one mode's model and effort: the session's override, then that mode's
+/// setting, then the fallback setting, then the default model.
+///
+/// An empty string counts as absent at every layer, because that is how the
+/// settings screen clears a mode's override.
+pub async fn effective_choice(
+    settings: &SettingsService,
+    mode: AgentMode,
+    choice: &ModeOverride,
+) -> Result<EffectiveChoice, ServiceError> {
+    let model = match non_empty(choice.model.as_deref()) {
+        Some(model) => model.to_owned(),
+        None => match stored(settings, keys::model_key(mode)).await? {
+            Some(model) => model,
+            None => match stored(settings, keys::MODEL).await? {
+                Some(model) => model,
+                None => DEFAULT_MODEL.to_owned(),
+            },
+        },
+    };
+    let effort = match non_empty(choice.reasoning_effort.as_deref()) {
+        Some(effort) => Some(effort.to_owned()),
+        None => match stored(settings, keys::effort_key(mode)).await? {
+            Some(effort) => Some(effort),
+            None => stored(settings, keys::REASONING_EFFORT).await?,
+        },
+    };
+    Ok(EffectiveChoice { model, effort })
+}
+
+/// Each mode's inheritable choice: what a session with no override of its own
+/// would use.
+///
+/// The picker needs all three at once, so a `Use default` row can name the value
+/// it is falling back to, and so switching mode does not require a second read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeDefaults {
+    pub ask: EffectiveChoice,
+    pub plan: EffectiveChoice,
+    pub agent: EffectiveChoice,
+}
+
+impl ModeDefaults {
+    pub async fn load(settings: &SettingsService) -> Result<Self, ServiceError> {
+        let inherited = ModeOverride::default();
+        Ok(Self {
+            ask: effective_choice(settings, AgentMode::Ask, &inherited).await?,
+            plan: effective_choice(settings, AgentMode::Plan, &inherited).await?,
+            agent: effective_choice(settings, AgentMode::Agent, &inherited).await?,
+        })
+    }
+
+    pub fn for_mode(&self, mode: AgentMode) -> &EffectiveChoice {
+        match mode {
+            AgentMode::Ask => &self.ask,
+            AgentMode::Plan => &self.plan,
+            AgentMode::Agent => &self.agent,
+        }
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
+}
+
+async fn stored(settings: &SettingsService, key: &str) -> Result<Option<String>, ServiceError> {
+    let ReadSetting { value, .. } = settings.get(key).await?;
+    Ok(non_empty(value.as_deref()).map(str::to_owned))
 }
 
 fn parse_effort(value: &str) -> Result<ReasoningEffort, ServiceError> {
@@ -259,6 +361,7 @@ mod tests {
         keys::{self, OPENCODE_GO_API_KEY},
         memory::MemorySettingsStore,
     };
+    use robi_core::ids::SessionId;
 
     /// No attachment is ever resolved in these tests; build_model only touches it
     /// when a transcript carries images, which none of these do.
@@ -266,7 +369,11 @@ mod tests {
 
     #[async_trait]
     impl ImageSource for NoImages {
-        async fn image(&self, _id: &str) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
+        async fn image(
+            &self,
+            _session: SessionId,
+            _id: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ProviderError> {
             Ok(None)
         }
     }
@@ -295,7 +402,6 @@ mod tests {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             )
             .await
             .unwrap();
@@ -321,7 +427,7 @@ mod tests {
             .unwrap();
 
         let second = source
-            .model(tools, None, AgentMode::Agent, ModeOverride::default(), None)
+            .model(tools, None, AgentMode::Agent, ModeOverride::default())
             .await
             .unwrap();
         let second_settings = source
@@ -346,7 +452,6 @@ mod tests {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             )
             .await
         {
@@ -412,7 +517,6 @@ mod tests {
                     model: Some("glm-5.2".into()),
                     reasoning_effort: None,
                 },
-                None,
             )
             .await
             .unwrap();
@@ -575,7 +679,6 @@ mod tests {
                 None,
                 AgentMode::Agent,
                 ModeOverride::default(),
-                None,
             )
             .await
             .unwrap();
@@ -598,7 +701,6 @@ mod tests {
                     model: Some("ocg_not-a-model".into()),
                     reasoning_effort: None,
                 },
-                None,
             )
             .await
         {
@@ -630,6 +732,162 @@ mod tests {
         assert_eq!(
             error,
             ServiceError::BadRequest("provider_opencode_go is off".into())
+        );
+    }
+
+    fn service(store: Arc<dyn SettingsStore>) -> SettingsService {
+        SettingsService { store }
+    }
+
+    #[tokio::test]
+    async fn the_pickable_list_leaves_out_a_provider_that_is_off() {
+        let store = Arc::new(MemorySettingsStore::new());
+        let settings = service(store.clone() as Arc<dyn SettingsStore>);
+        let all = pickable_models(&settings).await;
+        assert!(
+            all.iter()
+                .any(|info| ProviderKind::of(info.id.as_str()) == ProviderKind::Anthropic),
+            "every provider is on until one is turned off"
+        );
+
+        store
+            .set(keys::PROVIDER_ANTHROPIC, "off".into(), false)
+            .await
+            .unwrap();
+        let filtered = pickable_models(&settings).await;
+        assert_eq!(filtered.len(), all.len() - filtered_anthropic(&all));
+        assert!(
+            filtered
+                .iter()
+                .all(|info| ProviderKind::of(info.id.as_str()) != ProviderKind::Anthropic),
+            "an off provider is not offered"
+        );
+        assert!(
+            filtered.iter().all(|info| info.supports_tools),
+            "the list is tool-capable models only"
+        );
+    }
+
+    fn filtered_anthropic(all: &[ModelInfo]) -> usize {
+        all.iter()
+            .filter(|info| ProviderKind::of(info.id.as_str()) == ProviderKind::Anthropic)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_settings_read_that_fails_leaves_every_provider_on() {
+        let settings = service(Arc::new(FailingStore));
+        assert!(!pickable_models(&settings).await.is_empty());
+    }
+
+    /// Every read fails, which is the store a picker must survive.
+    struct FailingStore;
+
+    #[async_trait]
+    impl SettingsStore for FailingStore {
+        async fn get(
+            &self,
+            _key: &str,
+        ) -> Result<Option<crate::domain::settings::store::Setting>, ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+
+        async fn set(&self, _key: &str, _value: String, _secret: bool) -> Result<(), ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+
+        async fn remove(&self, _key: &str) -> Result<(), ServiceError> {
+            Err(ServiceError::Unknown)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_choice_climbs_override_then_mode_then_fallback_then_default() {
+        let store = Arc::new(MemorySettingsStore::new());
+        let settings = service(store.clone() as Arc<dyn SettingsStore>);
+        let none = ModeOverride::default();
+
+        let bare = effective_choice(&settings, AgentMode::Agent, &none)
+            .await
+            .unwrap();
+        assert_eq!(bare.model, keys::DEFAULT_MODEL);
+        assert_eq!(bare.effort, None);
+
+        store
+            .set(keys::MODEL, "glm-5.2".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::REASONING_EFFORT, "low".into(), false)
+            .await
+            .unwrap();
+        let fallback = effective_choice(&settings, AgentMode::Agent, &none)
+            .await
+            .unwrap();
+        assert_eq!(fallback.model, "glm-5.2");
+        assert_eq!(fallback.effort.as_deref(), Some("low"));
+
+        store
+            .set(keys::MODEL_AGENT, "ant_claude".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::REASONING_EFFORT_AGENT, "high".into(), false)
+            .await
+            .unwrap();
+        let mode = effective_choice(&settings, AgentMode::Agent, &none)
+            .await
+            .unwrap();
+        assert_eq!(mode.model, "ant_claude");
+        assert_eq!(mode.effort.as_deref(), Some("high"));
+        // Another mode still inherits the fallback: the keys are per mode.
+        let ask = effective_choice(&settings, AgentMode::Ask, &none)
+            .await
+            .unwrap();
+        assert_eq!(ask.model, "glm-5.2");
+
+        let override_ = ModeOverride {
+            model: Some("dsk_flash".into()),
+            reasoning_effort: Some("medium".into()),
+        };
+        let chosen = effective_choice(&settings, AgentMode::Agent, &override_)
+            .await
+            .unwrap();
+        assert_eq!(chosen.model, "dsk_flash");
+        assert_eq!(chosen.effort.as_deref(), Some("medium"));
+
+        // An empty string is absent, which is how a cleared override reads.
+        let cleared = ModeOverride {
+            model: Some(String::new()),
+            reasoning_effort: Some(String::new()),
+        };
+        let inherited = effective_choice(&settings, AgentMode::Agent, &cleared)
+            .await
+            .unwrap();
+        assert_eq!(inherited.model, "ant_claude");
+        assert_eq!(inherited.effort.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn mode_defaults_read_each_mode_separately() {
+        let store = Arc::new(MemorySettingsStore::new());
+        let settings = service(store.clone() as Arc<dyn SettingsStore>);
+        store
+            .set(keys::MODEL, "glm-5.3".into(), false)
+            .await
+            .unwrap();
+        store
+            .set(keys::MODEL_PLAN, "ant_claude".into(), false)
+            .await
+            .unwrap();
+
+        let defaults = ModeDefaults::load(&settings).await.unwrap();
+        assert_eq!(defaults.for_mode(AgentMode::Agent).model, "glm-5.3");
+        assert_eq!(defaults.for_mode(AgentMode::Ask).model, "glm-5.3");
+        assert_eq!(defaults.for_mode(AgentMode::Plan).model, "ant_claude");
+        assert_eq!(
+            defaults.for_mode(AgentMode::Plan).provider(),
+            ProviderKind::Anthropic
         );
     }
 }

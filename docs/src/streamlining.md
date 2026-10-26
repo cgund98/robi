@@ -1,8 +1,13 @@
 # Streamlining Roadmap
 
-This page is a proposal, not a plan of record. It sketches a smaller Robi: one
+This page sketches a smaller Robi: one
 general-purpose tool instead of a suite of specialised ones, fewer surfaces, and
-a shell that spends its width on the conversation. Nothing here is built yet.
+a shell that spends its width on the conversation. **Nine workstreams have
+shipped** — S1, S2, S3, S4, S5, S6, S7, S8, and S9 — so the roadmap is complete.
+
+Nothing was deleted to get there. Each backend surface sits behind a Cargo
+feature, off by default, exactly as the front end has one switch in
+`src/app/surfaces.ts`: [feature-switches.md](design/core/feature-switches.md).
 
 The premise is that a **minimalist harness** can outperform a complex one. A
 small tool set with good prompts gives the model fewer ways to choose wrong, and
@@ -12,7 +17,46 @@ remove is a guarantee we stop enforcing in code and start enforcing in prompt
 copy. This roadmap exists to test the first claim without losing the second.
 
 Read [roadmap.md](roadmap.md) first for the shipped milestones. This page
-describes a possible M11 that subtracts from them.
+describes M11, which subtracts from them.
+
+## What shipped
+
+Nine workstreams removed a **surface**, and the backend ones removed their
+routes and tools too. The first pass kept each backend surface behind a Cargo
+feature in `crates/robi/Cargo.toml`, off by default, gating the module, its
+registration, and its OpenAPI entry together. S3 and S4 are now past that stage:
+the index, the language-server client, and the tree-sitter outline are deleted,
+and no flag restores them. The front end keeps its own switch in
+`src/app/surfaces.ts`.
+
+| # | What the app lost |
+|---|---|
+| S1 | `read_file`, `list_dir`, `find`, `grep`, `write_file`, `edit_file`, and `delete_file`. The shell reads, searches, and edits; the prompt carries the forms |
+| S2 | The review screen, its route, its three API routes, and the `N files edited` strip. `git diff` is the review path |
+| S3 | The index status pill, the `robi.index.v1.progress` event, the `semantic_search` tool, `IndexHub`, the two `/index` routes, and `crates/robi-index` |
+| S4 | The five language-server tools, the `lsp` setting, and the LSP client in `agent/lsp/` |
+| S5 | The `#/docs` route, the docs screen, the editor, the chat tray, the toggle, and the four docs routes |
+| S6 | The permanent left sidebar. Navigation is one bar across the top; the transcript gets the full width |
+| S7 | The agent's ability to write from Ask or Plan. Ask holds a read-only shell; Plan may write only `.robi/plans` |
+| S8 | A subagent's ability to write. Both child modes are read-only |
+| S9 | `todos` and `write_plan`. A plan is `.robi/plans/<name>/PLAN.md` plus `TODO.md`, written and ticked with the shell |
+
+`src/app/surfaces.ts` is the front-end switch: `docsViewer` and `reviewScreen`
+are off, `topBarShell` is on. `topBarShell` is a layout flag only — it never
+gates a backend call (D5). The `indexStatus` flag is gone: with the index off
+there is nothing for it to show.
+
+`crates/robi/Cargo.toml` is the backend switch. `default = []`, and four
+features restore one workstream each: `read-tools`, `edit-tools`, `review`,
+`docs-viewer`. S3 and S4 are not flags: their code is deleted. `make
+lint-restore` and `make test-restore` compile and test the remaining restore
+path, and CI runs both — a missing feature edge fails only there. See
+[feature-switches.md](design/core/feature-switches.md).
+
+Two prerequisites grew out of S1. **S7** was already required because a shell in
+Plan is an editor in Plan. **S8 trimmed** became required because `explore` had
+*only* read tools: removing them left it with nothing, so both child modes were
+rebuilt on the read-only shell.
 
 ## Thesis
 
@@ -30,44 +74,32 @@ simpler. The measurement plan below is how we tell the difference.
 
 ## What changes
 
-| # | Workstream | Outcome |
-|---|---|---|
-| S1 | Shell-first editing | `read_file`, `edit_file`, and `write_file` are disabled. The agent reads and edits through `shell`, with prompt hints and `git diff` verification |
-| S2 | No in-app code review | Review routes, screens, and baselines leave the app. Review happens in an IDE or `git diff` |
-| S3 | No semantic index | Indexing, embeddings, the `semantic_search` tool, and index UI are disabled |
-| S4 | No LSP diagnostics | The `diagnostics` tool is disabled, and the LSP surface is reduced or gated |
-| S5 | No docs viewer | The `/docs` route, docs screen, and docs editor are temporarily removed |
-| S6 | Top-bar shell | The permanent left sidebar is removed; navigation moves into the top bar |
-| S7 | Read-only shell in Ask and Plan | Ask and Plan get a shell that cannot write, whatever the sandbox allows |
-| S8 | Read-only subagents | No child can write, and none can run unsandboxed |
-
-### Disable, do not delete
-
-Every workstream follows the same rule: **remove the surface, keep the code**.
-Concretely, a disabled feature:
-
-- is not registered in the tool registry or the router, so the model and the
-  client cannot reach it;
-- is not described in the system prompt, the tool catalog, or `reference/tools.md`;
-- has no entry point in the UI;
-- stays in a module behind one switch, so restoring it is a config change rather
-  than a revert.
-
-The switch should be one place, not six. A `streamlined` setting (or a
-`legacy-harness` Cargo feature) read once at composition time is enough. A
-feature with no switch and a commented-out `register_*` call is not a disabled
-feature; it is a merge conflict waiting to happen.
-
-Design pages for disabled features stay in the book with a status banner at the
-top: **Disabled in M11. Kept for reference.** A page that silently describes a
-screen the app no longer has is worse than no page.
+| # | Workstream | Outcome | State |
+|---|---|---|---|
+| S1 | Shell-first editing | `read_file`, `list_dir`, `find`, `grep`, `write_file`, `edit_file`, and `delete_file` are disabled. The agent reads, searches, and edits through `shell`, with prompt hints and `git diff` verification | **Shipped**. `read-tools` and `edit-tools` restore them |
+| S2 | No in-app code review | Review routes and the edited-file strip leave the app. Review happens in an IDE or `git diff` | **Shipped**. `review` restores the routes; the baseline table stays |
+| S3 | No semantic index | Indexing, embeddings, the `semantic_search` tool, and index UI are gone, along with `crates/robi-index`, tree-sitter, and the embedder | **Removed**. Nothing restores it |
+| S4 | No LSP diagnostics | The five language-server tools, the `lsp` setting, and the LSP client are gone | **Removed**. Nothing restores it |
+| S5 | No docs viewer | The `/docs` route, docs screen, docs editor, and the docs routes are removed | **Shipped**. `docs-viewer` restores them; `agent/docs/` stays |
+| S6 | Top-bar shell | The permanent left sidebar is removed; navigation moves into the top bar | **Shipped** |
+| S7 | Read-only shell in Ask and Plan | Ask gets a shell that cannot write; Plan may write only `.robi/plans` | **Shipped** |
+| S8 | Read-only subagents | No child can write, and none can run unsandboxed | **Shipped** |
+| S9 | No built-in todos | `todos` and `write_plan` go. A plan is `.robi/plans/<name>/PLAN.md` with a checkbox `TODO.md` beside it, written through the shell | **Shipped**. Nothing restores the tools |
 
 ## S1 — Shell-first editing
 
-Disable the three file-mutation tools and let `shell` do the work. `find`,
-`grep`, and `list_dir` stay: they are read-only, cheap, and map cleanly to what
-the model already knows. `read_code` stays for the same reason, or is disabled
-too if it goes unused; decide from the tool-call data, not from taste.
+**Shipped as shell-only**, which is further than this section first proposed.
+The original plan kept `find`, `grep`, `list_dir`, and `read_code`; the shipped
+build removes them too, behind `--features read-tools`. `read_code` went further
+still: it was the last user of the tree-sitter outline, so it is deleted with
+S3's grammar crates, and `read_file` is the window into a source file. The shell
+is the only interface to the workspace by default, and the prompt teaches the
+forms.
+
+That widened the prerequisites. `explore` had only read tools and no shell, so
+removing them would have left it with nothing: both child modes were rebuilt on
+the read-only shell (S8 trimmed). And the prompt now covers reading, searching,
+editing, and verifying, not just the three write operations.
 
 ### What the model is told
 
@@ -127,6 +159,12 @@ higher rate of failed commands. If it does not, keep the edit tools.
 
 ## S2 — No in-app code review
 
+**Shipped as a UI change.** The route and the screen are gone from the app, and
+the strip with them; the API routes and `features/review/` stay. Baselines are
+still written because the edit tools still write them — S2 coupled the baselines
+to S1, and S1 has not shipped, so there is nothing to remove yet. The inline file
+peek from a tool call card is not a review surface and stays.
+
 Remove the review screen and the routes behind it:
 
 - `GET /api/v1/chat_sessions/{id}/review`
@@ -161,54 +199,72 @@ documented verification path, and the S1 prompt hints say so.
 
 ## S3 — No semantic index
 
-Agents do not call `semantic_search` enough to justify an embedding runtime,
-a vector store, and a background index task. Disable:
+**Removed.** The first pass gated the workstream behind `--features
+semantic-index`. The code is now deleted:
 
-- the `semantic_search` tool (`crates/robi/src/agent/tools/semantic_search.rs`);
-- `IndexHub` and its leases (`crates/robi/src/agent/index.rs`);
+- the `semantic_search` tool (`agent/tools/semantic_search.rs`);
+- `IndexHub` and its leases (`agent/index.rs`);
 - `GET`/`PUT /api/v1/workspaces/{id}/index` (`web_api/code_index.rs`);
-- `IndexStatusLine` in the chat header;
-- the semantic engine in docs search, assuming docs search survives S5 at all.
+- the `robi.index.v1.progress` event and its constant;
+- the semantic engine in docs search, which is now a literal scan;
+- `crates/robi-index`, and with it `fastembed`, `sqlite-vec`, `rusqlite`,
+  `notify`, and the tree-sitter grammars.
 
-`crates/robi-index` stays in the tree, unbuilt or feature-gated. It is the
-largest optional dependency in the workspace, which is exactly why it should be
-behind a feature rather than deleted: restoring it later is a manifest change.
+The index status pill and the client's frame handling went in the first pass. A
+cold start issues no index work and opens no embedding model, because there is
+no embedder or index task left to start.
 
-`grep` and `find` become the only retrieval path. That is a real downgrade for
-"where is this concept handled?" questions, and the prompt should say so
-honestly: search by identifier and filename first, then read the hits.
+Agents did not call `semantic_search` enough to justify an embedding runtime, a
+vector store, and a background index task. `grep` and `find` are the retrieval
+path, and that is a real downgrade for "where is this concept handled?"
+questions. The prompt says so honestly: search by identifier and filename first,
+then read the hits.
+
+The last user of the tree-sitter outline was `read_code`, so it goes with the
+grammars rather than staying as a duplicate of `read_file`. `read_file` is the
+window into a source file, and the shell covers the rest.
+
+`~/.robi/index/<workspace_id>/` is no longer written. The workspace asset
+cleaner still removes a directory an older install left behind.
 
 ### Exit criteria
 
-A cold workspace start does no indexing work, opens no embedding model, and the
-index status UI is gone. `grep`/`find` cover the retrieval in the S1 task set
-without a measurable drop in success.
+A cold workspace start does no indexing work and opens no embedding model, and
+the index status UI is gone. `grep`/`find` cover the retrieval in the S1 task
+set without a measurable drop in success.
 
 ## S4 — No LSP diagnostics
 
-Disable the `diagnostics` tool, the settings toggle, and the registration path
-in `register_read_tools`. The two smaller decisions:
+**Removed.** The first pass gated the five tools behind `--features lsp-tools`
+and kept the client. With no tool driving it, the client is dead weight, so the
+whole module is deleted: `agent/lsp/`, `agent/tools/lsp.rs`, and the `async-lsp`
+and `futures-io` dependencies. `note_lsp` goes with it; nothing else invalidated
+a server cache.
 
-1. **Diagnostics only, or the whole LSP surface?** `definition`, `references`,
-   `hover`, and `workspace_symbol` share the same hub. If the agents do not use
-   diagnostics, they are unlikely to use symbol navigation either. Prefer
-   disabling the whole set and keeping `crates/robi/src/agent/lsp/` behind the
-   switch. If tool-call data says `grep` is not a substitute for `references`,
-   restore the four non-diagnostics tools and leave diagnostics off.
-2. **What replaces verification?** The shell. `cargo check`, `tsc`, `eslint`,
-   and the project's own test command are already available through `shell` and
-   are more honest than a diagnostics snapshot. Add them to the prompt hints.
+The two smaller decisions:
 
-`docs/src/reference/tools.md` should lose the language-server section, and
-[design/intelligence/lsp.md](design/intelligence/lsp.md) gets the disabled
-banner from S0.
+1. **Diagnostics only, or the whole LSP surface?** The whole surface. If the
+   agents do not use diagnostics, they do not use symbol navigation either, and
+   five tools sharing one hub is one subsystem, not five.
+2. **What replaces verification?** The shell. `cargo check`, `tsc --noEmit`,
+   `eslint`, and the project's own test command are already available through
+   `shell` and are more honest than a diagnostics snapshot. The prompt hints say
+   so.
+
+`docs/src/reference/tools.md` has no language-server section, and the design
+page for the client is deleted rather than bannered.
 
 ### Exit criteria
 
-`lsp = on` no longer registers a tool, the settings toggle is gone, and the S1
-task set verifies with `cargo check` rather than `diagnostics`.
+`lsp = on` is an unknown setting, no language-server tool is registered, and the
+S1 task set verifies with `cargo check` rather than `diagnostics`.
 
 ## S5 — No docs viewer
+
+**Shipped as a UI change.** The route is out of `chatRoutePaths`, `DocsScreen` and
+`ChatTray` are out of `ChatChrome`, and the toggle is out of the bar. The docs
+modules and the API routes stay, so a return is a flag flip plus a back link. A
+`#/docs` hash kept from an older build is rewritten to the chat on startup.
 
 Temporarily remove the viewer and editor:
 
@@ -222,9 +278,9 @@ the docs routes with the UI, and keep `agent/docs/` (change reconciliation and
 merge) behind the switch. When the viewer returns, it returns with its merge
 path intact rather than half-remembered.
 
-Docs search ([guides/documentation-search.md](guides/documentation-search.md))
-goes with the viewer. If search should survive as a standalone surface, it needs
-its own entry point, which is a different feature.
+Docs search goes with the viewer, and its guide went with it. If search should
+survive as a standalone surface, it needs its own entry point, which is a
+different feature.
 
 **Temporarily** means the removal is reversible and recorded: the design pages
 [design/shell/docs-viewer.md](design/shell/docs-viewer.md) and
@@ -237,6 +293,12 @@ No `/docs` route, no docs components, and the S1 prompt tells the agent to use
 the shell for markdown. The user browses docs in an external editor.
 
 ## S6 — Top-bar shell
+
+**Shipped.** `TopBar` renders one row over the window frame's strip: the workspace
+dropdown, back and forward, the session title (which is also the Recents menu),
+then New chat, Settings, and an overflow holding MCP marks and the API health
+row. `Sidebar` and `ChatHeader` remain in the tree as the legacy branch behind
+`showSurface('topBarShell')`; delete them a release after this shipped.
 
 Remove the permanent left sidebar and give the transcript the full window width.
 Everything the sidebar held moves into the top bar:
@@ -392,6 +454,104 @@ network option. A `general` child asked to write a file returns a refusal and
 the file is unchanged. A test asserts the read-only profile for both child
 modes, and a second test asserts the schema has no escalation keys.
 
+## S9 — No built-in todos
+
+**Shipped.** The `todos` and `write_plan` tools are gone. A plan is a directory
+in the workspace, written and ticked with the same shell the agent uses for
+everything else (S1).
+
+### The layout
+
+```
+.robi/plans/
+  .gitignore                 # one line: *
+  ship-mode-registry/
+    PLAN.md                  # the prose: what changes, why, in what order
+    TODO.md                  # the checklist, and nothing else
+```
+
+Flat under `.robi/plans/`, one directory per plan, named from the plan's title
+in kebab case — no session subdirectory and no uuid, so `ls .robi/plans` reads
+as the list of outstanding work. Splitting the prose from the checklist is what
+keeps ticking cheap: marking a step done touches only `TODO.md`, so `PLAN.md`
+stays stable for the whole implementation.
+
+Rules, and no more than these:
+
+- **Checkboxes, not frontmatter.** `- [ ]` and `- [x]` in `TODO.md`. Every model
+  writes these without being taught, and the user's editor renders them.
+- **One ignore file, ignoring itself.** `.robi/plans/.gitignore` holds a single
+  `*`. A bare `*` covers every entry in that directory recursively, including
+  the `.gitignore` itself, so `git status` stays clean and `git add` picks up
+  nothing. A `.gitignore` inside a plan directory would be dead weight: an
+  ignored directory's children are already unreachable to git.
+- **List first, then name.** Plan mode `ls`es `.robi/plans` and updates an
+  existing plan directory for the same work rather than minting a near-duplicate.
+- **The files are the source of truth.** No session column and no prompt
+  injection. Agent mode lists `TODO.md` and `cat`s both files, which is the same
+  pair of shell calls the user makes.
+
+### Plan mode writes one directory
+
+S7 made Plan's shell read-only, and `write_plan` was the only write it had.
+Removing the tool without a replacement would leave Plan unable to produce a
+plan at all, so Plan's profile gets **one writable directory**.
+
+`Profile::extra_writes` is emitted read-write in both modes, on Seatbelt
+(`allow file-write* (subpath …)`) and on bubblewrap (`--bind`, recursive). Its
+position in the policy is the whole design:
+
+- **after** the credential denies, so a workspace that *is* `$HOME` still opens
+  `~/.robi/plans` while the rest of `~/.robi` stays closed;
+- **before** the floor, the `.git` write deny, and the session deny lists, so
+  every one of those still wins inside the directory.
+
+The allow is a directory, not a file, so `mkdir -p .robi/plans/<name>` and both
+files work without a per-plan rule. `ShellAccess::PlanReadOnly` is the third
+variant: read-only schema (no `write_paths`, no `unsandboxed`), read-only
+workspace, plus that one extra write root. Agent mode is unchanged — its
+read-write profile already covers `.robi/plans`, which is what makes plan files
+editable after the plan is built.
+
+### What it cost
+
+- **No validation.** `normalize_todos` used to reject duplicate ids, two
+  `in_progress` items, and a 500-character step. A freeform checklist has none of
+  that, and that is accepted: those checks mostly caught the model fighting its
+  own tool schema.
+- **No in-app rendering.** With no tool call to render, `PlanPage`, the plan card,
+  and the todo rails went with the tools. The plan is two markdown files in the
+  user's editor, which is where D13 landed.
+- **The plan is invisible to tools.** `.robi` is hidden and git-ignored, so
+  `git status`, `rg`, and the `find`/`grep` tools skip it; only `ls` and `cat`
+  see it. That is the price of not polluting every diff.
+- **Two sessions can tick the same plan.** A shared directory is the feature —
+  the plan is a workspace artifact — and the mitigations are the read-before-write
+  rule and distinct names, not a session scope.
+
+### What was deleted, not disabled
+
+Unlike S1–S5 there was nothing worth keeping behind a Cargo feature:
+
+- `tools/todos.rs`, `tools/write_plan.rs`, and `tools/plan_file.rs`;
+- the `todos_prompt` block and the `PlanChecklist` source in prompt assembly;
+- `SessionPrompt.plan_path` and the `plan_path` argument on `ModelSource::model`;
+- `adapters/session_plans.rs` and `domain/chat_session/plans.rs`, replaced by a
+  `SessionDataCleaner` that removes only session blobs — a workspace plan
+  directory now outlives the session that wrote it;
+- the `chat_sessions.plan_path` column, dropped by migration `0003`;
+- `PlanPage.tsx`, `TodoList.tsx`, `todoProgress.ts`, and the `write_plan` and
+  `todos` cases in `toolCallView.ts`.
+
+### Exit criteria
+
+No `todos` or `write_plan` tool is registered in any mode, and a test asserts it
+in every feature combination. Plan mode's shell creates `.robi/plans/<name>/`
+with both files and the `.gitignore`, and is refused on `src/`, on a file at the
+workspace root, on `.git/`, and on a sibling that leaves the plans root. Agent
+mode's shell writes the same files. The prompt carries the layout, the checkbox
+convention, and the `.gitignore`.
+
 ## Sequencing
 
 The order is chosen so the app is usable at every step and each step can be
@@ -416,12 +576,16 @@ reverted alone.
 7. **S1 — shell-first editing.** Last, because it is the change that can
    actually make the product worse. It ships behind the switch and is measured
    against the current harness.
+8. **S9 — workspace plan directories.** Shipped last: after S1, because the
+   replacement writes through the shell, and after S7, because Plan's write
+   exception is defined against the read-only profile.
 
 S1 depends on S2's decision about baselines and on S7 being in place. If S1
 ships without S7, Plan and Ask become editing modes by accident. S3, S4, and S8
 must ship before S1's measurement run, so the "before" and "after" harnesses
 differ only in the editing path. If S1 fails its exit criteria, S2–S8 still
-stand on their own.
+stand on their own. S9 shipped last, and it could have shipped earlier: its
+replacement is a plain file write, so it needs only `write_file` or the shell.
 
 ```mermaid
 graph LR
@@ -436,6 +600,8 @@ graph LR
   S2 --> S7[S7 Read-only shell]
   S7 --> S1
   S4 --> S1
+  S1 --> S9[S9 Workspace todos]
+  S7 --> S9
 ```
 
 ## How we will know
@@ -472,55 +638,104 @@ question.
 | We remove a tool the model actually used | Keep a month of tool-call counts before deleting the registration. If a tool is in the top five, it does not qualify. |
 | A read-only shell blocks `cargo check` and test runs | Scope writes to build and cache directories, or move verification to Agent mode and say so in the prompt. |
 | A read-only shell is enforced by scanning the command string | Do not scan. Use the OS profile's deny list. A regex on `>` is defeated by `python -c` on the first try. |
-| Plan mode becomes useless without a writable shell | `write_plan` is a separate tool and stays. If a plan needs a scratch file, that is an Agent task. |
+| Plan mode becomes useless without a writable shell | Plan's one writable directory is `.robi/plans` (S9). Anything else is an Agent task. |
 | Subagents lose the ability to fix what they find | Expected. The summary names the fix; the parent applies it with its own approval. Measure the extra parent turns in the S1 run. |
 | S8 is "already true" and silently regresses | Assert the invariant with tests on the profile and the schema, not on the wrapper's behavior. |
+| Plan mode cannot write a plan once `write_plan` is gone | Plan's profile gets one writable directory: `Profile::extra_writes`, emitted before the floor and the `.git` and session denies. |
+| A plan directory is stale, duplicated, or fights the user's edits | Plan mode `ls`es `.robi/plans` first, and Agent mode re-reads `TODO.md` before rewriting it. |
+| A plan file pollutes every diff | `.robi/plans/.gitignore` holds `*`, so the directory ignores itself. Deleting that file is the opt-in to tracking. |
 
 ## Open decisions
 
-- **D1 — Is `read_file` really redundant?** `cat` and `sed` are fine, but
-  `read_file` reports truncation with an exact continuation offset, and that is
-  hard to reproduce in a one-liner. Keep it if the traces show repeated
-  `sed`/`wc` calls.
-- **D2 — Do checkpoints return as git-backed?** S1 needs an answer before it
-  ships. The likely shape: no automatic journal, a prompt hint to use a branch
-  or `git stash`, and no in-app undo.
-- **D3 — Diagnostics only, or all LSP tools?** See S4.
-- **D4 — Do docs routes leave with the UI, or stay for a future client?** The
-  recommendation is to disable them with the UI.
-- **D5 — One switch or two?** `streamlined` for S1–S5, and a separate flag for
-  S6, so the layout can ship without the harness changes. The UI flag should
-  not gate backend behavior.
-- **D6 — What happens to `read_code`?** It is a read tool, not an edit tool, and
-  it depends on the same tree-sitter work as the index. Decide from usage.
-- **D7 — Does Ask get a shell?** S7 gives it a read-only one. Ask currently has
-  none. Either is defensible; an unconstrained shell in Ask is not.
-- **D8 — Build caches under a read-only profile?** Scope the write exception to
-  `target/` and friends, or move verification to Agent. See S7. This decides
-  whether Ask and Plan can run their own checks.
-- **D9 — Do `general` subagents keep a shell at all?** S8 keeps it read-only.
-  If the read-only shell turns out to be useless for them, remove the shell from
-  both child modes and make delegation purely read-and-summarize.
+- **D1 — Is `read_file` really redundant?** **Settled: it went with the rest.**
+  The trade is real — `read_file` reported truncation with an exact continuation
+  offset, and `sed`/`wc` is the only substitute. `--features read-tools` brings
+  it back on its own if the S1 run shows repeated `sed`/`wc` calls.
+- **D2 — Do checkpoints return as git-backed?** **Settled: no automatic
+  journal.** A shell command is opaque, so no baseline is recorded and there is
+  no in-app undo. The prompt points at `git diff`, `git stash`, and a branch. The
+  baseline table stays because the `edit-tools` restore path writes it.
+- **D3 — Diagnostics only, or all LSP tools?** **Settled: all five.** They share
+  one hub, and leaving four registered buys nothing. The `lsp` setting is gone.
+- **D4 — Do docs routes leave with the UI, or stay for a future client?**
+  **Settled: they leave, behind `--features docs-viewer`.** `agent/docs/` stays
+  unconditional, so the reconciliation and merge path is intact for a return.
+- **D5 — One switch or two?** **Settled: one module of front-end flags, and one
+  Cargo feature per workstream.** `src/app/surfaces.ts` holds `docsViewer`,
+  `reviewScreen`, and `topBarShell`; `indexStatus` is gone with the index.
+  `topBarShell` is a layout flag that gates no backend behavior, which is what S6
+  shipping on its own required. The backend flags are in
+  [feature-switches.md](design/core/feature-switches.md).
+- **D6 — What happens to `read_code`?** **Settled: deleted.** It lived behind
+  `read-tools` while the outline was still there. It was the last user of
+  tree-sitter, so it went when the grammar crates did, rather than staying as a
+  second `read_file`. A return means a parser and a new outline, not a flag.
+- **D7 — Does Ask get a shell?** **Settled: a read-only one.** With `grep` and
+  `git diff` gone from the tool set, Ask needs the shell to answer anything.
+- **D8 — Build caches under a read-only profile?** **Settled: verify in Agent
+  only.** The read-only profile refuses `target/`, so `cargo check` and a test
+  run fail in Ask and Plan, and the mode copy says so. A `build_write_paths`
+  setting scoped to `target/` is the follow-up if those modes ever promise
+  verification.
+- **D9 — Do `general` subagents keep a shell at all?** **Settled: yes,
+  read-only.** If the traces show it is useless for them, the follow-up is to
+  drop the shell from both child modes and make delegation purely
+  read-and-summarize.
+- **D10 — Where does the checklist live?** **Settled:**
+  `.robi/plans/<name>/TODO.md`, with the prose in `PLAN.md` beside it. Not a
+  session directory and not one fixed file: the directory name says what the plan
+  is, and the split keeps stable prose apart from a changing checklist.
+- **D11 — Does Plan mode get a one-path write exception?** **Settled: yes,
+  directory-scoped.** `Profile::extra_writes` opens `.robi/plans` read-write for
+  Plan's shell instance and nothing else. The allow is recursive, so the model
+  may name its own directory and files inside it.
+- **D12 — Is the plan file git-tracked?** **Settled: no.**
+  `.robi/plans/.gitignore` holds a single `*`, which ignores the directory
+  recursively including itself. The user opts in by deleting that file.
+- **D13 — Does anything still render a plan in-app?** **Settled: no.** With S5
+  and S9 shipped there is no plan surface: the plan is markdown in the user's
+  editor. A read-only page over the workspace file route is the follow-up if it
+  is ever wanted.
 
 ## What must be updated when this ships
 
-- [roadmap.md](roadmap.md): M6, M7, and M10 gain a "Disabled" note, and M11
-  points here.
+Done for S1, S2, S3, S4, S5, S6, S7, S8, and S9. A page a shipped workstream touches
+now says what the app does, not what it used to do.
+
+- [roadmap.md](roadmap.md): M6, M7, and M10 say "Disabled". **Done.**
 - [reference/tools.md](reference/tools.md): the tool set after S1, S3, and S4.
-- [guides/editor.md](guides/editor.md): the shell-first workflow.
+  **Done.**
+- [guides/editor.md](guides/editor.md): the shell-first workflow. **Done.**
 - [guides/code-review.md](guides/code-review.md): review with git and an IDE.
-- [guides/documentation-search.md](guides/documentation-search.md): removed with
-  S5.
-- [design/shell/frontend-layout.md](design/shell/frontend-layout.md) and
-  [design/shell/visual-style.md](design/shell/visual-style.md): the top-bar
-  layout and the removal of the left column.
+  **Done.**
+- The docs-search guide: removed with S5. **Done.**
+- [design/shell/frontend-layout.md](design/shell/frontend-layout.md),
+  [design/shell/visual-style.md](design/shell/visual-style.md), and
+  [design/shell/events-sse.md](design/shell/events-sse.md): the top-bar layout
+  and the removed left column. **Done.**
 - [design/core/agent-modes.md](design/core/agent-modes.md): the mode table, with
-  a read-only shell in Ask and Plan.
-- [design/core/subagents.md](design/core/subagents.md): `general` children are
-  read-only, and no child can escalate.
+  a read-only shell in Ask and Plan. **Done.**
+- [design/core/subagents.md](design/core/subagents.md): both children are
+  read-only, and no child can escalate. **Done.**
 - [design/tools/shell-tool.md](design/tools/shell-tool.md): the `ShellAccess`
-  flag and the read-only profile.
-- The design pages for review, LSP, semantic search, and docs: the disabled
-  banner from S0.
-- `AGENTS.md`: the layout table and the "read/edit tools" language, once the
-  change is no longer a proposal.
+  flag, the read-only profile, and `Profile::extra_writes`. **Done.**
+- [design/tools/editing-tools.md](design/tools/editing-tools.md),
+  [read-tools.md](design/tools/read-tools.md), and
+  [checkpoints.md](design/tools/checkpoints.md): the shell is the interface and
+  there is no automatic journal. **Done.**
+- The design pages for review and docs: the disabled banner. The LSP, semantic
+  search, and code-outline pages are deleted with their subjects. **Done.**
+- [design/core/feature-switches.md](design/core/feature-switches.md): new, and
+  the backend counterpart of `src/app/surfaces.ts`. **Done.**
+- `AGENTS.md`: the layout table and the "removed surface is a Cargo feature"
+  rule. **Done.**
+- [reference/http-api.md](reference/http-api.md),
+  [reference/configuration.md](reference/configuration.md), and
+  [reference/file-locations.md](reference/file-locations.md): the removed
+  routes, the removed `lsp` key, and the index directory. **Done.**
+- `openapi/openapi.json` and `src/api/schema.d.ts`: regenerated, and they now
+  contain no review, docs, or index route. **Done.**
+- [design/core/agent-modes.md](design/core/agent-modes.md) and
+  [reference/tools.md](reference/tools.md): `todos` and `write_plan` removed,
+  Plan's one writable directory, and the `.robi/plans` convention in their place.
+  **Done.**

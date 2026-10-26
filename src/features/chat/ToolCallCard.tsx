@@ -1,5 +1,5 @@
 import { BarsBottomLeft, CommandLine, Document, MagnifyingGlass } from '../../components/ui/icons'
-import { createEffect, createSignal, For, onCleanup, Show, type JSX } from 'solid-js'
+import { createEffect, createSignal, For, on, onCleanup, Show, type JSX } from 'solid-js'
 
 import { isTauri } from '@tauri-apps/api/core'
 
@@ -18,7 +18,7 @@ import {
   exploreSummary,
   hasDetail,
   needsDecision,
-  planView,
+  shellOutputTail,
   subagentCount,
   subagentStepSummary,
   subagentView,
@@ -29,7 +29,6 @@ import {
   type ToolSummary,
   type DiffLine,
   type EditPreview,
-  type PlanView,
   type SubagentStepView
 } from './toolCallView'
 
@@ -50,10 +49,7 @@ export function ToolCallCard(props: {
   call: ChatToolCall
   phase: AgentPhase
   busy: boolean
-  buildDisabled?: boolean
   onDecide: (decision: 'approve' | 'reject') => void
-  onBuild?: (path: string) => void
-  onViewPlan?: (plan: PlanView) => void
   sessionId?: string | null
 }) {
   const [viewPath, setViewPath] = createSignal<string | null>(null)
@@ -77,11 +73,7 @@ export function ToolCallCard(props: {
 
   return (
     <>
-      <OpenedFile
-        sessionId={props.sessionId ?? null}
-        path={viewPath()}
-        onClose={() => setViewPath(null)}
-      />
+      <OpenedFile path={viewPath()} onClose={() => setViewPath(null)} />
       <Show
         when={!decision()}
         fallback={
@@ -101,28 +93,7 @@ export function ToolCallCard(props: {
         <Show when={props.call.name === 'delegate'} fallback={null}>
           <DelegateCard call={props.call} status={status()} />
         </Show>
-        <Show when={props.call.name !== 'delegate' && planView(props.call)}>
-          {(saved) => (
-            <PlanCard
-              plan={saved()}
-              buildDisabled={(props.buildDisabled ?? false) || saved().path.length === 0}
-              onBuild={() => {
-                if (saved().path && props.onBuild) {
-                  props.onBuild(saved().path)
-                }
-              }}
-              onView={() => props.onViewPlan?.(saved())}
-            />
-          )}
-        </Show>
-        <Show
-          when={
-            props.call.name !== 'delegate' &&
-            !planView(props.call) &&
-            preview() &&
-            status() !== 'failed'
-          }
-        >
+        <Show when={props.call.name !== 'delegate' && preview() && status() !== 'failed'}>
           <EditDiff
             expansionKey={props.call.id}
             preview={preview()!}
@@ -135,7 +106,6 @@ export function ToolCallCard(props: {
         <Show
           when={
             props.call.name !== 'delegate' &&
-            !planView(props.call) &&
             !(preview() && status() !== 'failed') &&
             detail()?.kind === 'shell'
               ? detail()
@@ -149,13 +119,10 @@ export function ToolCallCard(props: {
             output={shellDetail()?.output ?? ''}
             originalId={props.call.original_id}
             status={<StatusMark status={status()} />}
+            running={status() === 'running'}
           />
         </Show>
-        <Show
-          when={
-            detail()?.kind === 'retrieve' && props.call.name !== 'delegate' && !planView(props.call)
-          }
-        >
+        <Show when={detail()?.kind === 'retrieve' && props.call.name !== 'delegate'}>
           <RetrieveCard
             expansionKey={props.call.id}
             summary={summary()}
@@ -182,7 +149,6 @@ export function ToolCallCard(props: {
         <Show
           when={
             props.call.name !== 'delegate' &&
-            !planView(props.call) &&
             !(preview() && status() !== 'failed') &&
             detail()?.kind !== 'shell' &&
             detail()?.kind !== 'retrieve' &&
@@ -314,36 +280,6 @@ function statusOf(call: ChatToolCall, phase: AgentPhase): 'running' | 'failed' |
     return 'running'
   }
   return null
-}
-
-function PlanCard(props: {
-  plan: PlanView
-  buildDisabled: boolean
-  onBuild: () => void
-  onView: () => void
-}) {
-  return (
-    <div class={styles.planCard}>
-      <p class={styles.planStatus}>{props.plan.created ? 'Created Plan' : 'Updated Plan'}</p>
-      <p class={styles.planTitle}>{props.plan.title}</p>
-      <Show when={props.plan.summary}>
-        <p class={styles.planSummary}>{props.plan.summary}</p>
-      </Show>
-      <div class={styles.planActions}>
-        <button type="button" class={styles.viewPlan} onClick={() => props.onView()}>
-          View Plan
-        </button>
-        <button
-          type="button"
-          class={styles.planBuild}
-          disabled={props.buildDisabled}
-          onClick={() => props.onBuild()}
-        >
-          Build
-        </button>
-      </div>
-    </div>
-  )
 }
 
 function DelegateCard(props: { call: ChatToolCall; status: 'running' | 'failed' | null }) {
@@ -642,30 +578,58 @@ function ShellCard(props: {
   actions?: JSX.Element
   status?: JSX.Element
   defaultOpen?: boolean
+  running?: boolean
 }) {
   const shown = useCappedOutput(
     () => chat.activeSessionId,
     () => props.originalId,
     () => props.output
   )
-  const [open, setOpen] = createOpen(props.expansionKey, props.defaultOpen ?? false)
+  /**
+   * The running command opens the card, but that is not a choice the user made,
+   * so it is not remembered: a finished call starts closed on every refresh.
+   * Only a click writes to `expandedToolCalls`, and it outlives the card.
+   */
+  const chosen = () => expandedToolCalls.get(props.expansionKey)
+  const [open, setOpenState] = createSignal(
+    chosen() ?? ((props.defaultOpen ?? false) || (props.running ?? false))
+  )
+  const setOpen = (value: boolean) => {
+    expandedToolCalls.set(props.expansionKey, value)
+    setOpenState(value)
+  }
+  createEffect(
+    on(
+      () => props.running ?? false,
+      (running) => {
+        if (chosen() !== undefined) {
+          return
+        }
+        setOpenState(running)
+      },
+      { defer: true }
+    )
+  )
   return (
     <Show
       when={open()}
       fallback={
-        <div class={styles.editHead}>
-          <button
-            type="button"
-            class={styles.row}
-            aria-expanded={false}
-            onClick={() => setOpen(true)}
-          >
-            <ToolIcon name="shell" />
-            <span class={styles.verb}>{props.summary.verb}</span>
-            <SummaryLabel summary={props.summary} />
-            {props.status}
-          </button>
-          {props.actions}
+        <div class={styles.shell}>
+          <div class={styles.editHead}>
+            <button
+              type="button"
+              class={styles.editRow}
+              aria-expanded={false}
+              onClick={() => setOpen(true)}
+            >
+              <ToolIcon name="shell" />
+              <span class={styles.verb}>{props.summary.verb}</span>
+              <SummaryLabel summary={props.summary} />
+              {props.status}
+            </button>
+            {props.actions}
+          </div>
+          <ShellPreview command={props.command} lines={shellOutputTail(props.output)} />
         </div>
       }
     >
@@ -684,7 +648,7 @@ function ShellCard(props: {
           </button>
           {props.actions}
         </div>
-        <ShellBody command={props.command} output={shown()} compact={!props.actions} />
+        <ShellBody command={props.command} output={shown()} />
       </div>
     </Show>
   )
@@ -804,15 +768,27 @@ function LogLines(props: { text: string; startLine: number }) {
   )
 }
 
-function ShellBody(props: { command: string; output: string; compact?: boolean }) {
+function ShellBody(props: { command: string; output: string }) {
   return (
-    <pre
-      class={props.compact ? `${styles.shellBody} ${styles.shellBodyCompact}` : styles.shellBody}
-    >
+    <pre class={`${styles.shellBody} ${styles.shellCardBody}`}>
       <span class={styles.shellCommand}>
         <span class={styles.prompt}>$</span> {props.command}
       </span>
       {props.output}
+    </pre>
+  )
+}
+
+/** Collapsed shell card: the command on one line, then the tail of the output. */
+function ShellPreview(props: { command: string; lines: string[] }) {
+  return (
+    <pre class={styles.shellPreview}>
+      <span class={styles.shellPreviewCommand}>
+        <span class={styles.prompt}>$</span> {props.command}
+      </span>
+      <Show when={props.lines.length > 0}>
+        <span class={styles.shellPreviewOutput}>{props.lines.join('\n')}</span>
+      </Show>
     </pre>
   )
 }

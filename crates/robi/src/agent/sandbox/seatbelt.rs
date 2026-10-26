@@ -4,9 +4,10 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use super::profile::{NetworkMode, Profile};
+use super::profile::{NetworkMode, Profile, WriteAccess};
 
 pub fn seatbelt_policy(profile: &Profile) -> String {
+    let read_only = profile.write == WriteAccess::ReadOnly;
     let mut out = String::new();
     out.push_str("(version 1)\n");
     out.push_str("(deny default)\n");
@@ -24,7 +25,14 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
     // itself, so a path such as `/var/select/developer_dir` never resolves.
     allow_literal_read(&mut out, "/var");
     allow_literal_read(&mut out, "/tmp");
-    allow_read_write(&mut out, &profile.workspace);
+    // The private temp directory stays writable in both modes: it belongs to
+    // this call and is deleted when the call returns. A read-only profile that
+    // also locked `/tmp` would break innocuous tools.
+    if read_only {
+        allow_read(&mut out, &profile.workspace);
+    } else {
+        allow_read_write(&mut out, &profile.workspace);
+    }
     allow_read_write(&mut out, &profile.temp_dir);
     allow_metadata_ancestors(&mut out, &profile.temp_dir);
     allow_metadata_ancestors(&mut out, &profile.home);
@@ -38,11 +46,22 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         allow_metadata_ancestors(&mut out, path);
     }
     for path in &profile.wide_writes {
-        allow_read_write(&mut out, path);
+        if read_only {
+            allow_read(&mut out, path);
+        } else {
+            allow_read_write(&mut out, path);
+        }
         allow_metadata_ancestors(&mut out, path);
     }
     for path in credential_dirs(&profile.home) {
         deny_subpath(&mut out, &path);
+    }
+    // S9: the one directory Plan mode may write. Emitted after the credential
+    // denies (so a workspace that is `$HOME` still opens `.robi/plans`) and
+    // before the floor, the `.git` deny, and the session denies (so those win).
+    for path in &profile.extra_writes {
+        allow_read_write(&mut out, path);
+        allow_metadata_ancestors(&mut out, path);
     }
     for pattern in floor_regexes() {
         deny_regex(&mut out, &pattern);
@@ -63,7 +82,11 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         }
     }
     for path in &profile.protected_write_dirs {
-        allow_read_write(&mut out, path);
+        if read_only {
+            allow_read(&mut out, path);
+        } else {
+            allow_read_write(&mut out, path);
+        }
         for pattern in floor_regexes() {
             deny_regex(&mut out, &pattern);
         }
@@ -77,7 +100,11 @@ pub fn seatbelt_policy(profile: &Profile) -> String {
         allow_read(&mut out, path);
     }
     for path in &profile.protected_write_files {
-        allow_read_write(&mut out, path);
+        if read_only {
+            allow_read(&mut out, path);
+        } else {
+            allow_read_write(&mut out, path);
+        }
     }
     allow_read(&mut out, "/private/etc/ssl");
     allow_read(&mut out, "/etc/ssl");
@@ -221,6 +248,7 @@ mod tests {
     fn profile() -> Profile {
         Profile {
             sandboxed: true,
+            write: WriteAccess::ReadWrite,
             workspace: PathBuf::from("/work/app"),
             home: PathBuf::from("/Users/ada"),
             temp_dir: PathBuf::from("/private/var/folders/robi"),
@@ -230,6 +258,7 @@ mod tests {
             toolchain_reads: vec![PathBuf::from("/Users/ada/.cargo/bin")],
             wide_reads: vec![PathBuf::from("/Users/ada/code/gopi")],
             wide_writes: Vec::new(),
+            extra_writes: Vec::new(),
             protected_read_files: vec![PathBuf::from("/work/app/.env")],
             protected_write_files: Vec::new(),
             protected_read_dirs: vec![PathBuf::from("/Users/ada/.ssh")],
@@ -313,5 +342,63 @@ mod tests {
         let deny = policy.find("(deny network*)").unwrap();
         let allow = policy.find("(allow network*)").unwrap();
         assert!(deny < allow);
+    }
+
+    #[test]
+    fn a_read_only_profile_cannot_write_the_workspace_or_git() {
+        let mut profile = profile();
+        profile.write = WriteAccess::ReadOnly;
+        let policy = seatbelt_policy(&profile);
+        assert!(!policy.contains("(allow file-write* (subpath \"/work/app\"))"));
+        assert!(policy.contains("(allow file-read* (subpath \"/work/app\"))"));
+        assert!(policy.contains("(deny file-write* (subpath \"/work/app/.git\"))"));
+        // The private temp directory belongs to the call, so it stays writable.
+        assert!(policy.contains("(allow file-write* (subpath \"/private/var/folders/robi\"))"));
+    }
+
+    /// S9: Plan's one writable directory, emitted in both modes and ordered so
+    /// the credential deny, the floor, and the `.git` deny still win.
+    #[test]
+    fn extra_writes_are_writable_and_the_later_denies_still_win() {
+        for write in [WriteAccess::ReadOnly, WriteAccess::ReadWrite] {
+            let mut profile = profile();
+            profile.write = write;
+            profile.extra_writes = vec![PathBuf::from("/work/app/.robi/plans")];
+            let policy = seatbelt_policy(&profile);
+            let allow = policy
+                .find("(allow file-write* (subpath \"/work/app/.robi/plans\"))")
+                .expect("the plans directory is writable");
+            let credentials = policy
+                .find("(deny file-read* (subpath \"/Users/ada/.ssh\"))")
+                .unwrap();
+            let floor = policy
+                .find("(deny file-read* (regex \".*/\\.[Ee][Nn][Vv]$\"))")
+                .unwrap();
+            let git = policy
+                .find("(deny file-write* (subpath \"/work/app/.git\"))")
+                .unwrap();
+            assert!(credentials < allow, "{write:?}");
+            assert!(allow < floor, "{write:?}");
+            assert!(allow < git, "{write:?}");
+        }
+    }
+
+    /// The workspace may be `$HOME`, where `.robi` is also the credential deny.
+    #[test]
+    fn a_plans_directory_under_the_home_workspace_opens_after_the_credential_deny() {
+        let mut profile = profile();
+        profile.write = WriteAccess::ReadOnly;
+        profile.workspace = PathBuf::from("/Users/ada");
+        profile.extra_writes = vec![PathBuf::from("/Users/ada/.robi/plans")];
+        let policy = seatbelt_policy(&profile);
+        let credential = policy
+            .find("(deny file-read* (subpath \"/Users/ada/.robi\"))")
+            .unwrap();
+        let plans = policy
+            .find("(allow file-write* (subpath \"/Users/ada/.robi/plans\"))")
+            .unwrap();
+        assert!(credential < plans);
+        // Nothing else under `~/.robi` is opened.
+        assert!(!policy.contains("(allow file-write* (subpath \"/Users/ada/.robi\"))"));
     }
 }

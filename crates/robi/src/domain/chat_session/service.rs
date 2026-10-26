@@ -7,11 +7,12 @@ use crate::agent::providers::catalog::ModelCatalog;
 use crate::agent::providers::config::{ModelId, ReasoningEffort, OPENCODE_GO_PREFIX};
 use crate::domain::{
     chat_session::{
+        data::SessionDataCleaner,
+        lease::{Locks, Resource, Scope},
         model::{
             ChatSession, CreateChatSessionCommand, ModeOverride, ModeOverrideUpdate, ModelConfig,
             TurnDisplay, UpdateChatSessionCommand,
         },
-        plans::SessionPlanCleaner,
         repo::ChatSessionRepository,
     },
     error::ServiceError,
@@ -51,10 +52,18 @@ pub struct ChatSessionService {
     pub workspaces: Arc<dyn WorkspaceRepository>,
     /// Publishes session create, update, and delete. Absent in tests.
     pub events: Option<Arc<EventBus>>,
-    /// Removes a session's plan files under `~/.robi/plans/<session_id>`.
+    /// Removes the data a session keeps outside its row, such as blobs. Plan
+    /// directories live in the workspace and are left alone.
     /// Absent in tests. Best effort: a failure is logged and the delete still
     /// succeeds, because the row is already gone.
-    pub plan_cleaner: Option<Arc<dyn SessionPlanCleaner>>,
+    pub session_cleaner: Option<Arc<dyn SessionDataCleaner>>,
+    /// Cross-process ownership of a session's blob file.
+    ///
+    /// Required rather than optional, unlike the two above: an absent lock would
+    /// mean unenforced ownership on every path that matters, and an `Option`
+    /// reads as "tests do not need it" instead of "tests must say so".
+    /// `MemoryLocks` is what a test passes.
+    pub locks: Arc<dyn Locks>,
 }
 
 impl ChatSessionService {
@@ -154,19 +163,6 @@ impl ChatSessionService {
         }
     }
 
-    /// Remember the plan the next agent prompt should re-read.
-    pub async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-        let path = path.trim();
-        if path.is_empty() {
-            return Err(ServiceError::BadRequest(
-                "plan_path must not be empty".into(),
-            ));
-        }
-        self.repository.set_plan_path(id, path.to_owned()).await?;
-        self.publish(EventEnvelope::session_updated(id));
-        Ok(())
-    }
-
     /// Store the display summary and publish it on `robi.session.v1.updated`.
     pub async fn set_turn_display(
         &self,
@@ -183,32 +179,72 @@ impl ChatSessionService {
     /// A waiting tool call forces `awaiting_approval`. A stored `failed` stays
     /// when nothing is waiting. Anything else, including a leftover `pending`,
     /// becomes `idle`. No event is published.
+    ///
+    /// Only unsettled sessions are read, which is the sessions a process was
+    /// mid-turn in when it died: the write that stores a display also settles the
+    /// row, so a start no longer reads every transcript in the database.
+    ///
+    /// Skips any session another process holds, and returns how many. The owner is
+    /// the authority on its own turn, and repairing underneath it would write
+    /// `idle` over a running turn; the next start repairs the row if the owner exits
+    /// first.
+    ///
+    /// The display is written even when it already matches, because that write is
+    /// what settles the row. [`reconciled_turn_display`] never returns `pending`, so
+    /// a settled write always follows.
     pub async fn reconcile_turn_displays(
         &self,
         store: &dyn robi_core::store::MessageStore,
-    ) -> Result<(), ServiceError> {
-        let sessions = self.repository.list_chat_sessions(None).await?;
+    ) -> Result<usize, ServiceError> {
+        let sessions = self.repository.list_unsettled_chat_sessions().await?;
+        let mut skipped = 0;
         for session in sessions {
-            let messages = store.messages(session.id).await.map_err(|error| {
-                tracing::error!(%error, "failed to read messages for turn display");
-                ServiceError::Unknown
-            })?;
+            // Before the read, because the read is the work being skipped: a
+            // session another process is driving has a display that process will
+            // write itself.
+            let Ok(_guard) = self
+                .locks
+                .try_acquire(&Resource::Session(session.id), Scope::Turn)
+            else {
+                skipped += 1;
+                continue;
+            };
+            // Without results: every field the repair reads is in the message body,
+            // so the session's `blobs.redb` is never opened and no handle is left
+            // behind.
+            let messages = store
+                .messages_without_results(session.id)
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "failed to read messages for turn display");
+                    ServiceError::Unknown
+                })?;
             let next = reconciled_turn_display(session.turn_display, &messages);
-            if next != session.turn_display {
-                self.repository.set_turn_display(session.id, next).await?;
-            }
+            self.repository.set_turn_display(session.id, next).await?;
         }
-        Ok(())
+        Ok(skipped)
     }
 
+    /// Delete the row and the data outside it.
+    ///
+    /// Refused while another process holds the session: the delete unlinks a
+    /// directory that process may have open, which is a data-loss race rather
+    /// than a stale render.
     pub async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError> {
+        let guard = self
+            .locks
+            .try_acquire(&Resource::Session(id), Scope::Turn)
+            .map_err(|error| error.conflict())?;
         self.repository.delete_chat_session(id).await?;
-        if let Some(cleaner) = &self.plan_cleaner {
-            if let Err(err) = cleaner.remove_session_plans(id).await {
-                tracing::warn!(session = %id, %err, "failed to remove session plan files");
+        if let Some(cleaner) = &self.session_cleaner {
+            if let Err(err) = cleaner.remove_session_data(id).await {
+                tracing::warn!(session = %id, %err, "failed to remove session data");
             }
         }
         self.publish(EventEnvelope::session_deleted(id));
+        // Held until the row and the blobs are gone, so a second process cannot
+        // start driving a session that is half deleted.
+        drop(guard);
         Ok(())
     }
 
@@ -231,8 +267,16 @@ impl ChatSessionService {
                 continue;
             }
             for id in ids[MAX_SESSIONS_PER_WORKSPACE..].iter().rev() {
-                self.delete_chat_session(*id).await?;
-                removed += 1;
+                match self.delete_chat_session(*id).await {
+                    Ok(()) => removed += 1,
+                    // In use by another process. Keep it and let a later start
+                    // prune: aborting startup over it would be worse, and the
+                    // workspace is only one over its limit.
+                    Err(ServiceError::Conflict(_)) => {
+                        tracing::info!(%id, "kept a session another process is using");
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
         Ok(removed)
@@ -342,7 +386,8 @@ fn validate_title(title: &str) -> Result<(), ServiceError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use crate::domain::chat_session::lease::MemoryLocks;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
@@ -350,6 +395,7 @@ mod tests {
     use robi_core::ids::{SessionId, WorkspaceId};
 
     use super::*;
+    use crate::domain::chat_session::lease::{LeaseError, LeaseGuard, LeaseHolder, Scope};
     use crate::domain::{
         chat_session::model::{
             apply_session_update, AgentMode, ModeOverride, ModeOverrideUpdate, ModelConfigUpdate,
@@ -360,13 +406,24 @@ mod tests {
 
     struct FakeRepo {
         sessions: Mutex<HashMap<SessionId, ChatSession>>,
+        /// The `turn_settled` column. `insert` leaves a row unsettled, like a
+        /// session a turn was starting in.
+        settled: Mutex<HashSet<SessionId>>,
     }
 
     impl FakeRepo {
         fn new() -> Self {
             Self {
                 sessions: Mutex::new(HashMap::new()),
+                settled: Mutex::new(HashSet::new()),
             }
+        }
+
+        fn is_settled(&self, id: SessionId) -> bool {
+            self.settled
+                .lock()
+                .expect("fake settled lock")
+                .contains(&id)
         }
 
         fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<SessionId, ChatSession>> {
@@ -394,7 +451,6 @@ mod tests {
                 mcp_allows: Vec::new(),
                 mode: command.mode,
                 model_config: command.model_config,
-                plan_path: None,
                 turn_display: TurnDisplay::Idle,
                 created_at: now,
                 updated_at: now,
@@ -422,6 +478,22 @@ mod tests {
                     Some(id) => session.workspace_id == id,
                     None => true,
                 })
+                .cloned()
+                .collect();
+            sessions.sort_by(|left, right| {
+                right
+                    .last_used_at
+                    .cmp(&left.last_used_at)
+                    .then(right.id.cmp(&left.id))
+            });
+            Ok(sessions)
+        }
+
+        async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError> {
+            let mut sessions: Vec<_> = self
+                .lock()
+                .values()
+                .filter(|session| !self.is_settled(session.id))
                 .cloned()
                 .collect();
             sessions.sort_by(|left, right| {
@@ -464,15 +536,6 @@ mod tests {
             Ok(Some(session.clone()))
         }
 
-        async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError> {
-            let mut sessions = self.lock();
-            let session = sessions
-                .get_mut(&id)
-                .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
-            session.plan_path = Some(path);
-            Ok(())
-        }
-
         async fn set_turn_display(
             &self,
             id: SessionId,
@@ -483,6 +546,12 @@ mod tests {
                 .get_mut(&id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_string()))?;
             session.turn_display = display;
+            let mut settled = self.settled.lock().expect("fake settled lock");
+            if display.is_settled() {
+                settled.insert(id);
+            } else {
+                settled.remove(&id);
+            }
             Ok(())
         }
 
@@ -499,7 +568,8 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
+            locks: Arc::new(MemoryLocks::new()),
         }
     }
 
@@ -530,8 +600,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl SessionPlanCleaner for FakeCleaner {
-        async fn remove_session_plans(&self, session: SessionId) -> Result<(), String> {
+    impl SessionDataCleaner for FakeCleaner {
+        async fn remove_session_data(&self, session: SessionId) -> Result<(), String> {
             self.removed
                 .lock()
                 .expect("fake cleaner lock")
@@ -596,10 +666,11 @@ mod tests {
     async fn create_chat_session_is_not_found_for_an_unknown_workspace() {
         let repository = Arc::new(FakeRepo::new());
         let service = ChatSessionService {
+            locks: Arc::new(MemoryLocks::new()),
             repository: repository.clone(),
             workspaces: Arc::new(MissingWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
         };
         let workspace_id = WorkspaceId::new();
         let error = service
@@ -948,7 +1019,6 @@ mod tests {
             mcp_allows: Vec::new(),
             mode: AgentMode::Agent,
             model_config: ModelConfig::default(),
-            plan_path: None,
             turn_display: TurnDisplay::Idle,
             created_at: last_used_at,
             updated_at: last_used_at,
@@ -1005,7 +1075,8 @@ mod tests {
             repository: repo,
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: None,
+            session_cleaner: None,
+            locks: Arc::new(MemoryLocks::new()),
         };
         assert_eq!(service.prune_excess_sessions().await.unwrap(), 1);
 
@@ -1019,6 +1090,253 @@ mod tests {
         assert!(!full_ids.contains(&oldest.unwrap()));
         assert!(full_ids.contains(&newest.unwrap()));
         assert!(remaining.iter().any(|session| session.id == small_id));
+    }
+
+    /// Refuses the sessions it is told about, and grants the rest.
+    struct HeldByAnother {
+        held: Vec<SessionId>,
+    }
+
+    impl Locks for HeldByAnother {
+        fn try_acquire(&self, resource: &Resource, scope: Scope) -> Result<LeaseGuard, LeaseError> {
+            if let Resource::Session(id) = resource {
+                if self.held.contains(id) {
+                    return Err(LeaseError::held(resource, LeaseHolder::new(4812, scope)));
+                }
+            }
+            Ok(LeaseGuard::noop())
+        }
+
+        fn holder(&self, resource: &Resource) -> Option<LeaseHolder> {
+            match resource {
+                Resource::Session(id) if self.held.contains(id) => {
+                    Some(LeaseHolder::new(4812, Scope::Turn))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_skips_a_session_another_process_holds() {
+        let repo = Arc::new(FakeRepo::new());
+        let workspace = WorkspaceId::new();
+        let mut held = session_at(workspace, Utc::now());
+        held.turn_display = TurnDisplay::Pending;
+        let free = session_at(workspace, Utc::now());
+        repo.insert(held.clone());
+        repo.insert(free.clone());
+
+        // The held session would have been repaired from `pending` to `idle`.
+        let store = Arc::new(StubStore {
+            messages: vec![(held.id, Vec::new()), (free.id, Vec::new())],
+            reads: Mutex::new(Vec::new()),
+        });
+        let service = ChatSessionService {
+            repository: repo.clone(),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            session_cleaner: None,
+            locks: Arc::new(HeldByAnother {
+                held: vec![held.id],
+            }),
+        };
+
+        let skipped = service
+            .reconcile_turn_displays(store.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(skipped, 1, "one session was left alone");
+
+        let after = service.list_chat_sessions(None).await.unwrap();
+        let held_after = after.iter().find(|s| s.id == held.id).unwrap();
+        assert_eq!(
+            held_after.turn_display,
+            TurnDisplay::Pending,
+            "the held session keeps whatever the owner wrote"
+        );
+        let free_after = after.iter().find(|s| s.id == free.id).unwrap();
+        assert_eq!(free_after.turn_display, TurnDisplay::Idle);
+    }
+
+    #[tokio::test]
+    async fn reconcile_reads_a_session_once_and_not_again() {
+        let repo = Arc::new(FakeRepo::new());
+        let workspace = WorkspaceId::new();
+        let session = session_at(workspace, Utc::now());
+        repo.insert(session.clone());
+        let service = ChatSessionService {
+            repository: repo.clone(),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            session_cleaner: None,
+            locks: Arc::new(MemoryLocks),
+        };
+        let store = Arc::new(StubStore {
+            messages: vec![(session.id, Vec::new())],
+            reads: Mutex::new(Vec::new()),
+        });
+
+        service
+            .reconcile_turn_displays(store.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.reads.lock().expect("read log").as_slice(),
+            &[session.id],
+            "an unsettled session's transcript is read"
+        );
+
+        service
+            .reconcile_turn_displays(store.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.reads.lock().expect("read log").len(),
+            1,
+            "the write that repaired it also took it off the list"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_in_flight_is_unsettled_and_its_end_is_settled() {
+        let repo = Arc::new(FakeRepo::new());
+        let service = ChatSessionService {
+            repository: repo.clone(),
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            session_cleaner: None,
+            locks: Arc::new(MemoryLocks),
+        };
+        let session = service
+            .create_chat_session(CreateChatSessionCommand {
+                workspace_id: WorkspaceId::new(),
+                title: None,
+                mode: AgentMode::Agent,
+                model_config: ModelConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        service
+            .set_turn_display(session.id, TurnDisplay::Pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.list_unsettled_chat_sessions().await.unwrap().len(),
+            1,
+            "a starting turn is what puts a session back on the list"
+        );
+
+        service
+            .set_turn_display(session.id, TurnDisplay::AwaitingApproval)
+            .await
+            .unwrap();
+        assert!(
+            repo.list_unsettled_chat_sessions()
+                .await
+                .unwrap()
+                .is_empty(),
+            "the actor stopped, so the row already matches its transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_keeps_a_session_another_process_holds() {
+        let repo = Arc::new(FakeRepo::new());
+        let workspace = WorkspaceId::new();
+        let start = Utc::now() - chrono::Duration::hours(1);
+        let mut held = None;
+        for index in 0..=MAX_SESSIONS_PER_WORKSPACE {
+            let session = session_at(workspace, start + chrono::Duration::seconds(index as i64));
+            if index == 0 {
+                held = Some(session.id);
+            }
+            repo.insert(session);
+        }
+        let held = held.expect("the oldest session");
+
+        let service = ChatSessionService {
+            repository: repo,
+            workspaces: Arc::new(AnyWorkspace),
+            events: None,
+            session_cleaner: None,
+            locks: Arc::new(HeldByAnother { held: vec![held] }),
+        };
+
+        // The oldest is over the limit and would be deleted, but it is in use.
+        assert_eq!(
+            service.prune_excess_sessions().await.unwrap(),
+            0,
+            "a held session is retained rather than aborting startup"
+        );
+        let remaining = service.list_chat_sessions(None).await.unwrap();
+        assert!(remaining.iter().any(|session| session.id == held));
+        assert!(remaining.len() > MAX_SESSIONS_PER_WORKSPACE);
+    }
+
+    /// A store whose transcripts are fixed, so a reconcile has something to read.
+    struct StubStore {
+        messages: Vec<(SessionId, Vec<robi_core::message::Message>)>,
+        /// Every session whose transcript was asked for, in order.
+        reads: Mutex<Vec<SessionId>>,
+    }
+
+    #[async_trait::async_trait]
+    impl robi_core::store::MessageStore for StubStore {
+        fn create_session(&self, _workspace: WorkspaceId) -> SessionId {
+            SessionId::new()
+        }
+        fn has_session(&self, session: SessionId) -> bool {
+            self.messages.iter().any(|(id, _)| *id == session)
+        }
+        async fn messages(
+            &self,
+            session: SessionId,
+        ) -> Result<Vec<robi_core::message::Message>, robi_core::error::StoreError> {
+            self.reads.lock().expect("read log").push(session);
+            Ok(self
+                .messages
+                .iter()
+                .find(|(id, _)| *id == session)
+                .map(|(_, messages)| messages.clone())
+                .unwrap_or_default())
+        }
+        async fn messages_without_results(
+            &self,
+            session: SessionId,
+        ) -> Result<Vec<robi_core::message::Message>, robi_core::error::StoreError> {
+            self.messages(session).await
+        }
+        async fn message(
+            &self,
+            _session: SessionId,
+            _id: robi_core::ids::MessageId,
+        ) -> Result<Option<robi_core::message::Message>, robi_core::error::StoreError> {
+            Ok(None)
+        }
+        async fn append(
+            &self,
+            _session: SessionId,
+            _message: robi_core::message::Message,
+        ) -> Result<(), robi_core::error::StoreError> {
+            Ok(())
+        }
+        async fn update(
+            &self,
+            _session: SessionId,
+            _message: robi_core::message::Message,
+        ) -> Result<(), robi_core::error::StoreError> {
+            Ok(())
+        }
+        async fn replace_prefix(
+            &self,
+            _session: SessionId,
+            _delete: &[robi_core::ids::MessageId],
+            _summary: robi_core::message::Message,
+        ) -> Result<(), robi_core::error::StoreError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -1173,7 +1491,8 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: Some(cleaner.clone()),
+            session_cleaner: Some(cleaner.clone()),
+            locks: Arc::new(MemoryLocks::new()),
         };
         let session = service
             .create_chat_session(CreateChatSessionCommand {
@@ -1200,7 +1519,8 @@ mod tests {
             repository: Arc::new(FakeRepo::new()),
             workspaces: Arc::new(AnyWorkspace),
             events: None,
-            plan_cleaner: Some(Arc::new(FakeCleaner::failing())),
+            session_cleaner: Some(Arc::new(FakeCleaner::failing())),
+            locks: Arc::new(MemoryLocks::new()),
         };
         let session = service
             .create_chat_session(CreateChatSessionCommand {

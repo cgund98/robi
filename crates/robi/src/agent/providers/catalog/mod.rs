@@ -9,7 +9,7 @@ mod anthropic;
 mod deepseek;
 mod opencode_go;
 
-use super::config::ModelId;
+use super::config::{ModelId, OPENCODE_GO_PREFIX};
 
 /// One model a provider serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +102,22 @@ impl ModelCatalog {
     /// The models that can drive this agent loop, in table order.
     pub fn tool_capable(&self) -> impl Iterator<Item = &ModelInfo> {
         self.models.iter().filter(|info| info.supports_tools)
+    }
+}
+
+/// The label a picker shows for one model.
+///
+/// OpenCode Go vouches for models several labs make, so its ids collide with
+/// others in the flat list; they carry `OCG - ` to say which endpoint serves
+/// them. Anthropic and DeepSeek ids are unambiguous and stay as they are. This is
+/// `src/api/models.ts::modelDisplayName`'s rule, in Rust, next to the prefixes it
+/// reads, so the two front ends cannot label one model two ways.
+pub fn menu_label(info: &ModelInfo) -> String {
+    if info.id.as_str().starts_with(OPENCODE_GO_PREFIX) && !info.display_name.starts_with("OCG - ")
+    {
+        format!("OCG - {}", info.display_name)
+    } else {
+        info.display_name.clone()
     }
 }
 
@@ -263,5 +279,30 @@ mod tests {
         let before = ids.len();
         ids.dedup();
         assert_eq!(before, ids.len(), "a duplicate id would shadow a model");
+    }
+
+    #[test]
+    fn only_opencode_go_ids_gain_the_ocg_prefix() {
+        let catalog = ModelCatalog::all();
+        let opencode = catalog
+            .models()
+            .iter()
+            .find(|info| info.id.as_str().starts_with(OPENCODE_GO_PREFIX))
+            .expect("the table has an OpenCode Go model");
+        assert!(menu_label(opencode).starts_with("OCG - "));
+
+        let anthropic = catalog
+            .models()
+            .iter()
+            .find(|info| info.id.as_str().starts_with(ANTHROPIC_PREFIX))
+            .expect("the table has an Anthropic model");
+        let label = menu_label(anthropic);
+        assert!(!label.starts_with("OCG - "), "{label} keeps its own name");
+        assert_eq!(label, anthropic.display_name);
+
+        // Already labelled: the prefix is not doubled.
+        let mut labelled = opencode.clone();
+        labelled.display_name = format!("OCG - {}", labelled.display_name);
+        assert_eq!(menu_label(&labelled), labelled.display_name);
     }
 }

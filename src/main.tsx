@@ -15,6 +15,9 @@ void resolveApiBase().then(() => {
   void applyUiScale(uiScale.scale).catch(() => {
     // The default scale is close enough to carry on with.
   })
+  // The docs viewer has no route while S5 is in effect, so a retained `#/docs`
+  // hash would match nothing and leave the window on an empty page. Send it to
+  // the chat instead.
   const hash = withoutDocsRoute(window.location.hash)
   if (hash !== window.location.hash) {
     window.history.replaceState(null, '', hash)

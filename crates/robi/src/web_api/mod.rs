@@ -1,6 +1,10 @@
 //! Axum routes for the local API.
 //!
 //! Depends on `domain`. Does not depend on `adapters`.
+//!
+//! A route from a gated workstream is registered here **and** in the OpenAPI
+//! document, both behind the same feature. See
+//! `docs/src/design/core/feature-switches.md`.
 
 use std::time::{Duration, Instant};
 
@@ -17,30 +21,32 @@ use crate::web_api::state::AppState;
 
 pub mod chat_message;
 pub mod chat_session;
-pub mod code_index;
+#[cfg(feature = "docs-viewer")]
 pub mod docs;
 pub mod error;
 pub mod events;
 pub mod models;
+#[cfg(feature = "review")]
 pub mod review;
 pub mod settings;
 pub mod state;
 pub mod workspace;
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/api/v1/health", get(health_check))
         .with_state(state.clone())
         .merge(workspace::router(state.clone()))
-        .merge(code_index::router(state.clone()))
-        .merge(docs::router(state.clone()))
         .merge(chat_session::router(state.clone()))
-        .merge(review::router(state.clone()))
         .merge(chat_message::router(state.clone()))
         .merge(settings::router(state.clone()))
         .merge(models::router(state.clone()))
-        .merge(events::router(state))
-        .layer(from_fn(log_requests))
+        .merge(events::router(state.clone()));
+    #[cfg(feature = "docs-viewer")]
+    let router = router.merge(docs::router(state.clone()));
+    #[cfg(feature = "review")]
+    let router = router.merge(review::router(state.clone()));
+    router.layer(from_fn(log_requests))
 }
 
 const SLOW_REQUEST: Duration = Duration::from_secs(2);
@@ -70,8 +76,16 @@ async fn log_requests(request: Request, next: Next) -> Response {
     response
 }
 
+/// The whole document: the unconditional routes, plus each gated workstream's
+/// own fragment. `OpenApi::merge` combines the paths and the components.
 pub fn openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    #[allow(unused_mut)]
+    let mut document = ApiDoc::openapi();
+    #[cfg(feature = "docs-viewer")]
+    document.merge(DocsDoc::openapi());
+    #[cfg(feature = "review")]
+    document.merge(ReviewDoc::openapi());
+    document
 }
 
 #[utoipa::path(
@@ -100,20 +114,11 @@ async fn health_check() -> &'static str {
         workspace::resolve_workspace_path,
         workspace::open_workspace_file,
         workspace::read_workspace_file,
-        code_index::get_index,
-        code_index::put_index,
-        docs::list_docs,
-        docs::get_doc,
-        docs::put_doc,
-        docs::search_docs,
         chat_session::create_chat_session,
         chat_session::list_chat_sessions,
         chat_session::get_chat_session,
         chat_session::update_chat_session,
         chat_session::delete_chat_session,
-        review::get_session_review,
-        review::get_review_file,
-        review::decide_session_review,
         chat_message::submit_instruction,
         chat_message::list_chat_messages,
         chat_message::get_chat_message,
@@ -137,17 +142,6 @@ async fn health_check() -> &'static str {
         workspace::AbsolutePath,
         workspace::OpenWorkspaceFile,
         workspace::WorkspaceFile,
-        code_index::IndexStatusBody,
-        code_index::IndexCommand,
-        docs::DocsListing,
-        docs::DocEntry,
-        docs::DocKind,
-        docs::DocContent,
-        docs::DocWriteRequest,
-        docs::DocWriteResponse,
-        docs::DocWriteConflict,
-        docs::DocSearchResult,
-        docs::DocSearchHit,
         chat_session::CreateChatSession,
         chat_session::UpdateChatSession,
         chat_session::ChatSession,
@@ -165,14 +159,6 @@ async fn health_check() -> &'static str {
         chat_message::ChatToolCall,
         chat_message::ToolOriginal,
         chat_message::ChatUsage,
-        review::SessionReview,
-        review::ReviewFileSummary,
-        review::ReviewFileBody,
-        review::ReviewStatus,
-        review::ReviewLineBody,
-        review::ReviewLineStatus,
-        review::ReviewHunkBody,
-        review::DecideReview,
         settings::SetSetting,
         settings::SettingResponse,
         models::CatalogModel
@@ -182,3 +168,44 @@ async fn health_check() -> &'static str {
     )
 )]
 struct ApiDoc;
+
+/// S5: the docs routes.
+#[cfg(feature = "docs-viewer")]
+#[derive(OpenApi)]
+#[openapi(
+    paths(docs::list_docs, docs::get_doc, docs::put_doc, docs::search_docs),
+    components(schemas(
+        docs::DocsListing,
+        docs::DocEntry,
+        docs::DocKind,
+        docs::DocContent,
+        docs::DocWriteRequest,
+        docs::DocWriteResponse,
+        docs::DocWriteConflict,
+        docs::DocSearchResult,
+        docs::DocSearchHit
+    ))
+)]
+struct DocsDoc;
+
+/// S2: the review routes.
+#[cfg(feature = "review")]
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        review::get_session_review,
+        review::get_review_file,
+        review::decide_session_review
+    ),
+    components(schemas(
+        review::SessionReview,
+        review::ReviewFileSummary,
+        review::ReviewFileBody,
+        review::ReviewStatus,
+        review::ReviewLineBody,
+        review::ReviewLineStatus,
+        review::ReviewHunkBody,
+        review::DecideReview
+    ))
+)]
+struct ReviewDoc;

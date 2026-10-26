@@ -4,6 +4,13 @@ An agent that can edit files and run commands needs a boundary. Robi's boundary
 is three independent gates that compose, plus one invariant that ties them to the
 conversation.
 
+The default build edits through `shell`, so **approval is for a command, not for
+a path.** One command can touch many paths, which is why the sandbox and the
+session path rules are the enforcement point and the prompt hints are
+convenience. In Ask and Plan the shell is read-only: the workspace is mounted
+read-only and the schema has no `write_paths` or `unsandboxed`, so no approval
+can widen it.
+
 ## The three gates
 
 1. **Per-call approval.** Each tool decides from its own arguments, with a
@@ -27,10 +34,12 @@ sandbox unless you approved `unsandboxed`.
 |---|---|
 | Read or search inside the workspace | no |
 | Read or search a path the policy floor denies | yes |
-| Edit or delete a path the session write rules allow | no |
-| Edit or delete a path the session write rules deny | yes |
 | `shell` in the default profile (sandboxed, no extra paths, network `deny`) | no |
-| `shell` with `unsandboxed`, extra paths, or `network: "unrestricted"` | yes |
+| `shell` with `read_paths` | yes |
+| `shell` with `write_paths`, `unsandboxed`, or `network: "unrestricted"` (Agent only) | yes |
+| `shell` in Ask or Plan, which has none of those keys | never asked; a write fails inside the sandbox |
+| Edit or delete a path the session write rules allow (edit-tools build) | no |
+| Edit or delete a path the session write rules deny (edit-tools build) | yes |
 | `web_search` | always — each call spends quota |
 | `web_fetch` to a host already used this session | no |
 | `web_fetch` to a new host | yes |

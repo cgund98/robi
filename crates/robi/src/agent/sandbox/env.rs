@@ -86,8 +86,8 @@ fn path_value(input: &EnvInput<'_>) -> String {
 }
 
 /// `parent` with the `extra_path` directories appended, `~` expanded against
-/// `home`. The unsandboxed base for the shell, the MCP host, and the LSP hub.
-pub(crate) fn append_path_extra(parent: &str, home: &Path, extra_path: &str) -> String {
+/// `home`. The unsandboxed base for the shell and the MCP host.
+fn append_path_extra(parent: &str, home: &Path, extra_path: &str) -> String {
     let mut dirs: Vec<PathBuf> = parent
         .split(':')
         .filter(|entry| !entry.is_empty())

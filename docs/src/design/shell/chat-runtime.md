@@ -250,6 +250,12 @@ and `Failed` stores `failed`. That write happens after the actor clears its
 running slot, and it publishes the same event. The
 loop does not read the column.
 
+Each of those writes also settles the row, since `pending` is the only display
+written while a turn runs. That is what keeps the startup repair down to the
+sessions a killed process was mid-turn in. See
+[parallel-front-ends.md](parallel-front-ends.md) and
+[persistence.md](../persistence/persistence.md).
+
 `AgentFactory` (`crates/robi/src/adapters/chat_runtime.rs`) holds:
 
 | Field | Role |

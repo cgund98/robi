@@ -45,24 +45,23 @@ The crate root is `agent/`, `domain/`, `adapters/`, and `web_api/`. Turn I/O liv
 | `adapters/` | M2 | SQLite behind those traits, and the settings files. A keychain can replace the secret backend later |
 | `bootstrap/` | M2 | Shared app state, bind, and router for `robi-api` and the Tauri process |
 | `web_api/` | M2 | Local Axum routes, DTOs, and OpenAPI |
-| `agent/tools/` | M3 | Built-in tools |
+| `agent/tools/` | M3 | Built-in tools. The default build is shell-first: `read_file`, `list_dir`, `find`, `grep`, and the three write tools are behind `read-tools` and `edit-tools`. See [docs/src/design/core/feature-switches.md](docs/src/design/core/feature-switches.md) |
 | `agent/workspace/` | M3 | Root resolution, path confinement, policy |
-| `agent/review/` | M4 | Line diff and session hunks. The review object and UI stay M6 |
-| `agent/lsp/` | M7 | Language server client |
-| `agent/index/` | M7 | AST chunking, embeddings, vector search |
+| `agent/review/` | M4 | Line diff and session hunks. `diff.rs` is unconditional; the session baseline reader is behind `--features review` |
 | `agent/skills/` | M8 | Skill scan, catalog, and `/id` loads. See [docs/src/design/reach/skills.md](docs/src/design/reach/skills.md) |
 | `agent/mcp/` | M8 | MCP host: server config, connections, and remote tools. See [docs/src/design/reach/mcp.md](docs/src/design/reach/mcp.md) |
 | `agent/compress/` | M9 | Tool-output compression and the original store |
+| `tui/` | T0 | Terminal front end and the `robi` binary, behind `--features tui`. A surface, not a milestone: same services as `web_api`, no HTTP. See [docs/src/design/shell/tui.md](docs/src/design/shell/tui.md) |
 
 Inside `crates/robi`, `web_api` and `adapters` depend on `domain`, and `domain`
 depends on neither. `bootstrap` is the composition root both processes call. Schema,
 routes, and the chat session lifecycle are in
 [docs/src/design/persistence/persistence.md](docs/src/design/persistence/persistence.md).
 
-`crates/robi-index` and `crates/robi-lsp` are the likely first splits, because
-their dependencies — an embedding runtime, tree-sitter grammars, a JSON-RPC
-client — are large and optional. `crates/robi-cli` for headless mode (M8) is the
-next, and it is the evidence this layout works: a new binary with no code moved.
+`crates/robi-lsp` was once the likely first split, because a JSON-RPC client is
+large and optional. M7 is gone, so the first real split is `crates/robi-cli` for
+headless mode (M8), and it is the evidence this layout works: a new binary with
+no code moved.
 
 ## The crate boundary is the contract
 
@@ -134,6 +133,7 @@ Menus and dialogs use Kobalte primitives, styled with those tokens.
 |------|---------|
 | Web-only Vite dev | `pnpm dev` (port **1430**, strict; proxies `/api` → `127.0.0.1:1431`) |
 | Local API | `cargo run -p robi --bin robi-api` (default `127.0.0.1:1431`) |
+| Terminal app | `cargo run -p robi --features tui --bin robi` (two terminals in one workspace are allowed; a session is locked per process) |
 | Desktop app | `pnpm tauri dev` |
 | Production web build | `pnpm build` |
 | Lint (ESLint + Prettier) | `pnpm run lint` |
@@ -173,6 +173,11 @@ builds the mdBook, the same steps as the Pages workflow. Keep the jobs and the
   `crates/robi`.
 - **Keep I/O out of the loop.** When the loop needs a file or a socket, it needs
   a trait instead.
+- **A removed backend surface is a Cargo feature, not a deletion.** One flag per
+  workstream in `crates/robi/Cargo.toml`, off by default, gating the module, its
+  registration, and its OpenAPI entry together. `make lint-restore` and
+  `make test-restore` compile the restore path, and CI runs both: a missing
+  feature edge fails only there.
 - **Do not block an async worker.** Filesystem, SQLite, and tree walks in
   `robi-api` go through `spawn_blocking` (`agent::blocking::call`). A blocking
   call on the async runtime stalls the API. See

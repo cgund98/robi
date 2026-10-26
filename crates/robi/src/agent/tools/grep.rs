@@ -88,8 +88,7 @@ impl Tool for Grep {
             .map_err(|err| ToolError::Failed(err.to_string()))?;
         let mut rules = session.path_rules.clone();
         self.ctx.append_configured_allows(&mut rules).await;
-        let filter =
-            PathFilter::for_session(&rules, self.ctx.session_id).map_err(ToolError::Failed)?;
+        let filter = PathFilter::for_session(&rules).map_err(ToolError::Failed)?;
         let resolved = self.ctx.resolve(args.path.as_deref().unwrap_or(""))?;
         if !filter.allows_read(&resolved.relative) {
             return Err(denied(&resolved));
@@ -212,11 +211,7 @@ fn rg_arguments(query: &GrepQuery, globs: &[String]) -> Vec<String> {
 }
 
 fn find_rg() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
-        let candidate = dir.join("rg");
-        candidate.is_file().then_some(candidate)
-    })
+    crate::agent::workspace::find_binary("rg")
 }
 
 async fn search_ripgrep(

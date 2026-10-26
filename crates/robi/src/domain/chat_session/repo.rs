@@ -45,20 +45,25 @@ pub trait ChatSessionRepository: Send + Sync {
         title: String,
     ) -> Result<Option<ChatSession>, ServiceError>;
 
-    /// Remember the plan the next agent prompt should re-read.
-    ///
-    /// `updated_at` and `last_used_at` stay put. A missing session is
-    /// [`ServiceError::NotFound`].
-    async fn set_plan_path(&self, id: SessionId, path: String) -> Result<(), ServiceError>;
-
     /// Store the display summary. `updated_at` and `last_used_at` stay put.
     ///
     /// A missing session is [`ServiceError::NotFound`].
+    ///
+    /// The write also settles the row: `turn_settled` is stored from
+    /// [`TurnDisplay::is_settled`], so a display the transcript agrees with is what
+    /// takes the session off the next start's repair list.
     async fn set_turn_display(
         &self,
         id: SessionId,
         display: TurnDisplay,
     ) -> Result<(), ServiceError>;
+
+    /// Sessions whose `turn_display` is not known to match the transcript.
+    ///
+    /// Only these are worth reading at startup. A session enters the list when a
+    /// turn starts, and leaves it when [`Self::set_turn_display`] stores a
+    /// settled display. Order is `last_used_at` descending, then `id` descending.
+    async fn list_unsettled_chat_sessions(&self) -> Result<Vec<ChatSession>, ServiceError>;
 
     async fn delete_chat_session(&self, id: SessionId) -> Result<(), ServiceError>;
 }

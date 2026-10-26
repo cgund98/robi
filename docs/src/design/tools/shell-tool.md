@@ -36,6 +36,49 @@ call always returns `NeedsApproval`. A sandboxed command that stays inside
 the default profile runs immediately. There is no silent fallback, and a
 denied command is not retried outside the sandbox.
 
+### `ShellAccess`
+
+One tool, one schema shape, three policies. `Shell::new(ctx, access)` takes:
+
+| `ShellAccess` | Modes | Workspace | Schema |
+|---|---|---|---|
+| `ReadWrite` | Agent | writable | `unsandboxed`, `write_paths`, `network` |
+| `ReadOnly` | Ask | read-only | `read_paths` only; `network` is `deny` |
+| `PlanReadOnly` | Plan | read-only, plus `.robi/plans` | `read_paths` only; `network` is `deny` |
+
+A read-only instance sets `Profile.write = WriteAccess::ReadOnly`. Seatbelt
+emits `(allow file-read* (subpath workspace))` instead of the read-write pair,
+and bubblewrap `--ro-bind`s the workspace instead of `--bind`. `wide_writes` and
+the `protected_write_*` lists degrade to reads. `.git` writes stay denied. The
+private temp directory stays writable in both modes: it belongs to the call and
+is deleted when it returns, and a read-only `/tmp` breaks innocuous tools.
+
+`PlanReadOnly` adds exactly one writable root through `Profile::extra_writes`:
+`<workspace>/.robi/plans`. Seatbelt emits `(allow file-write* (subpath …))` for
+it, and bubblewrap a recursive `--bind`. Its position in the policy is the
+design: **after** the credential denies, so a workspace that *is* `$HOME` still
+opens `~/.robi/plans` while the rest of `~/.robi` stays closed, and **before**
+the floor, the `.git` write deny, and the session deny lists, so every one of
+those still wins inside the directory. The allow is a directory rather than a
+file, so the model may `mkdir -p .robi/plans/<name>` and name both files
+inside it. The tool creates the top-level `.robi/plans` before building the
+profile, because bubblewrap cannot bind a path that does not exist.
+
+Agent mode needs no exception: `WriteAccess::ReadWrite` already covers
+`.robi/plans`, so plan files stay editable after the mode switch.
+
+The schema drops the escalation keys in read-only mode, and `execute` refuses
+one that arrives anyway (`this mode is read-only`). A refused write also appends
+"this mode is read-only: ask the user to switch to Agent for a change" to the
+sandbox's blocked-path hint, so the model asks rather than retrying.
+
+The sharp edge is the build cache: `cargo check`, `tsc`, and `eslint` write
+`target/` and cache directories, so a read-only profile refuses exactly the
+verification commands the prompt recommends. The decision is that Ask and Plan
+do not run the build; verification is an Agent task, and the mode copy says so.
+A `build_write_paths` setting scoped to `target/` is the follow-up if those
+modes ever promise verification.
+
 The host process is the trust root. It holds API keys and computes each
 profile. It is not sandboxed.
 
@@ -59,6 +102,11 @@ flowchart TD
 | macOS | `/usr/bin/sandbox-exec -p` with a generated Seatbelt profile | The sandboxed call is refused |
 | Linux | `bwrap`. Landlock does not hide a directory or drop the network namespace, so it is not a second layer | The sandboxed call is refused when `bwrap` is missing |
 | Windows | No sandbox in this design | A sandboxed call is refused. `unsandboxed: true` still runs after approval |
+
+This table describes the default `os` mechanism, which ships and stays the
+default. A second mechanism runs the command in a gVisor container over the
+Docker API, on macOS as well as Linux; `sandbox_mechanism` selects it. See
+[container-sandbox.md](container-sandbox.md).
 
 ### Filesystem
 
@@ -96,8 +144,11 @@ Reads start allowed on `/`. Then these trees are denied: `$HOME`, `/Users`,
   read. Write paths open for read and write. A session write grant still
   does not.
 
-Writes are the workspace and the private temp directory. `write_paths` adds
-paths for that call only, after approval, and the command stays sandboxed.
+Writes are the workspace and the private temp directory, and the workspace is
+read-only for a `ReadOnly` instance. `write_paths` adds paths for that call
+only, after approval, and the command stays sandboxed. A read-only instance does
+not offer `write_paths` at all. `Profile::extra_writes` adds a read-write root
+that is not the workspace: today the only user is Plan mode's `.robi/plans`.
 
 Inside the workspace, `.git` stays readable and write-denied. `git status`
 works. A commit, an index update, or any other write under `.git` does not,

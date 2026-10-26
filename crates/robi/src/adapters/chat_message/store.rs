@@ -20,9 +20,56 @@ pub struct SqliteMessageStore {
     blobs: SessionBlobs,
 }
 
+/// Whether a transcript read resolves tool results from the blob file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WithResults {
+    Yes,
+    /// Another process owns the session, so its `redb` file stays shut.
+    No,
+}
+
 impl SqliteMessageStore {
     pub fn new(pool: Arc<SqlitePool>, blobs: SessionBlobs) -> Self {
         Self { pool, blobs }
+    }
+
+    /// Read the transcript, resolving results only when this process may open the
+    /// session's blob file.
+    async fn read_messages(
+        &self,
+        session: SessionId,
+        with: WithResults,
+    ) -> Result<Vec<Message>, StoreError> {
+        if !session_exists(Arc::clone(&self.pool), session)
+            .await
+            .map_err(backend)?
+        {
+            return Err(StoreError::SessionNotFound(session));
+        }
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT id, body
+            FROM chat_messages
+            WHERE chat_session_id = ?1
+            ORDER BY position ASC
+            "#,
+        )
+        .bind(session.to_string())
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(backend)?;
+
+        let mut messages = Vec::with_capacity(rows.len());
+        for (id, body) in rows {
+            let mut message: Message = serde_json::from_str(&body).map_err(|error| {
+                StoreError::Backend(format!("chat message {id} is not a message: {error}"))
+            })?;
+            if with == WithResults::Yes {
+                self.fill(session, &mut message).await?;
+            }
+            messages.push(message);
+        }
+        Ok(messages)
     }
 
     async fn persist_results(
@@ -80,35 +127,19 @@ impl MessageStore for SqliteMessageStore {
     }
 
     async fn messages(&self, session: SessionId) -> Result<Vec<Message>, StoreError> {
-        if !session_exists(Arc::clone(&self.pool), session)
-            .await
-            .map_err(backend)?
-        {
-            return Err(StoreError::SessionNotFound(session));
-        }
+        self.read_messages(session, WithResults::Yes).await
+    }
 
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            r#"
-            SELECT id, body
-            FROM chat_messages
-            WHERE chat_session_id = ?1
-            ORDER BY position ASC
-            "#,
-        )
-        .bind(session.to_string())
-        .fetch_all(self.pool.as_ref())
-        .await
-        .map_err(backend)?;
-
-        let mut messages = Vec::with_capacity(rows.len());
-        for (id, body) in rows {
-            let mut message: Message = serde_json::from_str(&body).map_err(|error| {
-                StoreError::Backend(format!("chat message {id} is not a message: {error}"))
-            })?;
-            self.fill(session, &mut message).await?;
-            messages.push(message);
-        }
-        Ok(messages)
+    /// The transcript with results left in the blob file.
+    ///
+    /// Used when another process owns the session: this process may read the chat
+    /// database, but opening that session's `redb` file is what the session lease
+    /// exists to prevent.
+    async fn messages_without_results(
+        &self,
+        session: SessionId,
+    ) -> Result<Vec<Message>, StoreError> {
+        self.read_messages(session, WithResults::No).await
     }
 
     async fn message(

@@ -1,38 +1,33 @@
 import { DropdownMenu } from '@kobalte/core/dropdown-menu'
 import { useNavigate } from '@solidjs/router'
 import { ChevronDown, Folder, FolderOpen } from '../ui/icons'
-import { For, Show } from 'solid-js'
+import { For } from 'solid-js'
 
-import { pickWorkspaceRoot } from '../../infra/pickWorkspaceRoot'
 import styles from './WorkspaceSwitcher.module.css'
-import { orderByRecentUse, patchWorkspaces, workspaces } from '../../state/workspaceStore'
+import { orderByRecentUse, workspaces } from '../../state/workspaceStore'
 
 const MENU_LIMIT = 8
 
-export function WorkspaceSwitcher() {
+/**
+ * The active workspace, with a dropdown of the others.
+ *
+ * `compact` is the top-bar form: an inline chip instead of the full-width row
+ * the sidebar used. The menu itself is the same in both. Adding a workspace is
+ * the workspaces page's job, so this menu switches and nothing more.
+ */
+export function WorkspaceSwitcher(props: { compact?: boolean } = {}) {
   const navigate = useNavigate()
   const ordered = () => orderByRecentUse(workspaces.workspaces, workspaces.recentWorkspaceIds)
   const active = () =>
     workspaces.workspaces.find((workspace) => workspace.id === workspaces.activeWorkspaceId) ?? null
 
-  async function handleAdd() {
-    try {
-      const root = await pickWorkspaceRoot()
-      if (root == null) {
-        return
-      }
-      await workspaces.addWorkspace(root)
-    } catch (err) {
-      patchWorkspaces({
-        error: err instanceof Error ? err.message : 'Failed to open the folder dialog'
-      })
-    }
-  }
-
   return (
-    <div class={styles.switcher}>
+    <div class={props.compact ? `${styles.switcher} ${styles.switcherCompact}` : styles.switcher}>
       <DropdownMenu>
-        <DropdownMenu.Trigger class={styles.summary}>
+        <DropdownMenu.Trigger
+          class={props.compact ? `${styles.summary} ${styles.summaryCompact}` : styles.summary}
+          aria-label={`Workspace: ${active()?.name ?? 'choose one'}`}
+        >
           <FolderIcon open={active() !== null} />
           <span class={styles.name}>{active()?.name ?? 'Choose a workspace'}</span>
           <span class={styles.chevron} aria-hidden="true">
@@ -61,18 +56,14 @@ export function WorkspaceSwitcher() {
                 )}
               </For>
             </DropdownMenu.RadioGroup>
-            <Show when={ordered().length > MENU_LIMIT}>
-              <DropdownMenu.Item
-                class={styles.action}
-                as="a"
-                href="#/workspaces"
-                onSelect={() => navigate('/workspaces')}
-              >
-                All workspaces…
-              </DropdownMenu.Item>
-            </Show>
-            <DropdownMenu.Item class={styles.action} onSelect={() => void handleAdd()}>
-              Add workspace…
+            <DropdownMenu.Separator class={styles.separator} />
+            <DropdownMenu.Item
+              class={styles.action}
+              as="a"
+              href="#/workspaces"
+              onSelect={() => navigate('/workspaces')}
+            >
+              Manage workspaces…
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>

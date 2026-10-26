@@ -2,26 +2,36 @@
 //!
 //! The host builds the profile. The child cannot widen it. `robi-core` does
 //! not use this module.
+//!
+//! Two mechanisms run that profile. [`Mechanism::Os`] is Seatbelt on macOS and
+//! bubblewrap on Linux, and it is the default. [`Mechanism::Container`] is a
+//! gVisor container over the Docker API, available on both platforms. Neither
+//! replaces the other.
 
 mod bwrap;
+pub mod container;
 mod env;
 mod launch;
+pub mod masks;
 mod profile;
 mod seatbelt;
 
-pub(crate) use env::append_path_extra;
-pub(crate) use env::secret_name;
 pub use env::{command_env, install_path_wrappers, EnvInput};
 pub use launch::run_command;
 pub use profile::{
     apply_allow_read, apply_allow_write, apply_deny, classify_path, parse_rule, push_classified,
-    AccessClass, NetworkMode, ParsedRule, Profile, ProfileError,
+    AccessClass, NetworkMode, ParsedRule, Profile, ProfileError, WriteAccess,
 };
 pub use seatbelt::seatbelt_policy;
+
+/// Which sandbox runs a command. Defined once, in the container module, so the
+/// setting and the dispatch cannot disagree.
+pub use container::config::Mechanism;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use robi_core::ids::SessionId;
 use tokio_util::sync::CancellationToken;
 
 /// Matches `LoopConfig::max_tool_result_bytes`, so the tool result stays under
@@ -35,11 +45,109 @@ pub struct CommandOutput {
     pub stderr: String,
     pub truncated: bool,
     pub killed: bool,
+    /// The directory the command actually ran in, as the sandbox sees it.
+    ///
+    /// `Some` only for the container mechanism, where the path differs from the
+    /// host's. The tool reports it so the model does not have to run `pwd` to
+    /// learn where it is, and does not guess a `cd`.
+    pub cwd: Option<String>,
 }
 
-/// Run `command` with `profile`. A sandboxed call uses Seatbelt or bubblewrap.
-/// An unsandboxed call runs `/bin/sh` directly.
-pub async fn launch(
+/// Everything one call needs beyond the profile.
+pub struct Launch<'a> {
+    pub profile: &'a Profile,
+    pub command: &'a str,
+    pub cancel: CancellationToken,
+    pub timeout: Duration,
+    pub session: SessionId,
+    pub mechanism: Mechanism,
+    /// Live settings, for the container mechanism's own keys.
+    pub settings: Option<&'a dyn crate::domain::settings::store::SettingsStore>,
+    /// Whether the workspace acknowledged its `sandbox.toml`.
+    pub project_trusted: bool,
+    /// The session's containers, reused across calls.
+    pub registry: Option<&'a container::Registry>,
+}
+
+impl<'a> Launch<'a> {
+    pub fn new(
+        profile: &'a Profile,
+        command: &'a str,
+        cancel: CancellationToken,
+        timeout: Duration,
+        session: SessionId,
+    ) -> Self {
+        Self {
+            profile,
+            command,
+            cancel,
+            timeout,
+            session,
+            mechanism: Mechanism::Os,
+            settings: None,
+            project_trusted: false,
+            registry: None,
+        }
+    }
+
+    pub fn with_mechanism(mut self, mechanism: Mechanism) -> Self {
+        self.mechanism = mechanism;
+        self
+    }
+
+    /// Attaches the settings the container mechanism resolves from.
+    pub fn with_settings(
+        mut self,
+        settings: Option<&'a dyn crate::domain::settings::store::SettingsStore>,
+        project_trusted: bool,
+    ) -> Self {
+        self.settings = settings;
+        self.project_trusted = project_trusted;
+        self
+    }
+
+    /// Attaches the session registry the container mechanism reuses.
+    pub fn with_registry(mut self, registry: &'a container::Registry) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+}
+
+/// Run `command` with `profile` under the selected mechanism.
+///
+/// The `os` mechanism is a process, so it needs no session. The container
+/// mechanism is per session, so it takes the id it was built with.
+pub async fn launch(request: Launch<'_>) -> Result<CommandOutput, String> {
+    let profile = request.profile;
+    if !profile.sandboxed {
+        return launch_host(profile, request.command, request.cancel, request.timeout).await;
+    }
+    match request.mechanism {
+        Mechanism::Os => launch_os(profile, request.command, request.cancel, request.timeout).await,
+        Mechanism::Container => launch_container(request).await,
+    }
+}
+
+/// `/bin/sh` on the host, with no profile. The approved escape hatch.
+async fn launch_host(
+    profile: &Profile,
+    command: &str,
+    cancel: CancellationToken,
+    timeout: Duration,
+) -> Result<CommandOutput, String> {
+    run_command(launch::Request {
+        argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), command.to_owned()],
+        cwd: profile.cwd.clone(),
+        env: profile.env.clone(),
+        timeout,
+        output_limit: OUTPUT_LIMIT,
+        cancel,
+    })
+    .await
+}
+
+/// Seatbelt or bubblewrap. The default, and unchanged from what shipped.
+async fn launch_os(
     profile: &Profile,
     command: &str,
     cancel: CancellationToken,
@@ -57,6 +165,44 @@ pub async fn launch(
         cancel,
     })
     .await
+}
+
+async fn launch_container(request: Launch<'_>) -> Result<CommandOutput, String> {
+    let Some(registry) = request.registry else {
+        return Err(
+            "sandbox could not be applied: the container sandbox needs a session registry"
+                .to_owned(),
+        );
+    };
+    let config = container::config::resolve(
+        request.settings,
+        &request.profile.workspace,
+        request.project_trusted,
+    )
+    .await
+    .map_err(|err| format!("sandbox could not be applied: {err}"))?;
+    // A workspace that keeps the `os` mechanism must not pay for the container:
+    // resolving the config is cheap, but only this branch asks for the daemon.
+    if config.mechanism == Mechanism::Os {
+        return launch_os(
+            request.profile,
+            request.command,
+            request.cancel,
+            request.timeout,
+        )
+        .await;
+    }
+    container::launch(
+        registry,
+        request.profile,
+        request.command,
+        request.cancel,
+        request.timeout,
+        request.session,
+        config,
+    )
+    .await
+    .map_err(|err| format!("sandbox could not be applied: {err}"))
 }
 
 fn launch_argv(profile: &Profile, command: &str) -> Result<Vec<String>, String> {

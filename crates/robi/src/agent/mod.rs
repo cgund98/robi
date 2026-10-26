@@ -7,16 +7,13 @@
 //! text, user settings, and instruction files. `compress` shortens tool
 //! output. `web` fetches and searches pages. `skills` and `mcp` load extra
 //! instructions and remote tools. `files` renders a user's attachments for the
-//! provider. `lsp` and `index` answer code questions. `docs` reconciles
-//! piece-meal editor saves against the file on disk.
+//! provider. `docs` reconciles piece-meal editor saves against the file on disk.
 
 pub mod blocking;
 pub mod compact;
 pub mod compress;
 pub mod docs;
 pub mod files;
-pub mod index;
-pub mod lsp;
 pub mod mcp;
 pub mod prompt;
 pub mod providers;

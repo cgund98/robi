@@ -16,7 +16,6 @@ export const SETTING_KEYS = {
   reasoningEffortAsk: 'reasoning_effort_ask',
   reasoningEffortPlan: 'reasoning_effort_plan',
   reasoningEffortAgent: 'reasoning_effort_agent',
-  lsp: 'lsp',
   pathAllowRead: 'path_allow_read',
   pathAllowWrite: 'path_allow_write',
   pathEntries: 'path_entries',
@@ -30,7 +29,15 @@ export const SETTING_KEYS = {
   webFetchApproval: 'web_fetch_approval',
   providerOpenCodeGo: 'provider_opencode_go',
   providerAnthropic: 'provider_anthropic',
-  providerDeepseek: 'provider_deepseek'
+  providerDeepseek: 'provider_deepseek',
+  sandboxMechanism: 'sandbox_mechanism',
+  sandboxImage: 'sandbox_image',
+  sandboxRuntime: 'sandbox_runtime',
+  sandboxMemoryMb: 'sandbox_memory_mb',
+  sandboxCpus: 'sandbox_cpus',
+  sandboxPidsLimit: 'sandbox_pids_limit',
+  sandboxProjectFiles: 'sandbox_project_files',
+  sandboxNetwork: 'sandbox_network'
 } as const
 
 export type SettingView = {

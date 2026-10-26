@@ -64,6 +64,38 @@ model reads the block as text, so it can widen the read with
 `read_file(path, offset, limit)` — `offset` is `start_line`, `limit` is
 `end_line - start_line + 1`.
 
+## The terminal's producers
+
+The terminal has no picker, so it has two commands. `/attach <path>` reads one
+file into the composer and `/detach [name]` takes one — or every one — off.
+
+**Every rule above is shared, not restated.** `domain::chat_message::attachment`
+holds the caps, the NUL-and-UTF-8 text rule, the base64 decode, and the
+in-workspace decision; the HTTP handler and the terminal both call it. The
+handler keeps `FileAttachmentInput` as its wire DTO and maps `AttachmentError` to
+its statuses; the terminal calls `text_attachment` with the text it already read.
+
+Two differences, both about where the bytes come from:
+
+- **The terminal reads the path it was given**, so `/attach` resolves a relative
+  path against the workspace root and also accepts `~` and an absolute one. A file
+  outside the workspace attaches with `path: None`, exactly as a browser upload
+  does — the explicit attach is the consent, and there is no server-side read of
+  the stored path to confine.
+- **A path may carry `:start-end`**, and `:40` is one line. The suffix is
+  recognised only when everything after the last `:` is digits or digits-dash-
+  digits, so `a:b.rs` and `C:\src\x.rs` keep their colons. The cap applies to
+  **what is attached** rather than to the file, which is what lets a file larger
+  than 64 KiB in at all; a range past the end clamps and the chip reports the
+  lines actually taken. This is the one piece of the model the GUI does not have —
+  its range producer is the docs viewer, in TypeScript — so it lives in the
+  domain module beside the caps.
+
+An image's bytes wait in the composer until a session exists, because the image
+store is keyed by session and the landing page has none. `ImageAttachment` stays
+an id and a media type: the name and the weight are the composer's chip, and the
+transcript can only say `[image, image/png]`.
+
 ## Transport
 
 `POST /api/v1/chat_sessions/{id}/messages` takes a `files` array. A JSON body
@@ -99,23 +131,25 @@ appears immediately, before the stored row exists.
 
 **Where a range comes from.** The composer never sets one: the OS file picker and
 a drop have no notion of a source line, so the composer only ever produces
-whole-file attachments (`filename`, no range). A range is a producer concern. The
-docs viewer is the built producer: hovering a rendered block in `#/docs` shows an
-add-to-chat button, and clicking it slices that block's raw markdown lines
-(`attachmentFromDocument` in `src/features/docs/docAttachment.ts`) and hands the
-composer a ready `FileAttachment` with `start_line` and `end_line`. The block's
-source range comes from `data-md-lines`, which `AssistantMarkdown`'s document mode
-takes from the mdast `position` react-markdown carries on every element — the file
-line, not a rendered one. See
-[docs-viewer.md](docs-viewer.md#attach-a-line-to-chat).
+whole-file attachments (`filename`, no range). A range is a producer concern, and
+both built producers are currently removed from the app (streamlining S5 and S2):
 
-The review screen is a second range producer, and it sends directly rather than
-handing off to the composer. **Reject with reason** on a hunk builds one
-attachment from that hunk's `new_start` / `new_count` range
-(`src/features/review/reviewAttachment.ts`), and on a whole file builds a
-whole-file attachment with no range. It decides the reject, returns to the chat,
-and calls `sendInstruction` with the attachment. See
-[code-review.md](../review/code-review.md).
+- The docs viewer's add-to-chat button slices a hovered block's raw markdown
+  lines (`attachmentFromDocument` in `src/features/docs/docAttachment.ts`) and
+  hands the composer a ready `FileAttachment` with `start_line` and `end_line`.
+  The block's source range comes from `data-md-lines`, which
+  `AssistantMarkdown`'s document mode takes from the mdast `position`
+  react-markdown carries on every element — the file line, not a rendered one.
+  See [docs-viewer.md](docs-viewer.md#attach-a-line-to-chat).
+- The review screen's **Reject with reason** sends directly rather than handing
+  off to the composer. It builds one attachment from the hunk's `new_start` /
+  `new_count` range (`src/features/review/reviewAttachment.ts`), or a whole-file
+  attachment, then decides the reject, returns to the chat, and calls
+  `sendInstruction`. See [code-review.md](../review/code-review.md).
+
+Both stay in the tree behind `showSurface('docsViewer')` and
+`showSurface('reviewScreen')`. The tray handoff below is what a restored producer
+would call.
 
 The producer does not pass the attachment down as a prop, because attaching a
 line opens the chat tray and the composer is not mounted until it does. It calls
@@ -192,7 +226,7 @@ opened by the server.
 ## Failure modes
 
 - A file over a cap is refused before the message is stored; the composer shows
-  the error.
+  the error. In the terminal that is the footer, and nothing is attached.
 - A file that is not UTF-8, or that contains a NUL, is refused by the client
   before send.
 - A missing `files` field deserializes as an empty list, so an older client and
