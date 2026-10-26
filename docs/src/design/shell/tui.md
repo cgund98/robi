@@ -459,9 +459,11 @@ the index itself, so nothing in the frame carries an index line.
   ```
 
   The heading is `# ` then the call's `description` argument or the tool's name,
-  in `--ink-muted`. A blank row separates it from the contents; the subject line
-  is `$ command`, with the `$` muted too and the command in the card's ink; a
-  second blank row precedes the output. **The output is not indented past `#` or
+  in `--ink-muted`. A shell call with `unsandboxed: true` appends
+  ` · unsandboxed`, so the one property that changes what the command can touch
+  shows without opening the card: `# shell · unsandboxed`. A blank row separates
+  it from the contents; the subject line is `$ command`, with the `$` muted too
+  and the command in the card's ink; a second blank row precedes the output. **The output is not indented past `#` or
   `$`** — all three start in the same column, so the card reads as one block
   rather than a nested list.
   At most `MAX_TOOL_OUTPUT_LINES` (6) lines of the result show, the cut counted
@@ -596,7 +598,11 @@ provider.
 - **`Enter` opens a card in a detail view**: the whole body, uncapped (the band
   stops at forty lines and an edit at twenty-four), its own scroll, `Esc` back
   with the selection where it was. On a prose block it does nothing — a message
-  has no second view.
+  has no second view. The body is wrapped to `view::content_width` when the view
+  opens and again on `Msg::Resize`, because a `Paragraph` without `.wrap()`
+  truncates: one long shell command ran off the right edge and its tail was
+  unreachable. Rows are built in the state, so `offset` counts rows and the
+  `1-22 of 83` position stays honest.
 - **In-card expansion is dormant.** The detail view replaced it: growing the band
   in place could push the turn it belonged to off the screen. `Render.expanded`,
   the `tui.json` key, the expanded branch and the expanded shell/MCP original
@@ -1812,8 +1818,9 @@ collapsed directories, docs-tray width, UI scale.
   page gets text and creates no session.
 - A card's long line: a 4800-cell result costs a handful of rows in the
   transcript, its cut marked with `…`, and the same call in the detail view shows
-  the whole line. The heading and the subject are cut the same way, and a cut is
-  measured in cells so a wide run cannot overflow the frame.
+  all of it, wrapped to the frame with no cells lost. The heading and the subject
+  are cut the same way, and a cut is measured in cells so a wide run cannot
+  overflow the frame.
 - A mermaid fence renders as its own source with the language on the fence line
   and does not panic.
 - A skill whose id collides with a built-in is listed but not selectable, and

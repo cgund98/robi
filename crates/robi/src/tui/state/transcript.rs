@@ -268,11 +268,12 @@ fn inner_width(width: usize) -> usize {
 /// however it is styled; the view paints the first cell separately.
 fn band_line(text: &str, inner: usize) -> String {
     let pad = inner.saturating_sub(display_width(text));
-    format!(
-        "{RAIL_CHAR}{}{text}{}",
-        " ".repeat(PAD_X),
-        " ".repeat(PAD_X + pad)
-    )
+    let mut line = String::with_capacity(RAIL_CHAR.len_utf8() + PAD_X * 2 + text.len() + pad);
+    line.push(RAIL_CHAR);
+    line.extend(std::iter::repeat_n(' ', PAD_X));
+    line.push_str(text);
+    line.extend(std::iter::repeat_n(' ', PAD_X + pad));
+    line
 }
 
 /// What a user message's attachments read as, one per row.

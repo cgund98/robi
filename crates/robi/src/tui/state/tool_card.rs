@@ -196,21 +196,15 @@ pub fn summary(call: &ToolCall) -> Summary {
         "write_file" => simple("Write", target("file")),
         "edit_file" => simple("Edit", target("file")),
         "delete_file" => simple("Delete", target("file")),
-        "shell" => {
-            let unsandboxed = record(Some(&call.args))
-                .and_then(|args| args.get("unsandboxed"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            Summary {
-                verb: if unsandboxed {
-                    "Run unsandboxed".to_owned()
-                } else {
-                    "Run".to_owned()
-                },
-                target: shell_program(&string_field(args, "command")),
-                range: None,
-            }
-        }
+        "shell" => Summary {
+            verb: if runs_unsandboxed(call) {
+                "Run unsandboxed".to_owned()
+            } else {
+                "Run".to_owned()
+            },
+            target: shell_program(&string_field(args, "command")),
+            range: None,
+        },
         "retrieve" => retrieve_summary(call),
         "delegate" => simple(
             "Delegate",
@@ -338,21 +332,41 @@ pub fn original_text(body: &Value) -> String {
 
 fn heading(call: &ToolCall, phase: Phase) -> String {
     let description = string_field(record(Some(&call.args)), "description");
-    if !description.is_empty() {
-        return description;
-    }
-    if call.execution_status == ExecutionStatus::Succeeded {
-        return call.name.clone();
-    }
-    // A call that has not started while the turn is busy is next in line, not
-    // stalled: the heading says what the reader is watching, which is the turn.
-    let status = if is_running(call, phase) && call.execution_status == ExecutionStatus::NotStarted
-    {
-        "running"
+    let heading = if !description.is_empty() {
+        description
+    } else if call.execution_status == ExecutionStatus::Succeeded {
+        call.name.clone()
     } else {
-        status_label(call.execution_status)
+        // A call that has not started while the turn is busy is next in line, not
+        // stalled: the heading says what the reader is watching, which is the turn.
+        let status =
+            if is_running(call, phase) && call.execution_status == ExecutionStatus::NotStarted {
+                "running"
+            } else {
+                status_label(call.execution_status)
+            };
+        format!("{} \u{b7} {}", call.name, status)
     };
-    format!("{} \u{b7} {}", call.name, status)
+    // Leaving the sandbox is the one thing about a shell call that changes what
+    // the command can touch, so it rides on the heading the reader always sees.
+    if runs_unsandboxed(call) {
+        format!("{heading} \u{b7} unsandboxed")
+    } else {
+        heading
+    }
+}
+
+/// Whether a shell call asked to run outside the sandbox.
+///
+/// Read from the arguments, not the result: the heading is drawn before the call
+/// runs, and an approved call keeps its arguments when it is replayed from the
+/// store.
+fn runs_unsandboxed(call: &ToolCall) -> bool {
+    call.name == "shell"
+        && record(Some(&call.args))
+            .and_then(|args| args.get("unsandboxed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
 }
 
 fn subject(call: &ToolCall) -> Option<String> {
@@ -889,6 +903,60 @@ mod tests {
         assert_eq!(card.subject.as_deref(), Some("cargo test"));
         assert_eq!(card.marker, '$');
         assert_eq!(texts(&card.lines), vec!["ok"]);
+    }
+
+    #[test]
+    fn an_unsandboxed_shell_call_says_so_on_the_heading() {
+        let mut call = call(
+            "shell",
+            serde_json::json!({ "command": "brew install jq", "unsandboxed": true }),
+            serde_json::json!({ "stdout": "", "exit_code": 0 }),
+        );
+        assert_eq!(
+            card(&call, Phase::Idle, false, None).heading_line(),
+            "# shell \u{b7} unsandboxed"
+        );
+
+        // A description replaces the tool's name, so the mark follows it.
+        call.args = serde_json::json!({
+            "command": "brew install jq",
+            "description": "Install jq",
+            "unsandboxed": true,
+        });
+        assert_eq!(
+            card(&call, Phase::Idle, false, None).heading_line(),
+            "# Install jq \u{b7} unsandboxed"
+        );
+
+        // The status keeps its place, and the mark comes after it.
+        call.execution_status = ExecutionStatus::Running;
+        assert_eq!(
+            card(&call, Phase::Thinking, false, None).heading_line(),
+            "# Install jq \u{b7} unsandboxed"
+        );
+    }
+
+    #[test]
+    fn a_sandboxed_shell_call_has_no_mark_and_another_tool_never_gets_one() {
+        let shell = call(
+            "shell",
+            serde_json::json!({ "command": "cargo test" }),
+            serde_json::json!({ "stdout": "", "exit_code": 0 }),
+        );
+        assert_eq!(
+            card(&shell, Phase::Idle, false, None).heading_line(),
+            "# shell"
+        );
+
+        let other = call(
+            "read_file",
+            serde_json::json!({ "path": "a.rs", "unsandboxed": true }),
+            serde_json::json!({ "content": "x" }),
+        );
+        assert_eq!(
+            card(&other, Phase::Idle, false, None).heading_line(),
+            "# read_file"
+        );
     }
 
     #[test]

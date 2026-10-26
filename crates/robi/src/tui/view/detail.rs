@@ -86,8 +86,12 @@ mod tests {
     use super::*;
 
     fn opened(output: &str) -> App {
+        opened_with(serde_json::json!({ "command": "seq" }), output)
+    }
+
+    fn opened_with(args: serde_json::Value, output: &str) -> App {
         let (mut app, _, session) = testing::booted(80, 24);
-        let mut call = testing::pending_call("shell", serde_json::json!({ "command": "seq" }));
+        let mut call = testing::pending_call("shell", args);
         call.execution_status = robi_core::message::ExecutionStatus::Succeeded;
         call.approval_status = robi_core::message::ApprovalStatus::Approved;
         call.result = Some(serde_json::json!({ "stdout": output }));
@@ -131,6 +135,34 @@ mod tests {
         // frame minus its two chrome rows, and it has to agree with the body.
         assert!(screen.contains("1-22 of 83"), "{screen}");
         assert!(screen.contains("Esc"), "{screen}");
+    }
+
+    #[test]
+    fn a_command_wider_than_the_frame_wraps_instead_of_running_off_it() {
+        // One token, no space to break at, far past the 76 cells of content, and
+        // a tail that only a wrapped row can show.
+        let command = format!(
+            "vendor/bin/phpunit --filter={}END-OF-COMMAND",
+            "a".repeat(180)
+        );
+        let mut app = opened_with(serde_json::json!({ "command": command }), "");
+
+        let screen = testing::screen(&app, 80, 24);
+        assert!(
+            screen.contains("END-OF-COMMAND"),
+            "the command was cut at the frame's edge: {screen}"
+        );
+
+        // Narrowing the terminal re-wraps an open view rather than cutting it.
+        app.update(Msg::Resize {
+            width: 48,
+            height: 24,
+        });
+        let narrow = testing::screen(&app, 48, 24);
+        assert!(
+            narrow.contains("END-OF-COMMAND"),
+            "the command was cut after the resize: {narrow}"
+        );
     }
 
     #[test]

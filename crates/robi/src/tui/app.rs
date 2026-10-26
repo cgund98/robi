@@ -220,6 +220,10 @@ pub struct App {
     paths_generation: u64,
     /// The workspace whose servers were last told to start.
     focused_mcp: Option<WorkspaceId>,
+    /// The terminal's columns. The detail view wraps to
+    /// `view::content_width` of them, so it needs the number, not just the
+    /// transcript's already-drunk width.
+    width: u16,
     height: u16,
     /// A stop was issued and has not come back yet.
     stopping: bool,
@@ -312,6 +316,7 @@ impl App {
             mcp_generation: 0,
             paths_generation: 0,
             focused_mcp: None,
+            width: 0,
             height: 0,
             stopping: false,
             quit: false,
@@ -738,10 +743,17 @@ impl App {
     /// Set the terminal size. The pump calls this once, then `Msg::Resize`
     /// keeps it current.
     pub fn resize(&mut self, width: u16, height: u16) {
+        self.width = width;
         self.height = height;
         // The transcript wraps to the content width, not the terminal's: the
         // frame keeps a gutter, and a band must end where the header does.
         self.transcript.set_width(view::content_width(width));
+        // The detail view's body is the same width, so it re-wraps with it: a
+        // command that fitted on one row may not, and rows the reader never saw
+        // as two would otherwise be cut at the frame's edge.
+        if let Some(detail) = self.detail.as_mut() {
+            detail.set_width(usize::from(view::content_width(width)));
+        }
         self.sync_viewport();
     }
 
@@ -2182,7 +2194,12 @@ impl App {
         };
         let original = self.transcript.original(call_id).map(str::to_owned);
         let phase = self.transcript.phase();
-        self.detail = Some(Detail::new(&call, phase, original.as_deref()));
+        self.detail = Some(Detail::new(
+            &call,
+            phase,
+            original.as_deref(),
+            usize::from(view::content_width(self.width)),
+        ));
         self.enter(Mode::Detail);
         // A compressed result keeps the uncapped body elsewhere; opening the view
         // is the one moment it is worth asking for.

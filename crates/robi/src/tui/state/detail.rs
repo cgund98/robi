@@ -11,6 +11,7 @@
 use robi_core::message::ToolCall;
 
 use crate::tui::state::tool_card::{self, CardLine};
+use crate::tui::state::transcript;
 use crate::tui::state::Phase;
 
 /// How far one `PageUp` or `PageDown` moves, given the viewport.
@@ -26,10 +27,18 @@ pub fn page(viewport: usize) -> usize {
 pub struct Detail {
     /// The call being read, so a reload can rebuild this.
     pub call: robi_core::ids::ToolCallId,
-    /// `# heading`, then the subject, then the body.
+    /// `# heading`, then the subject, then the body, wrapped to [`Self::width`].
+    ///
+    /// Rows, not source lines: the view paints one per row with no wrapping of
+    /// its own, and the offset counts rows, so the position it prints is honest.
     pub lines: Vec<CardLine>,
-    /// The first visible line.
+    /// The first visible row.
     pub offset: usize,
+    /// The unwrapped lines, kept so a resize can re-wrap without a rebuild.
+    source: Vec<CardLine>,
+    /// The cells a row may use. `view::content_width`, the frame minus its
+    /// gutter, which is exactly the width the detail's body is laid out in.
+    width: usize,
 }
 
 impl Detail {
@@ -39,39 +48,73 @@ impl Detail {
     /// uncapped: `tool_card` caps at forty lines for the band, and this is the
     /// answer to "the rest of it". A shell or MCP result that was compressed on
     /// the way to the model is replaced by `original` when the fetch has landed.
-    pub fn new(call: &ToolCall, phase: Phase, original: Option<&str>) -> Self {
+    pub fn new(call: &ToolCall, phase: Phase, original: Option<&str>, width: usize) -> Self {
         let card = tool_card::card(call, phase, true, None);
         // The heading and subject come from the short parse; the body is the
         // uncapped one. `card.lines` is only used when it is all there is.
-        let mut lines = Vec::new();
-        lines.push(CardLine {
+        let mut source = Vec::new();
+        source.push(CardLine {
             kind: tool_card::CardLineKind::Body,
             text: card.heading_line(),
         });
         if let Some(subject) = &card.subject {
-            lines.push(CardLine {
+            source.push(CardLine {
                 kind: tool_card::CardLineKind::Body,
                 text: format!("{} {subject}", card.marker),
             });
         }
-        lines.push(CardLine::body(""));
+        source.push(CardLine::body(""));
         match original {
-            Some(text) => lines.extend(text.lines().map(CardLine::body)),
+            Some(text) => source.extend(text.lines().map(CardLine::body)),
             // Uncapped, which is the whole point: the card stops at forty lines.
-            None => lines.extend(tool_card::full_body(call, phase)),
+            None => source.extend(tool_card::full_body(call, phase)),
         }
-        Self {
+        let mut detail = Self {
             call: call.id,
-            lines,
+            lines: Vec::new(),
             offset: 0,
+            source,
+            width: width.max(1),
+        };
+        detail.rewrap();
+        detail
+    }
+
+    /// Re-wrap the body to a new width, keeping the reader near where they were.
+    ///
+    /// A row's index changes when the width does — one long command can become
+    /// three rows — so the offset is clamped into the new body instead of being
+    /// trusted.
+    pub fn set_width(&mut self, width: usize) {
+        let width = width.max(1);
+        if width == self.width {
+            return;
         }
+        self.width = width;
+        let offset = self.offset;
+        self.rewrap();
+        self.clamp(offset, self.lines.len());
+    }
+
+    fn rewrap(&mut self) {
+        let mut rows = Vec::with_capacity(self.source.len());
+        for line in &self.source {
+            for row in transcript::wrap_text(&line.text, self.width) {
+                rows.push(CardLine {
+                    kind: line.kind,
+                    text: row,
+                });
+            }
+        }
+        self.lines = rows;
     }
 
     /// Rebuild from a call that changed underneath an open view.
     pub fn refresh(&mut self, call: &ToolCall, phase: Phase, original: Option<&str>) {
         let offset = self.offset;
-        let fresh = Detail::new(call, phase, original);
+        let fresh = Detail::new(call, phase, original, self.width);
         self.lines = fresh.lines;
+        self.source = fresh.source;
         self.clamp(offset, self.lines.len());
     }
 
@@ -156,7 +199,7 @@ mod tests {
     #[test]
     fn the_detail_shows_more_than_the_band_and_opens_at_the_top() {
         let call = many();
-        let detail = Detail::new(&call, Phase::Idle, None);
+        let detail = Detail::new(&call, Phase::Idle, None, 80);
         // Heading, subject, blank, then the hundred lines.
         assert_eq!(detail.len(), 103);
         assert_eq!(detail.offset, 0);
@@ -168,7 +211,7 @@ mod tests {
     #[test]
     fn scrolling_clamps_at_both_ends() {
         let call = many();
-        let mut detail = Detail::new(&call, Phase::Idle, None);
+        let mut detail = Detail::new(&call, Phase::Idle, None, 80);
         detail.scroll_by(-10, 10);
         assert_eq!(detail.offset, 0, "the top is the top");
 
@@ -182,6 +225,60 @@ mod tests {
     }
 
     #[test]
+    fn a_long_command_wraps_instead_of_running_off_the_edge() {
+        // One unbroken token: no space to break at, so it has to be split.
+        let command = format!("vendor/bin/phpunit --filter={}", "a".repeat(120));
+        let mut shell = call("");
+        shell.args = serde_json::json!({ "command": command });
+        let detail = Detail::new(&shell, Phase::Idle, None, 40);
+
+        assert!(
+            detail
+                .lines
+                .iter()
+                .all(|line| line.text.chars().count() <= 40),
+            "a row is wider than the frame: {:?}",
+            detail
+                .lines
+                .iter()
+                .map(|line| &line.text)
+                .collect::<Vec<_>>()
+        );
+        // The subject is split across rows rather than cut, and the body follows
+        // it: nothing the reader needs is dropped.
+        let subject: String = detail
+            .lines
+            .iter()
+            .skip_while(|line| !line.text.starts_with('$'))
+            .take_while(|line| !line.text.is_empty())
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("")
+            .trim_start_matches("$ ")
+            .replace(' ', "");
+        assert!(subject.ends_with(&"a".repeat(120)), "{subject}");
+    }
+
+    #[test]
+    fn a_width_change_rewraps_and_keeps_the_offset_in_the_body() {
+        let output: String = (0..20)
+            .map(|i| format!("{} {i}\n", "a".repeat(60)))
+            .collect();
+        let mut detail = Detail::new(&call(&output), Phase::Idle, None, 80);
+        let wide = detail.len();
+        detail.bottom(4);
+
+        // Narrowing turns each line into two rows; the offset has to survive.
+        detail.set_width(40);
+        assert!(detail.len() > wide, "{} vs {wide}", detail.len());
+        assert!(detail.offset < detail.len(), "{detail:?}");
+        assert!(detail
+            .lines
+            .iter()
+            .all(|line| line.text.chars().count() <= 40));
+    }
+
+    #[test]
     fn a_page_leaves_one_line_of_overlap() {
         assert_eq!(page(20), 19);
         assert_eq!(page(1), 1, "a one-row viewport still moves");
@@ -190,7 +287,7 @@ mod tests {
     #[test]
     fn a_fetched_original_replaces_the_compressed_body() {
         let call = call("the compressed view");
-        let detail = Detail::new(&call, Phase::Idle, Some("all of it"));
+        let detail = Detail::new(&call, Phase::Idle, Some("all of it"), 80);
         let text: Vec<&str> = detail.lines.iter().map(|line| line.text.as_str()).collect();
         assert!(text.contains(&"all of it"), "{text:?}");
         assert!(!text.contains(&"the compressed view"), "{text:?}");
@@ -199,7 +296,7 @@ mod tests {
     #[test]
     fn a_refresh_keeps_the_offset_inside_the_new_body() {
         let long = many();
-        let mut detail = Detail::new(&long, Phase::Idle, None);
+        let mut detail = Detail::new(&long, Phase::Idle, None, 80);
         detail.bottom(10);
         assert_eq!(detail.offset, 93);
 
