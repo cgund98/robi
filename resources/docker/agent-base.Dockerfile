@@ -69,6 +69,7 @@ RUN apt-get update \
         python3 \
         python3-pip \
         python3-venv \
+        pipx \
         nodejs \
         npm \
         iproute2 \
@@ -149,6 +150,30 @@ RUN npm install -g "pnpm@${PNPM_VERSION}" \
 RUN /usr/local/cargo/bin/cargo install mdbook --locked \
     && /usr/local/cargo/bin/mdbook --version \
     && rm -rf /usr/local/cargo/registry /usr/local/cargo/git
+
+# Poetry installs through pipx, which is why the apt list above has it.
+#
+# PIPX_HOME and PIPX_BIN_DIR are set for this layer only, not as image ENV. The
+# defaults are under /home/agent, and the harness mounts the home volume over
+# that path, so an app installed there at build time would vanish on the first
+# container. Installing into /opt keeps the venv in the image layer, where the
+# runtime PATH already finds /usr/local/bin/poetry. Leaving the variables unset
+# at runtime also means `pipx install <tool>` inside a command uses the defaults
+# again and lands in the writable home volume.
+#
+# The container runs as an arbitrary host UID, so the venv is made readable and
+# its executables runnable for every user; nothing in it is writable.
+#
+# Poetry's own state stays at ~/.cache/pypoetry, inside the home volume, so a
+# project virtualenv it creates survives a container recreation.
+ENV POETRY_VERSION=2.5.1
+
+RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+        pipx install "poetry==${POETRY_VERSION}" \
+    && test -x /usr/local/bin/poetry \
+    && chmod -R a+rX /opt/pipx \
+    && poetry --version \
+    && rm -rf /root/.cache/pip
 
 # A named account, not a fixed identity: the container is created with the
 # host's UID:GID, and a preparation exec chowns /home/agent to that owner. The

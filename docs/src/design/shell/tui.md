@@ -412,8 +412,11 @@ the index itself, so nothing in the frame carries an index line.
 - `tui/mod.rs::run` owns the terminal: `ratatui::init`, a panic hook that
   restores before the message prints, `ratatui::restore` on every exit path.
 - `bootstrap::build_app_state` for state. No `logs::init()` as-is: a debug build
-  writes tracing to **stderr**, which corrupts the frame. Log to the file layer
-  only, or redirect the stderr layer to `~/.robi/logs/tui.log`.
+  writes tracing to **stderr**, which corrupts the frame. `logs::init_tui` is the
+  same file layer with no stderr layer in any build, and its files are named
+  `tui-<timestamp>.log` so a TUI run is distinguishable from the app's
+  `robi-api-`/`robi-dev-` files in the same directory. Pruning is per prefix, so
+  a TUI start never deletes the app's logs.
 - The four-source `select!`, the input thread, `Msg`, `Action`, `effects::run`.
 - `state/transcript.rs`: turn grouping, follow-the-bottom with a scroll lock that
   yields on `PageUp` and re-arms at the bottom.

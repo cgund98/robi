@@ -72,6 +72,13 @@ async fn main() {
     }
 
     robi::logs::init_tui();
+    // One line that says which run this file belongs to. Without it the log
+    // opens on a blank line and you cannot tell two runs apart.
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        log = robi::logs::log_file().map(|path| path.display().to_string()),
+        "terminal front end starting"
+    );
 
     let workspace_path = match workspace_path {
         Some(path) => path,
@@ -88,6 +95,7 @@ async fn main() {
     let workspace_path = workspace_path
         .canonicalize()
         .unwrap_or_else(|_| workspace_path.clone());
+    tracing::info!(workspace = %workspace_path.display(), "workspace root");
 
     let database_url = match std::env::var("ROBI_DATABASE_URL") {
         Ok(url) => url,
@@ -126,6 +134,7 @@ async fn main() {
         }
     };
 
+    tracing::info!("entering the terminal front end");
     let outcome = tui::run(
         state,
         Options {
@@ -138,6 +147,13 @@ async fn main() {
     // The terminal is restored by now, so this is the last thing the process
     // does: a container is a label in a daemon, not a file this process holds.
     bootstrap::shutdown_sandboxes().await;
+    match &outcome {
+        Ok(()) => tracing::info!("terminal front end exited"),
+        Err(err) => tracing::error!(%err, "terminal front end failed"),
+    }
+    // Before the exit below: `process::exit` runs no destructors, and the
+    // background logger only drains when its guard drops.
+    robi::logs::flush();
     if let Err(err) = outcome {
         eprintln!("{err}");
         std::process::exit(1);

@@ -499,31 +499,20 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
                 }
             },
         },
-        Action::LoadMcpConfig { workspace } => {
-            let row = match state.workspace_service.get_workspace(workspace).await {
-                Ok(row) => row,
-                Err(error) => return ActionOutcome::failed(error.to_string()),
-            };
-            let Some(mcp) = &state.mcp else {
-                return ActionOutcome::McpConfig(McpPaths::default());
-            };
-            let mcp = mcp.clone();
-            let root = canonical_root(&row.root);
-            let hash = row.mcp_project_sha256.clone();
-            match blocking::call(move || mcp.config_files(&root, hash.as_deref())).await {
-                Ok(files) => ActionOutcome::McpConfig(McpPaths {
-                    user_path: files.user_path,
-                    project_path: files.project_path,
-                    project_enabled: files.project_enabled,
-                    // Where each server's own log lands, as `logs.rs` writes it.
-                    // Read here rather than in the view: `App` does no I/O, and a
-                    // per-frame `HOME` lookup is I/O however cheap.
-                    log_root: crate::adapters::settings::home_dir()
-                        .map(|home| home.join("logs").join("mcp"))
-                        .map(|dir| dir.display().to_string())
-                        .unwrap_or_default(),
-                }),
-                Err(error) => ActionOutcome::failed(error),
+        Action::LoadMcpConfig { workspace } => match mcp_paths(state, workspace).await {
+            Ok(paths) => ActionOutcome::McpConfig(paths),
+            Err(error) => ActionOutcome::failed(error),
+        },
+        Action::SetMcpProjectTrust { workspace, enable } => {
+            let stored =
+                crate::agent::mcp::set_project_trust(&state.workspace_service, workspace, enable)
+                    .await;
+            if let Err(message) = stored {
+                return ActionOutcome::McpTrustFailed { message };
+            }
+            match mcp_paths(state, workspace).await {
+                Ok(paths) => ActionOutcome::McpTrustSet { enable, paths },
+                Err(message) => ActionOutcome::McpTrustFailed { message },
             }
         }
         Action::Probe => {
@@ -559,6 +548,37 @@ async fn run(state: &AppState, options: &Options, action: Action) -> ActionOutco
 ///
 /// A failure is dropped, as the GUI's `.catch` drops it: the servers stay
 /// `disconnected` until a turn focuses them through the agent.
+/// Both config paths and this workspace's trust state, as the settings rows draw them.
+async fn mcp_paths(
+    state: &AppState,
+    workspace: robi_core::ids::WorkspaceId,
+) -> Result<McpPaths, String> {
+    let row = state
+        .workspace_service
+        .get_workspace(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(mcp) = &state.mcp else {
+        return Ok(McpPaths::default());
+    };
+    let mcp = mcp.clone();
+    let root = canonical_root(&row.root);
+    let hash = row.mcp_project_sha256.clone();
+    let files = blocking::call(move || mcp.config_files(&root, hash.as_deref())).await?;
+    Ok(McpPaths {
+        user_path: files.user_path,
+        project_path: files.project_path,
+        project_enabled: files.project_enabled,
+        // Where each server's own log lands, as `logs.rs` writes it. Read here
+        // rather than in the view: `App` does no I/O, and a per-frame `HOME`
+        // lookup is I/O however cheap.
+        log_root: crate::adapters::settings::home_dir()
+            .map(|home| home.join("logs").join("mcp"))
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default(),
+    })
+}
+
 async fn focus_mcp(state: &AppState, workspace: robi_core::ids::WorkspaceId) {
     let Some(mcp) = &state.mcp else {
         return;

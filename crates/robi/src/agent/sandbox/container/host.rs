@@ -264,17 +264,14 @@ fn volume_mount(volume: &str, target: &str) -> Mount {
 
 /// The environment the container starts with, and every command inherits.
 ///
-/// The host environment is never copied. `PATH` is the image's contract: a tool
-/// belongs in the image, not in a mounted host tree.
+/// The host environment is never copied. `PATH` is absent on purpose: the image
+/// sets it in its own `ENV`, Docker applies that to `run` and `exec`, and a
+/// tool belongs in the image rather than in a mounted host tree.
 pub fn base_env() -> Vec<(String, String)> {
     let env = vec![
         ("HOME".to_owned(), HOME.to_owned()),
         ("USER".to_owned(), "agent".to_owned()),
         ("LOGNAME".to_owned(), "agent".to_owned()),
-        (
-            "PATH".to_owned(),
-            format!("{HOME}/.local/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin"),
-        ),
         ("CARGO_HOME".to_owned(), format!("{HOME}/.cargo")),
         ("RUSTUP_HOME".to_owned(), "/usr/local/rustup".to_owned()),
         ("TMPDIR".to_owned(), "/tmp".to_owned()),
@@ -514,5 +511,8 @@ mod tests {
         assert_eq!(env.get("HOME").map(String::as_str), Some(HOME));
         assert_eq!(env.get("TMPDIR").map(String::as_str), Some("/tmp"));
         assert!(!env.contains_key("PATH_HOST"));
+        // The image's `ENV PATH` applies; the host's does not, and neither does
+        // a copy of the image's written into the exec.
+        assert!(!env.contains_key("PATH"));
     }
 }

@@ -151,6 +151,14 @@ jobs:
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
 
+      # release-please bumps `workspace.package.version` in `Cargo.toml` but
+      # cannot run cargo, so the tagged `Cargo.lock` still records the previous
+      # version and a `--locked` build fails. `cargo fetch` rewrites the three
+      # workspace entries and leaves the other packages alone. The build keeps
+      # `--locked`, so a dependency the lock is missing still fails here.
+      - name: Refresh the lock file
+        run: cargo fetch --target ${{ matrix.target }}
+
       # The shipped binary is the default feature set: the gated workstreams are
       # the restore path, and `tui` only adds the front end.
       - name: Build the terminal app

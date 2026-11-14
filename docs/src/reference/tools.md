@@ -203,7 +203,10 @@ what makes later shell calls need no `read_paths`.
 
 Tools from an MCP server are registered as `mcp_<server>_<tool>`. Each asks on
 its first call in the session; an approved pair runs on later calls. Client-side
-tool names outside `[A-Za-z0-9_-]` are replaced with `_`. See
+tool names outside `[A-Za-z0-9_-]` are replaced with `_`. A server entry may set
+`tools` to a list of glob or `re:` patterns; only the matching tools are
+registered, so the rest never reach a request. To see a server's list from the
+shell, run `cargo run -p robi --bin mcp-tools -- <server-id>`. See
 [MCP](../concepts/mcp.md).
 
 ## Where this is specified

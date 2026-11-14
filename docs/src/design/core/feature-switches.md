@@ -33,8 +33,9 @@ One feature edge is left, and it is not decoration:
 
 Two dependencies arrive with a feature rather than with the default build:
 
-- **`read-tools = ["dep:globset", "dep:ignore"]`** — `find` matches with
-  `globset`, and `find` and `grep` walk with `ignore`.
+- **`read-tools = ["dep:ignore"]`** — `find` and `grep` walk with `ignore`.
+  `globset` is not here: the MCP `tools` filter needs glob matching in every
+  build, so that dependency is unconditional.
 - **`docs-viewer = ["dep:ignore"]`** — the docs listing and its literal search
   walk with `ignore`.
 

@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::names::{description, registered_name, MAX_SCHEMA_BYTES, MAX_TOOLS};
-use super::session::{Listed, ListedTool, McpSession};
+use super::session::{ListedTool, McpSession};
 use super::tool::{AllowList, Hints, McpRuntime, McpTool};
 
 #[derive(Debug, Clone)]
@@ -20,10 +20,13 @@ pub struct Registered {
 }
 
 /// Turn `tools/list` into registry entries. Returns the names that landed.
+///
+/// `tools` is the slice that passed the server's filter, so an omitted tool
+/// never reaches the registry.
 pub fn register_list(
     registry: &ToolRegistry,
     server: &str,
-    listed: &Listed,
+    tools: &[&ListedTool],
     session: Arc<dyn McpSession>,
     gate: Arc<Mutex<()>>,
     allows: Arc<dyn AllowList>,
@@ -32,19 +35,9 @@ pub fn register_list(
     for name in previous {
         registry.remove(name);
     }
-    if let Some(instructions) = &listed.instructions {
-        tracing::info!(
-            server,
-            len = instructions.len(),
-            "mcp server instructions ignored"
-        );
-    }
     let mut seen = HashSet::new();
     let mut landed = Vec::new();
-    for tool in listed.tools.iter().take(MAX_TOOLS) {
-        if listed.tools.len() > MAX_TOOLS {
-            // logged once below
-        }
+    for tool in tools.iter().take(MAX_TOOLS).copied() {
         let Some(entry) = accept(server, tool, &mut seen, registry) else {
             continue;
         };
@@ -72,10 +65,10 @@ pub fn register_list(
             }
         }
     }
-    if listed.tools.len() > MAX_TOOLS {
+    if tools.len() > MAX_TOOLS {
         tracing::info!(
             server,
-            omitted = listed.tools.len() - MAX_TOOLS,
+            omitted = tools.len() - MAX_TOOLS,
             "mcp tool list truncated"
         );
     }
@@ -154,6 +147,7 @@ impl NameIndex {
 
 #[cfg(test)]
 mod tests {
+    use super::super::session::Listed;
     use super::*;
     use async_trait::async_trait;
     use robi_core::tool::{ApprovalDecision, Tool};
@@ -258,10 +252,11 @@ mod tests {
             title: None,
             icon: None,
         };
+        let visible: Vec<&ListedTool> = listed.tools.iter().collect();
         let rows = register_list(
             &registry,
             "git",
-            &listed,
+            &visible,
             session,
             Arc::new(Mutex::new(())),
             allows.clone(),

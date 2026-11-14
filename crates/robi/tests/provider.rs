@@ -615,7 +615,7 @@ async fn a_rate_limit_is_retried_and_then_succeeds() {
 async fn an_unauthorized_response_is_not_retried() {
     let fake = Fake::scripted(vec![Reply::Error {
         status: 401,
-        body: r#"{"error":"bad key"}"#.to_owned(),
+        body: r#"{"error":{"message":"Incorrect API key provided: sk-abc","type":"invalid_request_error","code":"invalid_api_key"}}"#.to_owned(),
         headers: Vec::new(),
     }]);
     let base = spawn(fake.clone()).await;
@@ -634,6 +634,10 @@ async fn an_unauthorized_response_is_not_retried() {
     assert_eq!(fake.request_count(), 1, "a bad key will not fix itself");
     let text = error.to_string();
     assert!(text.contains("credential"), "{text}");
+    assert!(text.contains("401"), "{text}");
+    // The provider's own sentence is the part that says what to do about it.
+    assert!(text.contains("Incorrect API key provided"), "{text}");
+    assert!(text.contains("invalid_api_key"), "{text}");
 }
 
 #[tokio::test]
@@ -657,7 +661,37 @@ async fn a_server_error_exhausts_the_attempts_and_reports_the_status() {
         .expect("the attempts run out");
 
     assert_eq!(fake.request_count(), 3, "max_attempts is three");
-    assert!(error.to_string().contains("500"), "{error}");
+    let text = error.to_string();
+    assert!(text.contains("500"), "{text}");
+    // A body that is not JSON is kept as it arrived, not replaced by the status.
+    assert!(text.contains("upstream is down"), "{text}");
+}
+
+#[tokio::test]
+async fn a_bare_error_body_still_carries_the_status() {
+    // A gateway can answer with nothing but the reason phrase. The status is the
+    // rest of what the user gets, so it has to be there.
+    let fake = Fake::scripted(vec![Reply::Error {
+        status: 500,
+        body: "Internal Server Error".to_owned(),
+        headers: Vec::new(),
+    }]);
+    let base = spawn(fake.clone()).await;
+    let model = build(base, Arc::new(ToolRegistry::new()));
+
+    let error = model
+        .generate(
+            SessionId::new(),
+            &[Message::user("hi")],
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("the attempts run out");
+
+    let text = error.to_string();
+    assert!(text.contains("500"), "{text}");
+    assert!(text.contains("Internal Server Error"), "{text}");
 }
 
 // ---------------------------------------------------------------------------

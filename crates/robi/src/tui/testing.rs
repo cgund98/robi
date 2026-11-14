@@ -5181,3 +5181,144 @@ fn a_locked_tool_call_sets_the_strip_once() {
     assert!(frame.contains("4812"), "{frame}");
     assert!(frame.contains("is held by another process"), "{frame}");
 }
+
+/// Land the two config paths the MCP section draws.
+fn land_mcp_paths(app: &mut App, project_enabled: bool) {
+    app.update(Msg::Done(ActionOutcome::McpConfig(
+        crate::tui::state::settings::McpPaths {
+            user_path: "/home/.robi/mcp.json".to_owned(),
+            project_path: "/work/.robi/mcp.json".to_owned(),
+            project_enabled,
+            log_root: "/home/.robi/logs/mcp".to_owned(),
+        },
+    )));
+}
+
+/// Open the MCP page and land its paths.
+fn mcp_section(project_enabled: bool) -> App {
+    let mut app = settings_panel(80, 30);
+    for _ in 0..4 {
+        app.update(typing(KeyCode::Char('l')));
+    }
+    assert_eq!(
+        app.settings().section(),
+        crate::tui::state::settings::Section::Mcp
+    );
+    land_mcp_paths(&mut app, project_enabled);
+    app.take_actions();
+    app
+}
+
+#[test]
+fn the_mcp_section_names_the_project_file_as_trusted_or_not() {
+    let app = mcp_section(false);
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("Your config"), "{screen}");
+    assert!(
+        screen.contains("/work/.robi/mcp.json \u{b7} not trusted"),
+        "{screen}"
+    );
+
+    let app = mcp_section(true);
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(
+        screen.contains("/work/.robi/mcp.json \u{b7} trusted"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn enter_on_the_project_row_asks_before_trusting_it() {
+    let mut app = mcp_section(false);
+    // Your config, Project config, Logs.
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Enter));
+    assert_eq!(app.mode(), Mode::Confirm);
+    let confirm = app.confirm().expect("a confirmation");
+    assert_eq!(
+        confirm.target,
+        crate::tui::state::confirm::Target::McpTrust {
+            workspace: app.active_workspace_id().expect("a workspace"),
+            enable: true,
+        }
+    );
+    assert!(confirm.question.contains("Trust"), "{}", confirm.question);
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("y confirm"), "{screen}");
+}
+
+#[test]
+fn accepting_the_trust_question_queues_the_write() {
+    let mut app = mcp_section(false);
+    let workspace = app.active_workspace_id().expect("a workspace");
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Enter));
+    app.update(typing(KeyCode::Char('y')));
+    assert_eq!(app.mode(), Surface::Settings);
+    assert!(app.take_actions().iter().any(|action| matches!(
+        action,
+        Action::SetMcpProjectTrust { workspace: queued, enable }
+            if *queued == workspace && *enable
+    )));
+}
+
+#[test]
+fn the_same_row_turns_a_trusted_file_off() {
+    let mut app = mcp_section(true);
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Enter));
+    let confirm = app.confirm().expect("a confirmation");
+    assert!(confirm.question.contains("off"), "{}", confirm.question);
+    app.update(typing(KeyCode::Char('y')));
+    assert!(app.take_actions().iter().any(|action| matches!(
+        action,
+        Action::SetMcpProjectTrust { enable, .. } if !*enable
+    )));
+}
+
+#[test]
+fn cancelling_the_trust_question_writes_nothing() {
+    let mut app = mcp_section(false);
+    app.update(typing(KeyCode::Char('j')));
+    app.update(typing(KeyCode::Enter));
+    app.update(typing(KeyCode::Char('n')));
+    assert!(app.confirm().is_none());
+    assert!(!app
+        .take_actions()
+        .iter()
+        .any(|action| matches!(action, Action::SetMcpProjectTrust { .. })));
+}
+
+#[test]
+fn a_refused_trust_is_a_note_on_the_surface() {
+    let mut app = mcp_section(false);
+    app.update(Msg::Done(ActionOutcome::McpTrustFailed {
+        message: "there is no /work/.robi/mcp.json to trust".to_owned(),
+    }));
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(screen.contains("no /work/.robi/mcp.json"), "{screen}");
+}
+
+#[test]
+fn a_landed_trust_reads_the_hub_again() {
+    let mut app = mcp_section(false);
+    let workspace = app.active_workspace_id().expect("a workspace");
+    app.update(Msg::Done(ActionOutcome::McpTrustSet {
+        enable: true,
+        paths: crate::tui::state::settings::McpPaths {
+            user_path: "/home/.robi/mcp.json".to_owned(),
+            project_path: "/work/.robi/mcp.json".to_owned(),
+            project_enabled: true,
+            log_root: "/home/.robi/logs/mcp".to_owned(),
+        },
+    }));
+    let actions = app.take_actions();
+    assert!(actions
+        .iter()
+        .any(|action| matches!(action, Action::FocusMcp { workspace: w } if *w == workspace)));
+    let screen = rows(&app, 80, 30).join("\n");
+    assert!(
+        screen.contains("/work/.robi/mcp.json \u{b7} trusted"),
+        "{screen}"
+    );
+}

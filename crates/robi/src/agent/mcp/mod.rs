@@ -4,16 +4,22 @@ mod config;
 mod connect;
 mod content;
 mod env;
+mod filter;
 mod host;
 pub(crate) mod logs;
 mod names;
 mod session;
 mod tool;
 
-pub use config::{file_hash, preview, project_path, read_file, user_path, ServerPreview};
+pub(crate) use config::load;
+pub use config::{
+    file_hash, preview, project_path, read_file, user_path, ProjectTrust, ServerConfig,
+    ServerPreview,
+};
 pub use connect::RmcpOpener;
 pub use host::{register_list, NameIndex, Registered};
-pub use session::{Listed, ListedTool, McpSession};
+pub(crate) use names::registered_name;
+pub use session::{Listed, ListedTool, McpSession, OpenSpec, SessionOpener};
 pub use tool::{AllowList, McpTool};
 
 use robi_core::ids::SessionId;
@@ -52,7 +58,50 @@ use tokio::sync::Mutex;
 use crate::domain::events::{EventBus, EventEnvelope};
 use crate::domain::settings::store::SettingsStore;
 
-use config::{merge, ServerConfig};
+/// The SHA-256 of `<root>/.robi/mcp.json`, or `None` when the file cannot be read.
+///
+/// This is what the workspace row stores to trust a project file. The bytes are
+/// hashed as they are on disk: one edit breaks the match, which is the point.
+pub async fn project_hash(root: &Path) -> Option<String> {
+    let path = project_path(root);
+    let bytes = crate::agent::blocking::call(move || std::fs::read(&path))
+        .await
+        .ok()?
+        .ok()?;
+    Some(file_hash(&bytes))
+}
+
+/// Trust or distrust this workspace's project MCP file.
+///
+/// Trust stores the hash of the file's current bytes. Distrust clears the
+/// column, which stops the project servers on the next focus or turn. Both
+/// surfaces go through here so the hash rule has one implementation.
+pub async fn set_project_trust(
+    workspaces: &crate::domain::workspace::service::WorkspaceService,
+    workspace: WorkspaceId,
+    enable: bool,
+) -> Result<(), String> {
+    let row = workspaces
+        .get_workspace(workspace)
+        .await
+        .map_err(|err| err.to_string())?;
+    let root = PathBuf::from(&row.root);
+    let root = root.canonicalize().unwrap_or(root);
+    let hash = if enable {
+        let path = project_path(&root);
+        Some(
+            project_hash(&root)
+                .await
+                .ok_or_else(|| format!("there is no {} to trust", path.display()))?,
+        )
+    } else {
+        None
+    };
+    workspaces
+        .set_mcp_project_sha256(workspace, hash)
+        .await
+        .map_err(|err| err.to_string())
+}
 
 /// One supervisor for the process. Sessions of a workspace share its servers.
 pub struct McpHub {
@@ -80,7 +129,6 @@ struct LiveServer {
     status: &'static str,
     title: Option<String>,
     icon: Option<String>,
-    tool_count: u32,
     session: Option<Arc<dyn McpSession>>,
     listed: Option<Listed>,
 }
@@ -169,7 +217,11 @@ impl McpHub {
         open: &dyn session::SessionOpener,
     ) {
         let _gate = self.gate.lock().await;
-        self.ensure(workspace, root, stored_hash, open).await;
+        let servers = self.ensure(workspace, root, stored_hash, open).await;
+        let filters: std::collections::HashMap<String, filter::ToolFilter> = servers
+            .into_iter()
+            .map(|server| (server.id, server.tools))
+            .collect();
         let state = self.inner.lock().await;
         let Some(slot) = state.workspaces.get(&workspace) else {
             return;
@@ -187,49 +239,55 @@ impl McpHub {
             return;
         };
         for (id, session, listed) in ready {
-            let _live = register_connected(registry, allows.clone(), slot, &id, session, listed);
+            let filter = filters.get(&id).cloned().unwrap_or_default();
+            let row = register_connected(
+                registry,
+                allows.clone(),
+                slot,
+                &id,
+                session,
+                listed,
+                &filter,
+            );
+            slot.live.insert(id, row);
         }
     }
 
+    /// Read both files, start any server that is not up, and return the parsed
+    /// entries so a caller can apply the current tool filters.
     async fn ensure(
         &self,
         workspace: WorkspaceId,
         root: &Path,
         stored_hash: Option<&str>,
         open: &dyn session::SessionOpener,
-    ) {
+    ) -> Vec<ServerConfig> {
         if self.open.lock().await.is_some_and(|id| id != workspace) {
-            return;
+            return Vec::new();
         }
-        let home = self.home.clone();
-        let project_file = project_path(root);
-        let (user, project_bytes) = crate::agent::blocking::call(move || {
-            (
-                read_file(&user_path(&home)),
-                std::fs::read(&project_file).unwrap_or_default(),
-            )
-        })
-        .await
-        .unwrap_or_default();
-        let trusted = stored_hash.is_some_and(|hash| hash == file_hash(&project_bytes));
-        let project = String::from_utf8_lossy(&project_bytes).into_owned();
-        let secrets = self.secrets().await;
-        let (servers, errors) = merge(&user, &project, trusted, &secrets);
+        let loaded = config::load(
+            &self.home,
+            root,
+            ProjectTrust::StoredHash(stored_hash),
+            self.settings.as_ref(),
+        )
+        .await;
         tracing::info!(
             %workspace,
-            servers = servers.len(),
-            project_trusted = trusted,
+            servers = loaded.servers.len(),
+            project_trusted = loaded.project_trusted,
             "mcp workspace"
         );
-        if !trusted && !project_bytes.is_empty() {
+        if !loaded.project_trusted && loaded.project_present {
             tracing::info!(
                 %workspace,
                 "project mcp.json is not enabled for this workspace"
             );
         }
-        for error in errors {
+        for error in loaded.errors {
             tracing::error!(server = %error.id, reason = %error.message, "skipped mcp server");
         }
+        let servers = loaded.servers;
         let mut pending = Vec::new();
         {
             let mut state = self.inner.lock().await;
@@ -265,7 +323,7 @@ impl McpHub {
             }
             let mut state = self.inner.lock().await;
             let Some(slot) = state.workspaces.get_mut(&workspace) else {
-                return;
+                return Vec::new();
             };
             for server in &servers {
                 if slot
@@ -281,7 +339,6 @@ impl McpHub {
                         status: "starting",
                         title: None,
                         icon: None,
-                        tool_count: 0,
                         session: None,
                         listed: None,
                     },
@@ -306,11 +363,27 @@ impl McpHub {
             };
             match opened {
                 Ok((session, listed)) => {
+                    let (visible, unused) = server.tools.visible(&server.id, &listed.tools);
+                    if server.tools.is_filtered() {
+                        tracing::info!(
+                            server = %server.id,
+                            listed = listed.tools.len(),
+                            registered = visible.len(),
+                            "mcp tool filter applied"
+                        );
+                    }
                     tracing::info!(
                         server = %server.id,
                         tools = listed.tools.len(),
                         "mcp server connected"
                     );
+                    for pattern in &unused {
+                        tracing::info!(
+                            server = %server.id,
+                            pattern = %pattern,
+                            "mcp tool filter matched nothing"
+                        );
+                    }
                     if let Some(icon) = listed.icon.clone() {
                         remember_icon(&self.home, &server.id, &icon);
                     }
@@ -320,7 +393,6 @@ impl McpHub {
                             status: "connected",
                             title: listed.title.clone(),
                             icon: listed.icon.clone(),
-                            tool_count: listed.tools.len() as u32,
                             session: Some(session),
                             listed: Some(listed),
                         },
@@ -340,7 +412,6 @@ impl McpHub {
                             status: "failed",
                             title,
                             icon: None,
-                            tool_count: 0,
                             session: None,
                             listed: None,
                         },
@@ -350,6 +421,7 @@ impl McpHub {
             drop(state);
             self.publish_status(workspace);
         }
+        servers
     }
 
     async fn close_except(&self, keep: WorkspaceId) {
@@ -402,19 +474,14 @@ impl McpHub {
         root: &Path,
         stored_hash: Option<&str>,
     ) -> Vec<McpServerStatus> {
-        let home = self.home.clone();
-        let project_file = project_path(root);
-        let (user, project_bytes) = crate::agent::blocking::call(move || {
-            (
-                read_file(&user_path(&home)),
-                std::fs::read(&project_file).unwrap_or_default(),
-            )
-        })
-        .await
-        .unwrap_or_default();
-        let trusted = stored_hash.is_some_and(|hash| hash == file_hash(&project_bytes));
-        let project = String::from_utf8_lossy(&project_bytes).into_owned();
-        let (servers, _) = merge(&user, &project, trusted, &self.secrets().await);
+        let loaded = config::load(
+            &self.home,
+            root,
+            ProjectTrust::StoredHash(stored_hash),
+            self.settings.as_ref(),
+        )
+        .await;
+        let servers = loaded.servers;
         let home = self.home.clone();
         let cached = crate::agent::blocking::call(move || load_icons(&home))
             .await
@@ -428,6 +495,10 @@ impl McpHub {
                 let icon = row
                     .and_then(|row| row.icon.clone())
                     .or_else(|| cached.get(&server.id).cloned());
+                let tool_count = row
+                    .and_then(|row| row.listed.as_ref())
+                    .map(|listed| server.tools.visible(&server.id, &listed.tools).0.len() as u32)
+                    .unwrap_or(0);
                 McpServerStatus {
                     id: server.id,
                     status: row
@@ -436,7 +507,7 @@ impl McpHub {
                         .to_owned(),
                     title: row.and_then(|row| row.title.clone()),
                     icon,
-                    tool_count: row.map(|row| row.tool_count).unwrap_or(0),
+                    tool_count,
                 }
             })
             .collect()
@@ -466,40 +537,9 @@ impl McpHub {
             .get(&workspace)
             .and_then(|slot| slot.names.pair(registered))
     }
-
-    async fn secrets(&self) -> BTreeMap<String, String> {
-        let path = self.home.join("secrets.toml");
-        let Ok(body) = crate::agent::blocking::call(move || std::fs::read_to_string(&path))
-            .await
-            .unwrap_or(Err(std::io::Error::other("filesystem read failed")))
-        else {
-            return BTreeMap::new();
-        };
-        let Ok(table) = toml::from_str::<toml::Table>(&body) else {
-            tracing::error!("secrets.toml did not parse; mcp secret references will fail");
-            return BTreeMap::new();
-        };
-        let mut found = BTreeMap::new();
-        for (key, value) in table {
-            let Some(text) = value.as_str() else {
-                continue;
-            };
-            if self
-                .settings
-                .get(&key)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|setting| setting.secret)
-            {
-                found.insert(key, text.to_owned());
-            }
-        }
-        found
-    }
 }
 
-async fn connect_server(
+pub(crate) async fn connect_server(
     open: &dyn session::SessionOpener,
     server: &ServerConfig,
     root: &Path,
@@ -571,14 +611,16 @@ fn register_connected(
     server: &str,
     session: Arc<dyn McpSession>,
     listed: Listed,
+    filter: &filter::ToolFilter,
 ) -> LiveServer {
     let previous = slot.names.forget_server(server);
+    let (visible, _unused) = filter.visible(server, &listed.tools);
     let title = listed.title.clone();
     let icon = listed.icon.clone();
     let rows = register_list(
         registry,
         server,
-        &listed,
+        &visible,
         Arc::clone(&session),
         Arc::new(Mutex::new(())),
         allows,
@@ -589,7 +631,6 @@ fn register_connected(
         status: "connected",
         title,
         icon,
-        tool_count: rows.len() as u32,
         session: Some(session),
         listed: Some(listed),
     }
@@ -647,5 +688,260 @@ mod tests {
             Some("https://example.com/linear.png")
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn listed_tool(name: &str) -> ListedTool {
+        ListedTool {
+            name: name.into(),
+            description: Some("do a thing".into()),
+            input_schema: None,
+            read_only: true,
+            destructive: false,
+            open_world: false,
+        }
+    }
+
+    struct FilteredServer;
+
+    #[async_trait::async_trait]
+    impl McpSession for FilteredServer {
+        async fn list_tools(&self) -> Result<Listed, String> {
+            Ok(Listed {
+                tools: vec![listed_tool("keep_one"), listed_tool("drop_two")],
+                instructions: None,
+                title: None,
+                icon: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: serde_json::Value,
+            _cancel: &tokio_util::sync::CancellationToken,
+        ) -> Result<serde_json::Value, String> {
+            Err("not called".into())
+        }
+    }
+
+    struct FilteredOpener;
+
+    #[async_trait::async_trait]
+    impl session::SessionOpener for FilteredOpener {
+        async fn open(&self, _spec: session::OpenSpec) -> Result<Box<dyn McpSession>, String> {
+            Ok(Box::new(FilteredServer))
+        }
+    }
+
+    struct Never;
+
+    #[async_trait::async_trait]
+    impl AllowList for Never {
+        async fn allows(&self, _server: &str, _tool: &str) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tools_list_keeps_the_other_tools_out_of_the_registry() {
+        let dir = std::env::temp_dir().join(format!("robi-mcp-filter-{}", std::process::id()));
+        let root = dir.join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            dir.join("mcp.json"),
+            r#"{"mcpServers":{"srv":{"command":"fake","tools":["keep_*"]}}}"#,
+        )
+        .unwrap();
+        let hub = McpHub::new(
+            Arc::new(MemorySettingsStore::new()),
+            dir.clone(),
+            Arc::new(EventBus::new()),
+        );
+        let workspace = WorkspaceId::new();
+        let registry = ToolRegistry::new();
+        hub.attach(
+            workspace,
+            &root,
+            None,
+            &registry,
+            Arc::new(Never),
+            &FilteredOpener,
+        )
+        .await;
+        assert!(registry.get("mcp_srv_keep_one").is_some());
+        assert!(registry.get("mcp_srv_drop_two").is_none());
+        let rows = hub.status(workspace, &root, None).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "connected");
+        assert_eq!(rows[0].tool_count, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+    use crate::domain::workspace::model::Workspace;
+    use crate::domain::workspace::repo::WorkspaceRepository;
+    use crate::domain::workspace::service::WorkspaceService;
+    use async_trait::async_trait;
+
+    /// One workspace whose row records what the trust path stored.
+    struct Recording {
+        root: String,
+        stored: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    impl Recording {
+        fn new(root: &Path) -> Self {
+            Self {
+                root: root.display().to_string(),
+                stored: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn writes(&self) -> Vec<Option<String>> {
+            self.stored.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceRepository for Recording {
+        async fn canonicalize_root(
+            &self,
+            root: &str,
+        ) -> Result<String, crate::domain::error::ServiceError> {
+            Ok(root.to_owned())
+        }
+
+        async fn get_workspace(
+            &self,
+            id: WorkspaceId,
+        ) -> Result<Option<Workspace>, crate::domain::error::ServiceError> {
+            Ok(Some(Workspace {
+                id,
+                name: "recording".to_owned(),
+                root: self.root.clone(),
+                mcp_project_sha256: None,
+                created_at: chrono::Utc::now(),
+            }))
+        }
+
+        async fn get_workspace_by_root(
+            &self,
+            _root: &str,
+        ) -> Result<Option<Workspace>, crate::domain::error::ServiceError> {
+            Ok(None)
+        }
+
+        async fn insert_workspace(
+            &self,
+            root: &str,
+            name: &str,
+        ) -> Result<Workspace, crate::domain::error::ServiceError> {
+            Ok(Workspace {
+                id: WorkspaceId::new(),
+                name: name.to_owned(),
+                root: root.to_owned(),
+                mcp_project_sha256: None,
+                created_at: chrono::Utc::now(),
+            })
+        }
+
+        async fn list_workspaces(
+            &self,
+        ) -> Result<Vec<Workspace>, crate::domain::error::ServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_workspace(
+            &self,
+            id: WorkspaceId,
+        ) -> Result<(), crate::domain::error::ServiceError> {
+            Err(crate::domain::error::ServiceError::NotFound(id.to_string()))
+        }
+
+        async fn set_mcp_project_sha256(
+            &self,
+            _id: WorkspaceId,
+            hash: Option<String>,
+        ) -> Result<(), crate::domain::error::ServiceError> {
+            self.stored.lock().unwrap().push(hash);
+            Ok(())
+        }
+    }
+
+    fn workspace_with_project_file(bytes: &[u8]) -> (std::path::PathBuf, Arc<Recording>) {
+        let dir = std::env::temp_dir().join(format!(
+            "robi-mcp-trust-{}-{}",
+            std::process::id(),
+            file_hash(bytes)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".robi")).unwrap();
+        std::fs::write(dir.join(".robi").join("mcp.json"), bytes).unwrap();
+        let root = dir.canonicalize().unwrap();
+        (root.clone(), Arc::new(Recording::new(&root)))
+    }
+
+    #[tokio::test]
+    async fn trusting_stores_the_hash_of_the_bytes_on_disk() {
+        let bytes = br#"{"mcpServers":{"git":{"command":"git-mcp"}}}"#;
+        let (root, repo) = workspace_with_project_file(bytes);
+        let service = WorkspaceService {
+            repository: repo.clone(),
+            asset_cleaner: None,
+        };
+        set_project_trust(&service, WorkspaceId::new(), true)
+            .await
+            .unwrap();
+        assert_eq!(repo.writes(), vec![Some(file_hash(bytes))]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn distrusting_clears_the_column_without_reading_the_file() {
+        let (root, repo) = workspace_with_project_file(b"{}");
+        std::fs::remove_file(root.join(".robi").join("mcp.json")).unwrap();
+        let service = WorkspaceService {
+            repository: repo.clone(),
+            asset_cleaner: None,
+        };
+        set_project_trust(&service, WorkspaceId::new(), false)
+            .await
+            .unwrap();
+        assert_eq!(repo.writes(), vec![None]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn trusting_a_workspace_with_no_project_file_names_the_path() {
+        let (root, repo) = workspace_with_project_file(b"{}");
+        std::fs::remove_file(root.join(".robi").join("mcp.json")).unwrap();
+        let service = WorkspaceService {
+            repository: repo.clone(),
+            asset_cleaner: None,
+        };
+        let err = set_project_trust(&service, WorkspaceId::new(), true)
+            .await
+            .unwrap_err();
+        assert!(err.contains("mcp.json"), "{err}");
+        assert!(repo.writes().is_empty(), "nothing was stored");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn one_byte_of_edit_changes_the_hash_the_surface_would_store() {
+        let first = br#"{"mcpServers":{"git":{"command":"git-mcp"}}}"#;
+        let (root, _) = workspace_with_project_file(first);
+        let before = project_hash(&root).await.expect("a hash");
+        std::fs::write(
+            root.join(".robi").join("mcp.json"),
+            br#"{"mcpServers":{"git":{"command":"git-mcp"}} }"#,
+        )
+        .unwrap();
+        let after = project_hash(&root).await.expect("a hash");
+        assert_ne!(before, after);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

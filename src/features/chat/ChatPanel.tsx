@@ -33,6 +33,8 @@ export type ChatPanelProps = {
   onModelChange: (model: string | null) => void
   onEffortChange: (effort: string | null) => void
   draftKey: string
+  /** Why the last turn failed, drawn under the transcript. */
+  error: string | null
   pendingText?: string | null
   workspaceId?: string | null
   onCompact?: () => void
@@ -76,6 +78,7 @@ export function ChatPanel(props: ChatPanelProps) {
           mode={props.mode}
           deciding={props.deciding}
           onDecide={props.onDecide}
+          error={props.error}
         />
         <div class={styles.dock} ref={dock}>
           <Composer

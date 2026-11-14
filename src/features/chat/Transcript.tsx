@@ -60,6 +60,8 @@ export function Transcript(props: {
   mode: AgentMode
   deciding: boolean
   onDecide: (callId: string, decision: 'approve' | 'reject') => void
+  /** Why the last turn failed. Shown under the last row until the next instruction. */
+  error?: string | null
 }) {
   let scroller: HTMLDivElement | undefined
   let pinned = true
@@ -211,6 +213,13 @@ export function Transcript(props: {
           </li>
         </Show>
         <ActivityLine phase={props.phase} anchorId={anchorId()} />
+        <Show when={props.error}>
+          {(message) => (
+            <li class={styles.turnError} role="alert">
+              {message()}
+            </li>
+          )}
+        </Show>
       </ul>
     </div>
   )

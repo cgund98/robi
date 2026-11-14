@@ -177,6 +177,16 @@ pub struct SettingsRow {
     pub label: String,
     /// The value as drawn: a bullet mask, an em dash, or the value itself.
     pub value: String,
+    /// What `Enter` does on this row, when it does anything. A row with an action
+    /// writes no setting, so `field` stays `None`.
+    pub action: Option<RowAction>,
+}
+
+/// A row whose `Enter` asks a question instead of editing a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowAction {
+    /// Trust or distrust this workspace's project MCP file.
+    ToggleProjectMcpTrust,
 }
 
 impl SettingsRow {
@@ -185,6 +195,21 @@ impl SettingsRow {
             field: None,
             label: label.into(),
             value: value.into(),
+            action: None,
+        }
+    }
+
+    /// A read-only row whose `Enter` raises a confirmation.
+    pub fn actionable(
+        label: impl Into<String>,
+        value: impl Into<String>,
+        action: RowAction,
+    ) -> Self {
+        Self {
+            field: None,
+            label: label.into(),
+            value: value.into(),
+            action: Some(action),
         }
     }
 }

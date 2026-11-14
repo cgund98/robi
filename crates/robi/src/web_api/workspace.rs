@@ -3,7 +3,7 @@ use std::path::{Path as FsPath, PathBuf};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -32,6 +32,10 @@ pub fn router(state: AppState) -> Router {
             get(list_mcp_servers).post(focus_mcp),
         )
         .route("/api/v1/workspaces/{id}/mcp/config", get(get_mcp_config))
+        .route(
+            "/api/v1/workspaces/{id}/mcp/trust",
+            put(trust_mcp_project).delete(untrust_mcp_project),
+        )
         .route("/api/v1/workspaces/{id}/path", get(resolve_workspace_path))
         .route("/api/v1/workspaces/{id}/open", post(open_workspace_file))
         .route("/api/v1/workspaces/{id}/file", get(read_workspace_file))
@@ -286,6 +290,74 @@ pub async fn get_mcp_config(
     }))
 }
 
+#[axum::debug_handler]
+#[utoipa::path(
+    put,
+    path = "/api/v1/workspaces/{id}/mcp/trust",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses(
+        (status = 200, description = "The project file's current bytes are now trusted", body = McpConfig),
+        (status = 400, description = "This workspace has no project config file")
+    )
+)]
+pub async fn trust_mcp_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<McpConfig>, ServiceError> {
+    set_project_trust(state, id, true).await
+}
+
+#[axum::debug_handler]
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{id}/mcp/trust",
+    params(("id" = String, Path, description = "Workspace id")),
+    responses(
+        (status = 200, description = "The project file's servers are off until trusted again", body = McpConfig)
+    )
+)]
+pub async fn untrust_mcp_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<McpConfig>, ServiceError> {
+    set_project_trust(state, id, false).await
+}
+
+/// Store or clear the project hash, then answer with the files as they now stand.
+async fn set_project_trust(
+    state: AppState,
+    id: String,
+    enable: bool,
+) -> Result<Json<McpConfig>, ServiceError> {
+    let id = parse_workspace_id(&id)?;
+    let mcp = state.mcp.clone().ok_or(ServiceError::Unknown)?;
+    crate::agent::mcp::set_project_trust(&state.workspace_service, id, enable)
+        .await
+        .map_err(ServiceError::BadRequest)?;
+    // The rows this workspace's servers started from are stale, so a surface
+    // that re-focuses gets the new set. A failure closes the servers until the
+    // next focus, which is the same state as a config it cannot read.
+    if !enable {
+        mcp.close(id).await;
+    }
+    let workspace = state.workspace_service.get_workspace(id).await?;
+    let root = std::path::PathBuf::from(&workspace.root);
+    let hash = workspace.mcp_project_sha256.clone();
+    let files = crate::agent::blocking::call(move || {
+        let root = root.canonicalize().unwrap_or(root);
+        mcp.config_files(&root, hash.as_deref())
+    })
+    .await
+    .map_err(ServiceError::BadRequest)?;
+    Ok(Json(McpConfig {
+        user_path: files.user_path,
+        user_text: files.user_text,
+        project_path: files.project_path,
+        project_text: files.project_text,
+        project_enabled: files.project_enabled,
+    }))
+}
+
 pub(crate) fn parse_workspace_id(value: &str) -> Result<WorkspaceId, ServiceError> {
     Uuid::parse_str(value)
         .map(WorkspaceId::from_uuid)
@@ -512,6 +584,18 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
         NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[test]
+    fn the_trust_route_is_documented_with_both_methods() {
+        let document = crate::web_api::openapi();
+        let path = document
+            .paths
+            .paths
+            .get("/api/v1/workspaces/{id}/mcp/trust")
+            .expect("the trust path is in the document");
+        assert!(path.put.is_some(), "PUT trusts the file");
+        assert!(path.delete.is_some(), "DELETE turns it off");
     }
 
     #[test]

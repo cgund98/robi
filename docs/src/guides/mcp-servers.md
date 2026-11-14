@@ -81,9 +81,37 @@ Fields that are enforced:
 | `url` | HTTP | `https`, or `http` on `127.0.0.1` or `localhost` |
 | `headers` | HTTP | map of header values |
 | `timeout_seconds` | both | whole-call budget; default 60, above 300 is a config error |
+| `tools` | both | patterns naming the tools to keep; absent or `null` keeps all, `[]` keeps none |
 | `enabled` | both | `false` skips the server |
 
 Unknown fields are ignored, so a config copied from another host still parses.
+
+### Keeping a server's tool list short
+
+A server that publishes 40 tools puts 40 names, descriptions, and schemas in
+front of the model on every request. `tools` keeps only the ones you want:
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "tools": ["get_*", "create_issue", "re:^search_[a-z]+$"]
+    }
+  }
+}
+```
+
+An entry is a glob (`*`, `?`, `[abc]`, `{a,b}`) that must match the whole name,
+or a regex when it starts with `re:`, which matches a substring unless you
+anchor it. Either form can name the server's own tool (`create_issue`) or the
+registered one (`mcp_linear_create_issue`).
+
+Leave `tools` out and every tool the server lists is registered, as before.
+Set it to `[]` and the server contributes nothing. A pattern that does not
+compile skips that server and is logged; a pattern that matches nothing is
+logged when the server connects. The status line counts the tools that passed,
+not the tools the server publishes. An edited list applies on the next message.
 
 ## 3. Reference secrets
 
@@ -103,10 +131,17 @@ missing file, a changed file, or a fresh workspace leaves project servers off;
 changing the file clears the match so a newly committed server does not start on
 the next message.
 
-> The trust control is designed but not yet wired into the shell: the config
-> route reports whether the project bytes match the stored hash, but there is no
-> **Enable** button in the UI yet. Until then, treat project MCP servers as
-> needing the backend path.
+To turn it on, open **Settings → MCP** and switch **Project servers are trusted**
+on. The panel lists the id and the command (or URL) of each server in the file,
+so you approve what starts rather than a filename. Env and header values stay out
+of that list.
+
+In the terminal app, open the MCP section, put the cursor on **Project config**,
+and press `Enter`. It asks first, then stores the hash. `Enter` on a trusted file
+turns it off again.
+
+Switching it off, or editing the file, stops the project servers on the next
+message. Nothing on disk is deleted.
 
 The same id in both files: the project entry replaces the user entry, and only
 after the project file is trusted. Until then the user entry stays.
@@ -136,6 +171,43 @@ setting), so `uvx` and `npm` work even when Robi is launched from Finder.
 **HTTP** redirects are followed only while the next host still matches the `url`
 rule. There is no OAuth flow; a `401` fails the server. Static headers
 authenticate.
+
+## List a server's tools
+
+`mcp-tools` connects to one configured server and prints its tool names, so you
+can see what an entry publishes before or after a `tools` filter:
+
+```
+cargo run -p robi --bin mcp-tools -- linear
+```
+
+It reads the same `mcp.json` and `secrets.toml` the app reads, and connects
+through the same opener, so a stdio child gets the login `PATH` and the config's
+environment. It opens no database, so it runs beside `robi-api` or the desktop
+app. The names are the registered ones, `mcp_<server>_<tool>`:
+
+```
+mcp_linear_create_issue
+mcp_linear_get_issue
+```
+
+| Flag | Effect |
+|---|---|
+| `--remote` | Print the server's own names instead of the registered ones |
+| `--kept` | Print only the tools the entry's `tools` filter keeps |
+| `--long` | Append the first line of each description, after a tab |
+| `--home <DIR>` | Robi's home directory. Defaults to `$HOME/.robi` |
+| `--workspace <DIR>` | Read `DIR/.robi/mcp.json` too. Defaults to the working directory |
+| `--trust` | Use the project file's servers. Without it the file is skipped with a note |
+
+When the entry has a `tools` filter, a plain run still prints every tool and
+writes `tools filter keeps 2 of 3` to stderr. That is deliberate: the full list
+is what the server publishes, and `--kept` is what a session will register. A
+pattern that matches nothing is named on stderr too, because a typo otherwise
+loads fewer tools without an error.
+
+Exit codes are `0` for a printed list, `1` for a config or connection failure,
+and `2` for a bad argument.
 
 ## 6. Approve calls
 

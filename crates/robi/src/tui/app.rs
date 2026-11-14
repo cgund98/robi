@@ -65,7 +65,9 @@ use crate::tui::state::manage::ManageView;
 use crate::tui::state::models::Picker;
 use crate::tui::state::prompt::{Prompt, PromptKind};
 use crate::tui::state::sessions::{self, Mark, SessionsView};
-use crate::tui::state::settings::{self, Kind, McpPaths, Section, SettingsRow, SettingsView};
+use crate::tui::state::settings::{
+    self, Kind, McpPaths, RowAction, Section, SettingsRow, SettingsView,
+};
 use crate::tui::state::status::Status;
 use crate::tui::state::transcript::{pending_calls, Transcript};
 use crate::tui::state::workspaces::{self, Screen, WorkspacesView, RECENT_LIMIT};
@@ -1490,6 +1492,7 @@ impl App {
                 field: Some(field),
                 label: field.label.to_owned(),
                 value,
+                action: None,
             });
         }
         match section {
@@ -1518,11 +1521,15 @@ impl App {
                 // A project file only applies once its hash is trusted, which is
                 // the one fact about it a reader cannot see in the path.
                 let value = if paths.project_enabled {
-                    paths.project_path.clone()
+                    format!("{} \u{b7} trusted", paths.project_path)
                 } else {
                     format!("{} \u{b7} not trusted", paths.project_path)
                 };
-                rows.push(SettingsRow::read_only("Project config", value));
+                rows.push(SettingsRow::actionable(
+                    "Project config",
+                    value,
+                    RowAction::ToggleProjectMcpTrust,
+                ));
                 rows.push(SettingsRow::read_only(
                     "Logs",
                     format!("{}/<server>/", paths.log_root),
@@ -1601,6 +1608,28 @@ impl App {
         self.reconcile_settings();
     }
 
+    /// `Enter` on a row that asks a question: raise its confirmation.
+    ///
+    /// The hash on the workspace row is the user saying yes to a file a
+    /// repository committed, so it is asked rather than toggled in place.
+    fn settings_row_action(&mut self, action: RowAction) {
+        match action {
+            RowAction::ToggleProjectMcpTrust => {
+                let Some(workspace) = self.view.active_workspace_id else {
+                    self.settings.failed("no workspace is open".to_owned());
+                    return;
+                };
+                let Some(paths) = &self.mcp_config else {
+                    return;
+                };
+                let enable = !paths.project_enabled;
+                let path = paths.project_path.clone();
+                self.confirm = Some(Confirm::mcp_trust(workspace, &path, enable));
+                self.enter(Mode::Confirm);
+            }
+        }
+    }
+
     /// Keep the row cursor inside the open section.
     fn reconcile_settings(&mut self) {
         let rows = self.settings_rows().len();
@@ -1609,6 +1638,13 @@ impl App {
 
     /// `Enter` on the surface: open a band, flip a switch, or advance a choice.
     fn settings_apply(&mut self) {
+        let rows = self.settings_rows();
+        if let Some(row) = rows.get(self.settings.selected) {
+            if let Some(action) = row.action {
+                self.settings_row_action(action);
+                return;
+            }
+        }
         if self.settings.editing().is_some() {
             self.settings_commit();
             return;
@@ -2373,6 +2409,10 @@ impl App {
             }
             Target::Compact(session) => {
                 self.actions.push(Action::Compact { session });
+            }
+            Target::McpTrust { workspace, enable } => {
+                self.actions
+                    .push(Action::SetMcpProjectTrust { workspace, enable });
             }
         }
     }
@@ -3363,6 +3403,30 @@ impl App {
             ActionOutcome::McpConfig(paths) => {
                 self.mcp_config = Some(paths);
                 self.status.clear_error();
+            }
+            ActionOutcome::McpTrustSet { enable, paths } => {
+                self.mcp_config = Some(paths);
+                self.status.clear_error();
+                self.settings.saved(if enable {
+                    "project servers trusted"
+                } else {
+                    "project servers off"
+                });
+                // The rows and the marks both read the hub, so a trust change is
+                // a focus and two reads rather than a local patch: newly trusted
+                // servers start, and newly untrusted ones are closed by the hub.
+                if let Some(workspace) = self.view.active_workspace_id {
+                    self.focused_mcp = None;
+                    self.actions.push(Action::FocusMcp { workspace });
+                    self.load_mcp();
+                    self.request_mcp_config();
+                }
+            }
+            ActionOutcome::McpTrustFailed { message } => {
+                self.settings.failed(message);
+                if let Some(workspace) = self.view.active_workspace_id {
+                    self.actions.push(Action::LoadMcpConfig { workspace });
+                }
             }
             ActionOutcome::Failed {
                 generation,

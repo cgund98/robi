@@ -1,9 +1,17 @@
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 
-import { getMcpConfig, type McpConfig, type McpServer } from '../../api/mcp'
-import styles from './Settings.module.css'
+import {
+  focusMcp,
+  getMcpConfig,
+  trustMcpProject,
+  untrustMcpProject,
+  type McpConfig,
+  type McpServer
+} from '../../api/mcp'
 import { mcp } from '../../state/mcpStore'
 import { workspaces } from '../../state/workspaceStore'
+import { projectServers } from './projectServers'
+import styles from './Settings.module.css'
 
 const EMPTY_CONFIG = `{
   "mcpServers": {}
@@ -67,6 +75,31 @@ export function McpSettings() {
 
   const logsRoot = () => mcpLogsRoot(config()?.user_path)
 
+  const [toggling, setToggling] = createSignal(false)
+  const [trustError, setTrustError] = createSignal<string | null>(null)
+
+  async function setTrust(enable: boolean) {
+    const id = workspaces.activeWorkspaceId
+    if (!id || toggling()) {
+      return
+    }
+    setToggling(true)
+    setTrustError(null)
+    try {
+      const next = enable ? await trustMcpProject(id) : await untrustMcpProject(id)
+      setConfig(next)
+      // The connections were opened from the old answer. Trusting starts nothing
+      // by itself, so focus this workspace and read both lists again; that is the
+      // same call the shell makes when a workspace becomes the open one.
+      await focusMcp(id)
+      await refresh()
+    } catch (err: unknown) {
+      setTrustError(err instanceof Error ? err.message : 'Failed to change the project trust')
+    } finally {
+      setToggling(false)
+    }
+  }
+
   return (
     <>
       <div class={styles.titleRow}>
@@ -118,6 +151,12 @@ export function McpSettings() {
               path={current().project_path}
               text={current().project_text}
             />
+            <ProjectTrust
+              config={current()}
+              busy={toggling()}
+              error={trustError()}
+              onToggle={(enable) => void setTrust(enable)}
+            />
           </section>
         )}
       </Show>
@@ -161,6 +200,77 @@ export function McpSettings() {
         <p class={`${styles.status} ${styles.statusError}`}>{error()}</p>
       </Show>
     </>
+  )
+}
+
+function ProjectTrust(props: {
+  config: McpConfig
+  busy: boolean
+  error: string | null
+  onToggle: (enable: boolean) => void
+}) {
+  const servers = () => projectServers(props.config.project_text)
+  const missing = () =>
+    props.config.project_text === null ||
+    props.config.project_text === undefined ||
+    props.config.project_text.trim() === ''
+  return (
+    <section class={styles.card}>
+      <div class={styles.row}>
+        <div class={styles.copy}>
+          <div class={styles.label}>Project servers are trusted</div>
+          <div class={styles.hint}>
+            A committed config does not start on its own. Robi stores the SHA-256 of the file you
+            approved, and any edit clears the match until you approve the new bytes.
+          </div>
+        </div>
+        <button
+          type="button"
+          class={styles.switch}
+          role="switch"
+          aria-checked={props.config.project_enabled}
+          aria-label="Trust the project MCP config"
+          disabled={props.busy || (missing() && !props.config.project_enabled)}
+          onClick={() => props.onToggle(!props.config.project_enabled)}
+        >
+          <span class={styles.knob} aria-hidden />
+        </button>
+      </div>
+      <div class={styles.row}>
+        <div class={styles.copy}>
+          <Show
+            when={!missing()}
+            fallback={
+              <div class={styles.hint}>
+                This workspace has no project config file, so there is nothing to trust.
+              </div>
+            }
+          >
+            <div class={styles.label}>
+              {props.config.project_enabled ? 'Trusted now' : 'Waiting for you to trust it'}
+            </div>
+            <ul class={styles.logPaths}>
+              <For each={servers()}>
+                {(server) => (
+                  <li>
+                    <code class={styles.path}>
+                      {server.id} {'\u00b7'} {server.target}
+                    </code>
+                  </li>
+                )}
+              </For>
+            </ul>
+            <div class={styles.hint}>
+              Env and header values are not shown. Approving starts these servers for this
+              workspace.
+            </div>
+          </Show>
+        </div>
+      </div>
+      <Show when={props.error}>
+        <p class={`${styles.status} ${styles.statusError}`}>{props.error}</p>
+      </Show>
+    </section>
   )
 }
 

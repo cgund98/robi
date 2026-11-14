@@ -40,6 +40,8 @@ handler that takes 2 seconds or longer is logged at warning with its duration.
 | `GET` | `/api/v1/workspaces/{id}/mcp` | Configured MCP servers and their status. |
 | `POST` | `/api/v1/workspaces/{id}/mcp` | Start this workspace's MCP servers and close every other workspace's. |
 | `GET` | `/api/v1/workspaces/{id}/mcp/config` | The user and project MCP config text. |
+| `PUT` | `/api/v1/workspaces/{id}/mcp/trust` | Trust the project MCP file's current bytes. `400` when there is no project file. Answers with the config. |
+| `DELETE` | `/api/v1/workspaces/{id}/mcp/trust` | Clear the stored hash, so the project servers stay off. Answers with the config. |
 | `GET` | `/api/v1/workspaces/{id}/path` | `{"absolute"}`. Query `path` is workspace-relative. A blank path, the workspace root, or a path that resolves outside the root is `400`. |
 | `POST` | `/api/v1/workspaces/{id}/open` | Body `{"path", "line?"}`. Runs `file_open_command` for that file. `204` when the program is still running after 10 seconds or exits 0 sooner. `400` with `{"error"}` when it cannot start or exits non-zero inside that window. `404` when the command is unset. |
 | `GET` | `/api/v1/workspaces/{id}/file` | `{"path","content"}`. UTF-8 text of that file, at most 1 MiB. A directory, a larger file, or a non-UTF-8 file is `400`. A missing file is `404`. |

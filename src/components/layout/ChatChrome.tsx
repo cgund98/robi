@@ -188,6 +188,12 @@ export function ChatChrome() {
       ? chat.pendingEcho!.files
       : []
   )
+  const turnError = createMemo(() => {
+    if (chat.draftSelected || !chat.activeSessionId) {
+      return null
+    }
+    return chat.turnErrorBySession[chat.activeSessionId] ?? null
+  })
   const mode = createMemo((): AgentMode =>
     chat.draftSelected || !activeSession() ? chat.draftMode : sessionMode(activeSession())
   )
@@ -258,6 +264,7 @@ export function ChatChrome() {
     onModelChange: (model: string | null) => void chat.setModelChoice(model),
     onEffortChange: (next: string | null) => void chat.setEffortChoice(next),
     draftKey: composerDraftKey(),
+    error: turnError(),
     pendingText: echo(),
     workspaceId: workspaces.activeWorkspaceId,
     onCompact: () => void chat.compactAgent(),

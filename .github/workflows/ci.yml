@@ -68,6 +68,13 @@ jobs:
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
 
+      # release-please writes `workspace.package.version` into `Cargo.toml` and
+      # never touches `Cargo.lock`, so its pull request arrives with a stale
+      # lock. The release build passes `--locked`, so catch it here, before the
+      # tag, where `cargo update --workspace` fixes it.
+      - name: Lock file is up to date
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:

@@ -3,6 +3,7 @@ import { render } from 'solid-js/web'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TopBar } from './TopBar'
+import { patchWorkspaces } from '../../state/workspaceStore'
 
 beforeEach(() => {
   // The bar's overflow polls the API's health. Answer it so the test does no
@@ -61,6 +62,19 @@ describe('TopBar', () => {
     expect(labels?.some((label) => label?.startsWith('Workspace'))).toBe(true)
     expect(labels).toContain('Fix the parser — recents')
     dispose()
+  })
+
+  it('names the active workspace in the bar, not only in the menu', () => {
+    patchWorkspaces({
+      workspaces: [{ id: 'w1', name: 'Robi', root: '/Users/me/robi', created_at: 'now' }],
+      activeWorkspaceId: 'w1'
+    })
+    const { container, dispose } = mount()
+    const trigger = container.querySelector('button[aria-label="Workspace: Robi"]')
+    expect(trigger?.textContent).toContain('Robi')
+    expect(trigger?.querySelector('svg')).not.toBeNull()
+    dispose()
+    patchWorkspaces({ workspaces: [], activeWorkspaceId: null })
   })
 
   it('carries the session title and no review entry point', () => {

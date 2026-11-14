@@ -69,6 +69,11 @@ export type ChatState = {
   draftEffort: string | null
   messagesBySession: Record<string, ChatMessage[]>
   phaseBySession: Record<string, AgentPhase>
+  /**
+   * Why a turn in that session failed, shown under the transcript. Cleared when
+   * the next instruction is sent, not when the frame arrives again.
+   */
+  turnErrorBySession: Record<string, string>
   pendingEcho: PendingEcho | null
   error: string | null
   loading: boolean
@@ -104,6 +109,9 @@ export type ChatState = {
   setPhase: (sessionId: string, phase: AgentPhase) => void
   noteDelta: (sessionId: string, kind: string) => void
   finishTurn: (sessionId: string, failedMessage: string | null) => Promise<void>
+  /** Record a failed turn for a session that is not on screen. */
+  noteTurnError: (sessionId: string, message: string) => void
+  clearTurnError: (sessionId: string) => void
   /** Reload the transcript while a turn looks busy, so a missed frame cannot hide it. */
   catchUpTranscript: (sessionId: string) => Promise<void>
   refreshSession: (sessionId: string) => Promise<void>
@@ -510,6 +518,7 @@ export function createChatState(
     draftEffort: null,
     messagesBySession: {},
     phaseBySession: {},
+    turnErrorBySession: {},
     pendingEcho: null,
     error: null,
     loading: true,
@@ -709,6 +718,10 @@ export function createChatState(
       // cancels the in-flight turn and queues this instruction.
 
       stopTick += 1
+      // The new instruction is the answer to whatever the last one failed with.
+      if (activeSessionId) {
+        get().clearTurnError(activeSessionId)
+      }
       set({ busy: true, error: null })
       try {
         if (creating) {
@@ -1047,14 +1060,12 @@ export function createChatState(
       const stopping = get().stoppingSessionId === sessionId
       if (failedMessage) {
         noteError(deps, failedMessage, sessionId)
+        get().noteTurnError(sessionId, failedMessage)
       }
       if (!stopping) {
         set((state) => ({
-          phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' },
-          error: failedMessage ?? state.error
+          phaseBySession: { ...state.phaseBySession, [sessionId]: 'idle' }
         }))
-      } else if (failedMessage) {
-        set({ error: failedMessage })
       }
       try {
         const transcript = await readTranscript(sessionId)
@@ -1073,15 +1084,32 @@ export function createChatState(
           'preserve'
         )
         get().bumpReview(sessionId)
-        if (failedMessage) {
-          set({ error: failedMessage })
-        }
       } catch (err) {
         if (epoch !== hydrateEpoch) {
           return
         }
         set({ error: noteError(deps, errorText(err, 'Failed to load chat session'), sessionId) })
       }
+    },
+
+    noteTurnError: (sessionId, message) => {
+      set((state) => {
+        if (state.turnErrorBySession[sessionId] === message) {
+          return state
+        }
+        return { turnErrorBySession: { ...state.turnErrorBySession, [sessionId]: message } }
+      })
+    },
+
+    clearTurnError: (sessionId) => {
+      set((state) => {
+        if (!(sessionId in state.turnErrorBySession)) {
+          return state
+        }
+        const next = { ...state.turnErrorBySession }
+        delete next[sessionId]
+        return { turnErrorBySession: next }
+      })
     },
 
     catchUpTranscript: async (sessionId) => {

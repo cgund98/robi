@@ -17,7 +17,7 @@ variable says otherwise. The directory is created mode `0700` on first use.
 | `~/.robi/index/<workspace_id>/` | A legacy semantic index from a build before M11. Nothing writes it now; deleting the workspace still removes the directory. |
 | `~/.robi/mcp.json` | User-scoped MCP server config. |
 | `~/.robi/mcp-icons.json` | Cached MCP server icons (capped at 256 KiB). |
-| `~/.robi/logs/` | Process logs. One file per start, `robi-api-<timestamp>.log` or `robi-dev-<timestamp>.log`; the newest prior file is kept, older than seven days is pruned. |
+| `~/.robi/logs/` | Process logs. One file per start: `robi-api-<timestamp>.log`, `robi-dev-<timestamp>.log`, or `tui-<timestamp>.log`. Each prefix is pruned on its own; the newest prior file is kept, older than seven days is pruned. |
 | `~/.robi/logs/mcp/<server_id>/` | One MCP server's logs, one `mcp-<timestamp>.log` per connection. Mode `0600`. See [MCP](../concepts/mcp.md). |
 
 The lock files are empty apart from one line naming the holder: `pid 4812 scope

@@ -104,7 +104,18 @@ overwrite a change they did not see.
 ## Logs
 
 `~/.robi/logs/`, one file per start, the same directory the app writes to. The
-log layer never writes to stderr: a tracing line there would land in the middle
-of the frame the terminal is drawing. A fatal error that stops the process
-before the frame exists still prints one line there, because nothing else is
-watching.
+name is `tui-<timestamp>.log`, which tells a TUI run apart from the app's
+`robi-api-` and `robi-dev-` files in the same directory. Each prefix is pruned on
+its own, so a TUI run never deletes the app's logs. `RUST_LOG` sets verbosity
+(default `robi=info`).
+
+The file opens with the version, the workspace root, and the database it opened,
+so two runs are easy to tell apart. The last line says whether the run finished
+or failed. `robi` flushes the logger before it exits, because `process::exit`
+skips the flush that a normal return would do and the last few lines would be
+lost.
+
+The log layer never writes to stderr: a tracing line there would land in the
+middle of the frame the terminal is drawing. A fatal error that stops the
+process before the frame exists still prints one line there, because nothing
+else is watching.

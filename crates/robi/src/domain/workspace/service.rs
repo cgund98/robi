@@ -67,6 +67,18 @@ impl WorkspaceService {
         self.repository.list_workspaces().await
     }
 
+    /// Store the SHA-256 of the project MCP file, or clear it.
+    ///
+    /// The hash is computed by the caller: reading the file is I/O, and this
+    /// module has none. `agent::mcp::set_project_trust` is the shared way in.
+    pub async fn set_mcp_project_sha256(
+        &self,
+        id: WorkspaceId,
+        hash: Option<String>,
+    ) -> Result<(), ServiceError> {
+        self.repository.set_mcp_project_sha256(id, hash).await
+    }
+
     pub async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), ServiceError> {
         self.repository.delete_workspace(id).await?;
         if let Some(cleaner) = &self.asset_cleaner {

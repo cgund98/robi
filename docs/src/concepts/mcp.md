@@ -35,6 +35,8 @@ Details that are enforced:
   config error.
 - `url` must be `https`, or `http` on `127.0.0.1` or `localhost`.
 - `timeout_seconds` defaults to 60; a value over 300 is a config error.
+- `tools` keeps only the tools that match its glob or `re:` patterns. Absent or
+  `null` keeps every tool; `[]` keeps none.
 - Unknown fields are ignored.
 
 The config is read when the workspace becomes the open one, and again on an
@@ -55,10 +57,10 @@ start until you trust the current contents: Robi stores a SHA-256 of the file on
 the workspace, and a missing file, a changed file, or a fresh workspace leaves
 project servers off. Changing the file clears the match.
 
-The trust control is designed but not yet wired in the shell: the config route
-exposes whether the project bytes match the stored hash, but there is no Enable
-button in the UI yet. Until then, treat project MCP servers as needing the
-backend path.
+**Settings → MCP** shows a switch for it, and the terminal app has the same row in
+its MCP section: press `Enter` on **Project config** and answer the question.
+Either one stores the hash of the bytes on disk, and any edit clears it, so a
+commit that adds a server asks again.
 
 ## Transports
 
@@ -85,6 +87,14 @@ Each remote tool is registered as `mcp_<server>_<tool>`, with client-side
 characters outside `[A-Za-z0-9_-]` replaced by `_`. Built-in tools register
 first, so a name collision with a built-in leaves the built-in in place. A server
 may contribute up to 64 tools; a tool whose schema exceeds 16 KiB is skipped.
+
+`mcp-tools <server-id>` prints what one server publishes without starting the app,
+and `--kept` prints only what its `tools` filter keeps.
+
+A server entry may also set `tools`, which limits what that server contributes.
+The rest never reach the request, so they cost no context. A glob matches the
+whole tool name and a `re:` entry is a regex, and either may name the server's
+own tool (`create_issue`) or the registered one (`mcp_linear_create_issue`).
 
 Every MCP tool asks on its **first** call in a session. Approving that call runs
 it; a later call with the same server and tool runs without asking. The list of

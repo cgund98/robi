@@ -106,6 +106,7 @@ from another host still parses.
 | `url` | Absent | `https`, or `http` on `127.0.0.1` or `localhost` |
 | `headers` | Absent | Map of header values |
 | `timeout_seconds` | Whole call budget. Default 60. Above 300 is a config error | Same |
+| `tools` | Array of glob or `re:` patterns naming the tools to keep. Absent or `null` keeps every tool | Same |
 
 An env or header value is either a string or `{ "secret": "<name>" }`.
 A string is passed through, which is how an existing config pastes in.
@@ -116,6 +117,66 @@ Resolved values are not logged.
 The same id in both files: the project entry replaces the user entry,
 and only after the project file is trusted. Until then the user entry
 stays.
+
+### Tool filter
+
+A server that publishes 40 tools spends context on 40 schemas and 40
+descriptions on every request. `tools` limits which of them reach the
+session. Absent or `null` keeps every tool, which is what an entry without
+the field did before. An array keeps only the tools that match, and `[]`
+keeps none.
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "tools": ["get_*", "create_issue", "re:^search_[a-z]+$"]
+    }
+  }
+}
+```
+
+Each entry is a glob, or a regex when it starts with `re:`. A glob matches
+the whole name and uses `globset` syntax: `*`, `?`, `[abc]`, `{a,b}`. A
+`re:` entry is unanchored, so it matches a substring; anchor it with `^`
+and `$` to pin the whole name. Matching is case-sensitive. Each pattern is
+tried against the name the server lists (`create_issue`) and against the
+registered name (`mcp_linear_create_issue`), so a name copied from a tool
+card and a name copied from the server's docs both work.
+
+The filter runs at registration, not at connect. The connection still
+lists every tool, and the status count and the omission log read that same
+list. `attach` re-reads both files before every model call, so an edited
+`tools` array applies on the next user message. A tool that stops passing
+fails as an unknown tool, the same as one from a server that dropped.
+
+The filter runs before the 64-tool cap, so it picks which 64 a server may
+contribute.
+
+A pattern that does not compile skips that server and is logged, the same
+as a relative `command`. A pattern that compiles and matches nothing is
+logged once per connection and changes nothing else; a typo loads fewer
+tools without an error.
+
+### Listing tools from a shell
+
+`mcp-tools` is the diagnostic binary. It takes a server id, reads the same two
+JSON files, the same secrets, and the same `path_entries` setting, connects
+through `RmcpOpener`, and prints `tools/list`. It opens no database, so it runs
+while the app does.
+
+`config::load` is the one read path: the hub starts servers from it, reports
+status from it, and the binary lists from it. The project hash rule holds in all
+three. The binary has no workspace row to compare against, so its `--trust` flag
+is the user saying yes to the bytes in front of them, which is what the Enable
+control will do. Without the flag the project file is read, reported, and
+contributes nothing.
+
+The binary prints every tool a server lists, and says on stderr how many the
+entry's `tools` filter keeps. `--kept` prints that subset instead, which is the
+shortest way to check a filter. It does not call a tool: `execute` needs an
+approval decision, and that needs a session.
 
 ### Trust
 
@@ -128,11 +189,28 @@ mismatch, or a null column means the project servers are off. Changing
 the file clears the match, so a newly committed server does not start on
 the next message.
 
-The shell asks when the workspace is open and the hash does not match.
-The dialog lists each server id and its `command` plus `args`, or its
-`url`. It does not list env or header values. **Enable** stores the hash.
-**Not now** leaves the column null. The dialog uses the same Radix dialog
-as the rest of the shell.
+Two surfaces write that column, and both go through
+`agent::mcp::set_project_trust`, which reads the file, hashes it, and calls
+`WorkspaceService::set_mcp_project_sha256`. The service stays free of I/O; the
+hash is computed by the caller.
+
+- `PUT /api/v1/workspaces/{id}/mcp/trust` stores the hash and answers with the
+  config as it now stands. `400` when the workspace has no project file. The
+  shell's **Settings → MCP** page renders this as a switch, with the ids and
+  targets from the file beside it, so the reader approves what starts rather
+  than a path. Env and header values are left out of the list.
+- `DELETE` on the same path clears the column and closes that workspace's
+  servers, so a distrust takes effect without waiting for the next message.
+  Leaving them running would mean a config the user just turned off kept
+  answering.
+
+The terminal app raises `Confirm::mcp_trust` from the `Enter` on its **Project
+config** row and queues `Action::SetMcpProjectTrust`. A landed write re-focuses
+the hub and re-reads both status lists.
+
+Trust is a stored hash, not a stored yes: one edited byte stops the servers and
+the surface shows the file as untrusted again. There is no timer and no
+"remember this repository" — the bytes are the subject.
 
 ### Process and HTTP
 
@@ -211,7 +289,8 @@ per-server file is where one server is debugged.
 
 ### Tools in the registry
 
-`tools/list` becomes one `Tool` per entry. The registered name is
+`tools/list` becomes one `Tool` per entry that passed the server's `tools`
+filter. The registered name is
 `mcp_<server>_<tool>`, with every character outside `[A-Za-z0-9_-]`
 replaced by `_`. A name longer than 64 characters keeps the `mcp_<server>_`
 prefix, cuts the tool portion, and appends `_` plus six hex characters of
@@ -414,6 +493,9 @@ flowchart TD
   User servers are unaffected.
 - `tools/list` returns more than 64 tools, or a schema over 16 KiB, or
   two names that sanitize to one. The extras are logged and omitted.
+- A `tools` pattern does not compile. That server is skipped and logged.
+  A pattern that compiles and matches nothing is logged and the server
+  contributes fewer tools than it publishes.
 - The model calls a name that was removed mid-turn. The tool error says
   the tool is gone. The turn continues.
 - The server sets `isError`, returns no content, or exceeds the timeout.
@@ -443,11 +525,23 @@ flowchart TD
 `remove`, and that a tool registered after the agent is built is the one
 `execute` finds.
 
+The trust path has its own tests: the hash stored for a file, the column
+cleared without reading anything, a workspace with no project file naming the
+path, one edited byte changing the hash, the terminal's row raising the right
+question and queueing the write, and the route documented with both methods.
+
+The `mcp-tools` tests live beside it. They cover the parser, a server entry with
+no filter and one with a filter, `--remote` and `--long`, an unknown id naming
+the configured ones, an untrusted project file reported and ignored, and
+`--trust` reading it.
+
 The client tests live in `crates/robi` and use an in-memory transport.
 They cover: a scrubbed environment with the config secret overlaid and
 the parent provider key absent; a project file ignored until the stored
 hash matches and ignored again after a one-byte change; the 64-tool cap;
-name sanitizing and a built-in collision skipped; `NeedsApproval` before
+a `tools` filter that keeps one listed tool and drops another, and a
+`tools` array that matches nothing; name sanitizing and a built-in
+collision skipped; `NeedsApproval` before
 the session list contains the pair and `AllowImmediately` after;
 annotations present on the tool and absent from the decision; a
 cancelled call sending `notifications/cancelled`; an `isError` result

@@ -167,3 +167,24 @@ describe('selectSession', () => {
     expect(chat.reviewTickBySession.s1).toBe(1)
   })
 })
+
+describe('turn errors', () => {
+  afterEach(() => {
+    patchChat({
+      activeSessionId: null,
+      draftSelected: false,
+      turnErrorBySession: {},
+      phaseBySession: {},
+      busy: false
+    })
+  })
+
+  it('keeps a failed turn under its session and clears it when the next instruction goes out', async () => {
+    await chat.finishTurn('s1', 'provider error: the credential was refused')
+    expect(chat.turnErrorBySession.s1).toBe('provider error: the credential was refused')
+
+    patchChat({ activeSessionId: 's1' })
+    expect(await chat.sendInstruction('try again')).toBe(true)
+    expect(chat.turnErrorBySession.s1).toBeUndefined()
+  })
+})

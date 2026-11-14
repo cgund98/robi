@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::filter::ToolFilter;
 use super::names::sha256_hex;
+use crate::domain::settings::store::SettingsStore;
 
 const ID: &str = r"^[A-Za-z0-9_-]{1,32}$";
 
@@ -14,6 +16,9 @@ pub struct ServerConfig {
     pub id: String,
     pub transport: Transport,
     pub timeout_seconds: u64,
+    /// Which of this server's tools reach the session. `all()` unless the entry
+    /// sets `tools`.
+    pub tools: ToolFilter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,10 +41,103 @@ pub struct ServerPreview {
     pub url: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoadError {
     pub id: String,
     pub message: String,
+}
+
+/// Whether the project file's servers may start.
+#[derive(Debug, Clone, Copy)]
+pub enum ProjectTrust<'a> {
+    /// Compare the file's SHA-256 with the hash stored on the workspace row.
+    StoredHash(Option<&'a str>),
+    /// The caller is looking at the bytes: the diagnostic CLI's `--trust`.
+    Always,
+}
+
+/// Both files read, merged, and resolved. What a caller needs to start servers.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    pub servers: Vec<ServerConfig>,
+    pub errors: Vec<LoadError>,
+    /// Whether a project file exists, trusted or not.
+    pub project_present: bool,
+    pub project_trusted: bool,
+}
+
+/// Read `~/.robi/mcp.json` and `<root>/.robi/mcp.json`, then merge them.
+///
+/// The one read path: the hub starts servers from it, reports status from it,
+/// and the `mcp-tools` binary lists from it. An untrusted project file is read
+/// and reported but contributes no server.
+pub async fn load(
+    home: &Path,
+    root: &Path,
+    trust: ProjectTrust<'_>,
+    settings: &dyn SettingsStore,
+) -> Loaded {
+    let settings_home = home.to_path_buf();
+    let read_home = settings_home.clone();
+    let project_file = project_path(root);
+    let (user, project_bytes) = crate::agent::blocking::call(move || {
+        (
+            read_file(&user_path(&read_home)),
+            std::fs::read(&project_file).unwrap_or_default(),
+        )
+    })
+    .await
+    .unwrap_or_default();
+    let project_present = !project_bytes.is_empty();
+    let project_trusted = match trust {
+        ProjectTrust::Always => true,
+        ProjectTrust::StoredHash(stored) => {
+            stored.is_some_and(|hash| hash == file_hash(&project_bytes))
+        }
+    };
+    let project = String::from_utf8_lossy(&project_bytes).into_owned();
+    let resolved = secrets(&settings_home, settings).await;
+    let (servers, errors) = merge(&user, &project, project_trusted, &resolved);
+    Loaded {
+        servers,
+        errors,
+        project_present,
+        project_trusted: project_trusted && project_present,
+    }
+}
+
+/// Secret values a config entry may reference.
+///
+/// A key in `secrets.toml` counts only when the store has it marked secret.
+/// The values are never logged.
+pub async fn secrets(home: &Path, settings: &dyn SettingsStore) -> BTreeMap<String, String> {
+    let path = home.join("secrets.toml");
+    let Ok(body) = crate::agent::blocking::call(move || std::fs::read_to_string(&path))
+        .await
+        .unwrap_or(Err(std::io::Error::other("filesystem read failed")))
+    else {
+        return BTreeMap::new();
+    };
+    let Ok(table) = toml::from_str::<toml::Table>(&body) else {
+        tracing::error!("secrets.toml did not parse; mcp secret references will fail");
+        return BTreeMap::new();
+    };
+    let mut found = BTreeMap::new();
+    for (key, value) in table {
+        let Some(text) = value.as_str() else {
+            continue;
+        };
+        if settings
+            .get(&key)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|setting| setting.secret)
+        {
+            found.insert(key, text.to_owned());
+        }
+    }
+    found
 }
 
 /// User servers, then project servers when `project_trusted` is true.
@@ -169,6 +267,7 @@ fn one(
     let command = body.get("command").and_then(Value::as_str);
     let url = body.get("url").and_then(Value::as_str);
     let timeout = timeout_seconds(body)?;
+    let tools = tool_filter(body)?;
     match (command, url) {
         (Some(_), Some(_)) => Err("server has both command and url".into()),
         (None, None) => Err("server has neither command nor url".into()),
@@ -182,6 +281,7 @@ fn one(
             Ok(Some(ServerConfig {
                 id: id.to_owned(),
                 timeout_seconds: timeout,
+                tools,
                 transport: Transport::Stdio {
                     command: command.to_owned(),
                     args: string_list(body, "args")?,
@@ -194,12 +294,21 @@ fn one(
             Ok(Some(ServerConfig {
                 id: id.to_owned(),
                 timeout_seconds: timeout,
+                tools,
                 transport: Transport::Http {
                     url: url.to_owned(),
                     headers: string_map(body, "headers", secrets)?,
                 },
             }))
         }
+    }
+}
+
+/// Absent or `null` loads every tool. An array filters, and `[]` loads none.
+fn tool_filter(body: &Value) -> Result<ToolFilter, String> {
+    match body.get("tools") {
+        None | Some(Value::Null) => Ok(ToolFilter::all()),
+        Some(_) => ToolFilter::new(&string_list(body, "tools")?),
     }
 }
 
@@ -291,6 +400,7 @@ pub fn file_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::mcp::session::ListedTool;
 
     fn secrets() -> BTreeMap<String, String> {
         BTreeMap::from([("github_token".into(), "gh".into())])
@@ -329,10 +439,155 @@ mod tests {
         assert_ne!(file_hash(original), file_hash(changed));
     }
 
+    #[tokio::test]
+    async fn an_untrusted_project_file_contributes_no_server() {
+        let dir = temp_home("untrusted");
+        let root = dir.join("workspace");
+        std::fs::create_dir_all(root.join(".robi")).unwrap();
+        std::fs::write(
+            dir.join("mcp.json"),
+            r#"{"mcpServers":{"git":{"command":"git-mcp"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".robi").join("mcp.json"),
+            r#"{"mcpServers":{"extra":{"command":"other"}}}"#,
+        )
+        .unwrap();
+        let store = crate::domain::settings::memory::MemorySettingsStore::new();
+        let loaded = load(&dir, &root, ProjectTrust::StoredHash(None), &store).await;
+        assert_eq!(loaded.servers.len(), 1);
+        assert_eq!(loaded.servers[0].id, "git");
+        assert!(loaded.project_present);
+        assert!(!loaded.project_trusted);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn always_trusts_the_project_file_and_lets_it_replace_an_id() {
+        let dir = temp_home("always");
+        let root = dir.join("workspace");
+        std::fs::create_dir_all(root.join(".robi")).unwrap();
+        std::fs::write(
+            dir.join("mcp.json"),
+            r#"{"mcpServers":{"git":{"command":"git-mcp"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".robi").join("mcp.json"),
+            r#"{"mcpServers":{"git":{"command":"other"}}}"#,
+        )
+        .unwrap();
+        let store = crate::domain::settings::memory::MemorySettingsStore::new();
+        let loaded = load(&dir, &root, ProjectTrust::Always, &store).await;
+        assert!(loaded.project_trusted);
+        assert_eq!(loaded.servers.len(), 1);
+        match &loaded.servers[0].transport {
+            Transport::Stdio { command, .. } => assert_eq!(command, "other"),
+            Transport::Http { .. } => panic!("expected stdio"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_stored_hash_that_matches_trusts_the_file() {
+        let dir = temp_home("hash");
+        let root = dir.join("workspace");
+        std::fs::create_dir_all(root.join(".robi")).unwrap();
+        let bytes = br#"{"mcpServers":{"extra":{"command":"other"}}}"#;
+        std::fs::write(root.join(".robi").join("mcp.json"), bytes).unwrap();
+        let hash = file_hash(bytes);
+        let store = crate::domain::settings::memory::MemorySettingsStore::new();
+        let loaded = load(&dir, &root, ProjectTrust::StoredHash(Some(&hash)), &store).await;
+        assert!(loaded.project_trusted);
+        assert_eq!(loaded.servers.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_secret_counts_only_when_the_store_marks_it_secret() {
+        use crate::domain::settings::store::SettingsStore;
+
+        let dir = temp_home("secrets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("secrets.toml"),
+            "github_token = \"gh\"\nplain = \"visible\"\n",
+        )
+        .unwrap();
+        let store = crate::domain::settings::memory::MemorySettingsStore::new();
+        store.set("github_token", "gh".into(), true).await.unwrap();
+        store.set("plain", "visible".into(), false).await.unwrap();
+        let found = super::secrets(&dir, &store).await;
+        assert_eq!(found.get("github_token").map(String::as_str), Some("gh"));
+        assert!(!found.contains_key("plain"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn temp_home(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("robi-mcp-config-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn http_to_a_public_host_is_rejected() {
         assert!(check_url("http://example.com/mcp").is_err());
         assert!(check_url("http://127.0.0.1:9/mcp").is_ok());
         assert!(check_url("https://mcp.linear.app/mcp").is_ok());
+    }
+
+    #[test]
+    fn a_server_without_tools_keeps_every_tool() {
+        let text = r#"{"mcpServers":{"linear":{"url":"https://mcp.linear.app/mcp"}}}"#;
+        let (servers, errors) = parse(text, &secrets());
+        assert!(errors.is_empty());
+        assert!(!servers[0].tools.is_filtered());
+    }
+
+    #[test]
+    fn a_tools_list_becomes_a_filter() {
+        let text = r#"{"mcpServers":{"linear":{"url":"https://mcp.linear.app/mcp","tools":["get_*","re:^search_"]}}}"#;
+        let (servers, errors) = parse(text, &secrets());
+        assert!(errors.is_empty());
+        assert!(servers[0].tools.is_filtered());
+    }
+
+    #[test]
+    fn an_empty_tools_list_keeps_nothing() {
+        let text = r#"{"mcpServers":{"linear":{"url":"https://mcp.linear.app/mcp","tools":[]}}}"#;
+        let (servers, errors) = parse(text, &secrets());
+        assert!(errors.is_empty());
+        let listed = [ListedTool {
+            name: "get_issue".into(),
+            description: None,
+            input_schema: None,
+            read_only: true,
+            destructive: false,
+            open_world: false,
+        }];
+        assert!(servers[0].tools.visible("linear", &listed).0.is_empty());
+    }
+
+    #[test]
+    fn a_null_tools_field_keeps_every_tool() {
+        let text = r#"{"mcpServers":{"linear":{"url":"https://mcp.linear.app/mcp","tools":null}}}"#;
+        let (servers, errors) = parse(text, &secrets());
+        assert!(errors.is_empty());
+        assert!(!servers[0].tools.is_filtered());
+    }
+
+    #[test]
+    fn a_bad_tools_shape_skips_that_server() {
+        for tools in [r#""get_*""#, r#"[1]"#, r#"["re:("]"#, r#"["*["]"#] {
+            let text = format!(
+                r#"{{"mcpServers":{{"linear":{{"url":"https://mcp.linear.app/mcp","tools":{tools}}}}}}}"#
+            );
+            let (servers, errors) = parse(&text, &secrets());
+            assert!(servers.is_empty(), "accepted {tools}");
+            assert_eq!(errors.len(), 1, "one error for {tools}");
+        }
     }
 }

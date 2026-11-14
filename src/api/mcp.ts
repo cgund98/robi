@@ -43,3 +43,29 @@ export async function getMcpConfig(workspaceId: string): Promise<McpConfig> {
     errorMessage(result.error, 'Failed to load MCP config')
   )
 }
+
+export async function trustMcpProject(workspaceId: string): Promise<McpConfig> {
+  const result = await api.PUT('/api/v1/workspaces/{id}/mcp/trust', {
+    params: { path: { id: workspaceId } }
+  })
+  if (result.data) {
+    return result.data
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to trust the project MCP config')
+  )
+}
+
+export async function untrustMcpProject(workspaceId: string): Promise<McpConfig> {
+  const result = await api.DELETE('/api/v1/workspaces/{id}/mcp/trust', {
+    params: { path: { id: workspaceId } }
+  })
+  if (result.data) {
+    return result.data
+  }
+  throw new ApiError(
+    statusOf(result.response as { status: number } | undefined),
+    errorMessage(result.error, 'Failed to turn off the project MCP config')
+  )
+}

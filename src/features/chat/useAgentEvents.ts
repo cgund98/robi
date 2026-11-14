@@ -175,6 +175,8 @@ export function useAgentEvents(): void {
           const outcome = data?.outcome
           if (outcome?.kind === 'failed') {
             const message = outcome.message ?? 'The turn failed'
+            // Recorded against the session so the banner is there when it is opened.
+            chat.noteTurnError(sessionId, message)
             errors.report(message, sessionId)
             void postTurnFailedNotice(sessionId, message)
           }

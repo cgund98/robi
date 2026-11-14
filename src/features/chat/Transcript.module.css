@@ -146,3 +146,15 @@
 .compactedLabel {
   white-space: nowrap;
 }
+
+.turnError {
+  max-width: var(--chat-column-width);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--danger);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

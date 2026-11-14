@@ -107,8 +107,10 @@ message, the composer sits under the greeting in the center of the column.
   The primary actions (workspace, title/Recents, New chat, Settings) stay visible;
   MCP marks and the API health row fold into one overflow menu, and that button is
   absent while there is nothing to show.
-- **The workspace name collapses below 1040 px.** At narrow widths the dropdown
-  keeps its folder icon and chevron and drops the name, before anything clips.
+- **The workspace name stays visible at every width.** The top bar names the
+  workspace beside its folder icon, so the user knows which one is open without
+  opening the menu. Below 1040 px the name shortens and truncates rather than
+  disappearing.
 - **The overflow is the only home for secondary chrome.** It is a Kobalte
   dropdown, styled with these tokens.
 

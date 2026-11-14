@@ -236,7 +236,16 @@ signature then and move the id into it.
 `robi_core::error::ModelError` has `Provider(String)` and `StreamClosed`.
 Retryability is decided inside the adapter, so the loop never needs it. The adapter
 encodes the HTTP status and a stable kind word in the message text, as in
-`rate limited (429)`.
+`the provider is rate limiting requests (429): ...`.
+
+The text after the colon is the provider's own explanation, kept whole. An error
+body is the only place a provider says which quota ran out or which key it
+refused, so `error_detail` reads the JSON `error.message` and keeps its `type`
+and `code` beside it, as in `insufficient_quota`. A body that is not JSON is
+passed through as it arrived, with an HTML page reduced to its visible text.
+Nothing is cut before that sentence: the banner that shows it has room for a
+paragraph, and a 512-byte window used to end mid-sentence. A body that is empty
+falls back to the status reason.
 
 **Deferred:** a structured `ModelError::Http { status, retryable, body }`, when the
 M2 UI must render a rate limit differently from a rejected key. Recording the
@@ -863,12 +872,12 @@ Quirks to handle, each with a test:
 
 | Failure | Handling | Retry |
 |---|---|---|
-| 401, 403 | `Provider` naming a rejected credential, key redacted | No |
+| 401, 403 | `Provider` naming a rejected credential, then the provider's own message. The key is never echoed from the request | No |
 | 404, or a model absent from the catalog | Name the model id | No |
 | A catalog model without tool support | Refused at `build_model`, naming the id | No |
 | 400, 422 | Surface the provider's message; the body is deterministic | No |
-| 429 | Honour `Retry-After` up to the 8 s cap, else back off. The last attempt fails the turn | Yes, before the first delta |
-| 5xx | Back off | Yes, before the first delta |
+| 429 | Honour `Retry-After` up to the 8 s cap, else back off. The last attempt fails the turn with the provider's message | Yes, before the first delta |
+| 5xx | Back off, then fail with the status and the body | Yes, before the first delta |
 | Connect failure, or header timeout | Treat as transport | Yes, before the first delta |
 | Inter-chunk gap over `chunk_timeout` | Terminal; a stalled stream is not recoverable in place | No |
 | Failure after the first delta | `Delta::Failed(StreamClosed)` | No |

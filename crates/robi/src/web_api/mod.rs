@@ -111,6 +111,8 @@ async fn health_check() -> &'static str {
         workspace::list_mcp_servers,
         workspace::focus_mcp,
         workspace::get_mcp_config,
+        workspace::trust_mcp_project,
+        workspace::untrust_mcp_project,
         workspace::resolve_workspace_path,
         workspace::open_workspace_file,
         workspace::read_workspace_file,

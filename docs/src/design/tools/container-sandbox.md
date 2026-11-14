@@ -631,7 +631,6 @@ constructs a smaller list:
 |---|---|
 | `HOME` | `/home/agent` |
 | `USER`, `LOGNAME` | `agent` |
-| `PATH` | `/home/agent/.local/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin` |
 | `CARGO_HOME` | `/home/agent/.cargo` |
 | `RUSTUP_HOME` | `/usr/local/rustup`, from the image |
 | `TMPDIR` | `/tmp` |
@@ -641,11 +640,16 @@ constructs a smaller list:
 
 The secret filter still applies. Any name containing `KEY`, `TOKEN`, `SECRET`,
 `PASSWORD`, or `CREDENTIAL`, and any `DYLD_*`, `LD_PRELOAD`, or
-`LD_LIBRARY_PATH`, is not copied. The host `PATH` is not copied: a directory in
-the workspace cannot place its own `ls` first.
+`LD_LIBRARY_PATH`, is not copied.
+
+`PATH` is not in the list. The image sets it in its own `ENV`, and Docker applies
+the image value to both `run` and `exec`, so neither the host `PATH` nor a second
+copy of the image's reaches the command. A directory in the workspace cannot
+place its own `ls` first.
 
 The image is the `PATH` contract. Add a toolchain to
-`resources/docker/agent-base.Dockerfile`, not to the profile.
+`resources/docker/agent-base.Dockerfile`, not to the profile. A profile `env`
+setting may still set `PATH`, because that is the user's deliberate choice.
 
 ### Execution
 

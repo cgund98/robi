@@ -1,17 +1,19 @@
-//! API process logs under `~/.robi/logs/`.
+//! Process logs under `~/.robi/logs/`.
 //!
-//! Each start opens a new log file and never truncates an existing one. A
-//! release build uses `robi-api-<timestamp>.log`. A dev build, including
-//! `pnpm tauri dev`, uses `robi-dev-<timestamp>.log`, so the two do not prune
-//! each other's files. The newest file from the previous start is kept even
-//! when it is old or the directory is over the cap, so the run you just left
-//! is still there after a reopen.
+//! Each start opens a new log file and never truncates an existing one. The
+//! name says which process wrote it: `robi-api-<timestamp>.log` for a release
+//! API or app process, `robi-dev-<timestamp>.log` for a debug one, and
+//! `tui-<timestamp>.log` for the terminal front end. Each prefix is pruned on
+//! its own, so a TUI run never prunes the app's logs or the other way around.
+//! The newest file from the previous start is kept even when it is old or the
+//! directory is over the cap, so the run you just left is still there after a
+//! reopen.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use chrono::{SecondsFormat, Utc};
@@ -29,6 +31,12 @@ const MAX_LOG_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// start with `robi-api-`, so a prefix check cannot match both.
 const PREFIX: &str = "robi-api-";
 const DEV_PREFIX: &str = "robi-dev-";
+
+/// The terminal front end. It is a separate process on the same directory, so
+/// its files carry their own prefix: `tui-` says which program wrote the file,
+/// where `robi-dev-` could be either the TUI or `pnpm tauri dev`.
+const TUI_PREFIX: &str = "tui-";
+
 const SUFFIX: &str = ".log";
 
 /// The `logs` directory under `~/.robi`, and the `mcp` subtree that holds one
@@ -46,13 +54,22 @@ pub(crate) fn mcp_logs_dir(home: &Path) -> PathBuf {
     logs_dir(home).join(MCP_DIR)
 }
 
-fn log_prefix() -> &'static str {
-    if cfg!(debug_assertions) {
-        DEV_PREFIX
-    } else {
-        PREFIX
+/// The file-name prefix `target` writes and prunes by.
+fn log_prefix(target: Target) -> &'static str {
+    match target {
+        Target::Tui => TUI_PREFIX,
+        Target::Api if cfg!(debug_assertions) => DEV_PREFIX,
+        Target::Api => PREFIX,
     }
 }
+
+/// Keeps the background writer alive, and is dropped by [`flush`].
+///
+/// `tracing_appender` flushes its queue when the guard drops, so the guard has
+/// to live as long as the process logs. Holding it here rather than leaking it
+/// is what makes a last line writable: `process::exit` does not run destructors,
+/// and the worker does not drain on its own.
+static LOG_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> = Mutex::new(None);
 
 /// The file this process is appending to. A startup failure writes here
 /// directly: the background logger does not flush when the process aborts.
@@ -104,9 +121,9 @@ fn install(target: Target) {
         .unwrap_or_else(|_| "robi=info".into());
 
     let file_layer = match home_logs() {
-        Ok((home, dir)) => match open_log_file(&dir) {
+        Ok((home, dir)) => match open_log_file(&dir, target) {
             Ok((path, file)) => {
-                if let Err(err) = prune_logs(&dir, &path, SystemTime::now()) {
+                if let Err(err) = prune_logs(&dir, &path, target, SystemTime::now()) {
                     eprintln!("could not prune old log files: {err}");
                 }
                 // Prune the per-server MCP logs too. A server removed from the
@@ -115,8 +132,9 @@ fn install(target: Target) {
                 let _ = LOG_FILE.set(path.clone());
                 install_panic_hook();
                 let (writer, guard) = tracing_appender::non_blocking(file);
-                // The guard flushes the worker on drop. It has to outlive the process.
-                Box::leak(Box::new(guard));
+                if let Ok(mut slot) = LOG_GUARD.lock() {
+                    *slot = Some(guard);
+                }
                 Some(
                     tracing_subscriber::fmt::layer()
                         .with_writer(writer)
@@ -154,6 +172,24 @@ fn install(target: Target) {
             registry.init();
         }
     }
+}
+
+/// Write out whatever the background logger still holds, then stop it.
+///
+/// Call this last, just before the process ends. Without it the tail of the log
+/// is lost: the worker flushes on drop, and `process::exit` skips that.
+pub fn flush() {
+    if let Ok(mut slot) = LOG_GUARD.lock() {
+        slot.take();
+    }
+}
+
+/// The file this process is logging to, once it has one.
+///
+/// The terminal front end cannot print the path on stderr, so its first log
+/// line names the file instead.
+pub fn log_file() -> Option<&'static Path> {
+    LOG_FILE.get().map(PathBuf::as_path)
 }
 
 /// Append one error line and flush it. Used when the process is about to
@@ -207,15 +243,15 @@ fn home_logs() -> io::Result<(PathBuf, PathBuf)> {
 
 /// Create a new log file. A name collision gets a numeric suffix rather than
 /// an append or a truncate.
-fn open_log_file(dir: &Path) -> io::Result<(PathBuf, File)> {
+fn open_log_file(dir: &Path, target: Target) -> io::Result<(PathBuf, File)> {
     let stamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let stamp = stamp.replace(':', "-");
     let mut n = 1u32;
     loop {
         let name = if n == 1 {
-            format!("{}{stamp}{SUFFIX}", log_prefix())
+            format!("{}{stamp}{SUFFIX}", log_prefix(target))
         } else {
-            format!("{}{stamp}-{n}{SUFFIX}", log_prefix())
+            format!("{}{stamp}-{n}{SUFFIX}", log_prefix(target))
         };
         let path = dir.join(name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -231,11 +267,11 @@ fn open_log_file(dir: &Path) -> io::Result<(PathBuf, File)> {
     }
 }
 
-fn prune_logs(dir: &Path, current: &Path, now: SystemTime) -> io::Result<()> {
+fn prune_logs(dir: &Path, current: &Path, target: Target, now: SystemTime) -> io::Result<()> {
     prune(
         dir,
         Some(current),
-        &is_log_file,
+        &|path| is_log_file(path, target),
         MAX_LOG_FILES,
         MAX_LOG_AGE,
         now,
@@ -304,11 +340,12 @@ fn prune(
     Ok(())
 }
 
-fn is_log_file(path: &Path) -> bool {
+/// A log file this process owns: its own prefix, and not another's.
+fn is_log_file(path: &Path, target: Target) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    name.starts_with(log_prefix()) && name.ends_with(SUFFIX)
+    name.starts_with(log_prefix(target)) && name.ends_with(SUFFIX)
 }
 
 /// One MCP server log: `mcp-<timestamp>.log`.
@@ -334,6 +371,45 @@ mod tests {
             cfg!(debug_assertions),
             "the API keeps its debug-build stderr layer"
         );
+    }
+
+    #[test]
+    fn flush_writes_the_line_the_background_worker_still_holds() {
+        let dir = std::env::temp_dir().join(format!("robi-logs-flush-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tui-flush.log");
+        let file = File::create(&path).unwrap();
+        let (writer, guard) = tracing_appender::non_blocking(file);
+        *LOG_GUARD.lock().unwrap() = Some(guard);
+
+        use tracing_subscriber::fmt::MakeWriter;
+        writer
+            .make_writer()
+            .write_all(b"terminal front end exited\n")
+            .unwrap();
+        flush();
+
+        assert!(LOG_GUARD.lock().unwrap().is_none(), "flush takes the guard");
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text, "terminal front end exited\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_process_writes_and_prunes_by_its_own_prefix() {
+        assert_eq!(log_prefix(Target::Tui), "tui-");
+        assert_eq!(
+            log_prefix(Target::Api),
+            if cfg!(debug_assertions) {
+                DEV_PREFIX
+            } else {
+                PREFIX
+            }
+        );
+        let dir = Path::new("/tmp");
+        assert!(!is_log_file(&dir.join("robi-api-x.log"), Target::Tui));
+        assert!(is_log_file(&dir.join("tui-x.log"), Target::Tui));
     }
 
     fn touch(path: &Path, age: Duration) {
@@ -366,23 +442,23 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let now = SystemTime::now();
-        let current = dir.join(format!("{}current.log", log_prefix()));
+        let current = dir.join(format!("{}current.log", log_prefix(Target::Api)));
         fs::write(&current, b"now").unwrap();
 
         // Newest prior file, and older than the age cap. It stays.
-        let previous = dir.join(format!("{}previous.log", log_prefix()));
+        let previous = dir.join(format!("{}previous.log", log_prefix(Target::Api)));
         touch(&previous, Duration::from_secs(1));
 
         let young: Vec<_> = (0..6)
             .map(|i| {
-                let path = dir.join(format!("{}young-{i}.log", log_prefix()));
+                let path = dir.join(format!("{}young-{i}.log", log_prefix(Target::Api)));
                 touch(&path, Duration::from_secs(60 * (i as u64 + 2)));
                 path
             })
             .collect();
-        let excess = dir.join(format!("{}excess.log", log_prefix()));
+        let excess = dir.join(format!("{}excess.log", log_prefix(Target::Api)));
         touch(&excess, Duration::from_secs(60 * 60));
-        let ancient = dir.join(format!("{}ancient.log", log_prefix()));
+        let ancient = dir.join(format!("{}ancient.log", log_prefix(Target::Api)));
         touch(&ancient, Duration::from_secs(10 * 24 * 60 * 60));
         fs::write(dir.join("notes.txt"), b"leave me").unwrap();
         let other_prefix = if cfg!(debug_assertions) {
@@ -392,8 +468,11 @@ mod tests {
         };
         let other = dir.join(format!("{other_prefix}other.log"));
         touch(&other, Duration::from_secs(10 * 24 * 60 * 60));
+        // Another process's log, aged past the cap. A TUI run leaves it alone.
+        let tui = dir.join("tui-other.log");
+        touch(&tui, Duration::from_secs(10 * 24 * 60 * 60));
 
-        prune_logs(&dir, &current, now).unwrap();
+        prune_logs(&dir, &current, Target::Api, now).unwrap();
 
         assert!(current.exists());
         assert!(previous.exists());
@@ -404,17 +483,18 @@ mod tests {
         assert!(!ancient.exists());
         assert!(dir.join("notes.txt").exists());
         assert!(other.exists());
+        assert!(tui.exists());
 
         let only = std::env::temp_dir().join(format!("robi-logs-old-{}", std::process::id()));
         let _ = fs::remove_dir_all(&only);
         fs::create_dir_all(&only).unwrap();
-        let current_only = only.join(format!("{}current.log", log_prefix()));
+        let current_only = only.join(format!("{}current.log", log_prefix(Target::Api)));
         fs::write(&current_only, b"now").unwrap();
-        let old_previous = only.join(format!("{}old.log", log_prefix()));
+        let old_previous = only.join(format!("{}old.log", log_prefix(Target::Api)));
         touch(&old_previous, Duration::from_secs(30 * 24 * 60 * 60));
-        let also_old = only.join(format!("{}also-old.log", log_prefix()));
+        let also_old = only.join(format!("{}also-old.log", log_prefix(Target::Api)));
         touch(&also_old, Duration::from_secs(40 * 24 * 60 * 60));
-        prune_logs(&only, &current_only, SystemTime::now()).unwrap();
+        prune_logs(&only, &current_only, Target::Api, SystemTime::now()).unwrap();
         assert!(old_previous.exists());
         assert!(!also_old.exists());
         let _ = fs::remove_dir_all(&only);

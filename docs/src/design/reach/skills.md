@@ -253,13 +253,16 @@ and confirmed before anything is written. The procedure is:
    `url` and `headers`.
 4. Ask about secrets, and write a token or key as `{ "secret": "<name>" }`
    against an entry in `~/.robi/secrets.toml` rather than inline.
-5. Ask whether to set `timeout_seconds` or `enabled: false`. Show the JSON and
-   the path, then write the entry into the existing `"mcpServers"` object.
-6. Tell the user to restart the app for the change to take effect.
+5. Ask whether to set `timeout_seconds` or `enabled: false`.
+6. Ask whether to limit the tool list with `tools`, which is a list of globs or
+   `re:` regexes. Only a match is registered, so the rest cost no context. The
+   skill says this only when the server publishes more than the user needs.
+7. Show the JSON and the path, then write the entry into the existing
+   `"mcpServers"` object.
+8. Tell the user to restart the app for the change to take effect.
 
-The body notes the id rule, the project trust hash and its not-yet-wired
-control, and links the MCP servers guide. Details are in
-[MCP](./mcp.md).
+The body notes the id rule, the project trust hash and where to approve it, and
+links the MCP servers guide. Details are in [MCP](./mcp.md).
 
 ## Rejected alternatives
 

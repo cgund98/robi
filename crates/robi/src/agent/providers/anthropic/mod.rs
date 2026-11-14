@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::providers::catalog::ModelCatalog;
 use crate::agent::providers::config::ProviderSettings;
-use crate::agent::providers::error::{truncate_body, ProviderError};
+use crate::agent::providers::error::{error_detail, ProviderError};
 use crate::agent::providers::images::ImageSource;
 use crate::agent::providers::retry::{classify, Retry};
 use crate::agent::providers::sse::SseDecoder;
@@ -276,20 +276,26 @@ impl AnthropicModel {
         }
 
         let retry = classify(status, response.headers());
-        let body = truncate_body(&response.text().await.unwrap_or_default());
-        let status = status.as_u16();
-        let error = match status {
+        let body = response.text().await.unwrap_or_default();
+        let detail = error_detail(status, &body);
+        let error = match status.as_u16() {
             401 | 403 => {
-                tracing::debug!(status, body, "the credential was refused");
-                ProviderError::Unauthorized { status }
+                tracing::debug!(status = status.as_u16(), %detail, "the credential was refused");
+                ProviderError::Unauthorized {
+                    status: status.as_u16(),
+                    detail,
+                }
             }
             429 => {
-                tracing::debug!(status, body, "the provider is rate limiting");
-                ProviderError::RateLimited { status }
+                tracing::debug!(status = status.as_u16(), %detail, "the provider is rate limiting");
+                ProviderError::RateLimited {
+                    status: status.as_u16(),
+                    detail,
+                }
             }
             other => ProviderError::Http {
                 status: other,
-                body,
+                detail,
             },
         };
         Err((error, retry))

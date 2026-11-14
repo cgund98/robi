@@ -63,14 +63,21 @@
   font-size: 13px;
 }
 
+/*
+ * The top bar keeps the name at every width, so it takes a content basis and
+ * truncates. `flex: 1` from the row form would give the chip no basis to size
+ * itself from, and the name would vanish inside a shrink-to-fit button.
+ */
 .summaryCompact .name {
+  flex: 0 1 auto;
+  max-width: 18ch;
   font-weight: 500;
 }
 
-/* Narrow windows: the workspace name goes first, before any control clips. */
+/* Narrow windows: the name shortens, so the title and actions keep their room. */
 @media (max-width: 1040px) {
   .summaryCompact .name {
-    display: none;
+    max-width: 10ch;
   }
 }
 

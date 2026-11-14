@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.10"
+    "version": "0.1.11"
   },
   "paths": {
     "/api/v1/chat_sessions": {
@@ -890,6 +890,69 @@
         "responses": {
           "200": {
             "description": "MCP JSON files as stored on disk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/mcp/trust": {
+      "put": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "trust_mcp_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project file's current bytes are now trusted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "This workspace has no project config file"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "untrust_mcp_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workspace id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project file's servers are off until trusted again",
             "content": {
               "application/json": {
                 "schema": {

@@ -162,6 +162,14 @@ pub enum Action {
     /// The user and project MCP config paths, and whether the project file is
     /// trusted. The file text is not read: the terminal never becomes an editor.
     LoadMcpConfig { workspace: WorkspaceId },
+    /// Store the hash of the project MCP file's current bytes, or clear it.
+    ///
+    /// Approving a committed file is the one action here that starts processes
+    /// nobody typed, so the surface asks first.
+    SetMcpProjectTrust {
+        workspace: WorkspaceId,
+        enable: bool,
+    },
     /// Read one file the reader named, and hand it back as an attachment.
     ///
     /// The path is resolved, read, and classified in the effect: `App` does no
@@ -337,6 +345,15 @@ pub enum ActionOutcome {
     },
     /// This workspace's MCP config paths.
     McpConfig(crate::tui::state::settings::McpPaths),
+    /// The trust toggle landed. The paths are the files as they now stand.
+    McpTrustSet {
+        enable: bool,
+        paths: crate::tui::state::settings::McpPaths,
+    },
+    /// The trust toggle was refused: no project file, or the store said no.
+    McpTrustFailed {
+        message: String,
+    },
     /// One file is read and ready to attach. `session` is the composer's session
     /// at the moment `Attach` was issued, so a read that lands after a switch
     /// cannot put a chip under another chat.
@@ -399,6 +416,7 @@ impl Action {
             Action::LoadSettings { .. } => "settings",
             Action::SaveSetting { .. } => "save setting",
             Action::LoadMcpConfig { .. } => "mcp config",
+            Action::SetMcpProjectTrust { .. } => "mcp trust",
             Action::Attach { .. } => "attach",
             Action::OpenFile { .. } => "open file",
         }
@@ -490,6 +508,14 @@ impl ActionOutcome {
             ActionOutcome::SettingSaved { key, .. } => format!("wrote {key}"),
             ActionOutcome::SettingFailed { key, message } => format!("{key} refused: {message}"),
             ActionOutcome::McpConfig(paths) => paths.project_path.clone(),
+            ActionOutcome::McpTrustSet { enable, .. } => {
+                if *enable {
+                    "project servers trusted".to_owned()
+                } else {
+                    "project servers off".to_owned()
+                }
+            }
+            ActionOutcome::McpTrustFailed { message } => message.clone(),
             ActionOutcome::Attached {
                 source, pending, ..
             } => {

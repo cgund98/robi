@@ -40,7 +40,7 @@ On Linux, the default sandbox runs commands through `bubblewrap`; without it, a 
 
 ## The version
 
-The version is one number for the whole app. The release pull request writes it in three places:
+The version is one number for the whole app. The release pull request writes it in three files:
 
 | File | Field |
 |---|---|
@@ -49,5 +49,7 @@ The version is one number for the whole app. The release pull request writes it 
 | `src-tauri/tauri.conf.json` | `version` |
 
 Crates take the workspace version, so they are not listed separately. `openapi/openapi.json` is generated; the next `make openapi-spec` picks up the new version.
+
+`Cargo.lock` also records the version of each workspace crate, and release-please cannot write it. The release pull request therefore arrives with a stale lock, and the `rust` CI job fails on `cargo metadata --locked` until `cargo update --workspace` is run and committed with it. The terminal build fetches the lock again before `cargo build --locked`, so that lock drift alone does not stop a release: a dependency missing from the lock still does.
 
 Commits on `main` use [Conventional Commits](https://www.conventionalcommits.org/). While the version is below `1.0.0`, `fix` and `feat` both open a patch (`0.1.1`), and `feat!` or `BREAKING CHANGE` opens a minor (`0.2.0`). Other types are omitted from the changelog unless they carry a breaking marker.

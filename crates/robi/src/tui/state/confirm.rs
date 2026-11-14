@@ -12,6 +12,11 @@ pub enum Target {
     DeleteSession(SessionId),
     DeleteWorkspace(WorkspaceId),
     Compact(SessionId),
+    /// Turn this workspace's project MCP servers on, or off.
+    McpTrust {
+        workspace: WorkspaceId,
+        enable: bool,
+    },
 }
 
 /// The question, and the thing it is about.
@@ -44,6 +49,27 @@ impl Confirm {
             target: Target::Compact(id),
             question: format!("Compact \u{201c}{title}\u{201d}?"),
             detail: Some("older messages become one summary".to_owned()),
+        }
+    }
+
+    /// `Trust the project servers in “.robi/mcp.json”?` and what approving runs.
+    ///
+    /// Enabling starts processes a repository asked for, which is the one thing
+    /// the hash exists to make deliberate. Disabling only stops them.
+    pub fn mcp_trust(workspace: WorkspaceId, path: &str, enable: bool) -> Self {
+        let target = Target::McpTrust { workspace, enable };
+        if enable {
+            Self {
+                target,
+                question: "Trust this workspace's project MCP servers?".to_owned(),
+                detail: Some(format!("{path} will start for this workspace")),
+            }
+        } else {
+            Self {
+                target,
+                question: "Turn this workspace's project MCP servers off?".to_owned(),
+                detail: Some(format!("{path} stays on disk, unread")),
+            }
         }
     }
 
@@ -86,4 +112,31 @@ mod tests {
             Some("its sessions will be deleted")
         );
     }
+}
+
+#[test]
+fn trusting_names_the_file_that_will_start() {
+    let confirm = Confirm::mcp_trust(WorkspaceId::new(), "/w/.robi/mcp.json", true);
+    assert!(confirm.question.contains("Trust"), "{}", confirm.question);
+    assert_eq!(
+        confirm.detail.as_deref(),
+        Some("/w/.robi/mcp.json will start for this workspace")
+    );
+    assert!(matches!(
+        confirm.target,
+        Target::McpTrust { enable: true, .. }
+    ));
+}
+
+#[test]
+fn turning_it_off_says_the_file_stays_on_disk() {
+    let confirm = Confirm::mcp_trust(WorkspaceId::new(), "/w/.robi/mcp.json", false);
+    assert_eq!(
+        confirm.detail.as_deref(),
+        Some("/w/.robi/mcp.json stays on disk, unread")
+    );
+    assert!(matches!(
+        confirm.target,
+        Target::McpTrust { enable: false, .. }
+    ));
 }

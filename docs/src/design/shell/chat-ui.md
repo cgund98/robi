@@ -94,8 +94,11 @@ ignored. `turn_started` sets **Thinking**. `turn_finished` sets `idle`, then
 refetches the session and the message list without taking the phase from
 `has_pending_agent`. The actor clears that flag after the event. A
 `turn_started` during the refetch stays **Thinking**. A reload while a turn
-is already running still restores the phase from `has_pending_agent`. A failed turn, and every other shell error, is kept in memory and listed
-under Settings → Audit log until Robi restarts. That page also lists the last 250 API calls, newest first, 50 per page, with method, OpenAPI path, status, and duration. Clicking a row shows that response body. `GET /api/v1/health` is left out. An API response outside 2xx, and a request that throws, is written to the error list too,
+is already running still restores the phase from `has_pending_agent`. A failed turn draws its message in `--danger` on a surface card under the last row of
+that session's transcript. It stays until the next instruction is sent for that
+session. Because the message is stored per session, opening a chat whose turn failed
+later shows it. The message, and every other shell error, is also kept in memory and
+listed under Settings → Audit log until Robi restarts. That page also lists the last 250 API calls, newest first, 50 per page, with method, OpenAPI path, status, and duration. Clicking a row shows that response body. `GET /api/v1/health` is left out. An API response outside 2xx, and a request that throws, is written to the error list too,
 without a second notice. A fetch this page aborted, including the 10-second
 timeout, is not. Several can be open at once. Each one sits under the window title and names
 the chat when it has one. Dismiss hides it. The audit log keeps it. The 2-second refetch is what paints a stored turn when the frame that
