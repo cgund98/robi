@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/cgund98/robi/compare/v0.1.11...v0.1.12) (2026-11-14)
+
+
+### Features
+
+* add mcp toolset and filters ([ee78db0](https://github.com/cgund98/robi/commit/ee78db02e62663b5f501c030155cce17314e1050))
+
 ## [0.1.11](https://github.com/cgund98/robi/compare/v0.1.10...v0.1.11) (2026-10-26)
 
 
